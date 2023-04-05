@@ -15,23 +15,6 @@ from ColorPrint import err_print
 from ftplib import FTP, FTP_TLS
 import socket
 import threading
-from urllib.parse impor#!/usr/bin/env python3
-# -*- coding: utf-8 -*-
-# @Time    : 2019/1/5 16:22
-# @Author  : Miyouzi
-# @File    : Anime.py @Software: PyCharm
-import ftplib
-import shutil
-import traceback
-import Config
-import pyhttpx
-from Danmu import Danmu
-from bs4 import BeautifulSoup
-import re, time, os, platform, subprocess, requests, random, sys
-from ColorPrint import err_print
-from ftplib import FTP, FTP_TLS
-import socket
-import threading
 from urllib.parse import quote
 
 
