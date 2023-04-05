@@ -1088,7 +1088,7 @@ class Anime:
                 if os.path.exists(self._bangumi_dir + '/playlist.m3u8'):
         	        with open(self._bangumi_dir + '/playlist.m3u8','w') as f:
         	            f.write('#EXTM3U')
-         	   with open(self._bangumi_dir + '/playlist.m3u8', 'w') as f:
+                with open(self._bangumi_dir + '/playlist.m3u8', 'w') as f:
                     f.write('#EXTINF:-1,' + self._video_file_name + '\n' + self._video_file_name)
             except:
             	err_print(self._sn, 'M3U8 write ERROR', status=1)
