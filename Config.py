@@ -4,6 +4,7 @@
 # @Author  : Miyouzi
 # @File    : Config.py
 # @Software: PyCharm
+# @Forked  : AvianJay
 
 import os, json, re, sys, requests, time, random, codecs, chardet
 import sqlite3
@@ -161,7 +162,8 @@ def __init_settings():
                 'save_logs': True,
                 'quantity_of_logs': 7,
                 'config_version': latest_config_version,
-                'database_version': latest_database_version
+                'database_version': latest_database_version,
+                'm3u8': True
                 }
     with open(config_path, 'w', encoding='utf-8') as f:
         json.dump(settings, f, ensure_ascii=False, indent=4)
@@ -385,6 +387,9 @@ def __update_settings(old_settings):  # 升级配置文件
     if 'parse_sn_cd' not in new_settings.keys():
         # v24.4 sn解析冷卻時間(秒)
         new_settings['parse_sn_cd'] = 5
+    if 'm3u8' not in new_settings.keys():
+        # add m3u8 option by avianjay
+        new_settings['m3u8'] = Ture
 
     new_settings['config_version'] = latest_config_version
     with open(config_path, 'w', encoding='utf-8') as f:
