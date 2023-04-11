@@ -3,6 +3,7 @@
 # @Time    : 2019/1/5 16:22
 # @Author  : Miyouzi
 # @File    : Anime.py @Software: PyCharm
+# @Forked  : AvianJay
 import ftplib
 import shutil
 import traceback
@@ -1082,6 +1083,23 @@ class Anime:
                     err_print(self._sn, 'Plex auto Refresh ERROR', status=1)
             except:
                 err_print(self._sn, 'Plex auto Refresh UNKNOWN ERROR', 'Exception: ' + str(e), status=1)
+        def m3u8(dir, name, title):
+            filepath = dir + '/' + 'playlist.m3u8'
+            if os.path.isfile(filepath):
+                err_print(self._sn, '下載狀態', '欲創建的m3u8已存在 ' + filepath, display=False)
+            else:
+                f = open(filepath, "w")
+                f.write("#EXTM3U\n")
+                f.close()
+            f2 = open(filepath, "a")
+            f2.write("#EXTINF"+ ':-1,' + title + '\n' + name + '\n')
+            f2.close()
+        if self._settings['m3u8']:
+            try:
+                m3u8(self._bangumi_dir, self._video_filename, self._title)
+                print('M3U8 寫入成功')
+            except:
+                err_print(self._sn, 'M3U8 寫入失敗 ' + dir + '/playlist.m3u8', 'M3U8 寫入失敗', status=1)
 
     def upload(self, bangumi_tag='', debug_file=''):
         first_connect = True  # 标记是否是第一次连接, 第一次连接会删除临时缓存目录
