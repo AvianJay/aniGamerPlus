@@ -68,5 +68,7 @@
     "save_logs": true,
     "quantity_of_logs": 7,
     "config_version": 13.0,
-    "database_version": 2.0
+    "database_version": 2.0,
+    "m3u8": true,
+    "danmu_update": true
 }

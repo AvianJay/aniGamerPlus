@@ -1097,7 +1097,7 @@ class Anime:
         if self._settings['m3u8']:
             try:
                 m3u8(self._bangumi_dir, self._video_filename, self._title)
-                print('M3U8 寫入成功')
+                err_print(self._sn, 'M3U8 寫入成功')
             except:
                 err_print(self._sn, 'M3U8 寫入失敗 ' + dir + '/playlist.m3u8', 'M3U8 寫入失敗', status=1)
 

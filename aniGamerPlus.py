@@ -383,6 +383,23 @@ def check_tasks():
             err_print("更新資訊", "SN 解析冷卻 " + str(settings['parse_sn_cd']) + " 秒", no_sn=True)
             time.sleep(settings['parse_sn_cd'])
 
+def update_danmu():
+    tasks_counter = 0
+    e = list(Config.read_sn_list().keys())
+    for anime_db in e:
+        if anime_db["status"] == 1:
+            if not anime_db["anime_name"] is None \
+                    and not anime_db["local_file_path"] is None:
+                a = threading.Thread(target=__get_danmu_only, args=(
+                    anime_db["sn"], anime_db["anime_name"], anime_db["local_file_path"]))
+                a.setDaemon(True)
+                thread_tasks.append(a)
+                a.start()
+                tasks_counter = tasks_counter + 1
+            else:
+                err_print(anime_db["sn"], '彈幕更新失敗', "資料庫不存在番劇名稱或影片路徑",
+                          status=1)
+    return tasks_counter
 
 def __download_only(sn, dl_resolution='', dl_save_dir='', realtime_show_file_size=False, classify=True):
     # 仅下载,不操作数据库
@@ -1032,6 +1049,10 @@ if __name__ == '__main__':
                     processing_queue.append(task_sn)
                     new_tasks_counter = new_tasks_counter + 1
                     err_print(task_sn, '加入任务列隊')
+        if settings['danmu_update']:
+            err_print(0, '開始更新彈幕(加入任務列隊)', no_sn=True)
+            danmu_tasks_counter = update_danmu()
+            new_tasks_counter = new_tasks_counter + danmu_tasks_counter
         info = '本次更新添加了 '+str(new_tasks_counter)+' 個新任務, 目前列隊中共有 ' + str(len(processing_queue)) + ' 個任務'
         err_print(0, '更新資訊', info, no_sn=True)
         err_print(0, '更新终了', no_sn=True)

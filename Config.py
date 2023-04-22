@@ -1,51 +1,5 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-# @Time    : 2023/4/15 17:13
-# @Author  : Miyouzi
-# @File    : Config.py
-# @Software: PyCharm
-# @Forked  : AvianJay
-
-import os, json, re, sys, requests, time, random, codecs, chardet
-import sqlite3
-import socket
-from urllib.parse import quote
-from urllib.parse import urlencode
-
-# 你猜猜看我是 .exe 或是 .py 檔案
-if getattr(sys, 'frozen', False):
-    working_dir = os.path.dirname(sys.executable)
-else:
-    working_dir = os.path.dirname(os.path.realpath(__file__))
-
-config_path = os.path.join(working_dir, 'config.json')
-sn_list_path = os.path.join(working_dir, 'sn_list.txt')
-cookie_path = os.path.join(working_dir, 'cookie.txt')
-logs_dir = os.path.join(working_dir, 'logs')
-aniGamerPlus_version = 'v24.5'
-latest_config_version = 17.2
-latest_database_version = 2.0
-cookie = None
-max_multi_thread = 5
-max_multi_downloading_segment = 5
-tasks_progress_rate = {}  # 储存任务进度, 供面板使用,
-# 格式: {sn: {'rate': 任务进度百分比(float), 'status': 任务状态, 'filename': 文件名} }
-# 任务状态有:  '正在下載' '正在解密合并' '正在移至番劇目錄' '任務失敗, 等待重啓' '等待下載'
-
-
-def __color_print(sn, err_msg, detail='', status=0, no_sn=False, display=True):
-    # 避免与 ColorPrint.py 相互调用产生问题
-    try:
-        err_print(sn, err_msg, detail=detail, status=status, no_sn=no_sn, display=display)
-    except UnboundLocalError:
-        from ColorPrint import err_print
-        err_print(sn, err_msg, detail=detail, status=status, no_sn=no_sn, display=display)
-
-
-def get_max_multi_thread():
-    return max_multi_thread
-#!/usr/bin/env python3
-# -*- coding: utf-8 -*-
 # @Time    : 2019/1/5 20:23
 # @Author  : Miyouzi
 # @File    : Config.py
@@ -68,8 +22,8 @@ config_path = os.path.join(working_dir, 'config.json')
 sn_list_path = os.path.join(working_dir, 'sn_list.txt')
 cookie_path = os.path.join(working_dir, 'cookie.txt')
 logs_dir = os.path.join(working_dir, 'logs')
-aniGamerPlus_version = 'v24.6'
-latest_config_version = 17.3
+aniGamerPlus_version = 'v24.7'
+latest_config_version = 17.4
 latest_database_version = 2.0
 cookie = None
 max_multi_thread = 5
@@ -209,7 +163,8 @@ def __init_settings():
                 'quantity_of_logs': 7,
                 'config_version': latest_config_version,
                 'database_version': latest_database_version,
-                'm3u8': True
+                'm3u8': True,
+                'danmu_update': True
                 }
     with open(config_path, 'w', encoding='utf-8') as f:
         json.dump(settings, f, ensure_ascii=False, indent=4)
@@ -434,8 +389,11 @@ def __update_settings(old_settings):  # 升级配置文件
         # v24.4 sn解析冷卻時間(秒)
         new_settings['parse_sn_cd'] = 5
     if 'm3u8' not in new_settings.keys():
-        # add m3u8 option by avianjay
-        new_settings['m3u8'] = Ture
+        # v24.6(?) add m3u8 option by avianjay
+        new_settings['m3u8'] = True
+    if 'danmu_update' not in new_settings.keys():
+        # v24.7 add Auto Update Danmu option by avianjay
+        new_settings['danmu_update'] = True
 
     new_settings['config_version'] = latest_config_version
     with open(config_path, 'w', encoding='utf-8') as f:
