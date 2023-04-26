@@ -385,7 +385,7 @@ def check_tasks():
 
 def update_danmu():
     tasks_counter = 0
-    e = list(Config.read_sn_list().keys())
+    e = read_db_all()
     for anime_db in e:
         if anime_db["status"] == 1:
             if not anime_db["anime_name"] is None \
