@@ -185,6 +185,12 @@ function readManualConfig(){
 
 		var danmu = $('#manual_danmu').is(":checked");
 		manualData['danmu'] = danmu;
+
+		var auto_update_danmu = $('#manual_auto_update_danmu').is(":checked");
+		manualData['auto_update_danmu'] = auto_update_danmu;
+
+		var m3u8 = $('#manual_m3u8').is(":checked");
+		manualData['m3u8'] = m3u8;
 		
 		$.ajax({
 			url: '/manualTask',
