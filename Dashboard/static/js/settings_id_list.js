@@ -24,5 +24,7 @@ var id_list = [
 	'save_logs', 
 	'quantity_of_logs',
 	'download_cd',
-	'parse_sn_cd'
+	'parse_sn_cd',
+        'm3u8',
+        'auto_update_danmu'
 ]

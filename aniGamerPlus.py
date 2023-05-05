@@ -1049,7 +1049,7 @@ if __name__ == '__main__':
                     processing_queue.append(task_sn)
                     new_tasks_counter = new_tasks_counter + 1
                     err_print(task_sn, '加入任务列隊')
-        if settings['danmu_update']:
+        if settings['auto_update_danmu']:
             err_print(0, '開始更新彈幕(加入任務列隊)', no_sn=True)
             danmu_tasks_counter = update_danmu()
             new_tasks_counter = new_tasks_counter + danmu_tasks_counter
