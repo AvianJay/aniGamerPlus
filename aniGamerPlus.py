@@ -478,7 +478,10 @@ def __get_danmu_only(sn, bangumi_name, video_path):
     thread_limiter.acquire()
 
     download_dir = settings['bangumi_dir']
-    if classify:  # 控制是否建立番剧文件夹
+    try:
+        if classify:  # 控制是否建立番剧文件夹
+            download_dir = os.path.join(download_dir, Config.legalize_filename(bangumi_name))
+    except:
         download_dir = os.path.join(download_dir, Config.legalize_filename(bangumi_name))
 
     if os.path.exists(download_dir):
