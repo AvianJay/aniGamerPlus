@@ -2,7 +2,8 @@
 # -*- coding: utf-8 -*-
 # @Time    : 2019/1/5 16:22
 # @Author  : Miyouzi
-# @File    : Anime.py @Software: PyCharm
+# @File    : Anime.py
+# @Software: PyCharm
 # @Forked  : AvianJay
 import ftplib
 import shutil
@@ -17,6 +18,7 @@ from ftplib import FTP, FTP_TLS
 import socket
 import threading
 from urllib.parse import quote
+from yt_dlp import YoutubeDL
 
 
 class TryTooManyTimeError(BaseException):
@@ -55,6 +57,8 @@ class Anime:
         self.upload_succeed_flag = False
         self._danmu = False
         self._proxies = {}
+        self._proxy_auth = ()
+        self._thumbnail_url = ''
 
         self.season_title_filter = re.compile('第[零一二三四五六七八九十]{1,3}季$')
         self.extra_title_filter = re.compile('\[(特別篇|中文配音)\]$')
@@ -236,6 +240,17 @@ class Anime:
                 # 当只有一集时，不存在剧集列表，self._episode_list 只有本身
                 self._episode_list[self._episode] = self._sn
 
+    def __get_thumbnail(self):
+        soup = self._src
+        c = 0
+        cc = 0
+        for e in soup.find_all('script'):
+            if 'animefun.poster = ' in e.text:
+                cc = c
+                break
+            c = c + 1
+        self._thumbnail_url = soup.find_all('script')[cc].string.split('animefun.poster = ')[1].split(';')[0].split("'")[1]
+
     def __init_header(self):
         # 伪装为浏览器
         host = 'ani.gamer.com.tw'
@@ -288,8 +303,8 @@ class Anime:
                     #https://github.com/miyouzi/aniGamerPlus/issues/249 pyhttpx 作者 在改動
                     #https://github.com/zero3301/pyhttpx/commit/4735190df741f4c00287ec948f0734fd2c21bfee 把 proxy 驗證放到了 proxies URL 裏面
                     f = self._pyhttpx_session.get(req, headers=current_header, cookies=cookies, timeout=10,
-                                                  proxies=self._proxies)
-                else:   
+                                                  proxies=self._proxies) # , proxy_auth=self._proxy_auth
+                else:
                     f = self._session.get(req, headers=current_header, cookies=cookies, timeout=10)
             except requests.exceptions.RequestException as e:
                 if error_cnt >= max_retry >= 0:
@@ -552,6 +567,39 @@ class Anime:
         result = result + tmp
         return result
 
+    def __youtube_download(anime_name, episode, file_path):
+        # 设置搜索关键字和频道ID
+        keywords = f"{anime_name} 第{episode}話"
+        channel_ids = ["UC45ONEZZfMDZCnEhgYmVu-A", "UCgdwtyqBunlRb-i-7PnCssQ"]
+
+        # 创建搜索器
+        ydl = YoutubeDL({'ignoreerrors': True, 'quiet': True, 'outtmpl': file_path})
+
+        # 根据关键字和频道ID搜索视频
+        for channel_id in channel_ids:
+            search_query = f"ytsearch:{keywords}"
+            search_results = ydl.extract_info(search_query, download=False)
+
+            # 遍历搜索结果，最多搜索10个视频
+            for i, result in enumerate(search_results['entries']):
+                video_url = result['webpage_url']
+                if result['channel_id'] == channel_id:
+                    try:
+                        # 下载视频到指定路径
+                        video = ydl.extract_info([video_url])
+                        for fmt in video['format']:
+                            pass
+
+                        # 返回下载的视频画质
+                        return result['format_note'].split('p')[0]
+                    except Exception as e:
+                        # 打印错误信息
+                        print(f"下载失败：{str(e)}")
+
+        # 若没有找到匹配的视频，则返回False
+        return False
+
+
     def __get_filename(self, resolution, without_suffix=False):
         # 处理剧集名补零
         if re.match(r'^[+-]?\d+(\.\d+){0,1}$', self._episode) and self._settings['zerofill'] > 1:
@@ -627,7 +675,7 @@ class Anime:
         merging_file = os.path.join(self._temp_dir, merging_filename)
 
         url_path = os.path.split(self._m3u8_dict[resolution])[0]  # 用于构造完整 chunk 链接
-        temp_dir = os.path.join(self._temp_dir, str(self._sn) + '-downloading-by-aniGamerPlus')  # 临时目录以 sn 命令
+        temp_dir = os.path.join(self._temp_dir, str(self._sn) + '-downloading-by-aniGamerPlusPlus')  # 临时目录以 sn 命令
         if not os.path.exists(temp_dir):  # 创建临时目录
             os.makedirs(temp_dir)
         m3u8_path = os.path.join(temp_dir, str(self._sn) + '.m3u8')  # m3u8 存放位置
@@ -894,6 +942,7 @@ class Anime:
         Config.tasks_progress_rate[int(self._sn)] = {'rate': 0, 'filename': '《'+self.get_title()+'》', 'status': '正在解析'}
 
         try:
+            #if settings['download_with_youtube'] and not self.__check_youtube():
             self.__get_m3u8_dict()  # 获取 m3u8 列表
         except TryTooManyTimeError:
             # 如果在获取 m3u8 过程中发生意外, 则取消此次下载
@@ -1007,7 +1056,7 @@ class Anime:
         # 推送 CQ 通知
         if self._settings['coolq_notify']:
             try:
-                msg = '【aniGamerPlus消息】\n《' + self._video_filename + '》下载完成, 本集 ' + str(self.video_size) + ' MB'
+                msg = '【aniGamerPlusPlus消息】\n《' + self._video_filename + '》下载完成, 本集 ' + str(self.video_size) + ' MB'
                 if self._settings['coolq_settings']['message_suffix']:
                     # 追加用户信息
                     msg = msg + '\n\n' + self._settings['coolq_settings']['message_suffix']
@@ -1025,7 +1074,7 @@ class Anime:
         # 推送 TG 通知
         if self._settings['telebot_notify']:
             try:
-                msg = '【aniGamerPlus消息】\n《' + self._video_filename + '》下载完成, 本集 ' + str(self.video_size) + ' MB'
+                msg = '【aniGamerPlusPlus消息】\n《' + self._video_filename + '》下载完成, 本集 ' + str(self.video_size) + ' MB'
                 vApiTokenTelegram = self._settings['telebot_token']
                 try:
                     if self._settings['telebot_use_chat_id'] and self._settings['telebot_chat_id']:  #手动指定发送目标
@@ -1056,7 +1105,7 @@ class Anime:
         # 推送通知至 Discord
         if self._settings['discord_notify']:
             try:
-                msg = '【aniGamerPlus消息】\n《' + self._video_filename + '》下載完成，本集 ' + str(self.video_size) + ' MB'
+                msg = '【aniGamerPlusPlus消息】\n《' + self._video_filename + '》下載完成，本集 ' + str(self.video_size) + ' MB'
                 url = self._settings['discord_token']
                 data = {
                     'content': None,
@@ -1106,7 +1155,7 @@ class Anime:
 
     def upload(self, bangumi_tag='', debug_file=''):
         first_connect = True  # 标记是否是第一次连接, 第一次连接会删除临时缓存目录
-        tmp_dir = str(self._sn) + '-uploading-by-aniGamerPlus'
+        tmp_dir = str(self._sn) + '-uploading-by-aniGamerPlusPlus'
 
         if debug_file:
             self.local_video_path = debug_file

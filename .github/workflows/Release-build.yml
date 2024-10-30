@@ -1,6 +1,6 @@
-#anigamerplus latest release build
+#anigamerplusplus latest release build
 
-name: aniGamerPlus Build Release
+name: aniGamerPlusPlus Build Release
 
 on:
   push:
@@ -26,8 +26,8 @@ jobs:
       run: |
         chcp 65001
         echo ("RELEASE_VERSION=" + $env:GITHUB_REF.replace('refs/tags/', '')) >> $env:GITHUB_ENV
-        echo ("RELEASE_TITLE=aniGamerPlus_" + $env:GITHUB_REF.replace('refs/tags/', '') + "_windows_64bit") >> $env:GITHUB_ENV
-        echo ("RELEASE_FILENAME=aniGamerPlus_" + $env:GITHUB_REF.replace('refs/tags/', '') + "_windows_64bit.zip") >> $env:GITHUB_ENV
+        echo ("RELEASE_TITLE=aniGamerPlusPlus_" + $env:GITHUB_REF.replace('refs/tags/', '') + "_windows_64bit") >> $env:GITHUB_ENV
+        echo ("RELEASE_FILENAME=aniGamerPlusPlus_" + $env:GITHUB_REF.replace('refs/tags/', '') + "_windows_64bit.zip") >> $env:GITHUB_ENV
         git fetch --tags --force
     - name: Get tag message
       id: tag_data
@@ -48,11 +48,11 @@ jobs:
         pip install -r requirements.txt
         pip install pyinstaller
     - name: Build exe
-      run: pyinstaller --noconfirm --distpath %cd%\ --onefile --console --icon %cd%\Dashboard\static\img\aniGamerPlus.ico --clean --add-data %cd%;aniGamerPlus/  %cd%\aniGamerPlus.py
+      run: pyinstaller --noconfirm --distpath %cd%\ --onefile --console --icon %cd%\Dashboard\static\img\aniGamerPlusPlus.ico --clean --add-data %cd%;aniGamerPlus/  %cd%\aniGamerPlus.py
       shell: cmd
 
     - name: Archive release
-      run: 7z a -tzip ${{ env.RELEASE_FILENAME }} aniGamerPlus.exe Dashboard DanmuTemplate.ass config-sample.json sn_list-sample.txt LICENSE README.md
+      run: 7z a -tzip ${{ env.RELEASE_FILENAME }} aniGamerPlusPlus.exe Dashboard DanmuTemplate.ass config-sample.json sn_list-sample.txt LICENSE README.md
 
     - name: Create Release
       id: create_release

@@ -14,10 +14,11 @@ import threading, traceback
 import random, string
 
 from aniGamerPlus import Config
-from flask import Flask, request, jsonify
-from flask import render_template
+from flask import Flask, request, jsonify, Response
+from flask import render_template, send_file
 from flask_basicauth import BasicAuth
 from aniGamerPlus import __cui as cui
+from aniGamerPlus import checknow
 import logging, termcolor
 from ColorPrint import err_print
 from logging.handlers import TimedRotatingFileHandler
@@ -36,6 +37,7 @@ static_path = os.path.join(Config.get_working_dir(), 'Dashboard', 'static')
 app = Flask(__name__, template_folder=template_path, static_folder=static_path)
 app.debug = False
 sockets = Sockets(app)
+basic_auth = BasicAuth(app)
 
 # 日志处理
 # logger = logging.getLogger('werkzeug')
@@ -81,11 +83,290 @@ termcolor.colored = colored
 app.logger.addHandler(handler)
 
 
+def get_chunk(path, byte1=None, byte2=None):
+    full_path = path
+    file_size = os.stat(full_path).st_size
+    start = 0
+    
+    if byte1 < file_size:
+        start = byte1
+    if byte2:
+        length = byte2 + 1 - byte1
+    else:
+        length = file_size - start
+
+    with open(full_path, 'rb') as f:
+        f.seek(start)
+        chunk = f.read(length)
+    return chunk, start, length, file_size
+
+
 # 读取web需要的配置名称列表
 id_list_path = os.path.join(Config.get_working_dir(), 'Dashboard', 'static', 'js', 'settings_id_list.js')
 with open(id_list_path, 'r', encoding='utf-8') as f:
     id_list = re.sub(r'(var id_list\s*=\s*|\s*\n?)', '', f.read()).replace('\'', '"')
     id_list = json.loads(id_list)
+
+@app.after_request
+def after_request(response):
+    response.headers.add('Accept-Ranges', 'bytes')
+    return response
+
+
+settings = Config.read_settings()
+if settings['dashboard']['BasicAuth']:
+    @app.route('/control')
+    @basic_auth.required
+    def control():
+        return render_template('control.html')
+
+
+    @app.route('/monitor')
+    @basic_auth.required
+    def monitor():
+        return render_template('monitor.html')
+
+
+    @app.route('/data/config.json', methods=['GET'])
+    @basic_auth.required
+    def config():
+        settings = Config.read_settings()
+        web_settings = {}
+        for id in id_list:
+            web_settings[id] = settings[id]  # 仅返回 web 需要的配置
+
+        return jsonify(web_settings)
+
+
+    @app.route('/uploadConfig', methods=['POST'])
+    @basic_auth.required
+    def recv_config():
+        data = json.loads(request.get_data(as_text=True))
+        new_settings = Config.read_settings()
+        for id in id_list:
+            new_settings[id] = data[id]  # 更新配置
+        Config.write_settings(new_settings)  # 保存配置
+        err_print(0, 'Dashboard', '通過 Web 控制臺更新了 config.json', no_sn=True, status=2)
+        return '{"status":"200"}'
+
+
+    @app.route('/manualTask', methods=['POST'])
+    @basic_auth.required
+    def manual_task():
+        data = json.loads(request.get_data(as_text=True))
+        settings = Config.read_settings()
+
+        # 下载清晰度
+        if data['resolution'] not in ('360', '480', '540', '720', '1080'):
+            # 如果不是合法清晰度
+            resolution = settings['download_resolution']
+        else:
+            resolution = data['resolution']
+
+        # 下载模式
+        if data['mode'] not in ('single', 'latest', 'all', 'largest-sn'):
+            mode = 'single'
+        else:
+            mode = data['mode']
+
+        # 下载线程数
+        if data['thread']:
+            thread = int(data['thread'])
+        else:
+            thread = 1
+        if thread > Config.get_max_multi_thread():
+            # 是否超过最大允许线程数
+            thread_limit = Config.get_max_multi_thread()
+        else:
+            thread_limit = thread
+
+        def run_cui():
+            cui(data['sn'], resolution, mode, thread_limit, [], classify=data['classify'], realtime_show=False,
+                cui_danmu=data['danmu'])
+
+        server = threading.Thread(target=run_cui)
+        err_print(0, 'Dashboard', '通過 Web 控制臺下達了手動任務', no_sn=True, status=2)
+        server.start()  # 启动手动任务线程
+        return '{"status":"200"}'
+
+
+    @app.route('/data/sn_list', methods=['GET'])
+    @basic_auth.required
+    def show_sn_list():
+        return Config.get_sn_list_content()
+
+
+    @app.route('/data/get_token', methods=['GET'])
+    @basic_auth.required
+    def get_token():
+        global websocket_token
+        # 生成 32 位随机字符串作为token
+        websocket_token = ''.join(random.sample(string.ascii_letters + string.digits, 32))
+        return websocket_token, '200 ok'
+
+
+    @sockets.route('/data/tasks_progress')
+    def tasks_progress(ws):
+        # 鉴权
+        global websocket_token
+        token = request.args.get('token')
+        if token != websocket_token:
+            ws.send('Unauthorized')
+            ws.close()
+        else:
+            # 一次性 token
+            websocket_token = ''
+
+        # 推送任务进度数据
+        # https://blog.csdn.net/sinat_32651363/article/details/87912701
+        while not ws.closed:
+            msg = json.dumps(Config.tasks_progress_rate)
+            try:
+                ws.send(msg)
+                time.sleep(1)
+            except WebSocketError:
+                # 连接中断
+                ws.close()
+                break
+
+
+    @app.route('/sn_list', methods=['POST'])
+    @basic_auth.required
+    def set_sn_list():
+        data = request.get_data(as_text=True)
+        Config.write_sn_list(data)
+        err_print(0, 'Dashboard', '通過 Web 控制臺更新了 sn_list', no_sn=True, status=2)
+        return '{"status":"200"}'
+
+
+    @app.route('/checknow')
+    @basic_auth.required
+    def checknow():
+        err_print(0, 'Dashboard', '通過 Web 控制臺發出了立即更新的請求', no_sn=True, status=2)
+        checknow()
+        return '{"status":"200"}'
+else:
+    @app.route('/control')
+    def control():
+        return render_template('control.html')
+
+
+    @app.route('/monitor')
+    def monitor():
+        return render_template('monitor.html')
+
+
+    @app.route('/data/config.json', methods=['GET'])
+    def config():
+        settings = Config.read_settings()
+        web_settings = {}
+        for id in id_list:
+            web_settings[id] = settings[id]  # 仅返回 web 需要的配置
+
+        return jsonify(web_settings)
+
+
+    @app.route('/uploadConfig', methods=['POST'])
+    def recv_config():
+        data = json.loads(request.get_data(as_text=True))
+        new_settings = Config.read_settings()
+        for id in id_list:
+            new_settings[id] = data[id]  # 更新配置
+        Config.write_settings(new_settings)  # 保存配置
+        err_print(0, 'Dashboard', '通過 Web 控制臺更新了 config.json', no_sn=True, status=2)
+        return '{"status":"200"}'
+
+
+    @app.route('/manualTask', methods=['POST'])
+    def manual_task():
+        data = json.loads(request.get_data(as_text=True))
+        settings = Config.read_settings()
+
+        # 下载清晰度
+        if data['resolution'] not in ('360', '480', '540', '720', '1080'):
+            # 如果不是合法清晰度
+            resolution = settings['download_resolution']
+        else:
+            resolution = data['resolution']
+
+        # 下载模式
+        if data['mode'] not in ('single', 'latest', 'all', 'largest-sn'):
+            mode = 'single'
+        else:
+            mode = data['mode']
+
+        # 下载线程数
+        if data['thread']:
+            thread = int(data['thread'])
+        else:
+            thread = 1
+        if thread > Config.get_max_multi_thread():
+            # 是否超过最大允许线程数
+            thread_limit = Config.get_max_multi_thread()
+        else:
+            thread_limit = thread
+
+        def run_cui():
+            cui(data['sn'], resolution, mode, thread_limit, [], classify=data['classify'], realtime_show=False,
+                cui_danmu=data['danmu'])
+
+        server = threading.Thread(target=run_cui)
+        err_print(0, 'Dashboard', '通過 Web 控制臺下達了手動任務', no_sn=True, status=2)
+        server.start()  # 启动手动任务线程
+        return '{"status":"200"}'
+
+
+    @app.route('/data/sn_list', methods=['GET'])
+    def show_sn_list():
+        return Config.get_sn_list_content()
+
+
+    @app.route('/data/get_token', methods=['GET'])
+    def get_token():
+        global websocket_token
+        # 生成 32 位随机字符串作为token
+        websocket_token = ''.join(random.sample(string.ascii_letters + string.digits, 32))
+        return websocket_token, '200 ok'
+
+
+    @sockets.route('/data/tasks_progress')
+    def tasks_progress(ws):
+        # 鉴权
+        global websocket_token
+        token = request.args.get('token')
+        if token != websocket_token:
+            ws.send('Unauthorized')
+            ws.close()
+        else:
+            # 一次性 token
+            websocket_token = ''
+
+        # 推送任务进度数据
+        # https://blog.csdn.net/sinat_32651363/article/details/87912701
+        while not ws.closed:
+            msg = json.dumps(Config.tasks_progress_rate)
+            try:
+                ws.send(msg)
+                time.sleep(1)
+            except WebSocketError:
+                # 连接中断
+                ws.close()
+                break
+
+
+    @app.route('/sn_list', methods=['POST'])
+    def set_sn_list():
+        data = request.get_data(as_text=True)
+        Config.write_sn_list(data)
+        err_print(0, 'Dashboard', '通過 Web 控制臺更新了 sn_list', no_sn=True, status=2)
+        return '{"status":"200"}'
+
+
+    @app.route('/checknow')
+    def checknow():
+        err_print(0, 'Dashboard', '通過 Web 控制臺發出了立即更新的請求', no_sn=True, status=2)
+        checknow()
+        return '{"status":"200"}'
 
 
 @app.route('/')
@@ -93,114 +374,112 @@ def home():
     return render_template('index.html')
 
 
-@app.route('/monitor')
-def monitor():
-    return render_template('monitor.html')
+@app.route('/favicon.ico')
+def favicon():
+    return send_file(os.path.join(static_path, 'img', 'aniGamerPlusPlus.ico'))
 
 
-@app.route('/data/config.json', methods=['GET'])
-def config():
-    settings = Config.read_settings()
-    web_settings = {}
-    for id in id_list:
-        web_settings[id] = settings[id]  # 仅返回 web 需要的配置
-
-    return jsonify(web_settings)
+@app.route('/watch')
+def watch():
+    return open(f'{template_path}/watch.html', 'r').read()
+    # return render_template('watch.html')
 
 
-@app.route('/uploadConfig', methods=['POST'])
-def recv_config():
-    data = json.loads(request.get_data(as_text=True))
-    new_settings = Config.read_settings()
-    for id in id_list:
-        new_settings[id] = data[id]  # 更新配置
-    Config.write_settings(new_settings)  # 保存配置
-    err_print(0, 'Dashboard', '通過 Web 控制臺更新了 config.json', no_sn=True, status=2)
-    return '{"status":"200"}'
+@app.route('/getvid.mp4')
+def getvid():
+    sn = request.args.get('id')
+    res = request.args.get('res')
+    path = Config.getpath(sn, 'video', resolution=res)
+    range_header = request.headers.get('Range', None)
+    byte1, byte2 = 0, None
+    if range_header:
+        match = re.search(r'(\d+)-(\d*)', range_header)
+        groups = match.groups()
+
+        if groups[0]:
+            byte1 = int(groups[0])
+        if groups[1]:
+            byte2 = int(groups[1])
+       
+    chunk, start, length, file_size = get_chunk(path, byte1, byte2)
+    resp = Response(chunk, 206, mimetype='video/mp4',
+                      content_type='video/mp4', direct_passthrough=True)
+    resp.headers.add('Content-Range', 'bytes {0}-{1}/{2}'.format(start, start + length - 1, file_size))
+    return resp
 
 
-@app.route('/manualTask', methods=['POST'])
-def manual_task():
-    data = json.loads(request.get_data(as_text=True))
-    settings = Config.read_settings()
-
-    # 下载清晰度
-    if data['resolution'] not in ('360', '480', '540', '720', '1080'):
-        # 如果不是合法清晰度
-        resolution = settings['download_resolution']
+@app.route('/getsub.ass')
+def getsub():
+    sn = request.args.get('id')
+    if settings['danmu']:
+        path = Config.getpath(sn, 'danmu')
+        return send_file(path)
     else:
-        resolution = data['resolution']
+        return 'Danmu is not enabled'
 
-    # 下载模式
-    if data['mode'] not in ('single', 'latest', 'all', 'largest-sn'):
-        mode = 'single'
+
+@app.route('/videolist.json')
+def videolist():
+    videojson = json.loads(open(os.path.join(Config.get_working_dir(), 'videolist.json'), 'r').read())
+    return jsonify(videojson)
+
+
+@app.route('/time')
+def webtime():
+    gettype = request.args.get('type')
+    sn = request.args.get('id')
+    token = request.cookies.get('token')
+    ran = False
+    userdata = open(os.path.join(Config.get_working_dir(), 'Dashboard', 'userdata.json'), 'r').read()
+    if gettype == 'send':
+        for user in userdata['users']:
+            if user['token'] == token:
+                user['videotimes'][sn] == request.args.get('time')
+                ran = True
+                return '{"status":"200"}'
+    elif gettype == 'get':
+        for user in userdata['users']:
+            if user['token'] == token:
+                if user['videotimes'][sn]:
+                    return str(user['videotimes'][sn])
+                else:
+                    return '0'
+                ran = True
+    if not ran:
+        for user in userdata['users']:
+            if user['token'] == token:
+                return '{"status":"404", "msg":"Type is invaild"}'
+        return '{"status":"403", "msg":"Token is invaild"}'
+
+        
+@app.route('/login', methods=['GET', 'POST'])
+def login():
+    if request.method == 'POST':
+        username = request.form.get('username')
+        password = request.form.get('password')
+        userdata = open(os.path.join(Config.get_working_dir(), 'Dashboard', 'userdata.json'), 'r').read()
+        for user in userdata['users']:
+            if user['name'] == username and user['password'] == password:
+                return f"<script>document.cookies.token = '{user['token']}';window.location.href = '/watch'</script>"
+        return '<script>window.location.href = "/login?error=1"</script>'
     else:
-        mode = data['mode']
+        return render_template('login.html')
 
-    # 下载线程数
-    if data['thread']:
-        thread = int(data['thread'])
+
+@app.route('/register', methods=['GET', 'POST'])
+def register():
+    if request.method == 'POST':
+        if not request.form.get('pw1') == request.form.get('pw2'):
+            return '<script>window.location.href = "/login?error=2"</script>'
+        username = request.form.get('username')
+        password = request.form.get('pw1')
+        userdata = open(os.path.join(Config.get_working_dir(), 'Dashboard', 'userdata.json'), 'r').read()
+        for user in userdata['users']:
+            if user['name'] == username:
+                return '<script>window.location.href = "/login?error=1"</script>'
+        newuser = {'name': username, 'password': password, 'token': ''.join(random.sample(string.ascii_letters + string.digits, 32)), 'videotimes': [], 'role': 'user'}
     else:
-        thread = 1
-    if thread > Config.get_max_multi_thread():
-        # 是否超过最大允许线程数
-        thread_limit = Config.get_max_multi_thread()
-    else:
-        thread_limit = thread
-
-    def run_cui():
-        cui(data['sn'], resolution, mode, thread_limit, [], classify=data['classify'], realtime_show=False, cui_danmu=data['danmu'])
-
-    server = threading.Thread(target=run_cui)
-    err_print(0, 'Dashboard', '通過 Web 控制臺下達了手動任務', no_sn=True, status=2)
-    server.start()  # 启动手动任务线程
-    return '{"status":"200"}'
-
-
-@app.route('/data/sn_list', methods=['GET'])
-def show_sn_list():
-    return Config.get_sn_list_content()
-
-
-@app.route('/data/get_token', methods=['GET'])
-def get_token():
-    global websocket_token
-    # 生成 32 位随机字符串作为token
-    websocket_token = ''.join(random.sample(string.ascii_letters + string.digits, 32))
-    return websocket_token, '200 ok'
-
-
-@sockets.route('/data/tasks_progress')
-def tasks_progress(ws):
-    # 鉴权
-    global websocket_token
-    token = request.args.get('token')
-    if token != websocket_token:
-        ws.send('Unauthorized')
-        ws.close()
-    else:
-        # 一次性 token
-        websocket_token = ''
-
-    # 推送任务进度数据
-    # https://blog.csdn.net/sinat_32651363/article/details/87912701
-    while not ws.closed:
-        msg = json.dumps(Config.tasks_progress_rate)
-        try:
-            ws.send(msg)
-            time.sleep(1)
-        except WebSocketError:
-            # 连接中断
-            ws.close()
-            break
-
-
-@app.route('/sn_list', methods=['POST'])
-def set_sn_list():
-    data = request.get_data(as_text=True)
-    Config.write_sn_list(data)
-    err_print(0, 'Dashboard', '通過 Web 控制臺更新了 sn_list', no_sn=True, status=2)
-    return '{"status":"200"}'
+        return render_template('register.html')
 
 
 def run():
@@ -210,7 +489,7 @@ def run():
         # BasicAuth 配置
         app.config['BASIC_AUTH_USERNAME'] = settings['dashboard']['username']  # BasicAuth user
         app.config['BASIC_AUTH_PASSWORD'] = settings['dashboard']['password']  # BasicAuth password
-        app.config['BASIC_AUTH_FORCE'] = True  # 全站验证
+        app.config['BASIC_AUTH_FORCE'] = False  # 關閉全站验证
         basic_auth = BasicAuth(app)
 
     port = settings['dashboard']['port']
@@ -221,12 +500,12 @@ def run():
         ssl_path = os.path.join(Config.get_working_dir(), 'Dashboard', 'sslkey')
         ssl_crt = os.path.join(ssl_path, 'server.crt')
         ssl_key = os.path.join(ssl_path, 'server.key')
-        # ssl_keys = (ssl_crt, ssl_key)
-        # app.run(use_reloader=False, port=port, host=host, ssl_context=ssl_keys)
-        server = WSGIServer((host, port), app, handler_class=WebSocketHandler, certfile=ssl_crt, keyfile=ssl_key)
+        ssl_keys = (ssl_crt, ssl_key)
+        app.run(use_reloader=False, port=port, host=host, ssl_context=ssl_keys, threaded=True)
+        # server = WSGIServer((host, port), app, handler_class=WebSocketHandler, certfile=ssl_crt, keyfile=ssl_key)
 
-        wrap_socket = server.wrap_socket
-        wrap_socket_and_handle = server.wrap_socket_and_handle
+        # wrap_socket = server.wrap_socket
+        # wrap_socket_and_handle = server.wrap_socket_and_handle
 
         # 处理一些浏览器(比如Chrome)尝试 SSL v3 访问时报错
         def my_wrap_socket(sock, **_kwargs):
@@ -246,14 +525,14 @@ def run():
                 # print('my_wrap_socket_and_handle AttributeError')
                 pass
 
-        server.wrap_socket = my_wrap_socket
-        server.wrap_socket_and_handle = my_wrap_socket_and_handle
+        # server.wrap_socket = my_wrap_socket
+        # server.wrap_socket_and_handle = my_wrap_socket_and_handle
 
     else:
-        # app.run(use_reloader=False, port=port, host=host)
-        server = WSGIServer((host, port), app, handler_class=WebSocketHandler)
+        app.run(use_reloader=False, port=port, host=host, threaded=True)
+        # server = WSGIServer((host, port), app, handler_class=WebSocketHandler, environ={'wsgi.multithread': True,'wsgi.multiprocess': True,})
 
-    server.serve_forever()
+    # server.serve_forever()
 
 
 if __name__ == '__main__':

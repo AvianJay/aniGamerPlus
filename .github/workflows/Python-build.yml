@@ -1,6 +1,6 @@
-#anigamerplus latest python build
+#anigamerplusplus latest python build
 
-name: aniGamerPlus Build Artifact
+name: aniGamerPlusPlus Build Artifact
 
 on:
   push:

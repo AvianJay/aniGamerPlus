@@ -22,13 +22,15 @@ config_path = os.path.join(working_dir, 'config.json')
 sn_list_path = os.path.join(working_dir, 'sn_list.txt')
 cookie_path = os.path.join(working_dir, 'cookie.txt')
 logs_dir = os.path.join(working_dir, 'logs')
-aniGamerPlus_version = 'v24.9'
-latest_config_version = 17.5
+aniGamerPlus_version = 'v25.0'
+latest_config_version = 17.8
 latest_database_version = 2.0
 cookie = None
 max_multi_thread = 5
 max_multi_downloading_segment = 5
 tasks_progress_rate = {}  # 储存任务进度, 供面板使用,
+
+
 # 格式: {sn: {'rate': 任务进度百分比(float), 'status': 任务状态, 'filename': 文件名} }
 # 任务状态有:  '正在下載' '正在解密合并' '正在移至番劇目錄' '任務失敗, 等待重啓' '等待下載'
 
@@ -44,6 +46,7 @@ def __color_print(sn, err_msg, detail='', status=0, no_sn=False, display=True):
 
 def get_max_multi_thread():
     return max_multi_thread
+
 
 def legalize_filename(filename):
     # 文件名合法化
@@ -92,7 +95,7 @@ def __init_settings():
                 'use_copyfile_method': False,  # 转移视频至番剧目录时是否使用复制法, 使用 True 以兼容 rclone 挂载盘
                 'multi-thread': 1,  # 最大并发下载数
                 'multi_upload': 3,  # 最大并发上传数
-                'segment_download_mode': True,  # 由 aniGamerPlus 下载分段, False 为 ffmpeg 下载
+                'segment_download_mode': True,  # 由 aniGamerPlusPlus 下载分段, False 为 ffmpeg 下载
                 'multi_downloading_segment': 2,  # 在上面配置为 True 时有效, 每个视频并发下载分段数
                 'segment_max_retry': 8,  # 在分段下载模式时有效, 每个分段最大重试次数, -1 为 无限重试
                 'add_bangumi_name_to_video_filename': True,
@@ -138,7 +141,7 @@ def __init_settings():
                 'plex_url': '',
                 'plex_token': '',
                 'plex_section': '',
-                'plex_naming': False, # 適配PLEX命名規則
+                'plex_naming': False,  # 適配PLEX命名規則
                 'faststart_movflags': False,
                 'audio_language': False,
                 'use_mobile_api': False,
@@ -156,14 +159,25 @@ def __init_settings():
                     'SSL': False,
                     'BasicAuth': False,
                     'username': 'admin',
-                    'password': 'admin'
+                    'password': 'admin',
+                    'online_watch': False,
+                    'user_control': {
+                        'enabled': True,
+                        'allow_register': False,
+                        'default_user': [
+                            {'username': 'admin', 'password': 'admin', 'role': 'admin'}
+                        ]
+                    }
                 },
                 'save_logs': True,
                 'quantity_of_logs': 7,
                 'config_version': latest_config_version,
                 'database_version': latest_database_version,
-                'm3u8': True,
-                'auto_update_danmu': False
+                'm3u8': False,
+                'auto_update_danmu': False,
+                'danmu_download_cd': 5,  # 彈幕下載冷却时间
+                'online_watch': True,
+                'download_with_youtube': False
                 }
     with open(config_path, 'w', encoding='utf-8') as f:
         json.dump(settings, f, ensure_ascii=False, indent=4)
@@ -222,7 +236,8 @@ def __update_settings(old_settings):  # 升级配置文件
         new_settings['lock_resolution'] = False  # v4.1 新增分辨率锁定开关
 
     if 'ua' not in new_settings.keys():  # v4.2 新增 UA 配置
-        new_settings['ua'] = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/72.0.3626.96 Safari/537.36"
+        new_settings[
+            'ua'] = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/72.0.3626.96 Safari/537.36"
 
     if 'classify_bangumi' not in new_settings.keys():
         new_settings['classify_bangumi'] = True  # v5.0 新增是否建立番剧目录开关
@@ -387,17 +402,28 @@ def __update_settings(old_settings):  # 升级配置文件
     if 'parse_sn_cd' not in new_settings.keys():
         # v24.4 sn解析冷卻時間(秒)
         new_settings['parse_sn_cd'] = 5
+
     if 'm3u8' not in new_settings.keys():
-        # add m3u8 option by avianjay
-        new_settings['m3u8'] = True
+        # add m3u8 option
+        new_settings['m3u8'] = False
+
     if 'auto_update_danmu' not in new_settings.keys():
-        # v24.7 add Auto Update Danmu option by avianjay
-        new_settings['auto_update_danmu'] = True
+        # v24.7 add Auto Update Danmu option
+        new_settings['auto_update_danmu'] = False
+
+    if 'danmu_download_cd' not in new_settings.keys():
+        # danmu download cd
+        new_settings['danmu_download_cd'] = 5
+
+    if 'online_watch' not in new_settings.keys():
+        # v25.0 add Online Watch
+        new_settings['online_watch'] = True
 
     new_settings['config_version'] = latest_config_version
     with open(config_path, 'w', encoding='utf-8') as f:
         json.dump(new_settings, f, ensure_ascii=False, indent=4)
-    msg = '配置文件從 v' + str(old_settings['config_version']) + ' 升級到 v' + str(latest_config_version) + ' 你的有效配置不會丟失!'
+    msg = '配置文件從 v' + str(old_settings['config_version']) + ' 升級到 v' + str(
+        latest_config_version) + ' 你的有效配置不會丟失!'
     __color_print(0, msg, status=2, no_sn=True)
 
 
@@ -547,7 +573,8 @@ def read_settings(config=''):
 
     if not settings['ua']:
         # 如果 ua 项目为空
-        settings['ua'] = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/72.0.3626.96 Safari/537.36"
+        settings[
+            'ua'] = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/72.0.3626.96 Safari/537.36"
 
     # 如果用户自定了番剧目录且存在
     if settings['bangumi_dir'] and os.path.exists(settings['bangumi_dir']):
@@ -603,7 +630,8 @@ def read_settings(config=''):
         # 如果启用的控制台, 那么检查是否存在Dashboard目录
         if not os.path.exists(os.path.join(working_dir, 'Dashboard')):
             settings['use_dashboard'] = False
-            __color_print(0, 'Web控制面板', '未發現控制面板所必須的Dashboard資料夾, 强制禁用控制面板!', no_sn=True, status=1)
+            __color_print(0, 'Web控制面板', '未發現控制面板所必須的Dashboard資料夾, 强制禁用控制面板!', no_sn=True,
+                          status=1)
             write_settings(settings)
 
     return settings
@@ -620,7 +648,8 @@ def check_encoding(file_path):
         else:
             # 如果为其他编码, 则转为 UTF-8 编码, 包含處理 BOM 頭
             with open(file_path, 'wb') as f2:
-                __color_print(0, '檔案讀取', file_path + ' 編碼為 ' + file_encoding + ' 將轉碼為 UTF-8', no_sn=True, status=1)
+                __color_print(0, '檔案讀取', file_path + ' 編碼為 ' + file_encoding + ' 將轉碼為 UTF-8', no_sn=True,
+                              status=1)
                 data = data.decode(file_encoding)  # 解码
                 data = data.encode('utf-8')  # 编码
                 f2.write(data)  # 写入文件
@@ -708,7 +737,9 @@ def read_cookie(log=False):
             for line in f.readlines():
                 if not line.isspace():  # 跳过空白行
                     cookies = line.replace('\n', '')  # 刪除换行符
-                    cookies = dict([list(map(lambda x: quote(x, safe='') if re.match(r'[\u4e00-\u9fa5]', x) else x,  l.split("=", 1))) for l in cookies.split("; ")])
+                    cookies = dict([list(
+                        map(lambda x: quote(x, safe='') if re.match(r'[\u4e00-\u9fa5]', x) else x, l.split("=", 1))) for
+                                    l in cookies.split("; ")])
                     cookies.pop('ckBH_lastBoard', 404)
                     cookie = cookies
                     if log:
@@ -867,6 +898,26 @@ def parse_proxy(proxy_str: str) -> dict:
     result['proxy_port'] = proxy_port
 
     return result
+
+
+def getpath(sn, type, resolution=None):
+    returnv = None
+    settings = read_settings()
+    with open(os.path.join(working_dir, 'videolist.json'), 'r') as f:
+        list = json.loads(f.read())
+    try:
+        for anime in list['videos']:
+            if anime['sn'] == str(sn):
+                if type == 'video' and anime['resolution'] == int(resolution):  # 確保輸入進來的畫質是int
+                    returnv = anime['path']
+                elif type == 'danmu':
+                    if settings['danmu']:
+                        returnv = anime['danmu_path']
+                    else:
+                        returnv = 'Danmu is not enabled'
+    except:
+        print("Error. Return None.")
+    return returnv
 
 
 if __name__ == '__main__':
