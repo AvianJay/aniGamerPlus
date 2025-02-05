@@ -1,11 +1,14 @@
-<h1 align="center">aniGamerPlus</h1>
+<h1 align="center">aniGamerPlus+</h1>
 
 <p align="center">
- <img alt="GitHub" src="https://img.shields.io/github/license/miyouzi/aniGamerPlus.svg?style=flat-square">
- <img alt="GitHub release" src="https://img.shields.io/github/release/miyouzi/aniGamerPlus.svg?style=flat-square">
- <img alt="GitHub Release Date" src="https://img.shields.io/github/release-date/miyouzi/aniGamerPlus.svg?style=flat-square">
- <img alt="GitHub Releases" src="https://img.shields.io/github/downloads/miyouzi/aniGamerPlus/latest/total.svg?style=flat-square">
+ <img alt="GitHub" src="https://img.shields.io/github/license/AvianJay/aniGamerPlus.svg?style=flat-square">
+ <img alt="GitHub release" src="https://img.shields.io/github/release/AvianJay/aniGamerPlus.svg?style=flat-square">
+ <img alt="GitHub Release Date" src="https://img.shields.io/github/release-date/AvianJay/aniGamerPlus.svg?style=flat-square">
+ <img alt="GitHub Releases" src="https://img.shields.io/github/downloads/AvianJay/aniGamerPlus/latest/total.svg?style=flat-square">
 </p>
+
+哥們這是我fork出來的至少我覺得很糟糕
+只有加了一些功能而已
 
 巴哈姆特動畫瘋自動下載工具, 可隨著番劇更新自動下載, 適合部署在全天開機的伺服器或NAS上.
 
