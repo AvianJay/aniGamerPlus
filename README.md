@@ -140,6 +140,8 @@ docker run -td --name anigamerplus \
  - [x] 下載使用代理
  - [x] 使用ftp上傳至遠程伺服器
  - [x] Web控制臺(持續完善中)
+ - [ ] Web線上看(持續完善中 too)
+ - [ ] 從YouTube搜尋並下載以得到1080P畫質(或許)
 
 ## 配置説明
 
