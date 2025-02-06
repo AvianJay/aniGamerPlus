@@ -381,8 +381,8 @@ def favicon():
 
 @app.route('/watch')
 def watch():
-    return open(f'{template_path}/watch.html', 'r').read()
-    # return render_template('watch.html')
+    # return open(f'{template_path}/watch.html', 'r').read()
+    return render_template('watch.html')
 
 
 @app.route('/getvid.mp4')
