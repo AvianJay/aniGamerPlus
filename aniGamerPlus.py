@@ -410,7 +410,7 @@ def update_danmu():
                 tasks_counter += 1
             else:
                 err_print(anime_db["sn"], '彈幕更新失敗', "資料庫不存在番劇名稱或影片路徑",
-                          status=1)
+                          status=1, display=False)
     return tasks_counter
 
 

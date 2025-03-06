@@ -342,6 +342,7 @@ a:hover {
           if (danmuEnabled) {
             ass.hide();
             danmuEnabled = false;
+            // stolen from yt lol
             danmuButton.innerHTML = '<svg class="ytp-subtitles-button-icon" height="100%" version="1.1" viewBox="0 0 36 36" width="100%" fill-opacity="1"><use class="ytp-svg-shadow" xlink:href="#ytp-id-68"></use><path d="M11,11 C9.9,11 9,11.9 9,13 L9,23 C9,24.1 9.9,25 11,25 L25,25 C26.1,25 27,24.1 27,23 L27,13 C27,11.9 26.1,11 25,11 L11,11 Z M11,17 L14,17 L14,19 L11,19 L11,17 L11,17 Z M20,23 L11,23 L11,21 L20,21 L20,23 L20,23 Z M25,23 L22,23 L22,21 L25,21 L25,23 L25,23 Z M25,19 L16,19 L16,17 L25,17 L25,19 L25,19 Z" id="ytp-id-68"></path></svg>';
           } else {
             ass.show();
@@ -413,6 +414,10 @@ a:hover {
         }
 
         window.addEventListener("resize", function() {
+          var finalWidth = window.innerWidth * (widthsize / 100);
+          var finalHeight = finalWidth / 16 * 9;
+          video.style.width = finalWidth + 'px';
+          video.style.height = finalHeight + 'px';
           ass.resize()
         });
 
@@ -427,6 +432,7 @@ a:hover {
                 } else if (videoPlayer.msRequestFullscreen) {
                     videoPlayer.msRequestFullscreen();
                 }
+                screen.orientation.lock("landscape-primary");
             } else {
                 if (document.exitFullscreen) {
                     document.exitFullscreen();
@@ -439,6 +445,7 @@ a:hover {
                 }
                 video.style.height = null;
                 video.style.width = '100%';
+                screen.orientation.lock("portrait-primary");
             }
             ass.resize()
         });
