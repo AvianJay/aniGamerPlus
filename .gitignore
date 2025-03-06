@@ -106,7 +106,7 @@ venv.bak/
 # mypy
 .mypy_cache/
 
-# aniGamerPlusPlus
+# aniGamerPlus+
 bangumi/
 cookies.txt
 cookie.txt
@@ -127,6 +127,8 @@ temp/
 cookie2.txt
 */*.iml
 videolist.json
+Dashboard/sslkey/server.crt
+Dashboard/sslkey/server.key
 
 # macOS DS_Store and some ._ files
 ._*
