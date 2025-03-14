@@ -14,7 +14,7 @@ import threading, traceback
 import random, string
 
 from aniGamerPlus import Config
-from flask import Flask, request, jsonify, Response
+from flask import Flask, request, jsonify, Response, redirect
 from flask import render_template, send_file
 from flask_basicauth import BasicAuth
 from aniGamerPlus import __cui as cui
@@ -371,85 +371,89 @@ else:
 
 @app.route('/')
 def home():
-    return render_template('index.html')
+    if settings["Dashboard"]["online_watch"]:
+        return render_template('index.html')
+    else:
+        return redirect("/control")
 
 
 @app.route('/favicon.ico')
 def favicon():
-    return send_file(os.path.join(static_path, 'img', 'aniGamerPlusPlus.ico'))
+    return send_file(os.path.join(static_path, 'img', 'aniGamerPlus.ico'))
 
 
-@app.route('/watch')
-def watch():
-    # return open(f'{template_path}/watch.html', 'r').read()
-    return render_template('watch.html')
+if settings["Dashboard"]["online_watch"]:
+    @app.route('/watch')
+    def watch():
+        # return open(f'{template_path}/watch.html', 'r').read()
+        return render_template('watch.html')
 
 
-@app.route('/getvid.mp4')
-def getvid():
-    sn = request.args.get('id')
-    res = request.args.get('res')
-    path = Config.getpath(sn, 'video', resolution=res)
-    range_header = request.headers.get('Range', None)
-    byte1, byte2 = 0, None
-    if range_header:
-        match = re.search(r'(\d+)-(\d*)', range_header)
-        groups = match.groups()
+    @app.route('/getvid.mp4')
+    def getvid():
+        sn = request.args.get('id')
+        res = request.args.get('res')
+        path = Config.getpath(sn, 'video', resolution=res)
+        range_header = request.headers.get('Range', None)
+        byte1, byte2 = 0, None
+        if range_header:
+            match = re.search(r'(\d+)-(\d*)', range_header)
+            groups = match.groups()
 
-        if groups[0]:
-            byte1 = int(groups[0])
-        if groups[1]:
-            byte2 = int(groups[1])
-       
-    chunk, start, length, file_size = get_chunk(path, byte1, byte2)
-    resp = Response(chunk, 206, mimetype='video/mp4',
-                      content_type='video/mp4', direct_passthrough=True)
-    resp.headers.add('Content-Range', 'bytes {0}-{1}/{2}'.format(start, start + length - 1, file_size))
-    return resp
-
-
-@app.route('/getsub.ass')
-def getsub():
-    sn = request.args.get('id')
-    if settings['danmu']:
-        path = Config.getpath(sn, 'danmu')
-        return send_file(path)
-    else:
-        return 'Danmu is not enabled'
+            if groups[0]:
+                byte1 = int(groups[0])
+            if groups[1]:
+                byte2 = int(groups[1])
+        
+        chunk, start, length, file_size = get_chunk(path, byte1, byte2)
+        resp = Response(chunk, 206, mimetype='video/mp4',
+                        content_type='video/mp4', direct_passthrough=True)
+        resp.headers.add('Content-Range', 'bytes {0}-{1}/{2}'.format(start, start + length - 1, file_size))
+        return resp
 
 
-@app.route('/videolist.json')
-def videolist():
-    videojson = json.loads(open(os.path.join(Config.get_working_dir(), 'videolist.json'), 'r').read())
-    return jsonify(videojson)
+    @app.route('/getsub.ass')
+    def getsub():
+        sn = request.args.get('id')
+        if settings['danmu']:
+            path = Config.getpath(sn, 'danmu')
+            return send_file(path)
+        else:
+            return 'Danmu is not enabled'
 
 
-@app.route('/time')
-def webtime():
-    gettype = request.args.get('type')
-    sn = request.args.get('id')
-    token = request.cookies.get('token')
-    ran = False
-    userdata = open(os.path.join(Config.get_working_dir(), 'Dashboard', 'userdata.json'), 'r').read()
-    if gettype == 'send':
-        for user in userdata['users']:
-            if user['token'] == token:
-                user['videotimes'][sn] == request.args.get('time')
-                ran = True
-                return '{"status":"200"}'
-    elif gettype == 'get':
-        for user in userdata['users']:
-            if user['token'] == token:
-                if user['videotimes'][sn]:
-                    return str(user['videotimes'][sn])
-                else:
-                    return '0'
-                ran = True
-    if not ran:
-        for user in userdata['users']:
-            if user['token'] == token:
-                return '{"status":"404", "msg":"Type is invaild"}'
-        return '{"status":"403", "msg":"Token is invaild"}'
+    @app.route('/videolist.json')
+    def videolist():
+        videojson = json.loads(open(os.path.join(Config.get_working_dir(), 'videolist.json'), 'r').read())
+        return jsonify(videojson)
+
+
+    @app.route('/time')
+    def webtime():
+        gettype = request.args.get('type')
+        sn = request.args.get('id')
+        token = request.cookies.get('token')
+        ran = False
+        userdata = open(os.path.join(Config.get_working_dir(), 'Dashboard', 'userdata.json'), 'r').read()
+        if gettype == 'send':
+            for user in userdata['users']:
+                if user['token'] == token:
+                    user['videotimes'][sn] == request.args.get('time')
+                    ran = True
+                    return '{"status":"200"}'
+        elif gettype == 'get':
+            for user in userdata['users']:
+                if user['token'] == token:
+                    if user['videotimes'][sn]:
+                        return str(user['videotimes'][sn])
+                    else:
+                        return '0'
+                    ran = True
+        if not ran:
+            for user in userdata['users']:
+                if user['token'] == token:
+                    return '{"status":"404", "msg":"Type is invaild"}'
+            return '{"status":"403", "msg":"Token is invaild"}'
 
         
 @app.route('/login', methods=['GET', 'POST'])
