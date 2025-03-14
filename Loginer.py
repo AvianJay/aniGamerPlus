@@ -9,6 +9,7 @@ from selenium.webdriver import Keys, ActionChains
 from selenium.webdriver.support.ui import Select
 from webdriver_manager.chrome import ChromeDriverManager
 from selenium.webdriver.chrome.options import Options
+from selenium_recaptcha_solver import RecaptchaSolver
 import time
 import sys
 import os
@@ -23,6 +24,7 @@ def get_driver(headless=False):
 
 
 def login(driver, username, password, save_cookie=False):
+    driver.get("https://user.gamer.com.tw/login.php")
     if os.path.exists('cookies.pkl'):
         print('INFO: Found cookie file. Restoring...')
         cookies = pickle.load(open("cookies.pkl", "rb"))
@@ -38,6 +40,9 @@ def login(driver, username, password, save_cookie=False):
     login_button = driver.find_element(By.XPATH, '//*[@id="btn-login"]')
     user_input.send_keys(username)
     pass_input.send_keys(password)
+    solver = RecaptchaSolver(driver=driver)
+    recaptcha_iframe = driver.find_element(By.XPATH, '//iframe[@title="reCAPTCHA"]')
+    solver.click_recaptcha_v2(iframe=recaptcha_iframe)
     login_button.click()
     time.sleep(.5)
     if driver.current_url == 'https://user.gamer.com.tw/login.php':
