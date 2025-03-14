@@ -44,7 +44,7 @@ def login(driver, username, password, save_cookie=False):
         # 還在登入頁面
         message = driver.find_element(By.CSS_SELECTOR, '#loginFormDiv > div.caption-text.red.margin-bottom.msgdiv-alert')
         if message != "":
-            print("ERROR:", message)
+            print("ERROR:", message.text)
             return False
         else:
             print("INFO: 2fa?")
