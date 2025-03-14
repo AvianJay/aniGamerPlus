@@ -129,6 +129,7 @@ cookie2.txt
 videolist.json
 Dashboard/sslkey/server.crt
 Dashboard/sslkey/server.key
+cookies.pkl
 
 # macOS DS_Store and some ._ files
 ._*
