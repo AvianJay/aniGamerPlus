@@ -414,6 +414,8 @@ def __update_settings(old_settings):  # 升级配置文件
     if 'm3u8' not in new_settings.keys():
         # add m3u8 option
         new_settings['m3u8'] = False
+    elif new_settings['m3u8'] == True:
+        rename_all_playlist()
 
     if 'auto_update_danmu' not in new_settings.keys():
         # v24.7 add Auto Update Danmu option
@@ -949,6 +951,23 @@ def getpath(sn, type, resolution=None):
     except:
         print("Error. Return None.")
     return returnv
+
+
+# updated m3u8 playlist must be anime name.m3u8
+def rename_all_playlist():
+    settings = read_settings()
+    bangumi_dir = settings["bangumi_dir"]
+    for dirpath, _, filenames in os.walk(root_dir):
+        if "playlist.m3u8" in filenames:
+            old_path = os.path.join(dirpath, "playlist.m3u8")
+            new_name = f"{os.path.basename(dirpath)}.m3u8"
+            new_path = os.path.join(dirpath, new_name)
+
+            try:
+                os.rename(old_path, new_path)
+                __color_print(0, f"成功重新命名 {old_path} -> {new_name}", no_sn=True, display=False)
+            except Exception as e:
+                __color_print(0, f"重新命名時發生錯誤 {old_path}: {e}", status=1, no_sn=True)
 
 
 if __name__ == '__main__':
