@@ -1,6 +1,4 @@
-#anigamerplusplus latest python build
-
-name: aniGamerPlusPlus Build Artifact
+name: aniGamerPlus Build Artifact
 
 on:
   push:
@@ -9,38 +7,65 @@ on:
   pull_request:
     branches:
       - master
+
 jobs:
   build:
-    runs-on: windows-2019
     strategy:
-      # You can use PyPy versions in python-version.
-      # For example, pypy2 and pypy3
       matrix:
+        os: [windows-2019, ubuntu-latest]
         python: [3.8.x, 3.9.x]
-    
+
+    runs-on: ${{ matrix.os }}
+
     steps:
     - uses: actions/checkout@v2
+
     - name: Set up Python ${{ matrix.python }}
       uses: actions/setup-python@v2
       with: 
-          python-version: ${{ matrix.python }}
+        python-version: ${{ matrix.python }}
+
     - name: Install dependencies
       run: |
         python -m pip install --upgrade pip
         pip install -r requirements.txt
         pip install pyinstaller
-    - name: Build exe
-      run: pyinstaller --noconfirm --distpath %cd%\ --onefile --console --icon %cd%\Dashboard\static\img\aniGamerPlus.ico --clean --add-data %cd%;aniGamerPlus/  %cd%\aniGamerPlus.py
+
+    - name: Build Executable (Windows)
+      if: runner.os == 'Windows'
+      run: |
+        pyinstaller --noconfirm --distpath %cd%\ --onefile --console --icon %cd%\Dashboard\static\img\aniGamerPlus.ico --clean --add-data "%cd%;aniGamerPlus/"  %cd%\aniGamerPlus.py
       shell: cmd
-    - name: Upload exe
+
+    - name: Build Executable (Linux)
+      if: runner.os == 'Linux'
+      run: |
+        pyinstaller --noconfirm --distpath ./ --onefile --console --clean --add-data "./:aniGamerPlus/" aniGamerPlus.py
+
+    - name: Upload Artifact (Windows)
+      if: runner.os == 'Windows'
       uses: actions/upload-artifact@v4
       with:
-       name: aniGamerPlus_artifacts_${{ matrix.python }}
-       path: |
-         aniGamerPlus.exe
-         Dashboard/
-         LICENSE
-         README.md
-         DanmuTemplate.ass
-         sn_list-sample.txt
-         config-sample.json
+        name: aniGamerPlus_artifacts_windows_${{ matrix.python }}
+        path: |
+          aniGamerPlus.exe
+          Dashboard/
+          LICENSE
+          README.md
+          DanmuTemplate.ass
+          sn_list-sample.txt
+          config-sample.json
+
+    - name: Upload Artifact (Linux)
+      if: runner.os == 'Linux'
+      uses: actions/upload-artifact@v4
+      with:
+        name: aniGamerPlus_artifacts_linux_${{ matrix.python }}
+        path: |
+          aniGamerPlus
+          Dashboard/
+          LICENSE
+          README.md
+          DanmuTemplate.ass
+          sn_list-sample.txt
+          config-sample.json
