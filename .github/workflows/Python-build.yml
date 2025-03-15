@@ -13,13 +13,10 @@ jobs:
     strategy:
       matrix:
         os: [windows-2019, ubuntu-latest]
-        arch: [x86_64] # 預設是 x86_64
         python: [3.8.x, 3.9.x]
-        include:
-          - os: ubuntu-latest
-            arch: arm64 # 增加 ARM64 (aarch64) 支援
 
     runs-on: ${{ matrix.os }}
+
     steps:
     - uses: actions/checkout@v2
 
@@ -33,24 +30,16 @@ jobs:
         python -m pip install --upgrade pip
         pip install -r requirements.txt
         pip install pyinstaller
-
     - name: Build Executable (Windows)
       if: runner.os == 'Windows'
       run: |
         pyinstaller --noconfirm --distpath %cd%\ --onefile --console --icon %cd%\Dashboard\static\img\aniGamerPlus.ico --clean --add-data "%cd%;aniGamerPlus/"  %cd%\aniGamerPlus.py
       shell: cmd
 
-    - name: Build Executable (Linux x86_64)
-      if: runner.os == 'Linux' && matrix.arch == 'x86_64'
+    - name: Build Executable (Linux)
+      if: runner.os == 'Linux'
       run: |
         pyinstaller --noconfirm --distpath ./ --onefile --console --clean --add-data "./:aniGamerPlus/" aniGamerPlus.py
-
-    - name: Build Executable (Linux ARM64)
-      if: runner.os == 'Linux' && matrix.arch == 'arm64'
-      run: |
-        sudo apt-get update && sudo apt-get install -y gcc-aarch64-linux-gnu
-        pyinstaller --noconfirm --distpath ./ --onefile --console --clean --add-data "./:aniGamerPlus/" aniGamerPlus.py
-
     - name: Upload Artifact (Windows)
       if: runner.os == 'Windows'
       uses: actions/upload-artifact@v4
@@ -64,26 +53,11 @@ jobs:
           DanmuTemplate.ass
           sn_list-sample.txt
           config-sample.json
-
-    - name: Upload Artifact (Linux x86_64)
-      if: runner.os == 'Linux' && matrix.arch == 'x86_64'
+    - name: Upload Artifact (Linux)
+      if: runner.os == 'Linux'
       uses: actions/upload-artifact@v4
       with:
-        name: aniGamerPlus_artifacts_linux_x86_64_${{ matrix.python }}
-        path: |
-          aniGamerPlus
-          Dashboard/
-          LICENSE
-          README.md
-          DanmuTemplate.ass
-          sn_list-sample.txt
-          config-sample.json
-
-    - name: Upload Artifact (Linux ARM64)
-      if: runner.os == 'Linux' && matrix.arch == 'arm64'
-      uses: actions/upload-artifact@v4
-      with:
-        name: aniGamerPlus_artifacts_linux_arm64_${{ matrix.python }}
+        name: aniGamerPlus_artifacts_linux_${{ matrix.python }}
         path: |
           aniGamerPlus
           Dashboard/
