@@ -9,6 +9,7 @@
 import os, json, re, sys, requests, time, random, codecs, chardet
 import sqlite3
 import socket
+import Loginer
 from urllib.parse import quote
 from urllib.parse import urlencode
 
@@ -162,7 +163,7 @@ def __init_settings():
                     'password': 'admin',
                     'online_watch': False,
                     'user_control': {
-                        'enabled': True,
+                        'enabled': False,
                         'allow_register': False,
                         'default_user': [
                             {'username': 'admin', 'password': 'admin', 'role': 'admin'}
@@ -177,7 +178,14 @@ def __init_settings():
                 'auto_update_danmu': False,
                 'danmu_download_cd': 5,  # 彈幕下載冷却时间
                 'online_watch': True,
-                'download_with_youtube': False
+                'download_with_youtube': False,
+                'auto_login': {
+                    'enabled': False,
+                    'headless': False,
+                    'save_browser_cookie': True,
+                    'username': 'My_Bahamut_Username',
+                    'password': 'My_Bahamut_Password'
+                }
                 }
     with open(config_path, 'w', encoding='utf-8') as f:
         json.dump(settings, f, ensure_ascii=False, indent=4)
@@ -418,6 +426,16 @@ def __update_settings(old_settings):  # 升级配置文件
     if 'online_watch' not in new_settings.keys():
         # v25.0 add Online Watch
         new_settings['online_watch'] = True
+
+    if 'auto_login' not in new_settings.keys():
+        # auto login when logout
+        new_settings['auto_login'] = {
+            'enabled': False,
+            'headless': False,
+            'save_browser_cookie': True,
+            'username': 'My_Bahamut_Username',
+            'password': 'My_Bahamut_Password'
+        }
 
     new_settings['config_version'] = latest_config_version
     with open(config_path, 'w', encoding='utf-8') as f:
@@ -751,13 +769,16 @@ def read_cookie(log=False):
         return cookie
     # 如果什么也没读到(空文件)
     __color_print(0, '讀取cookie', detail='cookie檔案為空', no_sn=True, status=1)
-    invalid_cookie()
-    cookie = {}
-    return cookie
+    if invalid_cookie():
+        return read_cookie()
+    else:
+        cookie = {}
+        return cookie
 
 
 def invalid_cookie():
     # 当cookie失效时, 将cookie改名, 避免重复尝试失效的cookie
+    settings = read_settings()
     if os.path.exists(cookie_path):
         invalid_cookie_path = cookie_path.replace('cookie.txt', 'invalid_cookie.txt')
         try:
@@ -770,6 +791,16 @@ def invalid_cookie():
             __color_print(0, 'cookie狀態', '嘗試標記失效cookie時遇到未知錯誤: ' + str(e), no_sn=True, status=1)
         else:
             __color_print(0, 'cookie狀態', '已成功標記失效cookie', no_sn=True, display=False)
+            if settings["auto_login"]["enabled"]:
+                __color_print(0, 'cookie狀態', '已開啟自動登入，嘗試透過瀏覽器登入...', no_sn=True, display=True)
+                loginer_return = Loginer.do_all(settings["username"], settings["password"], settings["headless"], settings["save_browser_cookie"])
+                if loginer_return:
+                    open('cookie.txt', 'w').write(loginer_return)
+                    __color_print(0, 'cookie狀態', '登入成功！已更新cookie。', no_sn=True, display=True)
+                    return True
+                else:
+                    __color_print(0, 'cookie狀態', '使用瀏覽器登入失敗！', no_sn=True, display=True)
+    return False
 
 
 def time_stamp_to_time(timestamp):

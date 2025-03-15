@@ -70,13 +70,22 @@ def get_raw_cookie(driver):
     return cookies_raw
 
 
+def do_all(username, password, headless, save_cookie):
+    driver = get_driver(headless)
+    if login(driver, username, password, save_cookie):
+        raw_cookie = get_raw_cookie(driver)
+    else:
+        raw_cookie = False
+    driver.close()
+
+
 if __name__ == "__main__":
     if len(sys.argv) < 5:
         print("Usage:", sys.argv[0], "[username] [password] [headless?] [save_cookie?]\nreturns raw cookie.\n? = [true/false]")
         exit(1)
-    driver = get_driver(bool(sys.argv[3]))
-    if login(driver, sys.argv[1], sys.argv[2], bool(sys.argv[4])):
-        print(get_raw_cookie(driver))
+    stat = do_all(sys.argv[1], sys.argv[2], bool(sys.argv[3]), bool(sys.argv[4]))
+    if stat:
+        print(stat)
         exit(0)
     else:
         print("ERROR: Get raw cookie failed.")

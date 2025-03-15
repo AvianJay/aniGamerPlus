@@ -354,8 +354,12 @@ class Anime:
                                 try_counter = try_counter + 1
                         if not succeed_flag:
                             self._cookies = {}
-                            err_print(0, '用戶cookie更新失敗! 使用游客身份訪問', status=1, no_sn=True)
-                            Config.invalid_cookie()  # 将失效cookie更名
+                            err_print(0, '用戶cookie更新失敗!', status=1, no_sn=True)
+                            # 将失效cookie更名
+                            if Config.invalid_cookie():
+                                self._cookies = Config.read_cookie()
+                            else:
+                                err_print(0, '使用游客身份訪問', status=1, no_sn=True)
 
                         if self._settings['use_mobile_api'] and 'X-Bahamut-App-Android' not in self._req_header:
                             # 即使切换 header cookie 也无法刷新, 那么恢复 header, 好歹广告只有 3s
