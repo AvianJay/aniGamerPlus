@@ -1130,6 +1130,8 @@ if __name__ == '__main__':
         if settings['online_watch']:
             err_print(0, '開始更新videolist.json', no_sn=True)
             updatelist()
+        if settings['check_sn_ended']:
+            Config.check_sn_ended()
         info = '本次更新添加了 ' + str(new_tasks_counter) + ' 個新任務, 目前列隊中共有 ' + str(
             len(processing_queue)) + ' 個任務'
         err_print(0, '更新資訊', info, no_sn=True)

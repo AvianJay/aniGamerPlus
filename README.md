@@ -7,7 +7,7 @@
  <img alt="GitHub Releases" src="https://img.shields.io/github/downloads/AvianJay/aniGamerPlus/latest/total.svg?style=flat-square">
 </p>
 
-哥們這是我fork出來的至少我覺得很糟糕
+哥們這是我fork出來的至少我覺得很糟糕 非常糟糕
 
 只有加了一些功能而已
 

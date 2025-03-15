@@ -186,7 +186,8 @@ def __init_settings():
                     'save_browser_cookie': True,
                     'username': 'My_Bahamut_Username',
                     'password': 'My_Bahamut_Password'
-                }
+                },
+                'check_sn_ended': False
                 }
     with open(config_path, 'w', encoding='utf-8') as f:
         json.dump(settings, f, ensure_ascii=False, indent=4)
@@ -439,6 +440,10 @@ def __update_settings(old_settings):  # 升级配置文件
             'username': 'My_Bahamut_Username',
             'password': 'My_Bahamut_Password'
         }
+
+    if 'check_sn_ended' not in new_settings.keys():
+        # 檢查動漫完結
+        new_settings['check_sn_ended'] = False
 
     new_settings['config_version'] = latest_config_version
     with open(config_path, 'w', encoding='utf-8') as f:
@@ -972,6 +977,8 @@ def rename_all_playlist():
 
 
 def check_sn_online():
+    # 檢查動漫是否在週期表上
+    # 如果沒有就註釋掉
     headers = {
         'User-Agent': 'Animad/1.16.25.1 (tw.com.gamer.android.animad; build: 351; Android 14) okHttp/4.4.0',
         'x-bahamut-app-android': 'tw.com.gamer.android.animad',
@@ -991,7 +998,7 @@ def check_sn_online():
     sn_list = open(sn_list_path, 'r').read().split('\n')
     for index, value in enumerate(sn_list):
         if any(str(nssn) in value for nssn in not_in_schedule_sn):
-            sn_list[index] = "# Expired: " + value
+            sn_list[index] = "# Ended: " + value
     write_sn_list("\n".join(sn_list))
 
 
