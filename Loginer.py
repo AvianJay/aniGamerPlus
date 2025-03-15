@@ -80,6 +80,7 @@ def do_all(username, password, headless, save_cookie):
     else:
         raw_cookie = False
     driver.close()
+    return raw_cookie
 
 
 if __name__ == "__main__":
