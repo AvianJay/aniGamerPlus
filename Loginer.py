@@ -20,7 +20,7 @@ def get_driver(headless=False):
     opt = webdriver.ChromeOptions()
     if headless:
         opt.add_argument('--headless')
-    return webdriver.Chrome(service=ChromeService(ChromeDriverManager().install(), options=opt))
+    return webdriver.Chrome(service=ChromeService(ChromeDriverManager().install()), options=opt)
 
 
 def login(driver, username, password, save_cookie=False):
