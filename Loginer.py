@@ -40,9 +40,12 @@ def login(driver, username, password, save_cookie=False):
     login_button = driver.find_element(By.XPATH, '//*[@id="btn-login"]')
     user_input.send_keys(username)
     pass_input.send_keys(password)
-    solver = RecaptchaSolver(driver=driver)
-    recaptcha_iframe = driver.find_element(By.XPATH, '//iframe[@title="reCAPTCHA"]')
-    solver.click_recaptcha_v2(iframe=recaptcha_iframe)
+    try:
+        solver = RecaptchaSolver(driver=driver)
+        recaptcha_iframe = driver.find_element(By.XPATH, '//iframe[@title="reCAPTCHA"]')
+        solver.click_recaptcha_v2(iframe=recaptcha_iframe)
+    except NoSuchElementException:
+        pass
     login_button.click()
     time.sleep(.5)
     if driver.current_url == 'https://user.gamer.com.tw/login.php':
