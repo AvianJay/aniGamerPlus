@@ -24,7 +24,7 @@ sn_list_path = os.path.join(working_dir, 'sn_list.txt')
 cookie_path = os.path.join(working_dir, 'cookie.txt')
 logs_dir = os.path.join(working_dir, 'logs')
 aniGamerPlus_version = 'v25.0'
-latest_config_version = 17.8
+latest_config_version = 17.9
 latest_database_version = 2.0
 cookie = None
 max_multi_thread = 5
@@ -957,7 +957,7 @@ def getpath(sn, type, resolution=None):
 def rename_all_playlist():
     settings = read_settings()
     bangumi_dir = settings["bangumi_dir"]
-    for dirpath, _, filenames in os.walk(root_dir):
+    for dirpath, _, filenames in os.walk(bangumi_dir):
         if "playlist.m3u8" in filenames:
             old_path = os.path.join(dirpath, "playlist.m3u8")
             new_name = f"{os.path.basename(dirpath)}.m3u8"
