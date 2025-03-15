@@ -926,6 +926,7 @@ def updatelist():
 check_cd = 0
 def checknow():
     err_print(0, '立即更新', no_sn=True)
+    global check_cd
     check_cd = 0
 
 
