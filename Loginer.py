@@ -65,7 +65,7 @@ def get_raw_cookie(driver):
     cookies = driver.get_cookies()
     cookies_raw = ""
     for cookie in cookies:
-        cookies_raw += f"{cookie["name"]}={cookie["value"]}; "
+        cookies_raw += f"{cookie['name']}={cookie['value']}; "
     cookies_raw.strip("; ")
     return cookies_raw
 

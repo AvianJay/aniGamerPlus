@@ -382,7 +382,7 @@ def favicon():
     return send_file(os.path.join(static_path, 'img', 'aniGamerPlus.ico'))
 
 
-if settings["Dashboard"]["online_watch"]:
+if settings["dashboard"]["online_watch"]:
     @app.route('/watch')
     def watch():
         # return open(f'{template_path}/watch.html', 'r').read()

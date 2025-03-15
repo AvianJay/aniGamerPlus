@@ -29,6 +29,7 @@ latest_database_version = 2.0
 cookie = None
 max_multi_thread = 5
 max_multi_downloading_segment = 5
+current_sn_list_all = {}
 tasks_progress_rate = {}  # 储存任务进度, 供面板使用,
 
 
@@ -968,6 +969,30 @@ def rename_all_playlist():
                 __color_print(0, f"成功重新命名 {old_path} -> {new_name}", no_sn=True, display=False)
             except Exception as e:
                 __color_print(0, f"重新命名時發生錯誤 {old_path}: {e}", status=1, no_sn=True)
+
+
+def check_sn_online():
+    headers = {
+        'User-Agent': 'Animad/1.16.25.1 (tw.com.gamer.android.animad; build: 351; Android 14) okHttp/4.4.0',
+        'x-bahamut-app-android': 'tw.com.gamer.android.animad',
+        'x-bahamut-app-version': '351',
+    }
+    response = requests.get('https://api.gamer.com.tw/anime/v1/index.php', headers=headers).json()
+    # collect sn
+    schedule_sn = []
+    for w in response["data"]["newAnimeSchedule"].values():
+        for a in w:
+            schedule_sn.append(int(a["videoSn"]))
+    not_in_schedule_sn = []
+    for sn, all_sn in current_sn_list_all.items():
+        if not any(ssn in all_sn for ssn in schedule_sn):
+            not_in_schedule_sn.append(sn)
+    # update sn_list
+    sn_list = open(sn_list_path, 'r').read().split('\n')
+    for index, value in enumerate(sn_list):
+        if any(str(nssn) in value for nssn in not_in_schedule_sn):
+            sn_list[index] = "# Expired: " + value
+    write_sn_list("\n".join(sn_list))
 
 
 if __name__ == '__main__':

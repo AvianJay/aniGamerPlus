@@ -325,6 +325,7 @@ def download_cd_counter():
 
 
 def check_tasks():
+    Config.current_sn_list_all = {} # reset
     for sn in sn_dict.keys():
         anime = build_anime(sn)
         if anime['failed']:
@@ -337,6 +338,7 @@ def check_tasks():
         anime = anime['anime']
         err_print(sn, '更新資訊', '正在檢查《' + anime.get_bangumi_name() + '》')
         episode_list = list(anime.get_episode_list().values())
+        Config.current_sn_list_all[sn] = episode_list
 
         if sn_dict[sn]['mode'] == 'all':
             # 如果用户选择全部下载 download_mode = 'all'
@@ -946,7 +948,7 @@ danmu = settings['danmu']
 if __name__ == '__main__':
     if settings['check_latest_version']:
         check_new_version()  # 检查新版
-    version_msg = '當前aniGamerPlusPlus版本: ' + settings['aniGamerPlus_version']
+    version_msg = '當前aniGamerPlus版本: ' + settings['aniGamerPlus_version']
     print(version_msg)
 
     # 初始化 sqlite3 数据库
