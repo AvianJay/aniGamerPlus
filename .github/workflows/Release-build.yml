@@ -1,6 +1,6 @@
-#anigamerplusplus latest release build
+#anigamerplus latest release build
 
-name: aniGamerPlusPlus Build Release
+name: aniGamerPlus Build Release
 
 on:
   push:
