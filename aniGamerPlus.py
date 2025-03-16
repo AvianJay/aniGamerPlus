@@ -406,7 +406,7 @@ def update_danmu():
                     and os.path.exists(anime_db["local_file_path"]):
                 a = threading.Thread(target=__get_danmu_only, args=(
                     anime_db["sn"], anime_db["anime_name"], anime_db["local_file_path"]))
-                a.setDaemon(True)
+                a.daemon = True
                 thread_tasks.append(a)
                 a.start()
                 tasks_counter += 1
