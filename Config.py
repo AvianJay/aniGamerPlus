@@ -108,7 +108,7 @@ def __init_settings():
                 'video_filename_extension': 'mp4',  # 视频扩展名/封装格式
                 'zerofill': 1,  # 剧集名补零, 此项填补足位数, 小于等于 1 即不补零
                 # cookie的自动刷新对 UA 有检查
-                'ua': "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/107.0.0.0 Safari/537.36",
+                'ua': "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/134.0.0.0 Safari/537.36",
                 'use_proxy': False,
                 'proxy': 'http://user:passwd@example.com:1000',  # 代理功能, config_version v13.0 删除链式代理
                 "no_proxy_akamai": False,  # 不代理 akamai CDN
@@ -246,7 +246,7 @@ def __update_settings(old_settings):  # 升级配置文件
 
     if 'ua' not in new_settings.keys():  # v4.2 新增 UA 配置
         new_settings[
-            'ua'] = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/72.0.3626.96 Safari/537.36"
+            'ua'] = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/134.0.0.0 Safari/537.36"
 
     if 'classify_bangumi' not in new_settings.keys():
         new_settings['classify_bangumi'] = True  # v5.0 新增是否建立番剧目录开关
@@ -607,7 +607,7 @@ def read_settings(config=''):
     if not settings['ua']:
         # 如果 ua 项目为空
         settings[
-            'ua'] = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/72.0.3626.96 Safari/537.36"
+            'ua'] = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/134.0.0.0 Safari/537.36"
 
     # 如果用户自定了番剧目录且存在
     if settings['bangumi_dir'] and os.path.exists(settings['bangumi_dir']):
@@ -744,11 +744,12 @@ def test_cookie():
     read_cookie(log=True)
 
 
-def read_cookie(log=False):
-    # 如果 cookie 已读入内存, 则直接返回
-    global cookie
-    if cookie is not None:
-        return cookie
+def read_cookie(log=False, force_reload=False):
+    if not force_reload:
+        # 如果 cookie 已读入内存, 则直接返回
+        global cookie
+        if cookie is not None:
+            return cookie
     # 兼容旧版cookie命名
     old_cookie_path = cookie_path.replace('cookie.txt', 'cookies.txt')
     if os.path.exists(old_cookie_path):
@@ -780,12 +781,14 @@ def read_cookie(log=False):
                     return cookie  # cookie仅一行, 读到后马上return
     else:
         __color_print(0, '讀取cookie', detail='未發現cookie檔案', no_sn=True, display=False)
-        cookie = {}
-        return cookie
+        if invalid_cookie():
+            return read_cookie(force_reload=True)
+        else:
+            return {}
     # 如果什么也没读到(空文件)
     __color_print(0, '讀取cookie', detail='cookie檔案為空', no_sn=True, status=1)
     if invalid_cookie():
-        return read_cookie()
+        return read_cookie(force_reload=True)
     else:
         cookie = {}
         return cookie
@@ -806,15 +809,15 @@ def invalid_cookie():
             __color_print(0, 'cookie狀態', '嘗試標記失效cookie時遇到未知錯誤: ' + str(e), no_sn=True, status=1)
         else:
             __color_print(0, 'cookie狀態', '已成功標記失效cookie', no_sn=True, display=False)
-            if settings["auto_login"]["enabled"]:
-                __color_print(0, 'cookie狀態', '已開啟自動登入，嘗試透過瀏覽器登入...', no_sn=True, display=True)
-                loginer_return = Loginer.do_all(settings["username"], settings["password"], settings["headless"], settings["save_browser_cookie"])
-                if loginer_return:
-                    open('cookie.txt', 'w').write(loginer_return)
-                    __color_print(0, 'cookie狀態', '登入成功！已更新cookie。', no_sn=True, display=True)
-                    return True
-                else:
-                    __color_print(0, 'cookie狀態', '使用瀏覽器登入失敗！', no_sn=True, display=True)
+    if settings["auto_login"]["enabled"]:
+        __color_print(0, 'cookie狀態', '已開啟自動登入，嘗試透過瀏覽器登入...', no_sn=True, display=True)
+        loginer_return = Loginer.do_all(settings["auto_login"]["username"], settings["auto_login"]["password"], settings["auto_login"]["headless"], settings["auto_login"]["save_browser_cookie"])
+        if loginer_return:
+            open('cookie.txt', 'w').write(loginer_return)
+            __color_print(0, 'cookie狀態', '登入成功！已更新cookie。', no_sn=True, display=True)
+            return True
+        else:
+            __color_print(0, 'cookie狀態', '使用瀏覽器登入失敗！', no_sn=True, display=True)
     return False
 
 
