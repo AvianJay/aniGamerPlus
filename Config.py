@@ -430,7 +430,7 @@ def __update_settings(old_settings):  # 升级配置文件
         # v25.0 add Online Watch
         # fix
         new_settings['dashboard']['online_watch'] = False
-        new_settings['user_control'] = {
+        new_settings['dashboard']['user_control'] = {
                         'enabled': False,
                         'allow_register': False,
                         'default_user': [

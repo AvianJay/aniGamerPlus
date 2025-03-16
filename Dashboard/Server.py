@@ -371,7 +371,7 @@ else:
 
 @app.route('/')
 def home():
-    if settings["Dashboard"]["online_watch"]:
+    if settings["dashboard"]["online_watch"]:
         return render_template('index.html')
     else:
         return redirect("/control")
@@ -505,8 +505,8 @@ def run():
         ssl_crt = os.path.join(ssl_path, 'server.crt')
         ssl_key = os.path.join(ssl_path, 'server.key')
         ssl_keys = (ssl_crt, ssl_key)
-        app.run(use_reloader=False, port=port, host=host, ssl_context=ssl_keys, threaded=True)
-        # server = WSGIServer((host, port), app, handler_class=WebSocketHandler, certfile=ssl_crt, keyfile=ssl_key)
+        # app.run(use_reloader=False, port=port, host=host, ssl_context=ssl_keys, threaded=True)
+        server = WSGIServer((host, port), app, handler_class=WebSocketHandler, certfile=ssl_crt, keyfile=ssl_key)
 
         # wrap_socket = server.wrap_socket
         # wrap_socket_and_handle = server.wrap_socket_and_handle
@@ -533,10 +533,10 @@ def run():
         # server.wrap_socket_and_handle = my_wrap_socket_and_handle
 
     else:
-        app.run(use_reloader=False, port=port, host=host, threaded=True)
-        # server = WSGIServer((host, port), app, handler_class=WebSocketHandler, environ={'wsgi.multithread': True,'wsgi.multiprocess': True,})
+        # app.run(use_reloader=False, port=port, host=host, threaded=True)
+        server = WSGIServer((host, port), app, handler_class=WebSocketHandler, environ={'wsgi.multithread': True,'wsgi.multiprocess': True,})
 
-    # server.serve_forever()
+    server.serve_forever()
 
 
 if __name__ == '__main__':
