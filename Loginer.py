@@ -14,12 +14,15 @@ import time
 import sys
 import os
 import pickle
+import Config
 
 
 def get_driver(headless=False):
+    ua = Config.read_settings()['ua']
     opt = webdriver.ChromeOptions()
     if headless:
         opt.add_argument('--headless')
+    opt.add_argument(f'--user-agent={ua}')
     return webdriver.Chrome(service=ChromeService(ChromeDriverManager().install()), options=opt)
 
 
@@ -69,7 +72,7 @@ def get_raw_cookie(driver):
     cookies_raw = ""
     for cookie in cookies:
         cookies_raw += f"{cookie['name']}={cookie['value']}; "
-    cookies_raw.strip("; ")
+    cookies_raw = cookies_raw.rstrip("; ")
     return cookies_raw
 
 
