@@ -1124,15 +1124,16 @@ if __name__ == '__main__':
                     processing_queue.append(task_sn)
                     new_tasks_counter = new_tasks_counter + 1
                     err_print(task_sn, '加入任务列隊')
-        if settings['auto_update_danmu']:
-            err_print(0, '開始更新彈幕', no_sn=True)
-            danmu_tasks_counter = update_danmu()
-            new_tasks_counter += danmu_tasks_counter
         if settings['online_watch']:
             err_print(0, '開始更新videolist.json', no_sn=True)
             updatelist()
         if settings['check_sn_ended']:
+            err_print(0, '開始檢查動漫是否已完結', no_sn=True)
             Config.check_sn_ended()
+        if settings['auto_update_danmu']:
+            err_print(0, '開始更新彈幕', no_sn=True)
+            danmu_tasks_counter = update_danmu()
+            new_tasks_counter += danmu_tasks_counter
         info = '本次更新添加了 ' + str(new_tasks_counter) + ' 個新任務, 目前列隊中共有 ' + str(
             len(processing_queue)) + ' 個任務'
         err_print(0, '更新資訊', info, no_sn=True)

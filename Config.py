@@ -178,7 +178,6 @@ def __init_settings():
                 'm3u8': False,
                 'auto_update_danmu': False,
                 'danmu_download_cd': 5,  # 彈幕下載冷却时间
-                'online_watch': True,
                 'download_with_youtube': False,
                 'auto_login': {
                     'enabled': False,
@@ -427,9 +426,17 @@ def __update_settings(old_settings):  # 升级配置文件
         # danmu download cd
         new_settings['danmu_download_cd'] = 5
 
-    if 'online_watch' not in new_settings.keys():
+    if 'online_watch' not in new_settings['dashboard'].keys():
         # v25.0 add Online Watch
-        new_settings['online_watch'] = True
+        # fix
+        new_settings['dashboard']['online_watch'] = False
+        new_settings['user_control'] = {
+                        'enabled': False,
+                        'allow_register': False,
+                        'default_user': [
+                            {'username': 'admin', 'password': 'admin', 'role': 'admin'}
+                        ]
+                    }
 
     if 'auto_login' not in new_settings.keys():
         # auto login when logout
@@ -961,7 +968,7 @@ def getpath(sn, type, resolution=None):
 
 # updated m3u8 playlist must be anime name.m3u8
 def rename_all_playlist():
-    settings = read_settings()
+    settings = __read_settings_file()
     bangumi_dir = settings["bangumi_dir"]
     for dirpath, _, filenames in os.walk(bangumi_dir):
         if "playlist.m3u8" in filenames:
@@ -976,9 +983,10 @@ def rename_all_playlist():
                 __color_print(0, f"重新命名時發生錯誤 {old_path}: {e}", status=1, no_sn=True)
 
 
-def check_sn_online():
+def check_sn_ended():
     # 檢查動漫是否在週期表上
     # 如果沒有就註釋掉
+    __color_print(0, "正在取得週期表", no_sn=True)
     headers = {
         'User-Agent': 'Animad/1.16.25.1 (tw.com.gamer.android.animad; build: 351; Android 14) okHttp/4.4.0',
         'x-bahamut-app-android': 'tw.com.gamer.android.animad',
@@ -994,7 +1002,9 @@ def check_sn_online():
     for sn, all_sn in current_sn_list_all.items():
         if not any(ssn in all_sn for ssn in schedule_sn):
             not_in_schedule_sn.append(sn)
+            __color_print(sn, "可能已經完結")
     # update sn_list
+    __color_print(0, "更新sn_list", no_sn=True)
     sn_list = open(sn_list_path, 'r').read().split('\n')
     for index, value in enumerate(sn_list):
         if any(str(nssn) in value for nssn in not_in_schedule_sn):
