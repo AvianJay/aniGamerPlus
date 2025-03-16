@@ -745,9 +745,10 @@ def test_cookie():
 
 
 def read_cookie(log=False, force_reload=False):
+    global cookie
+    # 強制重新載入
     if not force_reload:
         # 如果 cookie 已读入内存, 则直接返回
-        global cookie
         if cookie is not None:
             return cookie
     # 兼容旧版cookie命名
