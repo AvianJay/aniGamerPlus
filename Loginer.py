@@ -15,9 +15,11 @@ import sys
 import os
 import pickle
 import Config
+from ColorPrint import err_print
 
 
 def get_driver(headless=False):
+    err_print(0, "登入狀態", details='正在啟動瀏覽器', no_sn=True)
     ua = Config.read_settings()['ua']
     opt = webdriver.ChromeOptions()
     if headless:
@@ -27,14 +29,16 @@ def get_driver(headless=False):
 
 
 def login(driver, username, password, save_cookie=False):
+    err_print(0, "登入狀態", details='正在登入', no_sn=True)
     driver.get("https://user.gamer.com.tw/login.php")
     if os.path.exists('cookies.pkl'):
-        print('INFO: Found cookie file. Restoring...')
+        err_print(0, "登入狀態", details='找到cookie檔案', no_sn=True)
         cookies = pickle.load(open("cookies.pkl", "rb"))
         for cookie in cookies:
             driver.add_cookie(cookie)
     driver.get("https://user.gamer.com.tw/login.php")
     time.sleep(1)
+    # todo: 偵測效果不好，之後換方法
     if driver.current_url != 'https://user.gamer.com.tw/login.php':
         # already logined
         return True
@@ -54,14 +58,16 @@ def login(driver, username, password, save_cookie=False):
     if driver.current_url == 'https://user.gamer.com.tw/login.php':
         # 還在登入頁面
         message = driver.find_element(By.CSS_SELECTOR, '#loginFormDiv > div.caption-text.red.margin-bottom.msgdiv-alert')
-        if message != "":
-            print("ERROR:", message.text)
+        if message.text != "":
+            err_print(0, "登入狀態", details='錯誤: ' + message.text, no_sn=True, status=1)
             return False
         else:
-            print("INFO: 2fa?")
-    print("INFO: Logined")
+            err_print(0, "登入狀態", details='登入時可能發生驗證問題', no_sn=True, status=1)
+            # todo: 處理2fa
+            return False
+    err_print(0, "登入狀態", details='登入成功', no_sn=True, status=2)
     if save_cookie:
-        print("INFO: Saving cookie...")
+        err_print(0, "登入狀態", details='正在儲存cookie', no_sn=True)
         pickle.dump(driver.get_cookies(), open("cookies.pkl", "wb"))
     return True
 
