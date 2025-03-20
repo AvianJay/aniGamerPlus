@@ -1003,10 +1003,18 @@ def check_sn_ended():
         for a in w:
             schedule_sn.append(int(a["videoSn"]))
     not_in_schedule_sn = []
+    from aniGamerPlus import read_db
     for sn, all_sn in current_sn_list_all.items():
         if not any(ssn in all_sn for ssn in schedule_sn):
-            not_in_schedule_sn.append(sn)
-            __color_print(sn, "可能已經完結")
+            # 檢查資料庫是否有紀錄
+            try:
+                for s in all_sn:
+                    read_db(s)
+                not_in_schedule_sn.append(sn)
+                __color_print(sn, "可能已經完結")
+            except IndexError:
+                __color_print(sn, "可能已經完結，但是資料庫無紀錄")
+                break
     # update sn_list
     __color_print(0, "更新sn_list", no_sn=True)
     sn_list = open(sn_list_path, 'r').read().split('\n')

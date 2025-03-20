@@ -15,11 +15,19 @@ import sys
 import os
 import pickle
 import Config
-from ColorPrint import err_print
+
+# stolen from Config.py lol
+def __color_print(sn, err_msg, detail='', status=0, no_sn=False, display=True):
+    # 避免与 ColorPrint.py 相互调用产生问题
+    try:
+        err_print(sn, err_msg, detail=detail, status=status, no_sn=no_sn, display=display)
+    except UnboundLocalError:
+        from ColorPrint import err_print
+        err_print(sn, err_msg, detail=detail, status=status, no_sn=no_sn, display=display)
 
 
 def get_driver(headless=False):
-    err_print(0, "登入狀態", details='正在啟動瀏覽器', no_sn=True)
+    __color_print(0, "登入狀態", details='正在啟動瀏覽器', no_sn=True)
     ua = Config.read_settings()['ua']
     opt = webdriver.ChromeOptions()
     if headless:
@@ -29,10 +37,10 @@ def get_driver(headless=False):
 
 
 def login(driver, username, password, save_cookie=False):
-    err_print(0, "登入狀態", details='正在登入', no_sn=True)
+    __color_print(0, "登入狀態", details='正在登入', no_sn=True)
     driver.get("https://user.gamer.com.tw/login.php")
     if os.path.exists('cookies.pkl'):
-        err_print(0, "登入狀態", details='找到cookie檔案', no_sn=True)
+        __color_print(0, "登入狀態", details='找到cookie檔案', no_sn=True)
         cookies = pickle.load(open("cookies.pkl", "rb"))
         for cookie in cookies:
             driver.add_cookie(cookie)
@@ -59,15 +67,15 @@ def login(driver, username, password, save_cookie=False):
         # 還在登入頁面
         message = driver.find_element(By.CSS_SELECTOR, '#loginFormDiv > div.caption-text.red.margin-bottom.msgdiv-alert')
         if message.text != "":
-            err_print(0, "登入狀態", details='錯誤: ' + message.text, no_sn=True, status=1)
+            __color_print(0, "登入狀態", detail='錯誤: ' + message.text, no_sn=True, status=1)
             return False
         else:
-            err_print(0, "登入狀態", details='登入時可能發生驗證問題', no_sn=True, status=1)
+            __color_print(0, "登入狀態", detail='登入時可能發生驗證問題', no_sn=True, status=1)
             # todo: 處理2fa
             return False
-    err_print(0, "登入狀態", details='登入成功', no_sn=True, status=2)
+    __color_print(0, "登入狀態", detail='登入成功', no_sn=True, status=2)
     if save_cookie:
-        err_print(0, "登入狀態", details='正在儲存cookie', no_sn=True)
+        __color_print(0, "登入狀態", detail='正在儲存cookie', no_sn=True)
         pickle.dump(driver.get_cookies(), open("cookies.pkl", "wb"))
     return True
 
