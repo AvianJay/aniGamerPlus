@@ -508,8 +508,8 @@ def run():
         # app.run(use_reloader=False, port=port, host=host, ssl_context=ssl_keys, threaded=True)
         server = WSGIServer((host, port), app, handler_class=WebSocketHandler, certfile=ssl_crt, keyfile=ssl_key)
 
-        # wrap_socket = server.wrap_socket
-        # wrap_socket_and_handle = server.wrap_socket_and_handle
+        wrap_socket = server.wrap_socket
+        wrap_socket_and_handle = server.wrap_socket_and_handle
 
         # 处理一些浏览器(比如Chrome)尝试 SSL v3 访问时报错
         def my_wrap_socket(sock, **_kwargs):
@@ -529,8 +529,8 @@ def run():
                 # print('my_wrap_socket_and_handle AttributeError')
                 pass
 
-        # server.wrap_socket = my_wrap_socket
-        # server.wrap_socket_and_handle = my_wrap_socket_and_handle
+        server.wrap_socket = my_wrap_socket
+        server.wrap_socket_and_handle = my_wrap_socket_and_handle
 
     else:
         # app.run(use_reloader=False, port=port, host=host, threaded=True)
