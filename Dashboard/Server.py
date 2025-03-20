@@ -431,15 +431,14 @@ if settings["dashboard"]["online_watch"]:
     @app.route('/time')
     def webtime():
         gettype = request.args.get('type')
-        sn = request.args.get('id')
+        sn = request.args.get('sn')
         token = request.cookies.get('token')
         ran = False
-        userdata = open(os.path.join(Config.get_working_dir(), 'Dashboard', 'userdata.json'), 'r').read()
-        if gettype == 'send':
+        userdata = json.load(open(os.path.join(Config.get_working_dir(), 'Dashboard', 'userdata.json'), 'r'))
+        if gettype == 'set':
             for user in userdata['users']:
                 if user['token'] == token:
-                    user['videotimes'][sn] == request.args.get('time')
-                    ran = True
+                    user['videotimes'][sn] = request.args.get('time')
                     return '{"status":"200"}'
         elif gettype == 'get':
             for user in userdata['users']:
@@ -448,12 +447,10 @@ if settings["dashboard"]["online_watch"]:
                         return str(user['videotimes'][sn])
                     else:
                         return '0'
-                    ran = True
-        if not ran:
-            for user in userdata['users']:
-                if user['token'] == token:
-                    return '{"status":"404", "msg":"Type is invaild"}'
-            return '{"status":"403", "msg":"Token is invaild"}'
+        for user in userdata['users']:
+            if user['token'] == token:
+                return '{"status":"404", "msg":"Type is invalid"}'
+        return '{"status":"403", "msg":"Token is invalid"}'
 
         
 @app.route('/login', methods=['GET', 'POST'])
@@ -461,7 +458,7 @@ def login():
     if request.method == 'POST':
         username = request.form.get('username')
         password = request.form.get('password')
-        userdata = open(os.path.join(Config.get_working_dir(), 'Dashboard', 'userdata.json'), 'r').read()
+        userdata = json.load(open(os.path.join(Config.get_working_dir(), 'Dashboard', 'userdata.json'), 'r'))
         for user in userdata['users']:
             if user['name'] == username and user['password'] == password:
                 return f"<script>document.cookies.token = '{user['token']}';window.location.href = '/watch'</script>"
@@ -472,12 +469,15 @@ def login():
 
 @app.route('/register', methods=['GET', 'POST'])
 def register():
+    settings = Config.read_settings()
+    if not settings['dashboard']['user_control']['allow_register']:
+        return '<script>alert("伺服器沒有啟用註冊!");window.location.href="/";</script>'
     if request.method == 'POST':
         if not request.form.get('pw1') == request.form.get('pw2'):
             return '<script>window.location.href = "/login?error=2"</script>'
         username = request.form.get('username')
         password = request.form.get('pw1')
-        userdata = open(os.path.join(Config.get_working_dir(), 'Dashboard', 'userdata.json'), 'r').read()
+        userdata = json.load(open(os.path.join(Config.get_working_dir(), 'Dashboard', 'userdata.json'), 'r'))
         for user in userdata['users']:
             if user['name'] == username:
                 return '<script>window.location.href = "/login?error=1"</script>'
