@@ -363,7 +363,7 @@ else:
 
 
     @app.route('/checknow')
-    def checknow():
+    def checknowctrl():
         err_print(0, 'Dashboard', '通過 Web 控制臺發出了立即更新的請求', no_sn=True, status=2)
         checknow()
         return '{"status":"200"}'
