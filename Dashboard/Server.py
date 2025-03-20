@@ -424,8 +424,8 @@ if settings["dashboard"]["online_watch"]:
 
     @app.route('/videolist.json')
     def videolist():
-        videojson = json.loads(open(os.path.join(Config.get_working_dir(), 'videolist.json'), 'r').read())
-        return jsonify(videojson)
+        video_json = json.load(open(os.path.join(Config.get_working_dir(), 'video_list.json'), 'r'))
+        return jsonify(video_json)
 
 
     @app.route('/time')

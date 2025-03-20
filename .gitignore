@@ -126,7 +126,7 @@ logs/
 temp/
 cookie2.txt
 */*.iml
-videolist.json
+video_list.json
 Dashboard/sslkey/server.crt
 Dashboard/sslkey/server.key
 cookies.pkl

@@ -919,7 +919,11 @@ def updatelist():
             if settings['danmu']:
                 video_data['danmu_path'] = anime['local_file_path'].replace('.mp4', '.ass')
             my_list['videos'].append(video_data)
-    with open(os.path.join(working_dir, 'videolist.json'), 'w') as f:
+    if os.path.exists("custom_video_list.json"):
+        custom_list = json.load(open("custom_video_list.json", "r"))
+        for v in custom_list:
+            pass
+    with open(os.path.join(working_dir, 'video_list.json'), 'w') as f:
         json.dump(my_list, f)
 
 

@@ -2,15 +2,13 @@
 <html>
   <head>
     <title>動畫瘋++</title>
-    <link rel="shortcut icon" href="/static/img/aniGamerPlusPlus.ico" type="image/x-icon" />
+    <link rel="shortcut icon" href="/static/img/aniGamerPlus.ico" type="image/x-icon" />
     <link href="https://cdnjs.cloudflare.com/ajax/libs/video.js/5.5.3/video-js.min.css" rel="stylesheet">
     <link href="https://cdn.rawgit.com/Arnavion/libjass/36f6600d6cc78daf29fe747f2cc0cb0a4f83ad41/demo/libjass.css" rel="stylesheet">
     <script src="https://cdnjs.cloudflare.com/ajax/libs/video.js/5.5.3/video.min.js"></script>
     <script src="https://cdn.rawgit.com/Arnavion/libjass/36f6600d6cc78daf29fe747f2cc0cb0a4f83ad41/demo/libjass.js"></script>
     <meta name="viewport" content="width=device-width, user-scalable=no, initial-scale=1, maximum-scale=1.0">
-    <script src="/static/js/videojs.ass.js"></script>
     <script src="/static/js/ass.js"></script>
-    <link href="/static/css/videojs.ass.css" rel="stylesheet">
     <link rel="stylesheet" href="../static/css/aniGamerPlus.css" />
     <link rel="stylesheet" href="../static/css/fontawesome.all.min.css" />
     <link rel="stylesheet" href="../static/css/bootstrap-select.min.css" />
@@ -312,6 +310,8 @@ a:hover {
                 skipBackward();
             } else if (event.key === 'ArrowRight') {
                 skipForward();
+            } else if (event.key === 'f' || event.key === 'F') {
+                toggleFullscreen();
             }
         });
 
@@ -421,8 +421,8 @@ a:hover {
           ass.resize()
         });
 
-        fullscreenButton.addEventListener('click', function() {
-            if (!isFullscreen) {
+        function toggleFullscreen() {
+          if (!isFullscreen) {
                 if (videoPlayer.requestFullscreen) {
                     videoPlayer.requestFullscreen();
                 } else if (videoPlayer.mozRequestFullScreen) {
@@ -448,6 +448,10 @@ a:hover {
                 screen.orientation.lock("portrait-primary");
             }
             ass.resize()
+        };
+
+        fullscreenButton.addEventListener('click', function() {
+
         });
       
         function handleMouseEnter() {
@@ -513,7 +517,7 @@ a:hover {
         // });
       } else {
         // 載入影片清單
-        fetch('/videolist.json')
+        fetch('/video_list.json')
           .then(function(response) {
             return response.json();
           })
