@@ -422,7 +422,7 @@ if settings["dashboard"]["online_watch"]:
             return 'Danmu is not enabled'
 
 
-    @app.route('/videolist.json')
+    @app.route('/video_list.json')
     def videolist():
         video_json = json.load(open(os.path.join(Config.get_working_dir(), 'video_list.json'), 'r'))
         return jsonify(video_json)
