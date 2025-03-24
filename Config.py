@@ -953,7 +953,7 @@ def parse_proxy(proxy_str: str) -> dict:
 def getpath(sn, type, resolution=None):
     returnv = None
     settings = read_settings()
-    with open(os.path.join(working_dir, 'videolist.json'), 'r') as f:
+    with open(os.path.join(working_dir, 'video_list.json'), 'r') as f:
         list = json.loads(f.read())
     try:
         for anime in list['videos']:
