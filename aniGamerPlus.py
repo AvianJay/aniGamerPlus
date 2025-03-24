@@ -914,15 +914,36 @@ def updatelist():
                 'anime_name': anime['anime_name'],
                 'episode': anime['episode'],
                 'resolution': anime['resolution'],
-                'path': anime['local_file_path']
+                'path': anime['local_file_path'],
+                'source': '巴哈姆特動畫瘋'
             }
-            if settings['danmu']:
-                video_data['danmu_path'] = anime['local_file_path'].replace('.mp4', '.ass')
+            danmupath = anime['local_file_path'].replace('.mp4', '.ass')
+            if os.path.exists(danmupath):
+                video_data['danmu_path'] = danmupath
+                video_data['danmu'] = True
+            else:
+                video_data['danmu_path'] = None
+                video_data['danmu'] = False
             my_list['videos'].append(video_data)
-    if os.path.exists("custom_video_list.json"):
-        custom_list = json.load(open("custom_video_list.json", "r"))
-        for v in custom_list:
-            pass
+    settings = Config.read_settings()
+    bangumi_dir = settings["bangumi_dir"]
+    for dirpath, _, filenames in os.walk(bangumi_dir):
+        if ".aniGamerPlus.json" in filenames:
+            customVideos = json.load(open(os.path.join(dirpath, ".aniGamerPlus.json"), "r"))
+            anime_name = customVideos["anime_name"]
+            unique_sn = str(customVideos["id"])
+            source = customVideos["source"]
+            for v in customVideos["videos"]:
+                video_data = {
+                    'sn': "41" + unique_sn + "00" + str(v["episode"]),
+                    'anime_name': anime_name,
+                    'title': anime_name + "[" + int(v["episode"]) + "]",
+                    'episode': int(v["episode"]),
+                    'resolution': int(v["resolution"]),
+                    'path': os.path.join(dirpath, v["filename"]),
+                    'source': "未知" if source is None else source
+                }
+                my_list['videos'].append(video_data)
     with open(os.path.join(working_dir, 'video_list.json'), 'w') as f:
         json.dump(my_list, f)
 
