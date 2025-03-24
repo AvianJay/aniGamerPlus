@@ -8,13 +8,13 @@
     <script src="https://cdnjs.cloudflare.com/ajax/libs/video.js/5.5.3/video.min.js"></script>
     <script src="https://cdn.rawgit.com/Arnavion/libjass/36f6600d6cc78daf29fe747f2cc0cb0a4f83ad41/demo/libjass.js"></script>
     <meta name="viewport" content="width=device-width, user-scalable=no, initial-scale=1, maximum-scale=1.0">
-    <script src="/static/js/ass.js"></script>
     <link rel="stylesheet" href="../static/css/aniGamerPlus.css" />
     <link rel="stylesheet" href="../static/css/fontawesome.all.min.css" />
     <link rel="stylesheet" href="../static/css/bootstrap-select.min.css" />
     <link rel="stylesheet" href="../static/css/bootstrap-switch.min.css" />
     <link rel="stylesheet" href="../static/css/bootstrap.rfs.min.css">
     <script src="https://code.jquery.com/jquery-3.7.0.min.js" integrity="sha256-2Pmvv0kuTBOenSvLm6bvfBSSHrUJ+3A7x6P5Ebd07/g=" crossorigin="anonymous"></script>
+    <script src="/static/js/ass.global.min.js"></script>
     <script>
 
         function parseCookie() {
@@ -189,9 +189,14 @@ a {
 a:hover {
   text-decoration: underline;
 }
+    #ass-container {
+      position: absolute;
+      top: 0;
+      left: 0;
+    }
 
   </style>
-  <body>
+  <body onload="main()">
 		<nav class="navbar navbar-expand-md bg-dark navbar-dark fixed-top">
 			<a class="navbar-brand" href="/"><img src="/static/img/aniGamerPlus.ico"></a>
 
@@ -217,6 +222,7 @@ a:hover {
     <div id="videobox" class="player-wrapper">
     </div>
     <script>
+    function main() {
       var urlParams = new URLSearchParams(window.location.search);
       var videoId = urlParams.get('id');
       var videoResolution = urlParams.get('res');
@@ -244,7 +250,9 @@ a:hover {
         timeSlider.setAttribute("id", "timeSlider");
         timeSlider.setAttribute("type", "range");
         timeSlider.setAttribute("min", "0");
+        timeSlider.setAttribute("max", "100");
         timeSlider.setAttribute("step", "1");
+        timeSlider.value = 0;
         volumeSlider.setAttribute("type", "range");
         volumeSlider.setAttribute("min", "0");
         var danmuButton = document.createElement('button');
@@ -258,6 +266,9 @@ a:hover {
         video.setAttribute("src", videoSrc);
         video.controls = false;
         videoPlayer.appendChild(video);
+        var assContainer = document.createElement("div");
+        assContainer.setAttribute("id", "ass-container");
+        videoPlayer.appendChild(assContainer);
 
         ctrldiv.appendChild(playPauseButton);
         ctrldiv.appendChild(volumeSlider);
@@ -267,9 +278,9 @@ a:hover {
         ctrldiv.appendChild(fullscreenButton);
         videoPlayer.appendChild(ctrldiv);
         var controlsTimeout;
-        var ass;
         var widthsize;
         var danmuEnabled = true;
+        var ass;
 
 
         playPauseButton.addEventListener('click', function() {
@@ -334,8 +345,14 @@ a:hover {
 
         video.addEventListener('loadedmetadata', function() {
             timeSlider.max = video.duration;
-            ass.resize();
             timeSlider.value = 0;
+            const dh = Math.floor(video.duration / 60);
+            const dm = Math.round(video.duration % 60);
+            const dt = `${dh.toString().padStart(2, '0')}:${dm.toString().padStart(2, '0')}`;
+            const ch = Math.floor(video.currentTime / 60);
+            const cm = Math.round(video.currentTime % 60);
+            const ct = `${ch.toString().padStart(2, '0')}:${cm.toString().padStart(2, '0')}`;
+            timetext.innerHTML = ct + '/' + dt
         });
 
         danmuButton.addEventListener('click', function() {
@@ -361,17 +378,14 @@ a:hover {
 
         video.style.width = '100%';
 
-
-        ASS();
-        function loadsub() {
-          fetch(subtitleSrc)
+        fetch(subtitleSrc)
               .then(res => res.text())
               .then((text) => {
-                  ass = new ASS(text, video);
-                  return ass;
+                  ass = new ASS(text, video, {
+                    container: assContainer,
+                    resampling: 'video_width',
+                  });
           });
-        };
-        ass = loadsub();
 
         document.addEventListener('fullscreenchange', function() {
             isFullscreen = !isFullscreen;
@@ -397,7 +411,6 @@ a:hover {
                 video.style.width = finalWidth + 'px';
                 video.style.height = finalHeight + 'px';
             }
-            ass.resize()
         });
 
 
@@ -418,7 +431,6 @@ a:hover {
           var finalHeight = finalWidth / 16 * 9;
           video.style.width = finalWidth + 'px';
           video.style.height = finalHeight + 'px';
-          ass.resize()
         });
 
         function toggleFullscreen() {
@@ -432,7 +444,9 @@ a:hover {
                 } else if (videoPlayer.msRequestFullscreen) {
                     videoPlayer.msRequestFullscreen();
                 }
-                screen.orientation.lock("landscape-primary");
+                try {
+                    screen.orientation.lock("landscape-primary");
+                } catch (e) {}
             } else {
                 if (document.exitFullscreen) {
                     document.exitFullscreen();
@@ -445,13 +459,14 @@ a:hover {
                 }
                 video.style.height = null;
                 video.style.width = '100%';
-                screen.orientation.lock("portrait-primary");
+                try {
+                    screen.orientation.lock("portrait-primary");
+                } catch(e) {}
             }
-            ass.resize()
         };
 
         fullscreenButton.addEventListener('click', function() {
-
+            toggleFullscreen();
         });
       
         function handleMouseEnter() {
@@ -580,6 +595,7 @@ a:hover {
             console.log('發生錯誤：', error);
           });
       }
+    }
     </script>
     <!--<script>
       var urlParams = new URLSearchParams(window.location.search);
