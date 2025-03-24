@@ -945,7 +945,9 @@ def updatelist():
                     'episode': int(v["episode"]),
                     'resolution': int(v["resolution"]),
                     'path': os.path.join(dirpath, v["filename"]),
-                    'source': "未知" if source is None else source
+                    'source': "未知" if source is None else source,
+                    'danmu_path': None,
+                    'danmu': False
                 }
                 my_list['videos'].append(video_data)
     with open(os.path.join(working_dir, 'video_list.json'), 'w') as f:
