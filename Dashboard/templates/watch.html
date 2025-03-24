@@ -80,6 +80,7 @@
 #videobox {
   position: relative;
   overflow: hidden;
+  background-color: black;
 }
 
 
@@ -88,6 +89,7 @@ video {
   display: flex;
   justify-content: center;
   align-items: center;
+  object-fit: contain;
 }
 
 /* Controls */
@@ -127,7 +129,7 @@ video {
 }
 
 #volumeSlider {
-  width: 100px;
+  width: 15%;
   margin: 0 10px;
 }
 
@@ -195,6 +197,26 @@ a:hover {
       left: 0;
     }
 
+#loading-spinner {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  width: 50px;
+  height: 50px;
+  border: 5px solid rgba(255, 255, 255, 0.3);
+  border-top: 5px solid white;
+  border-radius: 50%;
+  animation: spin 1s linear infinite;
+  transform: translate(-50%, -50%);
+  display: none;
+}
+
+@keyframes spin {
+  0% { transform: translate(-50%, -50%) rotate(0deg); }
+  100% { transform: translate(-50%, -50%) rotate(360deg); }
+}
+
+
   </style>
   <body onload="main()">
 		<nav class="navbar navbar-expand-md bg-dark navbar-dark fixed-top">
@@ -259,16 +281,21 @@ a:hover {
         danmuButton.setAttribute("id", "danmuButton");
         danmuButton.innerHTML = '<svg class="ytp-subtitles-button-icon" height="100%" version="1.1" viewBox="0 0 36 36" width="100%" fill-opacity="1"><use class="ytp-svg-shadow" xlink:href="#ytp-id-68"></use><path d="M11,11 C9.9,11 9,11.9 9,13 L9,23 C9,24.1 9.9,25 11,25 L25,25 C26.1,25 27,24.1 27,23 L27,13 C27,11.9 26.1,11 25,11 L11,11 Z M11,17 L14,17 L14,19 L11,19 L11,17 L11,17 Z M20,23 L11,23 L11,21 L20,21 L20,23 L20,23 Z M25,23 L22,23 L22,21 L25,21 L25,23 L25,23 Z M25,19 L16,19 L16,17 L25,17 L25,19 L25,19 Z" fill="#fff" id="ytp-id-68"></path></svg>';
         var timetext = document.createElement('a');
-        timetext.innerHTML = "?/?"
+        timetext.innerHTML = "載入中"
         var isFullscreen = false;
         ctrldiv.setAttribute("id", "controls");
         video.setAttribute("id", "player");
         video.setAttribute("src", videoSrc);
         video.controls = false;
+        video.setAttribute("preload", "metadata");
         videoPlayer.appendChild(video);
         var assContainer = document.createElement("div");
         assContainer.setAttribute("id", "ass-container");
         videoPlayer.appendChild(assContainer);
+        var loadingSpinner = document.createElement("div")
+        loadingSpinner.setAttribute("id", "loading-spinner")
+        videoPlayer.appendChild(loadingSpinner)
+        loadingSpinner.style.display = 'block';
 
         ctrldiv.appendChild(playPauseButton);
         ctrldiv.appendChild(volumeSlider);
@@ -355,6 +382,18 @@ a:hover {
             timetext.innerHTML = ct + '/' + dt
         });
 
+        video.addEventListener('canplay', function() {
+          loadingSpinner.style.display = 'none';
+        });
+
+        video.addEventListener('playing', function() {
+          loadingSpinner.style.display = 'none';
+        });
+
+        video.addEventListener('waiting', function() {
+          loadingSpinner.style.display = 'none';
+        });
+
         danmuButton.addEventListener('click', function() {
           if (danmuEnabled) {
             ass.hide();
@@ -431,6 +470,8 @@ a:hover {
           var finalHeight = finalWidth / 16 * 9;
           video.style.width = finalWidth + 'px';
           video.style.height = finalHeight + 'px';
+          videoPlayer.style.width = finalWidth + 'px';
+          videoPlayer.style.height = finalHeight + 'px';
         });
 
         function toggleFullscreen() {
@@ -502,7 +543,7 @@ a:hover {
         }
 
         function uploadtime(time) {
-          if (getCookieByName('logined') = 'yes') {
+          if (getCookieByName('logined') == 'yes') {
             fetch('/time?id=' + videoId + '&type=send&time=' + time);
           };
         }

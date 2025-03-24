@@ -934,6 +934,10 @@ def updatelist():
             unique_sn = str(customVideos["id"])
             source = customVideos["source"]
             for v in customVideos["videos"]:
+                if v["type"] == "normal":
+                    anime_name2 = anime_name
+                else:
+                    anime_name2 = anime_name + f" [{v['type']}]"
                 video_data = {
                     'sn': "41" + unique_sn + "00" + str(v["episode"]),
                     'anime_name': anime_name,
