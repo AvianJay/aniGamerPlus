@@ -941,7 +941,7 @@ def updatelist():
                 video_data = {
                     'sn': "41" + unique_sn + "00" + str(v["episode"]),
                     'anime_name': anime_name,
-                    'title': anime_name + "[" + int(v["episode"]) + "]",
+                    'title': anime_name + "[" + str(int(v["episode"])) + "]",
                     'episode': int(v["episode"]),
                     'resolution': int(v["resolution"]),
                     'path': os.path.join(dirpath, v["filename"]),
