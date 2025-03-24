@@ -931,7 +931,7 @@ def updatelist():
         if ".aniGamerPlus.json" in filenames:
             customVideos = json.load(open(os.path.join(dirpath, ".aniGamerPlus.json"), "r"))
             anime_name = customVideos["anime_name"]
-            unique_sn = str(customVideos["id"])
+            unique_sn = str(customVideos["unique_id"])
             source = customVideos["source"]
             for v in customVideos["videos"]:
                 if v["type"] == "normal":
