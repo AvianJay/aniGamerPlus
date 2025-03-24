@@ -904,7 +904,7 @@ def run_dashboard():
 def updatelist():
     db = read_db_all()
     my_list = {'videos': []}
-    my_list['danmu'] = settings['danmu']
+    # my_list['danmu'] = settings['danmu']
     for index, anime in enumerate(db):
         if not anime['local_file_path'] is None and os.path.exists(anime['local_file_path']):
             # 创建一个包含所有键的字典
