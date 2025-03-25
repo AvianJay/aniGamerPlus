@@ -3,10 +3,6 @@
   <head>
     <title>動畫瘋++</title>
     <link rel="shortcut icon" href="/static/img/aniGamerPlus.ico" type="image/x-icon" />
-    <link href="https://cdnjs.cloudflare.com/ajax/libs/video.js/5.5.3/video-js.min.css" rel="stylesheet">
-    <link href="https://cdn.rawgit.com/Arnavion/libjass/36f6600d6cc78daf29fe747f2cc0cb0a4f83ad41/demo/libjass.css" rel="stylesheet">
-    <script src="https://cdnjs.cloudflare.com/ajax/libs/video.js/5.5.3/video.min.js"></script>
-    <script src="https://cdn.rawgit.com/Arnavion/libjass/36f6600d6cc78daf29fe747f2cc0cb0a4f83ad41/demo/libjass.js"></script>
     <meta name="viewport" content="width=device-width, user-scalable=no, initial-scale=1, maximum-scale=1.0">
     <link rel="stylesheet" href="../static/css/aniGamerPlus.css" />
     <link rel="stylesheet" href="../static/css/fontawesome.all.min.css" />
@@ -43,15 +39,15 @@
 
         try {
           login = getCookieByName('logined')
-          if (login = 'yes') {
+          if (login = 'true') {
 
-          } else if (login = 'no') {
+          } else if (login = 'false') {
 
           } else {
-            document.cookie.logined = 'no';
+            document.cookie = 'logined=false';
           }
         } catch (err) {
-          document.cookie.logined = 'no';
+          document.cookie = 'logined=false';
         }
     </script>
   </head>
@@ -285,6 +281,25 @@ a:hover {
       var videoResolution = urlParams.get('res');
 
       if (videoId && videoResolution) {
+        var videolist;
+        var videodata;
+        fetch('/video_list.json')
+          .then(function(response) {
+            return response.json();
+          })
+          .then(function(data) {
+            videolist = data.videos;
+          });
+        videolist.forEach(function(value){
+          if (value.sn == videoId) {
+            videodata = value;
+          }
+        });
+        // check video exists
+        if (!videodata) {
+          alert("影片不存在！");
+          history.back();
+        }
         var videoSrc = '/getvid.mp4?id=' + encodeURIComponent(videoId) + '&res=' + videoResolution;
         var subtitleSrc = '/getsub.ass?id=' + encodeURIComponent(videoId);
         var videoPlayer = document.getElementById('videobox');
@@ -316,7 +331,7 @@ a:hover {
         danmuButton.setAttribute("id", "danmuButton");
         danmuButton.innerHTML = '<svg class="ytp-subtitles-button-icon" height="100%" version="1.1" viewBox="0 0 36 36" width="100%" fill-opacity="1"><use class="ytp-svg-shadow" xlink:href="#ytp-id-68"></use><path d="M11,11 C9.9,11 9,11.9 9,13 L9,23 C9,24.1 9.9,25 11,25 L25,25 C26.1,25 27,24.1 27,23 L27,13 C27,11.9 26.1,11 25,11 L11,11 Z M11,17 L14,17 L14,19 L11,19 L11,17 L11,17 Z M20,23 L11,23 L11,21 L20,21 L20,23 L20,23 Z M25,23 L22,23 L22,21 L25,21 L25,23 L25,23 Z M25,19 L16,19 L16,17 L25,17 L25,19 L25,19 Z" fill="#fff" id="ytp-id-68"></path></svg>';
         var timetext = document.createElement('a');
-        timetext.innerHTML = "載入中"
+        timetext.innerText = "..."
         var isFullscreen = false;
         ctrldiv.setAttribute("id", "controls");
         video.setAttribute("id", "player");
@@ -588,24 +603,20 @@ a:hover {
         videoPlayer.addEventListener('mouseleave', handleMouseLeave);
         videoPlayer.addEventListener('touchstart', handleTouchStart);
 
+        videoDetail = document.createElement("div");
+        videoTitle = document.createElement("h2");
+        videoSource = document.createElement("p");
+        videoTitle.innerText = videodata.title;
+        if (videodata.source == "巴哈姆特動畫瘋") {
+          videoSource.innerHTML = '來源：<a href="https://ani.gamer.com.tw/animeVideo.php?sn=' + videodata.sn + '">巴哈姆特動畫瘋</a>';
+        } else {
+          videoSource.innerText = '來源：' + videodata.source;
+        }
+        videoDetail.appendChild(videoTitle);
+        videoDetail.appendChild(videoSource);
+        document.body.appendChild(document.createElement("br"))
+        document.body.appendChild(videoDetail)
 
-
-        // video.classList.add('video-js')
-        // video.classList.add('vjs-defahlt-skin')
-        // video.classList.add('vjs-big-play-centered')
-        // videojs('player', {
-        //   controls: true,
-        //   nativeControlsForTouch: false,
-        //   width: 640,
-        //   height: 360,
-        //   fluid: true,
-        //   plugins: {
-        //     ass: {
-        //       'src': [subtitleSrc],
-        //     }
-        //   },
-        //   sources: [{ "type": "video/mp4", "src": videoSrc }]
-        // });
       } else {
         // 載入影片清單
         fetch('/video_list.json')
