@@ -27,7 +27,7 @@ def __color_print(sn, err_msg, detail='', status=0, no_sn=False, display=True):
 
 
 def get_driver(headless=False):
-    __color_print(0, "登入狀態", details='正在啟動瀏覽器', no_sn=True)
+    __color_print(0, "登入狀態", detail='正在啟動瀏覽器', no_sn=True)
     ua = Config.read_settings()['ua']
     opt = webdriver.ChromeOptions()
     if headless:
@@ -37,7 +37,7 @@ def get_driver(headless=False):
 
 
 def login(driver, username, password, save_cookie=False):
-    __color_print(0, "登入狀態", details='正在登入', no_sn=True)
+    __color_print(0, "登入狀態", detail='正在登入', no_sn=True)
     driver.get("https://user.gamer.com.tw/login.php")
     if os.path.exists('cookies.pkl'):
         __color_print(0, "登入狀態", details='找到cookie檔案', no_sn=True)

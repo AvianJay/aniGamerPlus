@@ -281,24 +281,26 @@ a:hover {
       var videoResolution = urlParams.get('res');
 
       if (videoId && videoResolution) {
-        var videolist;
-        var videodata;
-        fetch('/video_list.json')
-          .then(function(response) {
-            return response.json();
-          })
-          .then(function(data) {
-            videolist = data.videos;
-          });
-        videolist.forEach(function(value){
-          if (value.sn == videoId) {
-            videodata = value;
+        async function fetchVideoData() {
+          try {
+            let response = await fetch('/video_list.json');
+            let data = await response.json();
+
+            let videolist = data.videos;
+            let videodata = videolist.find(value => value.sn == videoId);
+
+            // check video exists
+            if (!videodata) {
+              alert("影片不存在！");
+              history.back();
+              return;
+            }
+
+           return videodata;
+          } catch (error) {
+            console.error("發生錯誤：", error);
+            alert("無法載入影片清單！");
           }
-        });
-        // check video exists
-        if (!videodata) {
-          alert("影片不存在！");
-          history.back();
         }
         var videoSrc = '/getvid.mp4?id=' + encodeURIComponent(videoId) + '&res=' + videoResolution;
         var subtitleSrc = '/getsub.ass?id=' + encodeURIComponent(videoId);
@@ -606,16 +608,18 @@ a:hover {
         videoDetail = document.createElement("div");
         videoTitle = document.createElement("h2");
         videoSource = document.createElement("p");
-        videoTitle.innerText = videodata.title;
-        if (videodata.source == "巴哈姆特動畫瘋") {
-          videoSource.innerHTML = '來源：<a href="https://ani.gamer.com.tw/animeVideo.php?sn=' + videodata.sn + '">巴哈姆特動畫瘋</a>';
-        } else {
-          videoSource.innerText = '來源：' + videodata.source;
-        }
-        videoDetail.appendChild(videoTitle);
-        videoDetail.appendChild(videoSource);
-        document.body.appendChild(document.createElement("br"))
-        document.body.appendChild(videoDetail)
+        fetchVideoData().then(videodata => {
+          videoTitle.innerText = videodata.title;
+          if (videodata.source == "巴哈姆特動畫瘋") {
+            videoSource.innerHTML = '來源：<a href="https://ani.gamer.com.tw/animeVideo.php?sn=' + videodata.sn + '">巴哈姆特動畫瘋</a>';
+          } else {
+            videoSource.innerText = '來源：' + videodata.source;
+          }
+          videoDetail.appendChild(videoTitle);
+          videoDetail.appendChild(videoSource);
+          document.body.appendChild(document.createElement("br"))
+          document.body.appendChild(videoDetail)
+        });
 
       } else {
         // 載入影片清單

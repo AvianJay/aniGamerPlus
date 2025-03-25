@@ -24,7 +24,7 @@ sn_list_path = os.path.join(working_dir, 'sn_list.txt')
 cookie_path = os.path.join(working_dir, 'cookie.txt')
 logs_dir = os.path.join(working_dir, 'logs')
 aniGamerPlus_version = 'v25.0'
-latest_config_version = 17.9
+latest_config_version = 18.0
 latest_database_version = 2.0
 cookie = None
 max_multi_thread = 5
@@ -181,8 +181,9 @@ def __init_settings():
                 'download_with_youtube': False,
                 'auto_login': {
                     'enabled': False,
+                    'use_wdm': True,
                     'headless': False,
-                    'save_browser_cookie': True,
+                    'save_browser_cookie': False,
                     'username': 'My_Bahamut_Username',
                     'password': 'My_Bahamut_Password'
                 },
@@ -442,6 +443,7 @@ def __update_settings(old_settings):  # 升级配置文件
         # auto login when logout
         new_settings['auto_login'] = {
             'enabled': False,
+            'use_wdm': True,
             'headless': False,
             'save_browser_cookie': True,
             'username': 'My_Bahamut_Username',
@@ -451,6 +453,10 @@ def __update_settings(old_settings):  # 升级配置文件
     if 'check_sn_ended' not in new_settings.keys():
         # 檢查動漫完結
         new_settings['check_sn_ended'] = False
+
+    if 'use_wdm' not in new_settings['auto_login'].keys():
+        # option to use webdriver manager
+        new_settings['auto_login']['use_wdm'] = True
 
     new_settings['config_version'] = latest_config_version
     with open(config_path, 'w', encoding='utf-8') as f:
