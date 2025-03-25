@@ -216,6 +216,41 @@ a:hover {
   100% { transform: translate(-50%, -50%) rotate(360deg); }
 }
 
+.animeCategory {
+  border: 1px solid #ccc;
+  padding: 10px;
+  margin: 10px 0;
+  cursor: pointer;
+  transition: all 0.3s;
+  background-color: #f9f9f9;
+  border-radius: 5px;
+}
+
+.animeCategoryTitle {
+  margin: 0;
+  padding: 10px;
+  font-size: 18px;
+  font-weight: bold;
+  background-color: #ddd;
+  border-radius: 5px;
+}
+
+.animeEpisodeList {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+  display: none;
+  overflow: hidden;
+}
+
+.animeEpisodeList li {
+  padding: 5px 10px;
+  border-bottom: 1px solid #eee;
+}
+
+.animeEpisodeList li:last-child {
+  border-bottom: none;
+}
 
   </style>
   <body onload="main()">
@@ -598,15 +633,17 @@ a:hover {
               var videosInCategory = videoGroups[category];
               videosInCategory.sort((a, b) => a.episode - b.episode);
               var categorybox = document.createElement('div');
-              categorybox.id = 'category';
+              categorybox.classList.add('animeCategory');
 
               // 創建分類標題
               var categoryTitle = document.createElement('h2');
+              categoryTitle.classList.add('animeCategoryTitle');
               categoryTitle.textContent = category;
               categorybox.appendChild(categoryTitle);
 
               // 創建影片清單
               var videoList = document.createElement('ul');
+              videoList.classList.add('animeEpisodeList');
 
               for (var j = 0; j < videosInCategory.length; j++) {
                 var videoItem = videosInCategory[j];
@@ -617,9 +654,9 @@ a:hover {
                 var videoLink = document.createElement('a');
                 videoLink.href = '/watch?id=' + encodeURIComponent(videoId) + '&res=' + encodeURIComponent(videoItem.resolution);
                 videoLink.textContent = videoTitle;
-                var videodlLink = document.createElement('a');
-                videodlLink.href = '/getvid.mp4?id=' + encodeURIComponent(videoId) + '&res=' + encodeURIComponent(videoItem.resolution);
-                videodlLink.textContent = '[下載]';
+                // var videodlLink = document.createElement('a');
+                // videodlLink.href = '/getvid.mp4?id=' + encodeURIComponent(videoId) + '&res=' + encodeURIComponent(videoItem.resolution);
+                // videodlLink.textContent = '[下載]';
 
                 // 創建影片清單項目
                 var videoListItem = document.createElement('li');
@@ -632,6 +669,18 @@ a:hover {
               categorybox.appendChild(videoList);
               document.body.appendChild(categorybox)
             }
+            document.querySelectorAll('.animeCategoryTitle').forEach(title => {
+              title.addEventListener('click', function () {
+                var list = this.nextElementSibling;
+
+                if (list.style.display === "block") {
+                  list.style.display = "none";
+                } else {
+                  list.style.display = "block";
+                }
+              });
+            });
+
           })
           .catch(function(error) {
             console.log('發生錯誤：', error);
