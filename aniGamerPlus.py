@@ -939,8 +939,8 @@ def updatelist():
                 else:
                     anime_name2 = anime_name + f" [{v['type']}]"
                 video_data = {
-                    'sn': "41" + unique_sn + "00" + str(v["episode"]),
-                    'anime_name': anime_name,
+                    'sn': "41" + unique_sn + "00" + str(v["episode"]).zfill(3),
+                    'anime_name': anime_name2,
                     'title': anime_name + "[" + str(int(v["episode"])) + "]",
                     'episode': int(v["episode"]),
                     'resolution': int(v["resolution"]),
