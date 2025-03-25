@@ -28,12 +28,16 @@ def __color_print(sn, err_msg, detail='', status=0, no_sn=False, display=True):
 
 def get_driver(headless=False):
     __color_print(0, "登入狀態", detail='正在啟動瀏覽器', no_sn=True)
-    ua = Config.read_settings()['ua']
+    settings = Config.read_settings()
+    ua = settings['ua']
     opt = webdriver.ChromeOptions()
     if headless:
         opt.add_argument('--headless')
     opt.add_argument(f'--user-agent={ua}')
-    return webdriver.Chrome(service=ChromeService(ChromeDriverManager().install()), options=opt)
+    if settings['auto_login']['use_wdm']:
+        return webdriver.Chrome(service=ChromeService(ChromeDriverManager().install()), options=opt)
+    else:
+        return webdriver.Chrome(options=opt)
 
 
 def login(driver, username, password, save_cookie=False):
