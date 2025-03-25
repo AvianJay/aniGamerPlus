@@ -596,6 +596,7 @@ a:hover {
             // 顯示影片清單
             for (var category in videoGroups) {
               var videosInCategory = videoGroups[category];
+              videosInCategory.sort((a, b) => a.episode - b.episode);
               var categorybox = document.createElement('div');
               categorybox.id = 'category';
 
@@ -638,98 +639,5 @@ a:hover {
       }
     }
     </script>
-    <!--<script>
-      var urlParams = new URLSearchParams(window.location.search);
-      var videoId = urlParams.get('id');
-      var videoResolution = urlParams.get('res');
-
-      if (videoId && videoResolution) {
-        var videoSrc = '/getvid.mp4?id=' + encodeURIComponent(videoId) + '&res=' + videoResolution;
-        var subtitleSrc = '/getsub.ass?id=' + encodeURIComponent(videoId);
-        var videoPlayer = document.getElementById('videobox');
-        var video = document.createElement('video');
-        videoPlayer.appendChild(video);
-
-        video.classList.add('video-js')
-        video.classList.add('vjs-defahlt-skin')
-        video.classList.add('vjs-big-play-centered')
-        videojs(video, {
-          controls: true,
-          nativeControlsForTouch: false,
-          width: 640,
-          height: 360,
-          fluid: true,
-          plugins: {
-            ass: {
-              'src': [subtitleSrc],
-            }
-          },
-          sources: [{ "type": "video/mp4", "src": videoSrc }]
-        });
-        function isMobileDevice() {
-            return /Android|webOS|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini/i.test(navigator.userAgent);
-        }
-      } else {
-        // 載入影片清單
-        fetch('/videolist.json')
-          .then(function(response) {
-            return response.json();
-          })
-          .then(function(data) {
-            var videos = data.videos;
-
-            // 分類影片
-            var videoGroups = {};
-            for (var i = 0; i < videos.length; i++) {
-              var video = videos[i];
-              var category = video.anime_name;
-
-              if (!videoGroups[category]) {
-                videoGroups[category] = [];
-              }
-
-              videoGroups[category].push(video);
-            }
-
-            // 顯示影片清單
-            for (var category in videoGroups) {
-              var videosInCategory = videoGroups[category];
-              var categorybox = document.createElement('div');
-              categorybox.id = 'category';
-
-              // 創建分類標題
-              var categoryTitle = document.createElement('h2');
-              categoryTitle.textContent = category;
-              categorybox.appendChild(categoryTitle);
-
-              // 創建影片清單
-              var videoList = document.createElement('ul');
-
-              for (var j = 0; j < videosInCategory.length; j++) {
-                var videoItem = videosInCategory[j];
-                var videoId = videoItem.sn;
-                var videoTitle = videoItem.title;
-
-                // 創建影片連結
-                var videoLink = document.createElement('a');
-                videoLink.href = '/watch?id=' + encodeURIComponent(videoId) + '&res=' + encodeURIComponent(videoItem.resolution);
-                videoLink.textContent = videoTitle;
-
-                // 創建影片清單項目
-                var videoListItem = document.createElement('li');
-                videoListItem.appendChild(videoLink);
-                videoList.appendChild(videoListItem);
-              }
-
-              // 將影片清單加入分類
-              categorybox.appendChild(videoList);
-              document.body.appendChild(categorybox)
-            }
-          })
-          .catch(function(error) {
-            console.log('發生錯誤：', error);
-          });
-      }
-    </script>-->
   </body>
 </html>
