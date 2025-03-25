@@ -520,8 +520,8 @@ a:hover {
           var finalHeight = finalWidth / 16 * 9;
           video.style.width = finalWidth + 'px';
           video.style.height = finalHeight + 'px';
-          videoPlayer.style.width = finalWidth + 'px';
-          videoPlayer.style.height = finalHeight + 'px';
+          //videoPlayer.style.width = finalWidth + 'px';
+          //videoPlayer.style.height = finalHeight + 'px';
         });
 
         function toggleFullscreen() {
@@ -672,7 +672,7 @@ a:hover {
                 // 創建影片清單項目
                 var videoListItem = document.createElement('li');
                 videoListItem.appendChild(videoLink);
-                videoListItem.appendChild(videodlLink);
+                // videoListItem.appendChild(videodlLink);
                 videoList.appendChild(videoListItem);
               }
 
