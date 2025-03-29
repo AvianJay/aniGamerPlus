@@ -1014,13 +1014,19 @@ def check_sn_ended():
         if not any(ssn in all_sn for ssn in schedule_sn):
             # 檢查資料庫是否有紀錄
             try:
+                statZero = False
                 for s in all_sn:
-                    read_db(s)
+                    r = read_db(s)
+                    if not r["status"]:
+                        statZero = True
+                if statZero:
+                    __color_print(sn, "可能已經完結，但是還沒有下載過")
+                    continue
                 not_in_schedule_sn.append(sn)
                 __color_print(sn, "可能已經完結")
             except IndexError:
                 __color_print(sn, "可能已經完結，但是資料庫無紀錄")
-                break
+                continue
     # update sn_list
     __color_print(0, "更新sn_list", no_sn=True)
     sn_list = open(sn_list_path, 'r').read().split('\n')
