@@ -355,9 +355,10 @@ class Anime:
                         if not succeed_flag:
                             self._cookies = {}
                             err_print(0, '用戶cookie更新失敗!', status=1, no_sn=True)
-                            # 将失效cookie更名
+                            # 将失效cookie更名/嘗試自動登入(如果有設定)
                             if Config.invalid_cookie():
                                 self._cookies = Config.read_cookie()
+                                self.__request('https://ani.gamer.com.tw/')
                             else:
                                 err_print(0, '使用游客身份訪問', status=1, no_sn=True)
 
