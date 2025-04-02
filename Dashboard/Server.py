@@ -499,6 +499,15 @@ def run():
     port = settings['dashboard']['port']
     host = settings['dashboard']['host']
 
+    # check cert if enabled ssl
+    if settings['dashboard']['SSL']:
+        ssl_path = os.path.join(Config.get_working_dir(), 'Dashboard', 'sslkey')
+        ssl_crt = os.path.join(ssl_path, 'server.crt')
+        ssl_key = os.path.join(ssl_path, 'server.key')
+        if not os.path.exists(ssl_crt) or not os.path.exists(ssl_key):
+            err_print(0, 'Dashboard', '啟用了SSL，但是證書檔案不存在! 強制禁用', no_sn=True, status=1)
+            settings['dashboard']['SSL'] = False
+
     if settings['dashboard']['SSL']:
         # SSL 配置
         ssl_path = os.path.join(Config.get_working_dir(), 'Dashboard', 'sslkey')
