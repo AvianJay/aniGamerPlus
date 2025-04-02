@@ -996,44 +996,50 @@ def rename_all_playlist():
 def check_sn_ended():
     # 檢查動漫是否在週期表上
     # 如果沒有就註釋掉
-    __color_print(0, "正在取得週期表", no_sn=True)
-    headers = {
-        'User-Agent': 'Animad/1.16.25.1 (tw.com.gamer.android.animad; build: 351; Android 14) okHttp/4.4.0',
-        'x-bahamut-app-android': 'tw.com.gamer.android.animad',
-        'x-bahamut-app-version': '351',
-    }
-    response = requests.get('https://api.gamer.com.tw/anime/v1/index.php', headers=headers).json()
-    # collect sn
-    schedule_sn = []
-    for w in response["data"]["newAnimeSchedule"].values():
-        for a in w:
-            schedule_sn.append(int(a["videoSn"]))
-    not_in_schedule_sn = []
-    from aniGamerPlus import read_db
-    for sn, all_sn in current_sn_list_all.items():
-        if not any(ssn in all_sn for ssn in schedule_sn):
-            # 檢查資料庫是否有紀錄
-            try:
-                statZero = False
-                for s in all_sn:
-                    r = read_db(s)
-                    if not r["status"]:
-                        statZero = True
-                if statZero:
-                    __color_print(sn, "可能已經完結，但是還沒有下載過")
+    try:
+        __color_print(0, "正在取得週期表", no_sn=True)
+        headers = {
+            'User-Agent': 'Animad/1.16.25.1 (tw.com.gamer.android.animad; build: 351; Android 14) okHttp/4.4.0',
+            'x-bahamut-app-android': 'tw.com.gamer.android.animad',
+            'x-bahamut-app-version': '351',
+        }
+        response = requests.get('https://api.gamer.com.tw/anime/v1/index.php', headers=headers).json()
+        # collect sn
+        schedule_sn = []
+        for w in response["data"]["newAnimeSchedule"].values():
+            for a in w:
+                schedule_sn.append(int(a["videoSn"]))
+        not_in_schedule_sn = []
+        from aniGamerPlus import read_db
+        for sn, all_sn in current_sn_list_all.items():
+            if not any(ssn in all_sn for ssn in schedule_sn):
+                # 檢查資料庫是否有紀錄
+                try:
+                    statZero = False
+                    for s in all_sn:
+                        r = read_db(s)
+                        if not r["status"]:
+                            statZero = True
+                    if statZero:
+                        __color_print(sn, "可能已經完結，但是還沒有下載過")
+                        continue
+                    not_in_schedule_sn.append(sn)
+                    __color_print(sn, "可能已經完結")
+                except IndexError:
+                    __color_print(sn, "可能已經完結，但是資料庫無紀錄")
                     continue
-                not_in_schedule_sn.append(sn)
-                __color_print(sn, "可能已經完結")
-            except IndexError:
-                __color_print(sn, "可能已經完結，但是資料庫無紀錄")
-                continue
-    # update sn_list
-    __color_print(0, "更新sn_list", no_sn=True)
-    sn_list = open(sn_list_path, 'r').read().split('\n')
-    for index, value in enumerate(sn_list):
-        if any(str(nssn) in value for nssn in not_in_schedule_sn):
-            sn_list[index] = "# Ended: " + value
-    write_sn_list("\n".join(sn_list))
+    except Exception as e:
+        __color_print(0, '取得週期表時發生異常: ' + str(e), status=1, no_sn=True)
+    try:
+        # update sn_list
+        __color_print(0, "更新sn_list", no_sn=True)
+        sn_list = open(sn_list_path, 'r').read().split('\n')
+        for index, value in enumerate(sn_list):
+            if any(str(nssn) in value for nssn in not_in_schedule_sn):
+                sn_list[index] = "# Ended: " + value
+        write_sn_list("\n".join(sn_list))
+    except Exception as e:
+        __color_print(0, '更新sn_list時發生異常: ' + str(e), status=1, no_sn=True)
 
 
 if __name__ == '__main__':
