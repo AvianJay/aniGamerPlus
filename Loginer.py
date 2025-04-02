@@ -95,13 +95,21 @@ def get_raw_cookie(driver):
 
 
 def do_all(username, password, headless, save_cookie):
-    driver = get_driver(headless)
-    if login(driver, username, password, save_cookie):
-        raw_cookie = get_raw_cookie(driver)
-    else:
-        raw_cookie = False
-    driver.close()
-    return raw_cookie
+    try:
+        driver = get_driver(headless)
+    except Exception as e:
+        __color_print(0, "登入狀態", detail='啟動瀏覽器時發生異常: ' + e, status=1, no_sn=True)
+        return False
+    try:
+        if login(driver, username, password, save_cookie):
+            raw_cookie = get_raw_cookie(driver)
+        else:
+            raw_cookie = False
+        driver.close()
+        return raw_cookie
+    except Exception as e:
+        __color_print(0, "登入狀態", detail='登入時發生異常: ' + e, status=1, no_sn=True)
+        return False
 
 
 if __name__ == "__main__":
