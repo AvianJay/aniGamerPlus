@@ -125,10 +125,8 @@ function main() {
         playPauseButton.addEventListener('click', function () {
             if (video.paused) {
                 video.play();
-                playPauseButton.innerHTML = '<svg height="100%" version="1.1" viewBox="0 0 36 36" width="100%"><path d="M 12,26 16,26 16,10 12,10 z M 21,26 25,26 25,10 21,10 z"></path></svg>';
             } else {
                 video.pause();
-                playPauseButton.innerHTML = '<svg height="100%" version="1.1" viewBox="0 0 36 36" width="100%"><path d="M 12,26 18.5,22 18.5,14 12,10 z M 18.5,22 25,18 25,18 18.5,14 z"></path></svg>';
             }
         });
 
@@ -203,8 +201,16 @@ function main() {
         });
 
         video.addEventListener('waiting', function () {
-            loadingSpinner.style.display = 'none';
+            loadingSpinner.style.display = 'block';
         });
+
+        video.addEventListener('play', function () {
+            playPauseButton.innerHTML = '<svg height="100%" version="1.1" viewBox="0 0 36 36" width="100%"><path d="M 12,26 16,26 16,10 12,10 z M 21,26 25,26 25,10 21,10 z"></path></svg>';
+        });
+
+        video.addEventListener('pause', function() {
+            playPauseButton.innerHTML = '<svg height="100%" version="1.1" viewBox="0 0 36 36" width="100%"><path d="M 12,26 18.5,22 18.5,14 12,10 z M 18.5,22 25,18 25,18 18.5,14 z"></path></svg>';
+        })
 
         danmuButton.addEventListener('click', function () {
             if (danmuEnabled) {
@@ -278,10 +284,25 @@ function main() {
         }
 
         window.addEventListener("resize", function () {
-            var finalWidth = window.innerWidth * (widthsize / 100);
-            var finalHeight = finalWidth / 16 * 9;
-            video.style.width = finalWidth + 'px';
-            video.style.height = finalHeight + 'px';
+            if (isFullscreen) {
+                var targetWidth = window.innerHeight / 9 * 16;
+                var finalWidth, finalHeight;
+
+                if (targetWidth <= window.innerWidth) {
+                    finalWidth = targetWidth;
+                    finalHeight = window.innerHeight;
+                } else {
+                    finalWidth = window.innerWidth;
+                    finalHeight = window.innerWidth / 16 * 9;
+                }
+                video.style.width = finalWidth + 'px';
+                video.style.height = finalHeight + 'px';
+            } else {
+                var finalWidth = window.innerWidth * (widthsize / 100);
+                var finalHeight = finalWidth / 16 * 9;
+                video.style.width = finalWidth + 'px';
+                video.style.height = finalHeight + 'px';
+            }
             //videoPlayer.style.width = finalWidth + 'px';
             //videoPlayer.style.height = finalHeight + 'px';
         });
