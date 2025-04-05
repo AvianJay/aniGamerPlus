@@ -1,0 +1,196 @@
+.heada {
+  background-color: black;
+  color: white;
+  bottom: 0;
+  margin: 0 5px;
+  height: 100%;
+}
+
+.headu {
+  background-color: black;
+  color: white;
+  right: 0;
+  margin: 0 5px;
+}
+
+/* Video Box */
+#videobox {
+  position: relative;
+  overflow: hidden;
+  background-color: black;
+}
+
+
+video {
+  object-fit: fill;
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  object-fit: contain;
+}
+
+/* Controls */
+#controls {
+  position: absolute;
+  bottom: 0;
+  left: 0;
+  background-color: rgba(0, 0, 0, 0.5);
+  width: 100%;
+  padding: 10px;
+  box-sizing: border-box;
+  color: #fff;
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  opacity: 0;
+  transition: opacity 0.3s ease;
+}
+
+#controls a {
+  color: white;
+}
+
+#playPauseButton,
+#fullscreenButton,
+#danmuButton {
+  margin: 0 5px;
+  background-color: transparent;
+  border: none;
+  color: #fff;
+  cursor: pointer;
+  outline: none;
+}
+
+#fullscreenButton {
+  right: 1;
+}
+
+#volumeSlider {
+  width: 15%;
+  margin: 0 10px;
+}
+
+#timeSlider {
+  width: 100%;
+  margin: 0 10px;
+}
+
+.fullscreen {
+  position: fixed;
+  top: 0;
+  left: 0;
+  width: 100%;
+  height: 100%;
+  z-index: 9999;
+}
+
+.show-controls #controls {
+  opacity: 1;
+}
+
+#playPauseButton svg,
+#fullscreenButton svg,
+#danmuButton svg {
+  margin: 0 5px;
+  width: 24px;
+  height: 24px;
+  fill: white;
+}
+
+/* General Styling */
+body {
+  margin: 0;
+  padding: 0;
+  font-family: Arial, sans-serif;
+  background-color: #f0f0f0;
+}
+
+h2 {
+  font-size: 20px;
+  margin: 20px 0 10px;
+}
+
+ul {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+}
+
+li {
+  margin-bottom: 5px;
+}
+
+a {
+  color: #000;
+  text-decoration: none;
+}
+
+a:hover {
+  text-decoration: underline;
+}
+
+#ass-container {
+  position: absolute;
+  top: 0;
+  left: 0;
+}
+
+#loading-spinner {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  width: 50px;
+  height: 50px;
+  border: 5px solid rgba(255, 255, 255, 0.3);
+  border-top: 5px solid white;
+  border-radius: 50%;
+  animation: spin 1s linear infinite;
+  transform: translate(-50%, -50%);
+  display: none;
+}
+
+@keyframes spin {
+  0% {
+    transform: translate(-50%, -50%) rotate(0deg);
+  }
+
+  100% {
+    transform: translate(-50%, -50%) rotate(360deg);
+  }
+}
+
+.animeCategory {
+  border: 1px solid #ccc;
+  padding: 10px;
+  margin: 10px 0;
+  cursor: pointer;
+  transition: all 0.3s;
+  background-color: #f9f9f9;
+  border-radius: 5px;
+}
+
+.animeCategoryTitle {
+  margin: 0;
+  padding: 10px;
+  font-size: 18px;
+  font-weight: bold;
+  background-color: #ddd;
+  border-radius: 5px;
+}
+
+.animeEpisodeList {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+  display: none;
+  overflow: hidden;
+}
+
+.animeEpisodeList li {
+  padding: 5px 10px;
+  border-bottom: 1px solid #eee;
+}
+
+.animeEpisodeList li:last-child {
+  border-bottom: none;
+}
