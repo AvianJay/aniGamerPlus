@@ -248,19 +248,8 @@ function main() {
             isFullscreen = !isFullscreen;
             if (isFullscreen) {
                 videoPlayer.classList.add('fullscreen');
-
-                var targetWidth = window.innerHeight / 9 * 16;
-                var finalWidth, finalHeight;
-
-                if (targetWidth <= window.innerWidth) {
-                    finalWidth = targetWidth;
-                    finalHeight = window.innerHeight;
-                } else {
-                    finalWidth = window.innerWidth;
-                    finalHeight = window.innerWidth / 16 * 9;
-                }
-                video.style.width = finalWidth + 'px';
-                video.style.height = finalHeight + 'px';
+                video.style.width = '100%';
+                video.style.height = '100%';
             } else {
                 videoPlayer.classList.remove('fullscreen');
                 var finalWidth = window.innerWidth * (widthsize / 100);
@@ -285,18 +274,8 @@ function main() {
 
         window.addEventListener("resize", function () {
             if (isFullscreen) {
-                var targetWidth = window.innerHeight / 9 * 16;
-                var finalWidth, finalHeight;
-
-                if (targetWidth <= window.innerWidth) {
-                    finalWidth = targetWidth;
-                    finalHeight = window.innerHeight;
-                } else {
-                    finalWidth = window.innerWidth;
-                    finalHeight = window.innerWidth / 16 * 9;
-                }
-                video.style.width = finalWidth + 'px';
-                video.style.height = finalHeight + 'px';
+                video.style.width = '100%';
+                video.style.height = '100%';
             } else {
                 var finalWidth = window.innerWidth * (widthsize / 100);
                 var finalHeight = finalWidth / 16 * 9;
