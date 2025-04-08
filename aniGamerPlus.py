@@ -512,7 +512,7 @@ def __get_danmu_only(sn, bangumi_name, video_path):
         else:
             err_print(sn, '彈幕下載異常', '番劇資料夾不存在: ' + download_dir, status=1)
     except Exception as e:
-        err_print(sn, '彈幕下載異常', '出現未知異常: ' + e, status=1)
+        err_print(sn, '彈幕下載異常', '出現未知異常: ' + str(e), status=1)
     # 彈幕下載冷却
     if settings['danmu_download_cd'] > 0:
         err_print("更新資訊", "彈幕下載冷卻 " + str(settings['danmu_download_cd']) + " 秒", no_sn=True)
