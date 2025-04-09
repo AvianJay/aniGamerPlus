@@ -418,7 +418,7 @@ window.addEventListener("orientationchange", checkOrientation, false);
         var searchInput = document.createElement("input");
         searchInput.type = "search";
         searchInput.classList.add('form-control');
-        searchInput.
+        searchInput.placeholder = "搜尋動漫...";
             searchInput.addEventListener("input", (event) => {
                 var query = event.target.value;
                 Array.prototype.forEach.call(document.getElementsByClassName("animeCategory"), (category) => {
