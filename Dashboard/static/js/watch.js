@@ -40,31 +40,31 @@ var videoList;
 async function getVideoList() {
     if (!videoList) {
         try {
-        let response = await fetch('./video_list.json');
-        let data = await response.json();
-        videoList = data;
+            let response = await fetch('./video_list.json');
+            let data = await response.json();
+            videoList = data;
         } catch (error) {
-                console.error("發生錯誤：", error);
-                alert("無法載入影片清單！");
+            console.error("發生錯誤：", error);
+            alert("無法載入影片清單！");
             return {};
-            }
+        }
     }
     return videoList
 }
 
 async function fetchVideoData(sn) {
     let vl = await getVideoList();
-                let videolist = vl.videos;
-                let videodata = videolist.find(value => value.sn == sn);
+    let videolist = vl.videos;
+    let videodata = videolist.find(value => value.sn == sn);
 
-                // check video exists
-                if (!videodata) {
-                    alert("影片不存在！");
-                    history.back();
-                    return;
-                }
-                return videodata;
-        }
+    // check video exists
+    if (!videodata) {
+        alert("影片不存在！");
+        history.back();
+        return;
+    }
+    return videodata;
+}
 
 async function main() {
     var urlParams = new URLSearchParams(window.location.search);
@@ -120,10 +120,10 @@ async function main() {
         ctrldiv.appendChild(timeSlider);
         ctrldiv.appendChild(timetext);
         if (videoData.danmu) {
-        var danmuButton = document.createElement('button');
-        danmuButton.setAttribute("id", "danmuButton");
-        danmuButton.innerHTML = '<svg class="ytp-subtitles-button-icon" height="100%" version="1.1" viewBox="0 0 36 36" width="100%" fill-opacity="1"><use class="ytp-svg-shadow" xlink:href="#ytp-id-68"></use><path d="M11,11 C9.9,11 9,11.9 9,13 L9,23 C9,24.1 9.9,25 11,25 L25,25 C26.1,25 27,24.1 27,23 L27,13 C27,11.9 26.1,11 25,11 L11,11 Z M11,17 L14,17 L14,19 L11,19 L11,17 L11,17 Z M20,23 L11,23 L11,21 L20,21 L20,23 L20,23 Z M25,23 L22,23 L22,21 L25,21 L25,23 L25,23 Z M25,19 L16,19 L16,17 L25,17 L25,19 L25,19 Z" fill="#fff" id="ytp-id-68"></path></svg>';
-        ctrldiv.appendChild(danmuButton);
+            var danmuButton = document.createElement('button');
+            danmuButton.setAttribute("id", "danmuButton");
+            danmuButton.innerHTML = '<svg class="ytp-subtitles-button-icon" height="100%" version="1.1" viewBox="0 0 36 36" width="100%" fill-opacity="1"><use class="ytp-svg-shadow" xlink:href="#ytp-id-68"></use><path d="M11,11 C9.9,11 9,11.9 9,13 L9,23 C9,24.1 9.9,25 11,25 L25,25 C26.1,25 27,24.1 27,23 L27,13 C27,11.9 26.1,11 25,11 L11,11 Z M11,17 L14,17 L14,19 L11,19 L11,17 L11,17 Z M20,23 L11,23 L11,21 L20,21 L20,23 L20,23 Z M25,23 L22,23 L22,21 L25,21 L25,23 L25,23 Z M25,19 L16,19 L16,17 L25,17 L25,19 L25,19 Z" fill="#fff" id="ytp-id-68"></path></svg>';
+            ctrldiv.appendChild(danmuButton);
         }
         ctrldiv.appendChild(fullscreenButton);
         videoPlayer.appendChild(ctrldiv);
@@ -223,27 +223,27 @@ async function main() {
             playPauseButton.innerHTML = '<svg height="100%" version="1.1" viewBox="0 0 36 36" width="100%"><path d="M 12,26 18.5,22 18.5,14 12,10 z M 18.5,22 25,18 25,18 18.5,14 z"></path></svg>';
         })
         if (videoData.danmu) {
-        danmuButton.addEventListener('click', function () {
-            if (danmuEnabled) {
-                ass.hide();
-                danmuEnabled = false;
-                // stolen from yt lol
-                danmuButton.innerHTML = '<svg height="100%" version="1.1" viewBox="0 0 36 36" width="100%" fill-opacity="1"><path d="M11,11 C9.9,11 9,11.9 9,13 L9,23 C9,24.1 9.9,25 11,25 L25,25 C26.1,25 27,24.1 27,23 L27,13 C27,11.9 26.1,11 25,11 L11,11 Z M11,17 L14,17 L14,19 L11,19 L11,17 L11,17 Z M20,23 L11,23 L11,21 L20,21 L20,23 L20,23 Z M25,23 L22,23 L22,21 L25,21 L25,23 L25,23 Z M25,19 L16,19 L16,17 L25,17 L25,19 L25,19 Z" id="ytp-id-68"></path></svg>';
-            } else {
-                ass.show();
-                danmuEnabled = true;
-                danmuButton.innerHTML = '<svg height="100%" version="1.1" viewBox="0 0 36 36" width="100%" fill-opacity="1"><path d="M11,11 C9.9,11 9,11.9 9,13 L9,23 C9,24.1 9.9,25 11,25 L25,25 C26.1,25 27,24.1 27,23 L27,13 C27,11.9 26.1,11 25,11 L11,11 Z M11,17 L14,17 L14,19 L11,19 L11,17 L11,17 Z M20,23 L11,23 L11,21 L20,21 L20,23 L20,23 Z M25,23 L22,23 L22,21 L25,21 L25,23 L25,23 Z M25,19 L16,19 L16,17 L25,17 L25,19 L25,19 Z" fill="#fff"></path></svg>';
-            }
-        });
-
-        fetch(subtitleSrc)
-            .then(res => res.text())
-            .then((text) => {
-                ass = new ASS(text, video, {
-                    container: assContainer,
-                    resampling: 'video_width',
-                });
+            danmuButton.addEventListener('click', function () {
+                if (danmuEnabled) {
+                    ass.hide();
+                    danmuEnabled = false;
+                    // stolen from yt lol
+                    danmuButton.innerHTML = '<svg height="100%" version="1.1" viewBox="0 0 36 36" width="100%" fill-opacity="1"><path d="M11,11 C9.9,11 9,11.9 9,13 L9,23 C9,24.1 9.9,25 11,25 L25,25 C26.1,25 27,24.1 27,23 L27,13 C27,11.9 26.1,11 25,11 L11,11 Z M11,17 L14,17 L14,19 L11,19 L11,17 L11,17 Z M20,23 L11,23 L11,21 L20,21 L20,23 L20,23 Z M25,23 L22,23 L22,21 L25,21 L25,23 L25,23 Z M25,19 L16,19 L16,17 L25,17 L25,19 L25,19 Z" id="ytp-id-68"></path></svg>';
+                } else {
+                    ass.show();
+                    danmuEnabled = true;
+                    danmuButton.innerHTML = '<svg height="100%" version="1.1" viewBox="0 0 36 36" width="100%" fill-opacity="1"><path d="M11,11 C9.9,11 9,11.9 9,13 L9,23 C9,24.1 9.9,25 11,25 L25,25 C26.1,25 27,24.1 27,23 L27,13 C27,11.9 26.1,11 25,11 L11,11 Z M11,17 L14,17 L14,19 L11,19 L11,17 L11,17 Z M20,23 L11,23 L11,21 L20,21 L20,23 L20,23 Z M25,23 L22,23 L22,21 L25,21 L25,23 L25,23 Z M25,19 L16,19 L16,17 L25,17 L25,19 L25,19 Z" fill="#fff"></path></svg>';
+                }
             });
+
+            fetch(subtitleSrc)
+                .then(res => res.text())
+                .then((text) => {
+                    ass = new ASS(text, video, {
+                        container: assContainer,
+                        resampling: 'video_width',
+                    });
+                });
         }
         // i like yt
 
@@ -379,37 +379,37 @@ async function main() {
         // mobile fullscreen things
         // https://stackoverflow.com/a/6603537
         if (isMobileDevice()) {
-        var previousOrientation = window.orientation;
-var checkOrientation = function(){
-    if(window.orientation !== previousOrientation){
-        previousOrientation = window.orientation;
-        if (Math.abs(previousOrientation) == 90) {
-            if (!isFullscreen) {
-                toggleFullscreen();
-            }
-        }
-    }
-};
+            var previousOrientation = window.orientation;
+            var checkOrientation = function () {
+                if (window.orientation !== previousOrientation) {
+                    previousOrientation = window.orientation;
+                    if (Math.abs(previousOrientation) == 90) {
+                        if (!isFullscreen) {
+                            toggleFullscreen();
+                        }
+                    }
+                }
+            };
 
-window.addEventListener("resize", checkOrientation, false);
-window.addEventListener("orientationchange", checkOrientation, false);
+            window.addEventListener("resize", checkOrientation, false);
+            window.addEventListener("orientationchange", checkOrientation, false);
 
         }
 
         videoDetail = document.createElement("div");
         videoTitle = document.createElement("h2");
         videoSource = document.createElement("p");
-            videoTitle.innerText = videodata.title;
-            document.title = videodata.title + " | aGP+";
-            if (videodata.source == "巴哈姆特動畫瘋") {
-                videoSource.innerHTML = '來源：<a href="https://ani.gamer.com.tw/animeVideo.php?sn=' + videodata.sn + '">巴哈姆特動畫瘋</a>';
-            } else {
-                videoSource.innerText = '來源：' + videodata.source;
-            }
-            videoDetail.appendChild(videoTitle);
-            videoDetail.appendChild(videoSource);
-            document.body.appendChild(document.createElement("br"));
-            document.body.appendChild(videoDetail);
+        videoTitle.innerText = videodata.title;
+        document.title = videodata.title + " | aGP+";
+        if (videodata.source == "巴哈姆特動畫瘋") {
+            videoSource.innerHTML = '來源：<a href="https://ani.gamer.com.tw/animeVideo.php?sn=' + videodata.sn + '">巴哈姆特動畫瘋</a>';
+        } else {
+            videoSource.innerText = '來源：' + videodata.source;
+        }
+        videoDetail.appendChild(videoTitle);
+        videoDetail.appendChild(videoSource);
+        document.body.appendChild(document.createElement("br"));
+        document.body.appendChild(videoDetail);
 
     } else {
         var searchBox = document.createElement("div");
@@ -419,17 +419,17 @@ window.addEventListener("orientationchange", checkOrientation, false);
         searchInput.type = "search";
         searchInput.classList.add('form-control');
         searchInput.placeholder = "搜尋動漫...";
-            searchInput.addEventListener("input", (event) => {
-                var query = event.target.value;
-                Array.prototype.forEach.call(document.getElementsByClassName("animeCategory"), (category) => {
-                    var name = category.getElementsByTagName("h2")[0].textContent;
-                    if (name.includes(query)) {
-                        category.style.display = "block";
-                    } else {
-                        category.style.display = "none";
-                    }
-                });
+        searchInput.addEventListener("input", (event) => {
+            var query = event.target.value;
+            Array.prototype.forEach.call(document.getElementsByClassName("animeCategory"), (category) => {
+                var name = category.getElementsByTagName("h2")[0].textContent;
+                if (name.includes(query)) {
+                    category.style.display = "block";
+                } else {
+                    category.style.display = "none";
+                }
             });
+        });
         searchBox.appendChild(searchInput);
         document.body.appendChild(searchBox);
         // 載入影片清單
