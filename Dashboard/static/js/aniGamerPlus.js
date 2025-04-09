@@ -133,7 +133,7 @@ function readSettings() {
 	}
 
 	$.ajax({
-		url: '/uploadConfig',
+		url: './uploadConfig',
 		type: 'post',
 		dataType: 'json',
 		headers: {
@@ -223,7 +223,7 @@ function postSnList(){
 	var sn_list = $('#sn_list').val();
 	
 	$.ajax({
-		url: '/sn_list',
+		url: './sn_list',
 		type: 'post',
 		dataType: 'text',
 		headers: {

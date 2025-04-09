@@ -35,7 +35,18 @@ try {
     document.cookie = 'logined=false';
 }
 
-function main() {
+var videoList;
+
+async function getVideoList() {
+    if (!videoList) {
+        let response = await fetch('./video_list.json');
+        let data = await response.json();
+        videoList = data;
+    }
+    return videoList
+}
+
+async function main() {
     var urlParams = new URLSearchParams(window.location.search);
     var videoId = urlParams.get('id');
     var videoResolution = urlParams.get('res');
@@ -43,7 +54,7 @@ function main() {
     if (videoId && videoResolution) {
         async function fetchVideoData() {
             try {
-                let response = await fetch('/video_list.json');
+                let response = await fetch('./video_list.json');
                 let data = await response.json();
 
                 let videolist = data.videos;
@@ -378,17 +389,32 @@ function main() {
             }
             videoDetail.appendChild(videoTitle);
             videoDetail.appendChild(videoSource);
-            document.body.appendChild(document.createElement("br"))
-            document.body.appendChild(videoDetail)
+            document.body.appendChild(document.createElement("br"));
+            document.body.appendChild(videoDetail);
         });
 
     } else {
+        var searchBox = document.createElement("div");
+        searchBox.classList.add('row');
+        searchBox.classList.add('setting-content');
+        var searchInput = document.createElement("div");
+        searchInput.type = "search";
+        searchInput.classList.add('form-control');
+        searchInput.addEventListener("input", (event) => {
+            var query = event.target.value;
+            Array.prototype.forEach.call(document.getElementsByClassName("animeCategory"), (category) => {
+                var name = category.getElementsByTagName("h2")[0].textContent;
+                if (name.includes(query)) {
+                    category.style.display = "none";
+                } else {
+                    category.style.display = "block";
+                }
+            });
+        });
+        searchBox.appendChild(searchInput);
+        document.body.appendChild(searchBox);
         // 載入影片清單
-        fetch('/video_list.json')
-            .then(function (response) {
-                return response.json();
-            })
-            .then(function (data) {
+        var data = await getVideoList();
                 var videos = data.videos;
 
                 // 分類影片
@@ -410,6 +436,7 @@ function main() {
                     videosInCategory.sort((a, b) => a.episode - b.episode);
                     var categorybox = document.createElement('div');
                     categorybox.classList.add('animeCategory');
+                    categorybox.classList.add('row');
 
                     // 創建分類標題
                     var categoryTitle = document.createElement('h2');
@@ -456,10 +483,5 @@ function main() {
                         }
                     });
                 });
-
-            })
-            .catch(function (error) {
-                console.log('發生錯誤：', error);
-            });
     }
 }
