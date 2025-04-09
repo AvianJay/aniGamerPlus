@@ -401,7 +401,7 @@ async function main() {
         var videoSource = document.createElement("p");
         videoTitle.innerText = videoData.title;
         document.title = videoData.title + " | aGP+";
-        if (videodata.source == "巴哈姆特動畫瘋") {
+        if (videoData.source == "巴哈姆特動畫瘋") {
             videoSource.innerHTML = '來源：<a href="https://ani.gamer.com.tw/animeVideo.php?sn=' + videoData.sn + '">巴哈姆特動畫瘋</a>';
         } else {
             videoSource.innerText = '來源：' + videoData.source;
