@@ -170,7 +170,6 @@ a:hover {
   transition: all 0.3s;
   background-color: #f9f9f9;
   border-radius: 5px;
-  width: 100%;
 }
 
 .animeCategoryTitle {
@@ -180,6 +179,7 @@ a:hover {
   font-weight: bold;
   background-color: #ddd;
   border-radius: 5px;
+  width: 100%;
 }
 
 .animeEpisodeList {
