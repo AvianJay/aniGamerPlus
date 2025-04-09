@@ -23,7 +23,7 @@ function getCookieByName(name) {
 }
 
 try {
-    login = getCookieByName('logined')
+    var login = getCookieByName('logined');
     if (login = 'true') {
 
     } else if (login = 'false') {
@@ -39,26 +39,23 @@ var videoList;
 
 async function getVideoList() {
     if (!videoList) {
+        try {
         let response = await fetch('./video_list.json');
         let data = await response.json();
         videoList = data;
+        } catch (error) {
+                console.error("發生錯誤：", error);
+                alert("無法載入影片清單！");
+            return {};
+            }
     }
     return videoList
 }
 
-async function main() {
-    var urlParams = new URLSearchParams(window.location.search);
-    var videoId = urlParams.get('id');
-    var videoResolution = urlParams.get('res');
-
-    if (videoId && videoResolution) {
-        async function fetchVideoData() {
-            try {
-                let response = await fetch('./video_list.json');
-                let data = await response.json();
-
-                let videolist = data.videos;
-                let videodata = videolist.find(value => value.sn == videoId);
+async function fetchVideoData(sn) {
+    let vl = await getVideoList();
+                let videolist = vl.videos;
+                let videodata = videolist.find(value => value.sn == sn);
 
                 // check video exists
                 if (!videodata) {
@@ -66,15 +63,17 @@ async function main() {
                     history.back();
                     return;
                 }
-
                 return videodata;
-            } catch (error) {
-                console.error("發生錯誤：", error);
-                alert("無法載入影片清單！");
-            }
         }
-        var videoSrc = '/getvid.mp4?id=' + encodeURIComponent(videoId) + '&res=' + videoResolution;
-        var subtitleSrc = '/getsub.ass?id=' + encodeURIComponent(videoId);
+
+async function main() {
+    var urlParams = new URLSearchParams(window.location.search);
+    var videoId = urlParams.get('id');
+    var videoResolution = urlParams.get('res');
+    if (videoId && videoResolution) {
+        var videoData = await fetchVideoData(videoId);
+        var videoSrc = './getvid.mp4?id=' + encodeURIComponent(videoId) + '&res=' + videoResolution;
+        var subtitleSrc = './getsub.ass?id=' + encodeURIComponent(videoId);
         var videoPlayer = document.getElementById('videobox');
         var video = document.createElement('video');
         var ctrldiv = document.createElement('div');
@@ -100,9 +99,6 @@ async function main() {
         timeSlider.value = 0;
         volumeSlider.setAttribute("type", "range");
         volumeSlider.setAttribute("min", "0");
-        var danmuButton = document.createElement('button');
-        danmuButton.setAttribute("id", "danmuButton");
-        danmuButton.innerHTML = '<svg class="ytp-subtitles-button-icon" height="100%" version="1.1" viewBox="0 0 36 36" width="100%" fill-opacity="1"><use class="ytp-svg-shadow" xlink:href="#ytp-id-68"></use><path d="M11,11 C9.9,11 9,11.9 9,13 L9,23 C9,24.1 9.9,25 11,25 L25,25 C26.1,25 27,24.1 27,23 L27,13 C27,11.9 26.1,11 25,11 L11,11 Z M11,17 L14,17 L14,19 L11,19 L11,17 L11,17 Z M20,23 L11,23 L11,21 L20,21 L20,23 L20,23 Z M25,23 L22,23 L22,21 L25,21 L25,23 L25,23 Z M25,19 L16,19 L16,17 L25,17 L25,19 L25,19 Z" fill="#fff" id="ytp-id-68"></path></svg>';
         var timetext = document.createElement('a');
         timetext.innerText = "..."
         var isFullscreen = false;
@@ -119,17 +115,21 @@ async function main() {
         loadingSpinner.setAttribute("id", "loading-spinner")
         videoPlayer.appendChild(loadingSpinner)
         loadingSpinner.style.display = 'block';
-
         ctrldiv.appendChild(playPauseButton);
         ctrldiv.appendChild(volumeSlider);
         ctrldiv.appendChild(timeSlider);
         ctrldiv.appendChild(timetext);
+        if (videoData.danmu) {
+        var danmuButton = document.createElement('button');
+        danmuButton.setAttribute("id", "danmuButton");
+        danmuButton.innerHTML = '<svg class="ytp-subtitles-button-icon" height="100%" version="1.1" viewBox="0 0 36 36" width="100%" fill-opacity="1"><use class="ytp-svg-shadow" xlink:href="#ytp-id-68"></use><path d="M11,11 C9.9,11 9,11.9 9,13 L9,23 C9,24.1 9.9,25 11,25 L25,25 C26.1,25 27,24.1 27,23 L27,13 C27,11.9 26.1,11 25,11 L11,11 Z M11,17 L14,17 L14,19 L11,19 L11,17 L11,17 Z M20,23 L11,23 L11,21 L20,21 L20,23 L20,23 Z M25,23 L22,23 L22,21 L25,21 L25,23 L25,23 Z M25,19 L16,19 L16,17 L25,17 L25,19 L25,19 Z" fill="#fff" id="ytp-id-68"></path></svg>';
         ctrldiv.appendChild(danmuButton);
+        }
         ctrldiv.appendChild(fullscreenButton);
         videoPlayer.appendChild(ctrldiv);
         var controlsTimeout;
         var widthsize;
-        var danmuEnabled = true;
+        var danmuEnabled = True;
         var ass;
 
 
@@ -222,29 +222,19 @@ async function main() {
         video.addEventListener('pause', function () {
             playPauseButton.innerHTML = '<svg height="100%" version="1.1" viewBox="0 0 36 36" width="100%"><path d="M 12,26 18.5,22 18.5,14 12,10 z M 18.5,22 25,18 25,18 18.5,14 z"></path></svg>';
         })
-
+        if (videoData.danmu) {
         danmuButton.addEventListener('click', function () {
             if (danmuEnabled) {
                 ass.hide();
                 danmuEnabled = false;
                 // stolen from yt lol
-                danmuButton.innerHTML = '<svg class="ytp-subtitles-button-icon" height="100%" version="1.1" viewBox="0 0 36 36" width="100%" fill-opacity="1"><use class="ytp-svg-shadow" xlink:href="#ytp-id-68"></use><path d="M11,11 C9.9,11 9,11.9 9,13 L9,23 C9,24.1 9.9,25 11,25 L25,25 C26.1,25 27,24.1 27,23 L27,13 C27,11.9 26.1,11 25,11 L11,11 Z M11,17 L14,17 L14,19 L11,19 L11,17 L11,17 Z M20,23 L11,23 L11,21 L20,21 L20,23 L20,23 Z M25,23 L22,23 L22,21 L25,21 L25,23 L25,23 Z M25,19 L16,19 L16,17 L25,17 L25,19 L25,19 Z" id="ytp-id-68"></path></svg>';
+                danmuButton.innerHTML = '<svg height="100%" version="1.1" viewBox="0 0 36 36" width="100%" fill-opacity="1"><path d="M11,11 C9.9,11 9,11.9 9,13 L9,23 C9,24.1 9.9,25 11,25 L25,25 C26.1,25 27,24.1 27,23 L27,13 C27,11.9 26.1,11 25,11 L11,11 Z M11,17 L14,17 L14,19 L11,19 L11,17 L11,17 Z M20,23 L11,23 L11,21 L20,21 L20,23 L20,23 Z M25,23 L22,23 L22,21 L25,21 L25,23 L25,23 Z M25,19 L16,19 L16,17 L25,17 L25,19 L25,19 Z" id="ytp-id-68"></path></svg>';
             } else {
                 ass.show();
                 danmuEnabled = true;
-                danmuButton.innerHTML = '<svg class="ytp-subtitles-button-icon" height="100%" version="1.1" viewBox="0 0 36 36" width="100%" fill-opacity="1"><use class="ytp-svg-shadow" xlink:href="#ytp-id-68"></use><path d="M11,11 C9.9,11 9,11.9 9,13 L9,23 C9,24.1 9.9,25 11,25 L25,25 C26.1,25 27,24.1 27,23 L27,13 C27,11.9 26.1,11 25,11 L11,11 Z M11,17 L14,17 L14,19 L11,19 L11,17 L11,17 Z M20,23 L11,23 L11,21 L20,21 L20,23 L20,23 Z M25,23 L22,23 L22,21 L25,21 L25,23 L25,23 Z M25,19 L16,19 L16,17 L25,17 L25,19 L25,19 Z" fill="#fff" id="ytp-id-68"></path></svg>';
+                danmuButton.innerHTML = '<svg height="100%" version="1.1" viewBox="0 0 36 36" width="100%" fill-opacity="1"><path d="M11,11 C9.9,11 9,11.9 9,13 L9,23 C9,24.1 9.9,25 11,25 L25,25 C26.1,25 27,24.1 27,23 L27,13 C27,11.9 26.1,11 25,11 L11,11 Z M11,17 L14,17 L14,19 L11,19 L11,17 L11,17 Z M20,23 L11,23 L11,21 L20,21 L20,23 L20,23 Z M25,23 L22,23 L22,21 L25,21 L25,23 L25,23 Z M25,19 L16,19 L16,17 L25,17 L25,19 L25,19 Z" fill="#fff"></path></svg>';
             }
         });
-        // i like yt
-
-        if (isMobileDevice()) {
-            widthsize = '100';
-        } else {
-            widthsize = '70';
-        }
-        videoPlayer.style.width = widthsize + '%';
-
-        video.style.width = '100%';
 
         fetch(subtitleSrc)
             .then(res => res.text())
@@ -254,6 +244,16 @@ async function main() {
                     resampling: 'video_width',
                 });
             });
+        }
+        // i like yt
+
+        if (isMobileDevice()) {
+            widthsize = '100';
+        } else {
+            widthsize = '70';
+        }
+        videoPlayer.style.width = widthsize + '%';
+        video.style.width = '100%';
 
         document.addEventListener('fullscreenchange', function () {
             isFullscreen = !isFullscreen;
@@ -312,6 +312,9 @@ async function main() {
                     screen.orientation.lock("landscape-primary");
                 } catch (e) { }
             } else {
+                try {
+                    screen.orientation.lock("portrait-primary");
+                } catch (e) { }
                 if (document.exitFullscreen) {
                     document.exitFullscreen();
                 } else if (document.mozCancelFullScreen) {
@@ -323,9 +326,6 @@ async function main() {
                 }
                 video.style.height = null;
                 video.style.width = '100%';
-                try {
-                    screen.orientation.lock("portrait-primary");
-                } catch (e) { }
             }
         };
 
@@ -365,7 +365,7 @@ async function main() {
             return /Android|webOS|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini/i.test(navigator.userAgent);
         }
 
-        function uploadtime(time) {
+        function syncTime(time) {
             if (getCookieByName('logined') == 'true') {
                 fetch('/time?id=' + videoId + '&type=send&time=' + time);
             };
@@ -376,10 +376,29 @@ async function main() {
         videoPlayer.addEventListener('mouseleave', handleMouseLeave);
         videoPlayer.addEventListener('touchstart', handleTouchStart);
 
+        // mobile fullscreen things
+        // https://stackoverflow.com/a/6603537
+        if (isMobileDevice()) {
+        var previousOrientation = window.orientation;
+var checkOrientation = function(){
+    if(window.orientation !== previousOrientation){
+        previousOrientation = window.orientation;
+        if (Math.abs(previousOrientation) == 90) {
+            if (!isFullscreen) {
+                toggleFullscreen();
+            }
+        }
+    }
+};
+
+window.addEventListener("resize", checkOrientation, false);
+window.addEventListener("orientationchange", checkOrientation, false);
+
+        }
+
         videoDetail = document.createElement("div");
         videoTitle = document.createElement("h2");
         videoSource = document.createElement("p");
-        fetchVideoData().then(videodata => {
             videoTitle.innerText = videodata.title;
             document.title = videodata.title + " | aGP+";
             if (videodata.source == "巴哈姆特動畫瘋") {
@@ -391,7 +410,6 @@ async function main() {
             videoDetail.appendChild(videoSource);
             document.body.appendChild(document.createElement("br"));
             document.body.appendChild(videoDetail);
-        });
 
     } else {
         var searchBox = document.createElement("div");
@@ -456,7 +474,7 @@ async function main() {
 
                 // 創建影片連結
                 var videoLink = document.createElement('a');
-                videoLink.href = '/watch?id=' + encodeURIComponent(videoId) + '&res=' + encodeURIComponent(videoItem.resolution);
+                videoLink.href = './watch?id=' + encodeURIComponent(videoId) + '&res=' + encodeURIComponent(videoItem.resolution);
                 videoLink.textContent = videoTitle;
                 // var videodlLink = document.createElement('a');
                 // videodlLink.href = '/getvid.mp4?id=' + encodeURIComponent(videoId) + '&res=' + encodeURIComponent(videoItem.resolution);
