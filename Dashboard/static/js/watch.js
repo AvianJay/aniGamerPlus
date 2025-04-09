@@ -396,15 +396,15 @@ async function main() {
 
         }
 
-        videoDetail = document.createElement("div");
-        videoTitle = document.createElement("h2");
-        videoSource = document.createElement("p");
-        videoTitle.innerText = videodata.title;
-        document.title = videodata.title + " | aGP+";
+        var videoDetail = document.createElement("div");
+        var videoTitle = document.createElement("h2");
+        var videoSource = document.createElement("p");
+        videoTitle.innerText = videoData.title;
+        document.title = videoData.title + " | aGP+";
         if (videodata.source == "巴哈姆特動畫瘋") {
-            videoSource.innerHTML = '來源：<a href="https://ani.gamer.com.tw/animeVideo.php?sn=' + videodata.sn + '">巴哈姆特動畫瘋</a>';
+            videoSource.innerHTML = '來源：<a href="https://ani.gamer.com.tw/animeVideo.php?sn=' + videoData.sn + '">巴哈姆特動畫瘋</a>';
         } else {
-            videoSource.innerText = '來源：' + videodata.source;
+            videoSource.innerText = '來源：' + videoData.source;
         }
         videoDetail.appendChild(videoTitle);
         videoDetail.appendChild(videoSource);
