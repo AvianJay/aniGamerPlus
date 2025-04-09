@@ -129,7 +129,7 @@ async function main() {
         videoPlayer.appendChild(ctrldiv);
         var controlsTimeout;
         var widthsize;
-        var danmuEnabled = True;
+        var danmuEnabled = true;
         var ass;
 
 
@@ -155,11 +155,11 @@ async function main() {
             const cm = Math.round(video.currentTime % 60);
             const ct = `${ch.toString().padStart(2, '0')}:${cm.toString().padStart(2, '0')}`;
             timetext.innerHTML = ct + '/' + dt
+            syncTime(video.currentTime);
         });
 
         timeSlider.addEventListener('input', function () {
             video.currentTime = timeSlider.value;
-            uploadtime(video.currentTime);
         });
 
         document.addEventListener('keydown', function (event) {
@@ -418,18 +418,18 @@ window.addEventListener("orientationchange", checkOrientation, false);
         var searchInput = document.createElement("input");
         searchInput.type = "search";
         searchInput.classList.add('form-control');
-        searchInput.placeholder = "搜尋動漫...";
-        searchInput.addEventListener("input", (event) => {
-            var query = event.target.value;
-            Array.prototype.forEach.call(document.getElementsByClassName("animeCategory"), (category) => {
-                var name = category.getElementsByTagName("h2")[0].textContent;
-                if (name.includes(query)) {
-                    category.style.display = "block";
-                } else {
-                    category.style.display = "none";
-                }
+        searchInput.
+            searchInput.addEventListener("input", (event) => {
+                var query = event.target.value;
+                Array.prototype.forEach.call(document.getElementsByClassName("animeCategory"), (category) => {
+                    var name = category.getElementsByTagName("h2")[0].textContent;
+                    if (name.includes(query)) {
+                        category.style.display = "block";
+                    } else {
+                        category.style.display = "none";
+                    }
+                });
             });
-        });
         searchBox.appendChild(searchInput);
         document.body.appendChild(searchBox);
         // 載入影片清單
