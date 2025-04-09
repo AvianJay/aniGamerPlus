@@ -400,18 +400,18 @@ async function main() {
         var searchInput = document.createElement("input");
         searchInput.type = "search";
         searchInput.classList.add('form-control');
-        searchInput.
-            searchInput.addEventListener("input", (event) => {
-                var query = event.target.value;
-                Array.prototype.forEach.call(document.getElementsByClassName("animeCategory"), (category) => {
-                    var name = category.getElementsByTagName("h2")[0].textContent;
-                    if (name.includes(query)) {
-                        category.style.display = "block";
-                    } else {
-                        category.style.display = "none";
-                    }
-                });
+        searchInput.placeholder = "搜尋動漫...";
+        searchInput.addEventListener("input", (event) => {
+            var query = event.target.value;
+            Array.prototype.forEach.call(document.getElementsByClassName("animeCategory"), (category) => {
+                var name = category.getElementsByTagName("h2")[0].textContent;
+                if (name.includes(query)) {
+                    category.style.display = "block";
+                } else {
+                    category.style.display = "none";
+                }
             });
+        });
         searchBox.appendChild(searchInput);
         document.body.appendChild(searchBox);
         // 載入影片清單
