@@ -939,12 +939,14 @@ def updatelist():
             for v in customVideos["videos"]:
                 if v["type"] == "normal":
                     anime_name2 = anime_name
+                    sn = "41" + unique_sn + "00" + str(v["episode"]).zfill(3)
                 else:
                     anime_name2 = anime_name + f" [{v['type']}]"
+                    sn = "41" + unique_sn + str(hash(v['type']) % 100).zfill(2) + str(v["episode"]).zfill(3)
                 video_data = {
-                    'sn': "41" + unique_sn + "00" + str(v["episode"]).zfill(3),
+                    'sn': sn,
                     'anime_name': anime_name2,
-                    'title': anime_name + "[" + str(int(v["episode"])) + "]",
+                    'title': anime_name2 + "[" + str(int(v["episode"])) + "]",
                     'episode': int(v["episode"]),
                     'resolution': int(v["resolution"]),
                     'path': os.path.join(dirpath, v["filename"]),
