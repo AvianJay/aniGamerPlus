@@ -528,6 +528,8 @@ def run():
             except ssl.SSLError:
                 # print('my_wrap_socket ssl.SSLError')
                 pass
+            except ssl.SSLEOFError:
+                pass
 
         # 此方法依赖上面的返回值, 因此当尝试访问 SSL v3 时, 这个也会出错
         def my_wrap_socket_and_handle(client_socket, address):
