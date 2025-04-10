@@ -114,7 +114,6 @@ async function main() {
         videoPlayer.appendChild(loadingSpinner)
         loadingSpinner.style.display = 'block';
         ctrldiv.appendChild(playPauseButton);
-        ctrldiv.appendChild(volumeSlider);
         if (!isMobileDevice()) {
             var volumeSlider = document.createElement('input');
             volumeSlider.setAttribute("id", "volumeSlider");
@@ -125,8 +124,9 @@ async function main() {
             volumeSlider.setAttribute("value", "1");
             volumeSlider.setAttribute("type", "range");
             volumeSlider.setAttribute("min", "0");
-            ctrldiv.appendChild(timeSlider);
+            ctrldiv.appendChild(volumeSlider);
         }
+        ctrldiv.appendChild(timeSlider);
         ctrldiv.appendChild(timetext);
         if (videoData.danmu) {
             var danmuButton = document.createElement('button');
@@ -442,18 +442,31 @@ async function main() {
         }
 
         categorybox.appendChild(videoListe);
-        document.body.appendChild(categorybox)
-        document.querySelectorAll('.animeCategoryTitle').forEach(title => {
-            title.addEventListener('click', function () {
-                var list = this.nextElementSibling;
+        if (isMobileDevice()) {
+            document.body.appendChild(categorybox);
+            document.querySelectorAll('.animeCategoryTitle').forEach(title => {
+                title.addEventListener('click', function () {
+                    var list = this.nextElementSibling;
 
-                if (list.style.display === "block") {
-                    list.style.display = "none";
-                } else {
-                    list.style.display = "block";
-                }
+                    if (list.style.display === "block") {
+                        list.style.display = "none";
+                    } else {
+                        list.style.display = "block";
+                    }
+                });
             });
-        });
+        } else {
+            categorybox.classList.add('animeWatchingCategory');
+            categoryTitle.classList.add('animeWatchingTitle');
+            videoListe.classList.add('animeWatchingEpisodeList');
+            document.getElementById("anotherVideoBox").appendChild(categorybox);
+            videoListe.style.display = "block";
+            window.addEventListener("resize", function () {
+                var finalWidth = window.innerWidth * (widthsize / 100);
+                var finalHeight = (finalWidth / 16 * 9) - 61;
+                videoListe.style.height = finalHeight + "px";
+            });
+        }
 
         var videoDetail = document.createElement("div");
         var videoTitle = document.createElement("h2");
@@ -467,7 +480,6 @@ async function main() {
         }
         videoDetail.appendChild(videoTitle);
         videoDetail.appendChild(videoSource);
-        document.body.appendChild(document.createElement("br"));
         document.body.appendChild(videoDetail);
 
     } else {

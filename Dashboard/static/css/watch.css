@@ -198,3 +198,21 @@ a:hover {
 .animeEpisodeList li:last-child {
   border-bottom: none;
 }
+
+.animeWatchingCategory {
+  flex: 1;
+  flex-direction: column;
+  overflow: auto;
+}
+
+.animeWatchingTitle {
+  height: fit-content;
+}
+
+.animeWatchingEpisodeList {
+  overflow-y: auto;
+}
+
+.anotherVideoBox {
+  display: flex;
+}
