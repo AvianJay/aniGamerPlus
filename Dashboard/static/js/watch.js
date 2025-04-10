@@ -397,7 +397,7 @@ async function main() {
             var previousOrientation = getOrientation()
             var checkOrientation = function () {
                 if (getOrientation !== previousOrientation) {
-                    previousOrientation = getOrientation;
+                    previousOrientation = getOrientation();
                     if (Math.abs(previousOrientation) == 90) {
                         if (!isFullscreen) {
                             toggleFullscreen();
