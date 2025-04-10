@@ -397,7 +397,7 @@ async function main() {
                 }
             }
 
-            var previousOrientation = getOrientation()
+            var previousOrientation = getOrientation();
             var checkOrientation = function () {
                 if (getOrientation !== previousOrientation) {
                     previousOrientation = getOrientation();
@@ -503,6 +503,12 @@ async function main() {
         });
         searchBox.appendChild(searchInput);
         document.body.appendChild(searchBox);
+
+        var loadingBar = document.createElement("div");
+        loadingBar.classList.add('row');
+        loadingBar.classList.add('setting-content');
+        loadingBar.innerHTML = '<div id="progdiv" class="progress"><div id="prog" class="progress-bar progress-bar-striped progress-bar-animated" role="progressbar" aria-valuenow="1" aria-valuemin="0" aria-valuemax="1" style="width: 100%">載入清單中...</div></div>';
+        document.body.appendChild(loadingBar);
         // 載入影片清單
         var data = await getVideoList();
         var videos = data.videos;
@@ -573,5 +579,6 @@ async function main() {
                 }
             });
         });
+        loadingBar.remove();
     }
 }
