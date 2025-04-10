@@ -405,35 +405,33 @@ async function main() {
 
         var videoSeries = await getVideoSeries(videoId);
         videoSeries.sort((a, b) => a.episode - b.episode);
-var categorybox = document.createElement('div');
-            categorybox.classList.add('animeCategory');
-            categorybox.classList.add('row');
+        var categorybox = document.createElement('div');
+        categorybox.classList.add('animeCategory');
+        categorybox.classList.add('row');
 
-            var categoryTitle = document.createElement('h2');
-            categoryTitle.classList.add('animeCategoryTitle');
-            categoryTitle.textContent = "集數列表";
-            categorybox.appendChild(categoryTitle);
+        var categoryTitle = document.createElement('h2');
+        categoryTitle.classList.add('animeCategoryTitle');
+        categoryTitle.textContent = "集數列表";
+        categorybox.appendChild(categoryTitle);
 
-            var videoListe = document.createElement('ul');
-            videoListe.classList.add('animeEpisodeList');
+        var videoListe = document.createElement('ul');
+        videoListe.classList.add('animeEpisodeList');
 
-            for (var j = 0; j < videosInCategory.length; j++) {
-                var videoItem = videosInCategory[j];
-                var videoId = videoItem.sn;
-                var videoTitle = videoItem.title;
+        for (var j = 0; j < videosInCategory.length; j++) {
+            var videoItem = videosInCategory[j];
+            var videoId = videoItem.sn;
 
-                var videoLink = document.createElement('a');
-                videoLink.href = './watch?id=' + encodeURIComponent(videoId) + '&res=' + encodeURIComponent(videoItem.resolution);
-                videoLink.textContent = videoTitle;
+            var videoLink = document.createElement('a');
+            videoLink.href = './watch?id=' + encodeURIComponent(videoId) + '&res=' + encodeURIComponent(videoItem.resolution);
+            videoLink.textContent = `第 ${videoItem.episode} 集`;
 
-                var videoListItem = document.createElement('li');
-                videoListItem.appendChild(videoLink);
-                // videoListItem.appendChild(videodlLink);
-                videoListe.appendChild(videoListItem);
-            }
+            var videoListItem = document.createElement('li');
+            videoListItem.appendChild(videoLink);
+            videoListe.appendChild(videoListItem);
+        }
 
-            categorybox.appendChild(videoListe);
-            document.body.appendChild(categorybox)
+        categorybox.appendChild(videoListe);
+        document.body.appendChild(categorybox)
         document.querySelectorAll('.animeCategoryTitle').forEach(title => {
             title.addEventListener('click', function () {
                 var list = this.nextElementSibling;
