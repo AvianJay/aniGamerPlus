@@ -69,7 +69,7 @@ async function fetchVideoData(sn) {
 async function getVideoSeries(sn) {
     let vd = await fetchVideoData(sn);
     let fullList = await getVideoList();
-    series = fullList.filter(value => value.anime_name == vd.anime_name);
+    series = fullList.videos.filter(value => value.anime_name == vd.anime_name);
     return series;
 }
 
@@ -386,10 +386,18 @@ async function main() {
         // mobile fullscreen things
         // https://stackoverflow.com/a/6603537
         if (isMobileDevice()) {
-            var previousOrientation = window.orientation;
+            function getOrientation() {
+                if (screen.orientation) {
+                    var windowOrientation = screen.orientation.angle;
+                } else {
+                    var windowOrientation = window.orientation;
+                }
+            }
+
+            var previousOrientation = getOrientation()
             var checkOrientation = function () {
-                if (window.orientation !== previousOrientation) {
-                    previousOrientation = window.orientation;
+                if (getOrientation !== previousOrientation) {
+                    previousOrientation = getOrientation;
                     if (Math.abs(previousOrientation) == 90) {
                         if (!isFullscreen) {
                             toggleFullscreen();
@@ -417,8 +425,8 @@ async function main() {
         var videoListe = document.createElement('ul');
         videoListe.classList.add('animeEpisodeList');
 
-        for (var j = 0; j < videosInCategory.length; j++) {
-            var videoItem = videosInCategory[j];
+        for (var j = 0; j < videoSeries.length; j++) {
+            var videoItem = videoSeries[j];
             var videoId = videoItem.sn;
 
             var videoLink = document.createElement('a');
