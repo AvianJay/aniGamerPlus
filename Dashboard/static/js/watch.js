@@ -90,13 +90,6 @@ async function main() {
         var fullscreenButton = document.createElement('button');
         fullscreenButton.setAttribute("id", "fullscreenButton");
         fullscreenButton.innerHTML = '<svg height="100%" version="1.1" viewBox="0 0 36 36" width="100%"><g class="ytp-fullscreen-button-corner-0"><use class="ytp-svg-shadow" xlink:href="#ytp-id-7"></use><path class="ytp-svg-fill" d="m 10,16 2,0 0,-4 4,0 0,-2 L 10,10 l 0,6 0,0 z" id="ytp-id-7"></path></g><g class="ytp-fullscreen-button-corner-1"><use class="ytp-svg-shadow" xlink:href="#ytp-id-8"></use><path class="ytp-svg-fill" d="m 20,10 0,2 4,0 0,4 2,0 L 26,10 l -6,0 0,0 z" id="ytp-id-8"></path></g><g class="ytp-fullscreen-button-corner-2"><use class="ytp-svg-shadow" xlink:href="#ytp-id-9"></use><path class="ytp-svg-fill" d="m 24,24 -4,0 0,2 L 26,26 l 0,-6 -2,0 0,4 0,0 z" id="ytp-id-9"></path></g><g class="ytp-fullscreen-button-corner-3"><path class="ytp-svg-fill" d="M 12,20 10,20 10,26 l 6,0 0,-2 -4,0 0,-4 0,0 z"></path></g></svg>';
-        var volumeSlider = document.createElement('input');
-        volumeSlider.setAttribute("id", "volumeSlider");
-        volumeSlider.setAttribute("type", "range");
-        volumeSlider.setAttribute("min", "0");
-        volumeSlider.setAttribute("max", "1");
-        volumeSlider.setAttribute("step", "0.01");
-        volumeSlider.setAttribute("value", "1");
         var timeSlider = document.createElement('input');
         timeSlider.setAttribute("id", "timeSlider");
         timeSlider.setAttribute("type", "range");
@@ -104,8 +97,6 @@ async function main() {
         timeSlider.setAttribute("max", "100");
         timeSlider.setAttribute("step", "1");
         timeSlider.value = 0;
-        volumeSlider.setAttribute("type", "range");
-        volumeSlider.setAttribute("min", "0");
         var timetext = document.createElement('a');
         timetext.innerText = "..."
         var isFullscreen = false;
@@ -124,7 +115,18 @@ async function main() {
         loadingSpinner.style.display = 'block';
         ctrldiv.appendChild(playPauseButton);
         ctrldiv.appendChild(volumeSlider);
-        ctrldiv.appendChild(timeSlider);
+        if (!isMobileDevice()) {
+            var volumeSlider = document.createElement('input');
+            volumeSlider.setAttribute("id", "volumeSlider");
+            volumeSlider.setAttribute("type", "range");
+            volumeSlider.setAttribute("min", "0");
+            volumeSlider.setAttribute("max", "1");
+            volumeSlider.setAttribute("step", "0.01");
+            volumeSlider.setAttribute("value", "1");
+            volumeSlider.setAttribute("type", "range");
+            volumeSlider.setAttribute("min", "0");
+            ctrldiv.appendChild(timeSlider);
+        }
         ctrldiv.appendChild(timetext);
         if (videoData.danmu) {
             var danmuButton = document.createElement('button');
@@ -148,10 +150,11 @@ async function main() {
             }
         });
 
-
-        volumeSlider.addEventListener('input', function () {
-            video.volume = volumeSlider.value;
-        });
+        if (!isMobileDevice()) {
+            volumeSlider.addEventListener('input', function () {
+                video.volume = volumeSlider.value;
+            });
+        }
 
         video.addEventListener('timeupdate', function () {
             timeSlider.value = video.currentTime;
