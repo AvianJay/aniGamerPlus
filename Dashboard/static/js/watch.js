@@ -257,6 +257,16 @@ async function main() {
         }
         // i like yt
 
+        video.addEventListener("ended", (event) => {
+            var series = await getVideoSeries();
+            var nextEpisode = (Number(videoData.episode)+1).toString();
+            var nextObj = series.find(value => value.episode == nextEpisode);
+            if (nextObj) {
+                // todo: display message and countdown
+                window.location.href = "./watch?id=" + nextObj.sn + "&res=" + nextObj.resolution;
+            }
+        });
+
         if (isMobileDevice()) {
             widthsize = '100';
         } else {
