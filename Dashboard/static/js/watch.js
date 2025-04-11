@@ -79,6 +79,7 @@ async function main() {
     var videoResolution = urlParams.get('res');
     if (videoId && videoResolution) {
         var videoData = await fetchVideoData(videoId);
+        var videoSeries = await getVideoSeries(videoId);
         var videoSrc = './getvid.mp4?id=' + encodeURIComponent(videoId) + '&res=' + videoResolution;
         var subtitleSrc = './getsub.ass?id=' + encodeURIComponent(videoId);
         var videoPlayer = document.getElementById('videobox');
@@ -258,9 +259,8 @@ async function main() {
         // i like yt
 
         video.addEventListener("ended", (event) => {
-            var series = await getVideoSeries();
             var nextEpisode = (Number(videoData.episode)+1).toString();
-            var nextObj = series.find(value => value.episode == nextEpisode);
+            var nextObj = videoSeries.find(value => value.episode == nextEpisode);
             if (nextObj) {
                 // todo: display message and countdown
                 window.location.href = "./watch?id=" + nextObj.sn + "&res=" + nextObj.resolution;
@@ -424,7 +424,6 @@ async function main() {
 
         }
 
-        var videoSeries = await getVideoSeries(videoId);
         videoSeries.sort((a, b) => a.episode - b.episode);
         var categorybox = document.createElement('div');
         categorybox.classList.add('animeCategory');
