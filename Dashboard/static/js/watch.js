@@ -91,6 +91,12 @@ async function main() {
         var fullscreenButton = document.createElement('button');
         fullscreenButton.setAttribute("id", "fullscreenButton");
         fullscreenButton.innerHTML = '<svg height="100%" version="1.1" viewBox="0 0 36 36" width="100%"><g class="ytp-fullscreen-button-corner-0"><use class="ytp-svg-shadow" xlink:href="#ytp-id-7"></use><path class="ytp-svg-fill" d="m 10,16 2,0 0,-4 4,0 0,-2 L 10,10 l 0,6 0,0 z" id="ytp-id-7"></path></g><g class="ytp-fullscreen-button-corner-1"><use class="ytp-svg-shadow" xlink:href="#ytp-id-8"></use><path class="ytp-svg-fill" d="m 20,10 0,2 4,0 0,4 2,0 L 26,10 l -6,0 0,0 z" id="ytp-id-8"></path></g><g class="ytp-fullscreen-button-corner-2"><use class="ytp-svg-shadow" xlink:href="#ytp-id-9"></use><path class="ytp-svg-fill" d="m 24,24 -4,0 0,2 L 26,26 l 0,-6 -2,0 0,4 0,0 z" id="ytp-id-9"></path></g><g class="ytp-fullscreen-button-corner-3"><path class="ytp-svg-fill" d="M 12,20 10,20 10,26 l 6,0 0,-2 -4,0 0,-4 0,0 z"></path></g></svg>';
+        fullscreenButton.setAttribute("aria-label", "全螢幕");
+        fullscreenButton.setAttribute("title", "全螢幕");
+        var playrateButton = document.createElement('button');
+        playrateButton.innerHTML = '<svg width="800px" height="800px" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg"><path d="M12 22C17.5228 22 22 17.5228 22 12C22 6.47715 17.5228 2 12 2" stroke="#1C274C" stroke-width="1.5" stroke-linecap="round"/><path opacity="0.5" d="M12 22C6.47715 22 2 17.5228 2 12C2 6.47715 6.97715 2 12.5 2" stroke="#1C274C" stroke-width="1.5" stroke-linecap="round" stroke-dasharray="4 3"/><path d="M15.4137 10.941C16.1954 11.4026 16.1954 12.5974 15.4137 13.059L10.6935 15.8458C9.93371 16.2944 9 15.7105 9 14.7868L9 9.21316C9 8.28947 9.93371 7.70561 10.6935 8.15419L15.4137 10.941Z" stroke="#1C274C" stroke-width="1.5"/></svg>';
+        playrateButton.setAttribute("id", "playrateButton");
+        playrateButton.setAttribute("aria-label", "播放速度");
         var timeSlider = document.createElement('input');
         timeSlider.setAttribute("id", "timeSlider");
         timeSlider.setAttribute("type", "range");
@@ -135,6 +141,47 @@ async function main() {
             danmuButton.innerHTML = '<svg class="ytp-subtitles-button-icon" height="100%" version="1.1" viewBox="0 0 36 36" width="100%" fill-opacity="1"><use class="ytp-svg-shadow" xlink:href="#ytp-id-68"></use><path d="M11,11 C9.9,11 9,11.9 9,13 L9,23 C9,24.1 9.9,25 11,25 L25,25 C26.1,25 27,24.1 27,23 L27,13 C27,11.9 26.1,11 25,11 L11,11 Z M11,17 L14,17 L14,19 L11,19 L11,17 L11,17 Z M20,23 L11,23 L11,21 L20,21 L20,23 L20,23 Z M25,23 L22,23 L22,21 L25,21 L25,23 L25,23 Z M25,19 L16,19 L16,17 L25,17 L25,19 L25,19 Z" fill="#fff" id="ytp-id-68"></path></svg>';
             ctrldiv.appendChild(danmuButton);
         }
+        ctrldiv.appendChild(playrateButton);
+        
+        // 創建速度選單
+        var speedDropdown = document.createElement('select');
+        speedDropdown.setAttribute("id", "speedDropdown");
+        speedDropdown.style.display = 'none'; // 預設隱藏
+
+        // 添加速度選項
+        var speeds = [0.25, 0.5, 1, 1.25, 1.5, 2];
+        speeds.forEach(function (speed) {
+            var option = document.createElement('option');
+            option.value = speed;
+            option.textContent = `${speed}x`;
+            if (speed === 1) {
+                option.selected = true; // 預設為 1x
+            }
+            speedDropdown.appendChild(option);
+        });
+
+        // 當選擇速度時，調整影片播放速度
+        speedDropdown.addEventListener('change', function () {
+            video.playbackRate = parseFloat(speedDropdown.value);
+            speedDropdown.style.display = 'none'; // 選擇後隱藏選單
+        });
+
+        // 點擊播放速度按鈕時顯示或隱藏速度選單
+        playrateButton.addEventListener('click', function () {
+            if (speedDropdown.style.display === 'none') {
+                // 顯示選單並調整位置
+                const rect = playrateButton.getBoundingClientRect();
+                speedDropdown.style.top = '-30px';
+                speedDropdown.style.left = `${rect.left - 12}px`;
+                speedDropdown.style.display = 'block';
+            } else {
+                // 隱藏選單
+                speedDropdown.style.display = 'none';
+            }
+        });
+
+        // 將速度選單加入控制列
+        ctrldiv.appendChild(speedDropdown);
         ctrldiv.appendChild(fullscreenButton);
         videoPlayer.appendChild(ctrldiv);
         var controlsTimeout;
@@ -165,12 +212,19 @@ async function main() {
             const ch = Math.floor(video.currentTime / 60);
             const cm = Math.round(video.currentTime % 60);
             const ct = `${ch.toString().padStart(2, '0')}:${cm.toString().padStart(2, '0')}`;
-            timetext.innerHTML = ct + '/' + dt
+            timetext.innerHTML = ct + '/' + dt;
             syncTime(video.currentTime);
         });
 
         timeSlider.addEventListener('input', function () {
             video.currentTime = timeSlider.value;
+            const dh = Math.floor(video.duration / 60);
+            const dm = Math.round(video.duration % 60);
+            const dt = `${dh.toString().padStart(2, '0')}:${dm.toString().padStart(2, '0')}`;
+            const ch = Math.floor(video.currentTime / 60);
+            const cm = Math.round(video.currentTime % 60);
+            const ct = `${ch.toString().padStart(2, '0')}:${cm.toString().padStart(2, '0')}`;
+            timetext.innerHTML = ct + '/' + dt;
         });
 
         document.addEventListener('keydown', function (event) {
@@ -276,6 +330,7 @@ async function main() {
         video.style.width = '100%';
 
         document.addEventListener('fullscreenchange', function () {
+            speedDropdown.style.display = 'none';
             isFullscreen = !isFullscreen;
             if (isFullscreen) {
                 videoPlayer.classList.add('fullscreen');
@@ -304,6 +359,7 @@ async function main() {
         }
 
         window.addEventListener("resize", function () {
+            speedDropdown.style.display = 'none';
             if (isFullscreen) {
                 video.style.width = '100%';
                 video.style.height = '100%';
@@ -405,6 +461,7 @@ async function main() {
                 } else {
                     var windowOrientation = window.orientation;
                 }
+                return windowOrientation;
             }
 
             var previousOrientation = getOrientation();
@@ -472,7 +529,7 @@ async function main() {
             videoListe.style.display = "block";
             window.addEventListener("resize", function () {
                 var finalWidth = window.innerWidth * (widthsize / 100);
-                var finalHeight = (finalWidth / 16 * 9) - 61;
+                var finalHeight = (finalWidth / 16 * 9) - 71;
                 videoListe.style.height = finalHeight + "px";
             });
         }
