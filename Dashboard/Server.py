@@ -454,6 +454,26 @@ if settings["dashboard"]["online_watch"]:
 
 
 if settings['dashboard']['user_control']['enabled']:
+    // init user
+    settings = Config.read_settings()
+    if os.path.exists(os.path.join(Config.get_working_dir(), 'Dashboard', 'userdata.json')):
+        try:
+            userdata = json.load(open(os.path.join(Config.get_working_dir(), 'Dashboard', 'userdata.json'), 'r'))
+            for duser in settings['dashboard']['user_control']['default_user']:
+                if not duser in settings:
+                    t = False
+                    for user in userdata['users']:
+                        if duser['name'] == user['name']:
+                            user['password'] = duser['password']
+                            user['role'] = duser['role']
+                            t = True
+                    if not t:
+                        userdata['users'].append(duser)
+        except:
+            pass // todo
+    else:
+        pass // todo
+
     @app.route('/logout')
     def logout():
         return '<script>document.cookies.token = "";window.location.href = "/login"</script>'
