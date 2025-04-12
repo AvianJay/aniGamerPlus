@@ -108,10 +108,11 @@ async function main() {
         timetext.innerText = "..."
         var isFullscreen = false;
         ctrldiv.setAttribute("id", "controls");
+        video.controls = false;
+        video.autoplay = true;
+        video.setAttribute("preload", "metadata");
         video.setAttribute("id", "player");
         video.setAttribute("src", videoSrc);
-        video.controls = false;
-        video.setAttribute("preload", "metadata");
         videoPlayer.appendChild(video);
         var assContainer = document.createElement("div");
         assContainer.setAttribute("id", "ass-container");
