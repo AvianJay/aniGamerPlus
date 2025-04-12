@@ -421,9 +421,17 @@ async function main() {
             }
         }
 
-        function handleTouchStart() {
+        function handleTouchStart(event) {
             if (isMobileDevice()) {
+            // Prevent hiding controls if the touch is on a button
+            if (event.target.tagName === 'BUTTON' || event.target.closest('button')) {
+                return;
+            }
+            if (videoPlayer.classList.contains('show-controls')) {
+                hideControls();
+            } else {
                 showControls();
+            }
             }
         }
 
