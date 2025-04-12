@@ -216,3 +216,7 @@ a:hover {
 .anotherVideoBox {
   display: flex;
 }
+
+.progress {
+  width: 100%;
+}

@@ -516,6 +516,8 @@ async function main() {
         var loadingBar = document.createElement("div");
         loadingBar.classList.add('row');
         loadingBar.classList.add('setting-content');
+        loadingBar.style.display = "flex";
+        loadingBar.style.justifyContent = "center";
         loadingBar.innerHTML = '<div id="progdiv" class="progress"><div id="prog" class="progress-bar progress-bar-striped progress-bar-animated" role="progressbar" aria-valuenow="1" aria-valuemin="0" aria-valuemax="1" style="width: 100%">載入清單中...</div></div>';
         document.body.appendChild(loadingBar);
         // 載入影片清單
