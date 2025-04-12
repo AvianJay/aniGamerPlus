@@ -432,19 +432,22 @@ if settings["dashboard"]["online_watch"]:
     def webtime():
         gettype = request.args.get('type')
         sn = request.args.get('sn')
+        ended = request.args.get('ended', "false").lower() == "true"
         token = request.cookies.get('token')
         ran = False
         userdata = json.load(open(os.path.join(Config.get_working_dir(), 'Dashboard', 'userdata.json'), 'r'))
         if gettype == 'set':
             for user in userdata['users']:
                 if user['token'] == token:
-                    user['videotimes'][sn] = request.args.get('time')
+                    user['videotimes'][sn] = {"time": int(request.args.get('time')), "ended": ended}
+                    with open(os.path.join(Config.get_working_dir(), 'Dashboard', 'userdata.json'), 'w', encoding='utf-8') as f:
+                        json.dump(userdata, f, ensure_ascii=False, indent=4)
                     return '{"status":"200"}'
         elif gettype == 'get':
             for user in userdata['users']:
                 if user['token'] == token:
                     if user['videotimes'][sn]:
-                        return str(user['videotimes'][sn])
+                        return jsonify(user['videotimes'][sn])
                     else:
                         return '0'
         for user in userdata['users']:
@@ -460,19 +463,26 @@ if settings['dashboard']['user_control']['enabled']:
         try:
             userdata = json.load(open(os.path.join(Config.get_working_dir(), 'Dashboard', 'userdata.json'), 'r'))
             for duser in settings['dashboard']['user_control']['default_user']:
-                if not duser in settings:
-                    t = False
-                    for user in userdata['users']:
-                        if duser['name'] == user['name']:
-                            user['password'] = duser['password']
-                            user['role'] = duser['role']
-                            t = True
-                    if not t:
-                        userdata['users'].append(duser)
+                t = False
+                for user in userdata['users']:
+                    if duser['name'] == user['name']:
+                        user['password'] = duser['password']
+                        user['role'] = duser['role']
+                        t = True
+                if not t:
+                    userdata['users'].append(duser)
         except:
-            pass // todo
+            userdata = {"users": settings['dashboard']['user_control']['default_user'].copy()}
+            for u in userdata["users"]:
+                u["token"] = ''.join(random.sample(string.ascii_letters + string.digits, 32))
+                u["videotimes"] = []
     else:
-        pass // todo
+        userdata = {"users": settings['dashboard']['user_control']['default_user'].copy()}
+        for u in userdata["users"]:
+            u["token"] = ''.join(random.sample(string.ascii_letters + string.digits, 32))
+            u["videotimes"] = []
+    with open(os.path.join(Config.get_working_dir(), 'Dashboard', 'userdata.json'), 'w', encoding='utf-8') as f:
+        json.dump(userdata, f, ensure_ascii=False, indent=4)
 
     @app.route('/logout')
     def logout():
