@@ -243,7 +243,7 @@ if settings['dashboard']['BasicAuth']:
     @basic_auth.required
     def checknowctrl():
         err_print(0, 'Dashboard', '通過 Web 控制臺發出了立即更新的請求', no_sn=True, status=2)
-        checknow()
+        checknow(True)
         return '{"status":"200"}'
 else:
     @app.route('/control')
@@ -365,7 +365,7 @@ else:
     @app.route('/checknow')
     def checknowctrl():
         err_print(0, 'Dashboard', '通過 Web 控制臺發出了立即更新的請求', no_sn=True, status=2)
-        checknow()
+        checknow(True)
         return '{"status":"200"}'
 
 
@@ -452,38 +452,47 @@ if settings["dashboard"]["online_watch"]:
                 return '{"status":"404", "msg":"Type is invalid"}'
         return '{"status":"403", "msg":"Token is invalid"}'
 
-        
-@app.route('/login', methods=['GET', 'POST'])
-def login():
-    if request.method == 'POST':
-        username = request.form.get('username')
-        password = request.form.get('password')
-        userdata = json.load(open(os.path.join(Config.get_working_dir(), 'Dashboard', 'userdata.json'), 'r'))
-        for user in userdata['users']:
-            if user['name'] == username and user['password'] == password:
-                return f"<script>document.cookies.token = '{user['token']}';window.location.href = '/watch'</script>"
-        return '<script>window.location.href = "/login?error=1"</script>'
-    else:
-        return render_template('login.html')
+
+if settings['dashboard']['user_control']['enabled']:
+    @app.route('/logout')
+    def logout():
+        return '<script>document.cookies.token = "";window.location.href = "/login"</script>'
+
+    @app.route('/login', methods=['GET', 'POST'])
+    def login():
+        if request.method == 'POST':
+            username = request.form.get('username')
+            password = request.form.get('password')
+            userdata = json.load(open(os.path.join(Config.get_working_dir(), 'Dashboard', 'userdata.json'), 'r'))
+            for user in userdata['users']:
+                if user['name'] == username and user['password'] == password:
+                    return f"<script>document.cookies.token = '{user['token']}';window.location.href = '/watch'</script>"
+            return '<script>window.location.href = "/login?error=1"</script>'
+        else:
+            return render_template('login.html')
 
 
-@app.route('/register', methods=['GET', 'POST'])
-def register():
-    settings = Config.read_settings()
-    if not settings['dashboard']['user_control']['allow_register']:
-        return '<script>alert("伺服器沒有啟用註冊!");window.location.href="/";</script>'
-    if request.method == 'POST':
-        if not request.form.get('pw1') == request.form.get('pw2'):
-            return '<script>window.location.href = "/login?error=2"</script>'
-        username = request.form.get('username')
-        password = request.form.get('pw1')
-        userdata = json.load(open(os.path.join(Config.get_working_dir(), 'Dashboard', 'userdata.json'), 'r'))
-        for user in userdata['users']:
-            if user['name'] == username:
-                return '<script>window.location.href = "/login?error=1"</script>'
-        newuser = {'name': username, 'password': password, 'token': ''.join(random.sample(string.ascii_letters + string.digits, 32)), 'videotimes': [], 'role': 'user'}
-    else:
-        return render_template('register.html')
+    @app.route('/register', methods=['GET', 'POST'])
+    def register():
+        settings = Config.read_settings()
+        if not settings['dashboard']['user_control']['allow_register']:
+            return '<script>alert("伺服器沒有啟用註冊!");history.back();</script>'
+        if request.method == 'POST':
+            if not request.form.get('pw1') == request.form.get('pw2'):
+                return '<script>window.location.href = "/register?error=2"</script>'
+            username = request.form.get('username')
+            password = request.form.get('pw1')
+            userdata = json.load(open(os.path.join(Config.get_working_dir(), 'Dashboard', 'userdata.json'), 'r'))
+            for user in userdata['users']:
+                if user['name'] == username:
+                    return '<script>window.location.href = "/register?error=1"</script>'
+            newuser = {'name': username, 'password': password, 'token': ''.join(random.sample(string.ascii_letters + string.digits, 32)), 'videotimes': [], 'role': 'user'}
+            userdata['users'].append(newuser)
+            with open(os.path.join(Config.get_working_dir(), 'Dashboard', 'userdata.json'), 'w', encoding='utf-8') as f:
+                json.dump(userdata, f, ensure_ascii=False, indent=4)
+            return '<script>alert("註冊成功!");window.location.href = "/login"</script>'
+        else:
+            return render_template('register.html')
 
 
 def run():

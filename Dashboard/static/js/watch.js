@@ -142,7 +142,7 @@ async function main() {
             ctrldiv.appendChild(danmuButton);
         }
         ctrldiv.appendChild(playrateButton);
-        
+
         // 創建速度選單
         var speedDropdown = document.createElement('select');
         speedDropdown.setAttribute("id", "speedDropdown");
@@ -313,7 +313,7 @@ async function main() {
         // i like yt
 
         video.addEventListener("ended", (event) => {
-            var nextEpisode = (Number(videoData.episode)+1).toString();
+            var nextEpisode = (Number(videoData.episode) + 1).toString();
             var nextObj = videoSeries.find(value => value.episode == nextEpisode);
             if (nextObj) {
                 // todo: display message and countdown
@@ -423,15 +423,15 @@ async function main() {
 
         function handleTouchStart(event) {
             if (isMobileDevice()) {
-            // Prevent hiding controls if the touch is on a button
-            if (event.target.tagName === 'BUTTON' || event.target.closest('button')) {
-                return;
-            }
-            if (videoPlayer.classList.contains('show-controls')) {
-                hideControls();
-            } else {
-                showControls();
-            }
+                // Prevent hiding controls if the touch is on a button
+                if (event.target.tagName === 'BUTTON' || event.target.closest('button')) {
+                    return;
+                }
+                if (videoPlayer.classList.contains('show-controls')) {
+                    hideControls();
+                } else {
+                    showControls();
+                }
             }
         }
 
