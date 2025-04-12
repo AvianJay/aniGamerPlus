@@ -206,25 +206,12 @@ async function main() {
 
         video.addEventListener('timeupdate', function () {
             timeSlider.value = video.currentTime;
-            const dh = Math.floor(video.duration / 60);
-            const dm = Math.round(video.duration % 60);
-            const dt = `${dh.toString().padStart(2, '0')}:${dm.toString().padStart(2, '0')}`;
-            const ch = Math.floor(video.currentTime / 60);
-            const cm = Math.round(video.currentTime % 60);
-            const ct = `${ch.toString().padStart(2, '0')}:${cm.toString().padStart(2, '0')}`;
-            timetext.innerHTML = ct + '/' + dt;
             syncTime(video.currentTime);
         });
 
         timeSlider.addEventListener('input', function () {
             video.currentTime = timeSlider.value;
-            const dh = Math.floor(video.duration / 60);
-            const dm = Math.round(video.duration % 60);
-            const dt = `${dh.toString().padStart(2, '0')}:${dm.toString().padStart(2, '0')}`;
-            const ch = Math.floor(video.currentTime / 60);
-            const cm = Math.round(video.currentTime % 60);
-            const ct = `${ch.toString().padStart(2, '0')}:${cm.toString().padStart(2, '0')}`;
-            timetext.innerHTML = ct + '/' + dt;
+            syncTime(video.currentTime);
         });
 
         document.addEventListener('keydown', function (event) {
@@ -249,10 +236,14 @@ async function main() {
 
         function skipBackward() {
             video.currentTime -= 10; // 倒退10秒
+            timeSlider.value = video.currentTime;
+            syncTime(video.currentTime);
         }
 
         function skipForward() {
             video.currentTime += 10; // 快轉10秒
+            timeSlider.value = video.currentTime;
+            syncTime(video.currentTime);
         }
 
 
@@ -286,6 +277,7 @@ async function main() {
 
         video.addEventListener('pause', function () {
             playPauseButton.innerHTML = '<svg height="100%" version="1.1" viewBox="0 0 36 36" width="100%"><path d="M 12,26 18.5,22 18.5,14 12,10 z M 18.5,22 25,18 25,18 18.5,14 z"></path></svg>';
+            showControls();
         })
         if (videoData.danmu) {
             danmuButton.addEventListener('click', function () {
@@ -354,8 +346,10 @@ async function main() {
         }
 
         function hideControls() {
-            videoPlayer.classList.remove('show-controls');
-            videoPlayer.style.cursor = 'none';
+            if (!video.paused) {
+                videoPlayer.classList.remove('show-controls');
+                videoPlayer.style.cursor = 'none';
+            }
         }
 
         window.addEventListener("resize", function () {
@@ -450,6 +444,13 @@ async function main() {
         }
 
         function syncTime(time) {
+            const dh = Math.floor(video.duration / 60);
+            const dm = Math.round(video.duration % 60);
+            const dt = `${dh.toString().padStart(2, '0')}:${dm.toString().padStart(2, '0')}`;
+            const ch = Math.floor(video.currentTime / 60);
+            const cm = Math.round(video.currentTime % 60);
+            const ct = `${ch.toString().padStart(2, '0')}:${cm.toString().padStart(2, '0')}`;
+            timetext.innerHTML = ct + '/' + dt;
             if (getCookieByName('logined') == 'true') {
                 fetch('/time?id=' + videoId + '&type=send&time=' + time);
             };
@@ -473,9 +474,12 @@ async function main() {
                 const touchX = event.changedTouches[0].clientX;
                 const screenWidth = window.innerWidth;
 
-                if (touchX < screenWidth / 2) {
+                if (touchX < screenWidth / 3) {
                     // 點擊左側，執行 skipBackward
                     skipBackward();
+                } else if (touchX < screenWidth / 3 * 2) {
+                    // middle toggle play
+                    togglePlayPause();
                 } else {
                     // 點擊右側，執行 skipForward
                     skipForward();
