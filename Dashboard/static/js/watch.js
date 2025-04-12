@@ -460,6 +460,31 @@ async function main() {
         videoPlayer.addEventListener('mouseleave', handleMouseLeave);
         videoPlayer.addEventListener('touchstart', handleTouchStart);
 
+        // 定義雙擊事件的處理邏輯
+        let lastTap = 0; // 用於記錄上次點擊的時間
+        const doubleTapThreshold = 300; // 雙擊的時間間隔（毫秒）
+
+        videoPlayer.addEventListener('touchend', function (event) {
+            const currentTime = new Date().getTime();
+            const tapInterval = currentTime - lastTap;
+
+            if (tapInterval < doubleTapThreshold && tapInterval > 0) {
+                // 確定點擊位置
+                const touchX = event.changedTouches[0].clientX;
+                const screenWidth = window.innerWidth;
+
+                if (touchX < screenWidth / 2) {
+                    // 點擊左側，執行 skipBackward
+                    skipBackward();
+                } else {
+                    // 點擊右側，執行 skipForward
+                    skipForward();
+                }
+            }
+
+            lastTap = currentTime; // 更新上次點擊的時間
+        });
+
         // mobile fullscreen things
         // https://stackoverflow.com/a/6603537
         if (isMobileDevice()) {
