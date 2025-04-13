@@ -457,7 +457,7 @@ if settings["dashboard"]["online_watch"]:
 
 
 if settings['dashboard']['user_control']['enabled']:
-    // init user
+    # init user
     settings = Config.read_settings()
     if os.path.exists(os.path.join(Config.get_working_dir(), 'Dashboard', 'userdata.json')):
         try:
