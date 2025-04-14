@@ -130,6 +130,7 @@ video_list.json
 Dashboard/sslkey/server.crt
 Dashboard/sslkey/server.key
 cookies.pkl
+Dashboard/userdata.json
 
 # macOS DS_Store and some ._ files
 ._*
