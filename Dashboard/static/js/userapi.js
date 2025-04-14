@@ -42,7 +42,7 @@ async function userMain() {
     try {
         navbar = document.querySelector('.navbar-nav');
         if (!navbar) {
-            setTimeout(userMain, 1000);
+            setTimeout(userMain, 100);
             return;
         }
         if (await getServerInfo('user_control')) {

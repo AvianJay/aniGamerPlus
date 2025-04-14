@@ -476,7 +476,7 @@ if settings['dashboard']['user_control']['enabled']:
             for duser in settings['dashboard']['user_control']['default_user']:
                 t = False
                 for user in userdata['users']:
-                    if duser['name'] == user['name']:
+                    if duser['username'] == user['username']:
                         user['password'] = duser['password']
                         user['role'] = duser['role']
                         t = True
@@ -506,7 +506,7 @@ if settings['dashboard']['user_control']['enabled']:
             password = request.form.get('password')
             userdata = json.load(open(os.path.join(Config.get_working_dir(), 'Dashboard', 'userdata.json'), 'r'))
             for user in userdata['users']:
-                if user['name'] == username and user['password'] == password:
+                if user['username'] == username and user['password'] == password:
                     return f"<script>document.cookies.token = '{user['token']}';window.location.href = '/watch'</script>"
             return '<script>window.location.href = "/login?error=1"</script>'
         else:
@@ -525,9 +525,9 @@ if settings['dashboard']['user_control']['enabled']:
             password = request.form.get('pw1')
             userdata = json.load(open(os.path.join(Config.get_working_dir(), 'Dashboard', 'userdata.json'), 'r'))
             for user in userdata['users']:
-                if user['name'] == username:
+                if user['username'] == username:
                     return '<script>window.location.href = "/register?error=1"</script>'
-            newuser = {'name': username, 'password': password, 'token': ''.join(random.sample(string.ascii_letters + string.digits, 32)), 'videotimes': [], 'role': 'user'}
+            newuser = {'username': username, 'password': password, 'token': ''.join(random.sample(string.ascii_letters + string.digits, 32)), 'videotimes': [], 'role': 'user'}
             userdata['users'].append(newuser)
             with open(os.path.join(Config.get_working_dir(), 'Dashboard', 'userdata.json'), 'w', encoding='utf-8') as f:
                 json.dump(userdata, f, ensure_ascii=False, indent=4)
@@ -548,7 +548,7 @@ if settings['dashboard']['user_control']['enabled']:
                         return '<script>alert("刪除成功!");window.location.href = "./user"</script>'
                     elif request.form.get('action') == 'change':
                         for u in userdata['users']:
-                            if u['name'] == request.form.get('username'):
+                            if u['username'] == request.form.get('username'):
                                 u['password'] = request.form.get('password')
                                 u['role'] = request.form.get('role')
                         with open(os.path.join(Config.get_working_dir(), 'Dashboard', 'userdata.json'), 'w', encoding='utf-8') as f:
@@ -556,7 +556,7 @@ if settings['dashboard']['user_control']['enabled']:
                         return '<script>alert("修改成功!");window.location.href = "./user"</script>'
                     elif request.form.get('action') == 'add':
                         for u in userdata['users']:
-                            if u['name'] == request.form.get('username'):
+                            if u['username'] == request.form.get('username'):
                                 return '<script>alert("用戶名已存在!");window.location.href = "./user"</script>'
                         newuser = {'name': request.form.get('username'), 'password': request.form.get('password'), 'token': ''.join(random.sample(string.ascii_letters + string.digits, 32)), 'videotimes': [], 'role': request.form.get('role')}
                         userdata['users'].append(newuser)
