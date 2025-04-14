@@ -40,6 +40,11 @@ async function getServerInfo(key) {
 
 async function userMain() {
     try {
+        navbar = document.querySelector('.navbar-nav');
+        if (!navbar) {
+            setTimeout(userMain, 1000);
+            return;
+        }
         if (await getServerInfo('user_control')) {
             var login = getCookieByName('logined');
             if (login == 'true' && getCookieByName('token') != null) {
@@ -51,7 +56,6 @@ async function userMain() {
                     },
                     body: "action=get"
                 }).then(res => res.json()).then(async function (data) {
-                    navbar = document.querySelector('.navbar-nav');
                     if (data.status == '200') {
                         document.cookie = 'logined=true; expires=Fri, 31 Dec 9999 23:59:59 GMT';
                         var userlink = document.createElement('li');
@@ -68,7 +72,7 @@ async function userMain() {
                         loginlink.className = 'nav-item my-navbar';
                         loginlink.innerHTML = '<a class="nav-link" href="./login">登入</a>';
                         navbar.appendChild(loginlink);
-                        if (await getServerInfo('user_control_allow_register') == 'true') {
+                        if (await getServerInfo('user_control_allow_register') == true) {
                             var registerlink = document.createElement('li');
                             registerlink.className = 'nav-item my-navbar';
                             registerlink.innerHTML = '<a class="nav-link" href="./register">註冊</a>';
@@ -80,12 +84,43 @@ async function userMain() {
                 });
             } else {
                 document.cookie = 'logined=false; expires=Fri, 31 Dec 9999 23:59:59 GMT';
+                var loginlink = document.createElement('li');
+                loginlink.className = 'nav-item my-navbar';
+                loginlink.innerHTML = '<a class="nav-link" href="./login">登入</a>';
+                navbar.appendChild(loginlink);
+                if (await getServerInfo('user_control_allow_register') == true) {
+                    var registerlink = document.createElement('li');
+                    registerlink.className = 'nav-item my-navbar';
+                    registerlink.innerHTML = '<a class="nav-link" href="./register">註冊</a>';
+                    navbar.appendChild(registerlink);
+                }
             }
         } else {
             document.cookie = 'logined=false; expires=Fri, 31 Dec 9999 23:59:59 GMT';
+            var loginlink = document.createElement('li');
+            loginlink.className = 'nav-item my-navbar';
+            loginlink.innerHTML = '<a class="nav-link" href="./login">登入</a>';
+            navbar.appendChild(loginlink);
+            if (await getServerInfo('user_control_allow_register') == true) {
+                var registerlink = document.createElement('li');
+                registerlink.className = 'nav-item my-navbar';
+                registerlink.innerHTML = '<a class="nav-link" href="./register">註冊</a>';
+                navbar.appendChild(registerlink);
+            }
         }
     } catch (err) {
         document.cookie = 'logined=false; expires=Fri, 31 Dec 9999 23:59:59 GMT';
+        var loginlink = document.createElement('li');
+        loginlink.className = 'nav-item my-navbar';
+        loginlink.innerHTML = '<a class="nav-link" href="./login">登入</a>';
+        navbar.appendChild(loginlink);
+        if (await getServerInfo('user_control_allow_register') == 'true') {
+            var registerlink = document.createElement('li');
+            registerlink.className = 'nav-item my-navbar';
+            registerlink.innerHTML = '<a class="nav-link" href="./register">註冊</a>';
+            navbar.appendChild(registerlink);
+        }
+        console.warn(err);
     }
 }
 userMain();
