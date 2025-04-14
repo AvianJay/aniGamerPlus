@@ -35,6 +35,37 @@ try {
     document.cookie = 'logined=false';
 }
 
+function getTime(sn) {
+    if (getCookieByName('logined') == 'true') {
+        fetch('./watch/time?sn=' + sn + '&type=get').then(res => res.json()).then((data) => {
+            var time = parseInt(data.time);
+            if (time) {
+                if (data.ended) {
+                    return 0;
+                }
+                return time;
+            } else {
+                return 0;
+            }
+        });
+    } else {
+        return 0;
+    }
+}
+
+function setTime(sn, time, ended) {
+    if (getCookieByName('logined') == 'true') {
+        if (ended) {
+            fetch('./watch/time?sn=' + sn + '&type=set&time=0&ended=true');
+            return;
+        } else {
+            fetch('./watch/time?sn=' + sn + '&type=set&time=' + time);
+            return;
+        }
+    }
+    return 0;
+}
+
 var videoList;
 
 async function getVideoList() {
@@ -258,6 +289,11 @@ async function main() {
             const cm = Math.round(video.currentTime % 60);
             const ct = `${ch.toString().padStart(2, '0')}:${cm.toString().padStart(2, '0')}`;
             timetext.innerHTML = ct + '/' + dt
+            getTime(videoId).then((time) => {
+                video.currentTime = time;
+                timeSlider.value = time;
+                syncTime(time);
+            });
         });
 
         video.addEventListener('canplay', function () {
@@ -306,6 +342,7 @@ async function main() {
         // i like yt
 
         video.addEventListener("ended", (event) => {
+            setTime(videoId, 0, true);
             var nextEpisode = (Number(videoData.episode) + 1).toString();
             var nextObj = videoSeries.find(value => value.episode == nextEpisode);
             if (nextObj) {
@@ -452,9 +489,10 @@ async function main() {
             const cm = Math.round(video.currentTime % 60);
             const ct = `${ch.toString().padStart(2, '0')}:${cm.toString().padStart(2, '0')}`;
             timetext.innerHTML = ct + '/' + dt;
-            if (getCookieByName('logined') == 'true') {
-                fetch('/time?id=' + videoId + '&type=send&time=' + time);
-            };
+            setTime(videoData.sn, time, false);
+            if (video.currentTime >= video.duration - 5) {
+                setTime(videoData.sn, 0, true);
+            }
         }
 
         videoPlayer.addEventListener('mouseenter', handleMouseEnter);

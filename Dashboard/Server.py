@@ -428,13 +428,12 @@ if settings["dashboard"]["online_watch"]:
         return jsonify(video_json)
 
 
-    @app.route('/time')
+    @app.route('/watch/time')
     def webtime():
         gettype = request.args.get('type')
         sn = request.args.get('sn')
         ended = request.args.get('ended', "false").lower() == "true"
         token = request.cookies.get('token')
-        ran = False
         userdata = json.load(open(os.path.join(Config.get_working_dir(), 'Dashboard', 'userdata.json'), 'r'))
         if gettype == 'set':
             for user in userdata['users']:
@@ -446,10 +445,12 @@ if settings["dashboard"]["online_watch"]:
         elif gettype == 'get':
             for user in userdata['users']:
                 if user['token'] == token:
+                    if not sn:
+                        return jsonify(user['videotimes'])
                     if user['videotimes'][sn]:
                         return jsonify(user['videotimes'][sn])
                     else:
-                        return '0'
+                        return jsonify({"time": 0, "ended": False})
         for user in userdata['users']:
             if user['token'] == token:
                 return '{"status":"404", "msg":"Type is invalid"}'
