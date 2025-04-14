@@ -389,7 +389,7 @@ if settings["dashboard"]["online_watch"]:
         return render_template('watch.html')
 
 
-    @app.route('/getvid.mp4')
+    @app.route('/get_video.mp4')
     def getvid():
         sn = request.args.get('id')
         res = request.args.get('res')
@@ -412,7 +412,7 @@ if settings["dashboard"]["online_watch"]:
         return resp
 
 
-    @app.route('/getsub.ass')
+    @app.route('/get_danmu.ass')
     def getsub():
         sn = request.args.get('id')
         if settings['danmu']:

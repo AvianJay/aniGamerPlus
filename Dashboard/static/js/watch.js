@@ -111,8 +111,8 @@ async function main() {
     if (videoId && videoResolution) {
         var videoData = await fetchVideoData(videoId);
         var videoSeries = await getVideoSeries(videoId);
-        var videoSrc = './getvid.mp4?id=' + encodeURIComponent(videoId) + '&res=' + videoResolution;
-        var subtitleSrc = './getsub.ass?id=' + encodeURIComponent(videoId);
+        var videoSrc = './get_video.mp4?id=' + encodeURIComponent(videoId) + '&res=' + videoResolution;
+        var subtitleSrc = './get_danmu.ass?id=' + encodeURIComponent(videoId);
         var videoPlayer = document.getElementById('videobox');
         var video = document.createElement('video');
         var ctrldiv = document.createElement('div');
@@ -697,9 +697,6 @@ async function main() {
                 var videoLink = document.createElement('a');
                 videoLink.href = './watch?id=' + encodeURIComponent(videoId) + '&res=' + encodeURIComponent(videoItem.resolution);
                 videoLink.textContent = videoTitle;
-                // var videodlLink = document.createElement('a');
-                // videodlLink.href = '/getvid.mp4?id=' + encodeURIComponent(videoId) + '&res=' + encodeURIComponent(videoItem.resolution);
-                // videodlLink.textContent = '[下載]';
 
                 // 創建影片清單項目
                 var videoListItem = document.createElement('li');
