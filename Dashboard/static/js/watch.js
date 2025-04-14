@@ -347,7 +347,11 @@ async function main() {
             var nextObj = videoSeries.find(value => value.episode == nextEpisode);
             if (nextObj) {
                 // todo: display message and countdown
-                window.location.href = "./watch?id=" + nextObj.sn + "&res=" + nextObj.resolution;
+                if (isFullscreen) {
+                    window.location.href = "./watch?id=" + nextObj.sn + "&res=" + nextObj.resolution + "&fullscreen=true";
+                } else {
+                    window.location.href = "./watch?id=" + nextObj.sn + "&res=" + nextObj.resolution;
+                }
             }
         });
 
@@ -624,6 +628,10 @@ async function main() {
         videoDetail.appendChild(videoSource);
         document.body.appendChild(videoDetail);
 
+        var needFullscreen = urlParams.get('fullscreen');
+        if (needFullscreen == 'true') {
+            toggleFullscreen();
+        }
     } else {
         var searchBox = document.createElement("div");
         searchBox.classList.add('row');
