@@ -497,7 +497,7 @@ if settings['dashboard']['user_control']['enabled']:
 
     @app.route('/logout')
     def logout():
-        return '<script>document.cookies.token = "";window.location.href = "/login"</script>'
+        return '<script>document.cookie = "token=expired";document.cookie = "logined=false";window.location.href = "/login"</script>'
 
     @app.route('/login', methods=['GET', 'POST'])
     def login():
@@ -507,7 +507,7 @@ if settings['dashboard']['user_control']['enabled']:
             userdata = json.load(open(os.path.join(Config.get_working_dir(), 'Dashboard', 'userdata.json'), 'r'))
             for user in userdata['users']:
                 if user['username'] == username and user['password'] == password:
-                    return f"<script>document.cookies.token = '{user['token']}';window.location.href = '/watch'</script>"
+                    return f"<script>document.cookie = 'token={user['token']}';document.cookie = 'logined=true';window.location.href = '/watch'</script>"
             return '<script>window.location.href = "/login?error=1"</script>'
         else:
             return render_template('login.html')

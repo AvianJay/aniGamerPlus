@@ -15,8 +15,8 @@
 		<div class="login-wrapper">
 			<form class="login-content" action="./login" method="POST">
 				<h1>登入</h1>
-				<input type="text" class="form-control" id="username" placeholder="輸入帳號" />
-				<input type="password" class="form-control" id="pw0" placeholder="輸入密碼" />
+				<input type="text" class="form-control" id="username" name="username" placeholder="輸入帳號" />
+				<input type="password" class="form-control" id="password" name="password" placeholder="輸入密碼" />
 				<button type="submit" class="btn btn-success">登入</button>
 			</form>
 			{% if request.args.get('error') %}
