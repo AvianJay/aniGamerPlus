@@ -22,19 +22,6 @@ function getCookieByName(name) {
     return value;
 }
 
-try {
-    var login = getCookieByName('logined');
-    if (login = 'true') {
-
-    } else if (login = 'false') {
-
-    } else {
-        document.cookie = 'logined=false';
-    }
-} catch (err) {
-    document.cookie = 'logined=false';
-}
-
 function getTime(sn) {
     if (getCookieByName('logined') == 'true') {
         fetch('./watch/time?sn=' + sn + '&type=get').then(res => res.json()).then((data) => {

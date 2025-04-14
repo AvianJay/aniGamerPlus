@@ -455,6 +455,16 @@ if settings["dashboard"]["online_watch"]:
             if user['token'] == token:
                 return '{"status":"404", "msg":"Type is invalid"}'
         return '{"status":"403", "msg":"Token is invalid"}'
+    
+
+@app.route('/get_server_info')
+def get_server_info():
+    settings = Config.read_settings()
+    return jsonify({
+        "user_control": settings['dashboard']['user_control']['enabled'],
+        "user_control_allow_register": settings['dashboard']['user_control']['allow_register'],
+        "online_watch": settings['dashboard']['online_watch'],
+    })
 
 
 if settings['dashboard']['user_control']['enabled']:
@@ -524,6 +534,61 @@ if settings['dashboard']['user_control']['enabled']:
             return '<script>alert("註冊成功!");window.location.href = "/login"</script>'
         else:
             return render_template('register.html')
+        
+    @app.route('/control/user', methods=['GET', 'POST'])
+    def usermanage():
+        if request.method == 'POST':
+            userdata = json.load(open(os.path.join(Config.get_working_dir(), 'Dashboard', 'userdata.json'), 'r'))
+            for user in userdata['users']:
+                if user['token'] == request.cookies.get('token'):
+                    if request.form.get('action') == 'delete':
+                        userdata['users'].remove(user)
+                        with open(os.path.join(Config.get_working_dir(), 'Dashboard', 'userdata.json'), 'w', encoding='utf-8') as f:
+                            json.dump(userdata, f, ensure_ascii=False, indent=4)
+                        return '<script>alert("刪除成功!");window.location.href = "./user"</script>'
+                    elif request.form.get('action') == 'change':
+                        for u in userdata['users']:
+                            if u['name'] == request.form.get('username'):
+                                u['password'] = request.form.get('password')
+                                u['role'] = request.form.get('role')
+                        with open(os.path.join(Config.get_working_dir(), 'Dashboard', 'userdata.json'), 'w', encoding='utf-8') as f:
+                            json.dump(userdata, f, ensure_ascii=False, indent=4)
+                        return '<script>alert("修改成功!");window.location.href = "./user"</script>'
+                    elif request.form.get('action') == 'add':
+                        for u in userdata['users']:
+                            if u['name'] == request.form.get('username'):
+                                return '<script>alert("用戶名已存在!");window.location.href = "./user"</script>'
+                        newuser = {'name': request.form.get('username'), 'password': request.form.get('password'), 'token': ''.join(random.sample(string.ascii_letters + string.digits, 32)), 'videotimes': [], 'role': request.form.get('role')}
+                        userdata['users'].append(newuser)
+                        with open(os.path.join(Config.get_working_dir(), 'Dashboard', 'userdata.json'), 'w', encoding='utf-8') as f:
+                            json.dump(userdata, f, ensure_ascii=False, indent=4)
+                        return '<script>alert("添加成功!");window.location.href = "./user"</script>'
+        else:
+            userdata = json.load(open(os.path.join(Config.get_working_dir(), 'Dashboard', 'userdata.json'), 'r'))
+            return render_template('usermanage.html', users=userdata['users'])
+        
+    @app.route('/userinfo', methods=['GET', 'POST'])
+    def userinfo():
+        userdata = json.load(open(os.path.join(Config.get_working_dir(), 'Dashboard', 'userdata.json'), 'r'))
+        if request.method == 'POST':
+            for user in userdata['users']:
+                if user['token'] == request.cookies.get('token'):
+                    if request.form.get('action') == 'get':
+                        retData = user.copy()
+                        retData['status'] = '200'
+                        retData.pop('token')
+                        retData.pop('password')
+                        return jsonify(retData)
+                    elif request.form.get('action') == 'change':
+                        user['password'] = request.form.get('password')
+                        with open(os.path.join(Config.get_working_dir(), 'Dashboard', 'userdata.json'), 'w', encoding='utf-8') as f:
+                            json.dump(userdata, f, ensure_ascii=False, indent=4)
+                        return jsonify({"status": "200", "message": "修改成功!"})
+        else:
+            for user in userdata['users']:
+                if user['token'] == request.cookies.get('token'):
+                    return render_template('userinfo.html', user=user)
+        return '<script>alert("Token is invalid!");window.location.href = "/login"</script>'
 
 
 def run():
