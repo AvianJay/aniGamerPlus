@@ -45,6 +45,12 @@ async function userMain() {
             setTimeout(userMain, 100);
             return;
         }
+        if (await getServerInfo('online_watch')) {
+            var watchlink = document.createElement('li');
+            watchlink.className = 'nav-item my-navbar';
+            watchlink.innerHTML = '<a class="nav-link" href="./watch">線上看</a>';
+            navbar.appendChild(watchlink);
+        }
         if (await getServerInfo('user_control')) {
             var login = getCookieByName('logined');
             if (login == 'true' && getCookieByName('token') != null) {
@@ -58,6 +64,12 @@ async function userMain() {
                 }).then(res => res.json()).then(async function (data) {
                     if (data.status == '200') {
                         document.cookie = 'logined=true; expires=Fri, 31 Dec 9999 23:59:59 GMT';
+                        if (data.role == 'admin') {
+                            var adminlink = document.createElement('li');
+                            adminlink.className = 'nav-item my-navbar';
+                            adminlink.innerHTML = '<a class="nav-link" href="./control">主控台</a>';
+                            navbar.appendChild(adminlink);
+                        }
                         var userlink = document.createElement('li');
                         userlink.className = 'nav-item my-navbar';
                         userlink.innerHTML = '<a class="nav-link" href="./userinfo">' + data.username + '</a>';
