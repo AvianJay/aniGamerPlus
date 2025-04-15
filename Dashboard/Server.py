@@ -535,12 +535,10 @@ if settings['dashboard']['user_control']['enabled']:
         if not settings['dashboard']['user_control']['allow_register']:
             return '<script>alert("伺服器沒有啟用註冊!");history.back();</script>'
         if request.method == 'POST':
-            if request.form:
-                reqdata = request.form.copy()
-            else:
-                reqdata = request.get_json()
+            reqdata = request.get_json() or request.form.copy()
+            # print("DEBUG:", reqdata)
             if not reqdata:
-                return '<script>alert("Empty request!);history.back();</script>'
+                return '<script>alert("Empty request!");history.back();</script>'
             if not reqdata.get('pw1') == reqdata.get('pw2'):
                 return '<script>window.location.href = "./register?error=2"</script>'
             username = reqdata.get('username')
