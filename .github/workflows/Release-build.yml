@@ -8,12 +8,12 @@ on:
       - v*
 jobs:
   build:
-    runs-on: windows-2019
     strategy:
-      # You can use PyPy versions in python-version.
-      # For example, pypy2 and pypy3
       matrix:
+        os: [windows-2019, ubuntu-latest]
         python: [3.8.x]
+
+    runs-on: ${{ matrix.os }}
 
     steps:
     - uses: actions/checkout@v2
@@ -26,8 +26,9 @@ jobs:
       run: |
         chcp 65001
         echo ("RELEASE_VERSION=" + $env:GITHUB_REF.replace('refs/tags/', '')) >> $env:GITHUB_ENV
-        echo ("RELEASE_TITLE=aniGamerPlusPlus_" + $env:GITHUB_REF.replace('refs/tags/', '') + "_windows_64bit") >> $env:GITHUB_ENV
-        echo ("RELEASE_FILENAME=aniGamerPlusPlus_" + $env:GITHUB_REF.replace('refs/tags/', '') + "_windows_64bit.zip") >> $env:GITHUB_ENV
+        echo ("RELEASE_TITLE=aniGamerPlus_" + $env:GITHUB_REF.replace('refs/tags/', '')) >> $env:GITHUB_ENV
+        echo ("RELEASE_WINDOWS_FILENAME=aniGamerPlus_" + $env:GITHUB_REF.replace('refs/tags/', '') + "_windows_64bit.zip") >> $env:GITHUB_ENV
+        echo ("RELEASE_LINUX_FILENAME=aniGamerPlus_" + $env:GITHUB_REF.replace('refs/tags/', '') + "_linux_64bit.zip") >> $env:GITHUB_ENV
         git fetch --tags --force
     - name: Get tag message
       id: tag_data
@@ -38,8 +39,10 @@ jobs:
         echo ${{ env.RELEASE_VERSION }}
         echo $RELEASE_TITLE
         echo ${{ env.RELEASE_TITLE }}
-        echo $RELEASE_FILENAME
-        echo ${{ env.RELEASE_FILENAME }}
+        echo $RELEASE_WINDOWS_FILENAME
+        echo ${{ env.RELEASE_WINDOWS_FILENAME }}
+        echo $RELEASE_LINUX_FILENAME
+        echo ${{ env.RELEASE_LINUX_FILENAME }}
         echo $TAG_MESSAGE
         echo '${{ steps.tag_data.outputs.git-tag-annotation }}'
     - name: Install dependencies
@@ -51,8 +54,17 @@ jobs:
       run: pyinstaller --noconfirm --distpath %cd%\ --onefile --console --icon %cd%\Dashboard\static\img\aniGamerPlus.ico --clean --add-data %cd%;aniGamerPlus/  %cd%\aniGamerPlus.py
       shell: cmd
 
+    - name: Build exe (Linux)
+      if: runner.os == 'Linux'
+      run: |
+        pyinstaller --noconfirm --distpath ./ --onefile --console --clean --add-data "./:aniGamerPlus/" aniGamerPlus.py
+
     - name: Archive release
       run: 7z a -tzip ${{ env.RELEASE_FILENAME }} aniGamerPlusPlus.exe Dashboard DanmuTemplate.ass config-sample.json sn_list-sample.txt LICENSE README.md
+
+    - name: Archive release (Linux)
+      if: runner.os == 'Linux'
+      run: 7z a -tzip ${{ env.RELEASE_FILENAME }} aniGamerPlus Dashboard DanmuTemplate.ass config-sample.json sn_list-sample.txt LICENSE README.md
 
     - name: Create Release
       id: create_release
@@ -72,6 +84,17 @@ jobs:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       with:
         upload_url: ${{ steps.create_release.outputs.upload_url }} # This pulls from the CREATE RELEASE step above, referencing it's ID to get its outputs object, which include a `upload_url`. See this blog post for more info: https://jasonet.co/posts/new-features-of-github-actions/#passing-data-to-future-steps
-        asset_path: ./${{ env.RELEASE_FILENAME }}
-        asset_name: ${{ env.RELEASE_FILENAME }}
+        asset_path: ./${{ env.RELEASE_WINDOWS_FILENAME }}
+        asset_name: ${{ env.RELEASE_LINUX_FILENAME }}
+        asset_content_type: application/zip
+
+    - name: Upload Release Asset (Linux)
+      if: runner.os == 'Linux'
+      uses: actions/upload-release-asset@v1
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      with:
+        upload_url: ${{ steps.create_release.outputs.upload_url }}
+        asset_path: ./${{ env.RELEASE_LINUX_FILENAME }}
+        asset_name: ${{ env.RELEASE_LINUX_FILENAME }}
         asset_content_type: application/zip
