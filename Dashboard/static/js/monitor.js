@@ -1,9 +1,8 @@
 layui.use('element', function(){
 	let element = layui.element;
 	
-	let protocol = window.location.protocol;
-	let ws = protocol.replace('http', 'ws');
-	let tasks_progress_url = ws+'//'+window.location.host+'/data/tasks_progress'+'?token=';
+	// proxy support
+	let tasks_progress_url = window.location.href.replace('http', 'ws').replace('monitor', 'data/tasks_progress?token=');
 	
 	// 获取token
 	$.get('data/get_token', function(token){
