@@ -1160,7 +1160,7 @@ if __name__ == '__main__':
                     processing_queue.append(task_sn)
                     new_tasks_counter = new_tasks_counter + 1
                     err_print(task_sn, '加入任务列隊')
-        if settings['online_watch']:
+        if settings['dashboard']['online_watch']:
             err_print(0, '開始更新videolist.json', no_sn=True)
             updatelist()
         if settings['check_sn_ended']:

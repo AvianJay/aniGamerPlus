@@ -434,12 +434,6 @@ if settings["dashboard"]["online_watch"]:
             reqdata = request.get_json() or request.form.copy()
         else:
             reqdata = request.args.copy()
-            try:
-                reqdata = request.get_json()
-                if reqdata is None:
-                    return '<script>alert("Invalid or missing JSON payload!");history.back();</script>'
-            except Exception as e:
-                return f'<script>alert("Error parsing JSON: {str(e)}");history.back();</script>'
         gettype = reqdata.get('type')
         sn = reqdata.get('sn')
         ended = reqdata.get('ended', "false").lower() == "true"

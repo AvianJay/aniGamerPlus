@@ -48,7 +48,7 @@
         $(document).ready(function () {
             // 獲取用戶資訊
             $.ajax({
-                url: '/userinfo',
+                url: './userinfo',
                 method: 'POST',
                 contentType: 'application/json',
                 data: JSON.stringify({ action: 'get' }),
@@ -76,7 +76,7 @@
                 const newPassword = prompt('請輸入新密碼：');
                 if (newPassword) {
                     $.ajax({
-                        url: '/userinfo',
+                        url: './userinfo',
                         method: 'POST',
                         contentType: 'application/json',
                         data: JSON.stringify({ action: 'change', password: newPassword }),
