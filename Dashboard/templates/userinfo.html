@@ -1,0 +1,103 @@
+<!DOCTYPE HTML>
+<html>
+<head>
+    <meta charset="utf-8">
+    <title>aGP+ | 用戶資訊</title>
+    <meta name="viewport" content="user-scalable=no, width=device-width, initial-scale=1.0" />
+    <link rel="shortcut icon" href="./static/img/aniGamerPlus.ico" type="image/x-icon" />
+    <script src="./static/js/jquery-3.4.0.min.js"></script>
+    <script src="./static/js/popper.min.js"></script>
+    <link rel="stylesheet" href="./static/css/bootstrap.rfs.min.css">
+    <script src="./static/js/bootstrap.min.js"></script>
+    <link rel="stylesheet" href="./static/css/bootstrap-switch.min.css" />
+    <script src="./static/js/bootstrap-switch.min-3.3.4.js"></script>
+    <link rel="stylesheet" href="./static/css/bootstrap-select.min.css" />
+    <script src="./static/js/bootstrap-select.min.js"></script>
+    <link rel="stylesheet" href="./static/css/fontawesome.all.min.css" />
+    <link rel="stylesheet" href="./static/css/aniGamerPlus.css" />
+    <script src="./static/js/userapi.js"></script>
+</head>
+<body>
+    <nav class="navbar navbar-expand-md bg-dark navbar-dark fixed-top">
+        <a class="navbar-brand" href="/"><img src="./static/img/aniGamerPlus.ico"></a>
+        <button class="navbar-toggler" type="button" data-toggle="collapse" data-target="#collapsibleNavbar">
+            <span class="navbar-toggler-icon"></span>
+        </button>
+        <div class="collapse navbar-collapse" id="collapsibleNavbar">
+            <ul class="navbar-nav">
+                <li class="nav-item my-navbar">
+                    <a class="nav-link" href="./watch">線上看</a>
+                </li>
+            </ul>
+        </div>
+    </nav>
+    <br><br><br>
+    <div class="container">
+        <h1 class="text-center">用戶資訊</h1>
+        <hr>
+        <div id="user-info" class="text-center">
+            <p><strong>用戶名：</strong> <span id="username"></span></p>
+            <p><strong>身分：</strong> <span id="role"></span></p>
+            <p><strong>觀看紀錄：</strong></p>
+            <ul id="video-times" class="list-group"></ul>
+        </div>
+        <hr>
+        <div class="text-center">
+            <button class="btn btn-primary" id="change-password-btn">修改密碼</button>
+        </div>
+    </div>
+
+    <script>
+        $(document).ready(function () {
+            // 獲取用戶資訊
+            $.ajax({
+                url: '/userinfo',
+                method: 'POST',
+                contentType: 'application/json',
+                data: JSON.stringify({ action: 'get' }),
+                success: function (response) {
+                    if (response.status === '200') {
+                        $('#username').text(response.username);
+                        $('#role').text(response.role);
+                        const videoTimes = response.videotimes;
+                        for (const [sn, info] of Object.entries(videoTimes)) {
+                            $('#video-times').append(
+                                `<li class="list-group-item">影片 SN: ${sn}, 時間: ${info.time}s, 已結束?: ${info.ended}</li>`
+                            );
+                        }
+                    } else {
+                        alert('無法獲取用戶資訊！');
+                    }
+                },
+                error: function () {
+                    alert('請求失敗，請稍後再試！');
+                }
+            });
+
+            // 修改密碼按鈕
+            $('#change-password-btn').click(function () {
+                const newPassword = prompt('請輸入新密碼：');
+                if (newPassword) {
+                    $.ajax({
+                        url: '/userinfo',
+                        method: 'POST',
+                        contentType: 'application/json',
+                        data: JSON.stringify({ action: 'change', password: newPassword }),
+                        success: function (response) {
+                            if (response.status === '200') {
+                                alert(response.message);
+                            } else {
+                                alert('修改密碼失敗！');
+                            }
+                        },
+                        error: function () {
+                            alert('請求失敗，請稍後再試！');
+                        }
+                    });
+                }
+            });
+        });
+    </script>
+</body>
+
+</html>
