@@ -502,8 +502,14 @@ if settings['dashboard']['user_control']['enabled']:
     @app.route('/login', methods=['GET', 'POST'])
     def login():
         if request.method == 'POST':
-            username = request.form.get('username')
-            password = request.form.get('password')
+            if request.form:
+                reqdata = request.form.copy()
+            else:
+                reqdata = request.get_json()
+            if not reqdata:
+                return '<script>alert("Empty request!);history.back();</script>'
+            username = reqdata.get('username')
+            password = reqdata.get('password')
             userdata = json.load(open(os.path.join(Config.get_working_dir(), 'Dashboard', 'userdata.json'), 'r'))
             for user in userdata['users']:
                 if user['username'] == username and user['password'] == password:
@@ -519,10 +525,16 @@ if settings['dashboard']['user_control']['enabled']:
         if not settings['dashboard']['user_control']['allow_register']:
             return '<script>alert("伺服器沒有啟用註冊!");history.back();</script>'
         if request.method == 'POST':
-            if not request.form.get('pw1') == request.form.get('pw2'):
+            if request.form:
+                reqdata = request.form.copy()
+            else:
+                reqdata = request.get_json()
+            if not reqdata:
+                return '<script>alert("Empty request!);history.back();</script>'
+            if not reqdata.get('pw1') == reqdata.get('pw2'):
                 return '<script>window.location.href = "/register?error=2"</script>'
-            username = request.form.get('username')
-            password = request.form.get('pw1')
+            username = reqdata.get('username')
+            password = reqdata.get('pw1')
             userdata = json.load(open(os.path.join(Config.get_working_dir(), 'Dashboard', 'userdata.json'), 'r'))
             for user in userdata['users']:
                 if user['username'] == username:
@@ -538,27 +550,33 @@ if settings['dashboard']['user_control']['enabled']:
     @app.route('/control/user', methods=['GET', 'POST'])
     def usermanage():
         if request.method == 'POST':
+            if reqdata:
+                reqdata = reqdata.copy()
+            else:
+                reqdata = request.get_json()
+            if not reqdata:
+                return '<script>alert("Empty request!);history.back();</script>'
             userdata = json.load(open(os.path.join(Config.get_working_dir(), 'Dashboard', 'userdata.json'), 'r'))
             for user in userdata['users']:
                 if user['token'] == request.cookies.get('token'):
-                    if request.form.get('action') == 'delete':
+                    if reqdata.get('action') == 'delete':
                         userdata['users'].remove(user)
                         with open(os.path.join(Config.get_working_dir(), 'Dashboard', 'userdata.json'), 'w', encoding='utf-8') as f:
                             json.dump(userdata, f, ensure_ascii=False, indent=4)
                         return '<script>alert("刪除成功!");window.location.href = "./user"</script>'
-                    elif request.form.get('action') == 'change':
+                    elif reqdata.get('action') == 'change':
                         for u in userdata['users']:
-                            if u['username'] == request.form.get('username'):
-                                u['password'] = request.form.get('password')
-                                u['role'] = request.form.get('role')
+                            if u['username'] == reqdata.get('username'):
+                                u['password'] = reqdata.get('password')
+                                u['role'] = reqdata.get('role')
                         with open(os.path.join(Config.get_working_dir(), 'Dashboard', 'userdata.json'), 'w', encoding='utf-8') as f:
                             json.dump(userdata, f, ensure_ascii=False, indent=4)
                         return '<script>alert("修改成功!");window.location.href = "./user"</script>'
-                    elif request.form.get('action') == 'add':
+                    elif reqdata.get('action') == 'add':
                         for u in userdata['users']:
-                            if u['username'] == request.form.get('username'):
+                            if u['username'] == reqdata.get('username'):
                                 return '<script>alert("用戶名已存在!");window.location.href = "./user"</script>'
-                        newuser = {'name': request.form.get('username'), 'password': request.form.get('password'), 'token': ''.join(random.sample(string.ascii_letters + string.digits, 32)), 'videotimes': [], 'role': request.form.get('role')}
+                        newuser = {'name': reqdata.get('username'), 'password': reqdata.get('password'), 'token': ''.join(random.sample(string.ascii_letters + string.digits, 32)), 'videotimes': [], 'role': reqdata.get('role')}
                         userdata['users'].append(newuser)
                         with open(os.path.join(Config.get_working_dir(), 'Dashboard', 'userdata.json'), 'w', encoding='utf-8') as f:
                             json.dump(userdata, f, ensure_ascii=False, indent=4)
@@ -571,16 +589,22 @@ if settings['dashboard']['user_control']['enabled']:
     def userinfo():
         userdata = json.load(open(os.path.join(Config.get_working_dir(), 'Dashboard', 'userdata.json'), 'r'))
         if request.method == 'POST':
+            if reqdata:
+                reqdata = reqdata.copy()
+            else:
+                reqdata = request.get_json()
+            if not reqdata:
+                return '<script>alert("Empty request!);history.back();</script>'
             for user in userdata['users']:
                 if user['token'] == request.cookies.get('token'):
-                    if request.form.get('action') == 'get':
+                    if reqdata.get('action') == 'get':
                         retData = user.copy()
                         retData['status'] = '200'
                         retData.pop('token')
                         retData.pop('password')
                         return jsonify(retData)
-                    elif request.form.get('action') == 'change':
-                        user['password'] = request.form.get('password')
+                    elif reqdata.get('action') == 'change':
+                        user['password'] = reqdata.get('password')
                         with open(os.path.join(Config.get_working_dir(), 'Dashboard', 'userdata.json'), 'w', encoding='utf-8') as f:
                             json.dump(userdata, f, ensure_ascii=False, indent=4)
                         return jsonify({"status": "200", "message": "修改成功!"})

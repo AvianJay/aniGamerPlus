@@ -54,7 +54,7 @@ async function userMain() {
                     headers: {
                         'Content-Type': 'application/json'
                     },
-                    body: "action=get"
+                    body: JSON.stringify({ action: "get" })
                 }).then(res => res.json()).then(async function (data) {
                     if (data.status == '200') {
                         document.cookie = 'logined=true; expires=Fri, 31 Dec 9999 23:59:59 GMT';
