@@ -212,7 +212,8 @@ async function main() {
         var widthsize;
         var danmuEnabled = true;
         var ass;
-
+        var ended = false;
+        var webTime = await getTime(videoId);
 
         playPauseButton.addEventListener('click', function () {
             if (video.paused) {
@@ -280,8 +281,7 @@ async function main() {
             const ch = Math.floor(video.currentTime / 60);
             const cm = Math.round(video.currentTime % 60);
             const ct = `${ch.toString().padStart(2, '0')}:${cm.toString().padStart(2, '0')}`;
-            timetext.innerHTML = ct + '/' + dt
-            var webTime = await getTime(videoId)
+            timetext.innerHTML = ct + '/' + dt;
             video.currentTime = webTime;
             timeSlider.value = webTime;
             syncTime(webTime);
@@ -291,7 +291,7 @@ async function main() {
                     type: 'set',
                     sn: videoId,
                     time: video.currentTime,
-                    ended: false
+                    ended: ended
                 }));
             });
         });
@@ -343,6 +343,7 @@ async function main() {
 
         video.addEventListener("ended", (event) => {
             setTime(videoId, 0, true);
+            ended = true;
             var nextEpisode = (Number(videoData.episode) + 1).toString();
             var nextObj = videoSeries.find(value => value.episode == nextEpisode);
             if (nextObj) {
