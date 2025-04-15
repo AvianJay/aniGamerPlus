@@ -40,6 +40,9 @@
         </div>
         <hr>
         <div class="text-center">
+            <input type="password" class="form-control" id="old_password" placeholder="舊密碼" />
+            <input type="password" class="form-control" id="new_password1" placeholder="新密碼" />
+            <input type="password" class="form-control" id="new_password2" placeholder="驗證新密碼" />
             <button class="btn btn-primary" id="change-password-btn">修改密碼</button>
         </div>
     </div>
@@ -73,18 +76,19 @@
 
             // 修改密碼按鈕
             $('#change-password-btn').click(function () {
-                const newPassword = prompt('請輸入新密碼：');
+                const oldPassword = document.getElementById('old_password')
+                const newPassword1 = document.getElementById('new_password1')
+                const newPassword2 = document.getElementById('new_password2')
                 if (newPassword) {
                     $.ajax({
                         url: './userinfo',
                         method: 'POST',
                         contentType: 'application/json',
-                        data: JSON.stringify({ action: 'change', password: newPassword }),
+                        data: JSON.stringify({ action: 'change', old_password: oldPassword, new_password1: newPassword1, new_password2: newPassword2 }),
                         success: function (response) {
+                            alert(response.message);
                             if (response.status === '200') {
-                                alert(response.message);
-                            } else {
-                                alert('修改密碼失敗！');
+                                window.location.href = "./logout";
                             }
                         },
                         error: function () {

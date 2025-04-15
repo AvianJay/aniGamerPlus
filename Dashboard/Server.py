@@ -29,6 +29,7 @@ from flask_sockets import Sockets
 from gevent.pywsgi import WSGIServer
 from geventwebsocket.exceptions import WebSocketError
 from geventwebsocket.handler import WebSocketHandler
+from datetime import datetime
 
 mimetypes.add_type('text/css', '.css')
 mimetypes.add_type('application/x-javascript', '.js')
@@ -442,7 +443,7 @@ if settings["dashboard"]["online_watch"]:
         if gettype == 'set':
             for user in userdata['users']:
                 if user['token'] == token:
-                    user['videotimes'][sn] = {"time": int(float(request.args.get('time'))), "ended": ended}
+                    user['videotimes'][sn] = {"time": int(float(request.args.get('time'))), "ended": ended, "timestamp": int(datetime.now().timestamp())}
                     with open(os.path.join(Config.get_working_dir(), 'Dashboard', 'userdata.json'), 'w', encoding='utf-8') as f:
                         json.dump(userdata, f, ensure_ascii=False, indent=4)
                     return '{"status":"200"}'
@@ -457,8 +458,8 @@ if settings["dashboard"]["online_watch"]:
                         return jsonify({"time": 0, "ended": False})
         for user in userdata['users']:
             if user['token'] == token:
-                return '{"status":"404", "msg":"Type is invalid"}'
-        return '{"status":"403", "msg":"Token is invalid"}'
+                return '{"status":"404", "msg":"Invalid type"}'
+        return '{"status":"403", "msg":"Invalid token"}'
     
 
 @app.route('/get_server_info')
@@ -605,8 +606,16 @@ if settings['dashboard']['user_control']['enabled']:
                         retData.pop('token')
                         retData.pop('password')
                         return jsonify(retData)
-                    elif reqdata.get('action') == 'change':
-                        user['password'] = reqdata.get('password')
+                    elif reqdata.get('action') == 'changepassword':
+                        original_pw = reqdata.get('original_password')
+                        if not original_pw == user['password']:
+                            return jsonify({"status": "403", "message": "舊密碼驗證失敗！"})
+                        pw1 = reqdata.get('new_password1')
+                        pw2 = reqdata.get('new_password2')
+                        if not pw1 == pw2:
+                            return jsonify({"status": "403", "message": "新密碼不一致！"})
+                        user['password'] = pw1
+                        user['token'] = ''.join(random.sample(string.ascii_letters + string.digits, 32))
                         with open(os.path.join(Config.get_working_dir(), 'Dashboard', 'userdata.json'), 'w', encoding='utf-8') as f:
                             json.dump(userdata, f, ensure_ascii=False, indent=4)
                         return jsonify({"status": "200", "message": "修改成功!"})
