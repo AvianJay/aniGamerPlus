@@ -428,17 +428,27 @@ if settings["dashboard"]["online_watch"]:
         return jsonify(video_json)
 
 
-    @app.route('/watch/time')
+    @app.route('/watch/time', methods=['GET', 'POST'])
     def webtime():
-        gettype = request.args.get('type')
-        sn = request.args.get('sn')
-        ended = request.args.get('ended', "false").lower() == "true"
+        if request.method == 'POST':
+            reqdata = request.get_json() or request.form.copy()
+        else:
+            reqdata = request.args.copy()
+            try:
+                reqdata = request.get_json()
+                if reqdata is None:
+                    return '<script>alert("Invalid or missing JSON payload!");history.back();</script>'
+            except Exception as e:
+                return f'<script>alert("Error parsing JSON: {str(e)}");history.back();</script>'
+        gettype = reqdata.get('type')
+        sn = reqdata.get('sn')
+        ended = reqdata.get('ended', "false").lower() == "true"
         token = request.cookies.get('token')
         userdata = json.load(open(os.path.join(Config.get_working_dir(), 'Dashboard', 'userdata.json'), 'r'))
         if gettype == 'set':
             for user in userdata['users']:
                 if user['token'] == token:
-                    user['videotimes'][sn] = {"time": int(request.args.get('time')), "ended": ended}
+                    user['videotimes'][sn] = {"time": int(float(request.args.get('time'))), "ended": ended}
                     with open(os.path.join(Config.get_working_dir(), 'Dashboard', 'userdata.json'), 'w', encoding='utf-8') as f:
                         json.dump(userdata, f, ensure_ascii=False, indent=4)
                     return '{"status":"200"}'
@@ -486,18 +496,18 @@ if settings['dashboard']['user_control']['enabled']:
             userdata = {"users": settings['dashboard']['user_control']['default_user'].copy()}
             for u in userdata["users"]:
                 u["token"] = ''.join(random.sample(string.ascii_letters + string.digits, 32))
-                u["videotimes"] = []
+                u["videotimes"] = {}
     else:
         userdata = {"users": settings['dashboard']['user_control']['default_user'].copy()}
         for u in userdata["users"]:
             u["token"] = ''.join(random.sample(string.ascii_letters + string.digits, 32))
-            u["videotimes"] = []
+            u["videotimes"] = {}
     with open(os.path.join(Config.get_working_dir(), 'Dashboard', 'userdata.json'), 'w', encoding='utf-8') as f:
         json.dump(userdata, f, ensure_ascii=False, indent=4)
 
     @app.route('/logout')
     def logout():
-        return '<script>document.cookie = "token=expired";document.cookie = "logined=false";window.location.href = "/login"</script>'
+        return '<script>document.cookie = "token=expired";document.cookie = "logined=false";window.location.href = "./login"</script>'
 
     @app.route('/login', methods=['GET', 'POST'])
     def login():
@@ -513,8 +523,8 @@ if settings['dashboard']['user_control']['enabled']:
             userdata = json.load(open(os.path.join(Config.get_working_dir(), 'Dashboard', 'userdata.json'), 'r'))
             for user in userdata['users']:
                 if user['username'] == username and user['password'] == password:
-                    return f"<script>document.cookie = 'token={user['token']}';document.cookie = 'logined=true';window.location.href = '/watch'</script>"
-            return '<script>window.location.href = "/login?error=1"</script>'
+                    return f"<script>document.cookie = 'token={user['token']}; expires=Fri, 31 Dec 9999 23:59:59 GMT';document.cookie = 'logined=true; expires=Fri, 31 Dec 9999 23:59:59 GMT';window.location.href = './watch'</script>"
+            return '<script>window.location.href = "./login?error=1"</script>'
         else:
             return render_template('login.html')
 
@@ -532,26 +542,26 @@ if settings['dashboard']['user_control']['enabled']:
             if not reqdata:
                 return '<script>alert("Empty request!);history.back();</script>'
             if not reqdata.get('pw1') == reqdata.get('pw2'):
-                return '<script>window.location.href = "/register?error=2"</script>'
+                return '<script>window.location.href = "./register?error=2"</script>'
             username = reqdata.get('username')
             password = reqdata.get('pw1')
             userdata = json.load(open(os.path.join(Config.get_working_dir(), 'Dashboard', 'userdata.json'), 'r'))
             for user in userdata['users']:
                 if user['username'] == username:
-                    return '<script>window.location.href = "/register?error=1"</script>'
+                    return '<script>window.location.href = "./register?error=1"</script>'
             newuser = {'username': username, 'password': password, 'token': ''.join(random.sample(string.ascii_letters + string.digits, 32)), 'videotimes': [], 'role': 'user'}
             userdata['users'].append(newuser)
             with open(os.path.join(Config.get_working_dir(), 'Dashboard', 'userdata.json'), 'w', encoding='utf-8') as f:
                 json.dump(userdata, f, ensure_ascii=False, indent=4)
-            return '<script>alert("註冊成功!");window.location.href = "/login"</script>'
+            return '<script>alert("註冊成功!");window.location.href = "./login"</script>'
         else:
             return render_template('register.html')
         
     @app.route('/control/user', methods=['GET', 'POST'])
     def usermanage():
         if request.method == 'POST':
-            if reqdata:
-                reqdata = reqdata.copy()
+            if request.form:
+                reqdata = request.form.copy()
             else:
                 reqdata = request.get_json()
             if not reqdata:
@@ -589,8 +599,8 @@ if settings['dashboard']['user_control']['enabled']:
     def userinfo():
         userdata = json.load(open(os.path.join(Config.get_working_dir(), 'Dashboard', 'userdata.json'), 'r'))
         if request.method == 'POST':
-            if reqdata:
-                reqdata = reqdata.copy()
+            if request.form:
+                reqdata = request.form.copy()
             else:
                 reqdata = request.get_json()
             if not reqdata:

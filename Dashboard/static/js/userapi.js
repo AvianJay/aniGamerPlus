@@ -60,7 +60,7 @@ async function userMain() {
                         document.cookie = 'logined=true; expires=Fri, 31 Dec 9999 23:59:59 GMT';
                         var userlink = document.createElement('li');
                         userlink.className = 'nav-item my-navbar';
-                        userlink.innerHTML = '<a class="nav-link" href="./user">' + data.name + '</a>';
+                        userlink.innerHTML = '<a class="nav-link" href="./userinfo">' + data.username + '</a>';
                         navbar.appendChild(userlink);
                         var logoutlink = document.createElement('li');
                         logoutlink.className = 'nav-item my-navbar';

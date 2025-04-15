@@ -22,25 +22,30 @@ function getCookieByName(name) {
     return value;
 }
 
-function getTime(sn) {
+async function getTime(sn) {
     if (getCookieByName('logined') == 'true') {
-        fetch('./watch/time?sn=' + sn + '&type=get').then(res => res.json()).then((data) => {
-            var time = parseInt(data.time);
-            if (time) {
-                if (data.ended) {
-                    return 0;
-                }
-                return time;
-            } else {
+        let res = await fetch('./watch/time?sn=' + sn + '&type=get');
+        let data = await res.json();
+        if (data.time) {
+            if (data.ended) {
                 return 0;
             }
-        });
+            return data.time;
+        } else {
+            return 0;
+        }
     } else {
         return 0;
     }
 }
 
+let lastSetTime = 0;
 function setTime(sn, time, ended) {
+    let currentTime = new Date().getTime();
+    if (currentTime - lastSetTime < 10000) {
+        return;
+    }
+    lastSetTime = currentTime;
     if (getCookieByName('logined') == 'true') {
         if (ended) {
             fetch('./watch/time?sn=' + sn + '&type=set&time=0&ended=true');
@@ -266,7 +271,7 @@ async function main() {
         }
 
 
-        video.addEventListener('loadedmetadata', function () {
+        video.addEventListener('loadedmetadata', async function () {
             timeSlider.max = video.duration;
             timeSlider.value = 0;
             const dh = Math.floor(video.duration / 60);
@@ -276,10 +281,18 @@ async function main() {
             const cm = Math.round(video.currentTime % 60);
             const ct = `${ch.toString().padStart(2, '0')}:${cm.toString().padStart(2, '0')}`;
             timetext.innerHTML = ct + '/' + dt
-            getTime(videoId).then((time) => {
-                video.currentTime = time;
-                timeSlider.value = time;
-                syncTime(time);
+            var webTime = await getTime(videoId)
+            video.currentTime = webTime;
+            timeSlider.value = webTime;
+            syncTime(webTime);
+            window.addEventListener('unload', function () {
+                // 使用 navigator.sendBeacon 發送資料
+                navigator.sendBeacon('./watch/time', JSON.stringify({
+                    type: 'set',
+                    sn: videoId,
+                    time: video.currentTime,
+                    ended: false
+                }));
             });
         });
 
