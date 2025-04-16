@@ -109,7 +109,7 @@ async function getVideoSeries(sn) {
 function convertTime(duration) {
     const h = Math.floor(duration / 60);
     const m = Math.round(duration % 60);
-    const result = `${dh.toString().padStart(2, '0')}:${dm.toString().padStart(2, '0')}`;
+    const result = `${h.toString().padStart(2, '0')}:${m.toString().padStart(2, '0')}`;
     return result;
 }
 
