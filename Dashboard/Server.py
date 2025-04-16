@@ -542,7 +542,7 @@ if settings['dashboard']['user_control']['enabled']:
             for user in userdata['users']:
                 if user['username'] == username:
                     return '<script>window.location.href = "./register?error=1"</script>'
-            newuser = {'username': username, 'password': password, 'token': ''.join(random.sample(string.ascii_letters + string.digits, 32)), 'videotimes': [], 'role': 'user'}
+            newuser = {'username': username, 'password': password, 'token': ''.join(random.sample(string.ascii_letters + string.digits, 32)), 'videotimes': {}, 'role': 'user'}
             userdata['users'].append(newuser)
             with open(os.path.join(Config.get_working_dir(), 'Dashboard', 'userdata.json'), 'w', encoding='utf-8') as f:
                 json.dump(userdata, f, ensure_ascii=False, indent=4)
