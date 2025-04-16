@@ -550,7 +550,7 @@ if settings['dashboard']['user_control']['enabled']:
         else:
             return render_template('register.html')
         
-    @app.route('/control/user', methods=['GET', 'POST'])
+    @app.route('/usermanage', methods=['GET', 'POST'])
     def usermanage():
         if request.method == 'POST':
             if request.form:
