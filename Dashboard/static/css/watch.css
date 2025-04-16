@@ -190,6 +190,7 @@ a:hover {
   margin: 0;
   display: none;
   overflow: hidden;
+  width: 100%;
 }
 
 .animeEpisodeList li {
