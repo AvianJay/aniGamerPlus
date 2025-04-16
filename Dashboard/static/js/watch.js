@@ -359,7 +359,7 @@ async function main() {
         }
         // i like yt
 
-        video.addEventListener("ended", (event) => {
+        video.addEventListener("ended", async function (event) {
             await setTime(videoId, 0, true);
             ended = true;
             var nextEpisode = (Number(videoData.episode) + 1).toString();
