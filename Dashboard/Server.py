@@ -452,7 +452,7 @@ if settings["dashboard"]["online_watch"]:
                 if user['token'] == token:
                     if not sn:
                         return jsonify(user['videotimes'])
-                    if user['videotimes'][sn]:
+                    if user['videotimes'].get(sn):
                         return jsonify(user['videotimes'][sn])
                     else:
                         return jsonify({"time": 0, "ended": False})

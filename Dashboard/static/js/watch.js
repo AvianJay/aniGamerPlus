@@ -39,6 +39,16 @@ async function getTime(sn) {
     }
 }
 
+async function getAllTimes() {
+    if (getCookieByName('logined') == 'true') {
+        let res = await fetch('./watch/time?type=get');
+        let data = await res.json();
+        return data;
+    } else {
+        return {};
+    }
+}
+
 let lastSetTime = 0;
 function setTime(sn, time, ended) {
     let currentTime = new Date().getTime();
@@ -94,6 +104,13 @@ async function getVideoSeries(sn) {
     let fullList = await getVideoList();
     series = fullList.videos.filter(value => value.anime_name == vd.anime_name);
     return series;
+}
+
+function convertTime(duration) {
+    const h = Math.floor(duration / 60);
+    const m = Math.round(duration % 60);
+    const result = `${dh.toString().padStart(2, '0')}:${dm.toString().padStart(2, '0')}`;
+    return result;
 }
 
 async function main() {
@@ -487,12 +504,8 @@ async function main() {
         }
 
         function syncTime(time) {
-            const dh = Math.floor(video.duration / 60);
-            const dm = Math.round(video.duration % 60);
-            const dt = `${dh.toString().padStart(2, '0')}:${dm.toString().padStart(2, '0')}`;
-            const ch = Math.floor(video.currentTime / 60);
-            const cm = Math.round(video.currentTime % 60);
-            const ct = `${ch.toString().padStart(2, '0')}:${cm.toString().padStart(2, '0')}`;
+            const dt = convertTime(video.duration);
+            const ct = convertTime(video.currentTime);
             timetext.innerHTML = ct + '/' + dt;
             setTime(videoData.sn, time, false);
             if (video.currentTime >= video.duration - 5) {
@@ -655,6 +668,8 @@ async function main() {
         searchBox.appendChild(searchInput);
         document.body.appendChild(searchBox);
 
+        document.body.appendChild(document.createElement("hr"));
+
         var loadingBar = document.createElement("div");
         loadingBar.classList.add('row');
         loadingBar.classList.add('setting-content');
@@ -662,6 +677,10 @@ async function main() {
         loadingBar.style.justifyContent = "center";
         loadingBar.innerHTML = '<div id="progdiv" class="progress"><div id="prog" class="progress-bar progress-bar-striped progress-bar-animated" role="progressbar" aria-valuenow="1" aria-valuemin="0" aria-valuemax="1" style="width: 100%">載入清單中...</div></div>';
         document.body.appendChild(loadingBar);
+
+        // get watched time
+        var watchedTimes = await getAllTimes();
+
         // 載入影片清單
         var data = await getVideoList();
         var videos = data.videos;
@@ -697,20 +716,33 @@ async function main() {
             var videoList = document.createElement('ul');
             videoList.classList.add('animeEpisodeList');
 
+
             for (var j = 0; j < videosInCategory.length; j++) {
                 var videoItem = videosInCategory[j];
                 var videoId = videoItem.sn;
                 var videoTitle = videoItem.title;
 
+                // 創建影片清單項目
+                var videoListItem = document.createElement('li');
+                 videoListItem.classList.add('animeEpisodeItem');
+
                 // 創建影片連結
                 var videoLink = document.createElement('a');
                 videoLink.href = './watch?id=' + encodeURIComponent(videoId) + '&res=' + encodeURIComponent(videoItem.resolution);
-                videoLink.textContent = videoTitle;
-
-                // 創建影片清單項目
-                var videoListItem = document.createElement('li');
+                videoLink.textContent = `第 ${videoItem.episode} 集`;
                 videoListItem.appendChild(videoLink);
-                // videoListItem.appendChild(videodlLink);
+
+                if (watchedTimes[videoId]) {
+                    var watchedText = document.createElement('p');
+                    watchedText.classList.add('watchedText');
+                    if (watchedTimes[videoId].ended) {
+                        watchedText.textContent = "看完了";
+                    } else {
+                        watchedText.textContent = "看到 " + convertTime(watchedTimes[videoId].time);
+                    }
+                    videoListItem.appendChild(watchedText);
+                }
+
                 videoList.appendChild(videoListItem);
             }
 

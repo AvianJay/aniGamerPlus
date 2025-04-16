@@ -236,3 +236,13 @@ a:hover {
     display: none; /* 預設隱藏 */
     box-shadow: 0px 4px 6px rgba(0, 0, 0, 0.1); /* 增加陰影效果 */
 }
+
+.animeEpisodeItem {
+    width: 100%;
+    display: flex;
+}
+
+.watchedText {
+    flex: 1;
+    text-align: end;
+}
