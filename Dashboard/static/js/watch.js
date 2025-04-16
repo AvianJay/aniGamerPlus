@@ -50,7 +50,7 @@ async function getAllTimes() {
 }
 
 let lastSetTime = 0;
-function setTime(sn, time, ended) {
+async function setTime(sn, time, ended) {
     let currentTime = new Date().getTime();
     if (currentTime - lastSetTime < 10000) {
         return;
@@ -58,10 +58,10 @@ function setTime(sn, time, ended) {
     lastSetTime = currentTime;
     if (getCookieByName('logined') == 'true') {
         if (ended) {
-            fetch('./watch/time?sn=' + sn + '&type=set&time=0&ended=true');
+            await fetch('./watch/time?sn=' + sn + '&type=set&time=0&ended=true');
             return;
         } else {
-            fetch('./watch/time?sn=' + sn + '&type=set&time=' + time);
+            await fetch('./watch/time?sn=' + sn + '&type=set&time=' + time);
             return;
         }
     }
@@ -302,7 +302,8 @@ async function main() {
             video.currentTime = webTime;
             timeSlider.value = webTime;
             syncTime(webTime);
-            window.addEventListener('unload', function () {
+
+            window.addEventListener('beforeunload', function () {
                 // 使用 navigator.sendBeacon 發送資料
                 navigator.sendBeacon('./watch/time', JSON.stringify({
                     type: 'set',
@@ -359,7 +360,7 @@ async function main() {
         // i like yt
 
         video.addEventListener("ended", (event) => {
-            setTime(videoId, 0, true);
+            await setTime(videoId, 0, true);
             ended = true;
             var nextEpisode = (Number(videoData.episode) + 1).toString();
             var nextObj = videoSeries.find(value => value.episode == nextEpisode);
@@ -655,9 +656,9 @@ async function main() {
         searchInput.classList.add('form-control');
         searchInput.placeholder = "搜尋動漫...";
         searchInput.addEventListener("input", (event) => {
-            var query = event.target.value;
+            var query = event.target.value.toLowerCase();
             Array.prototype.forEach.call(document.getElementsByClassName("animeCategory"), (category) => {
-                var name = category.getElementsByTagName("h2")[0].textContent;
+                var name = category.getElementsByTagName("h2")[0].textContent.toLowerCase();
                 if (name.includes(query)) {
                     category.style.display = "block";
                 } else {
