@@ -135,4 +135,7 @@ async function userMain() {
         console.warn(err);
     }
 }
-userMain();
+
+$(document).ready(function () {
+    userMain();
+});
