@@ -412,6 +412,10 @@ async function main() {
             }
         }
 
+        var finalWidth = window.innerWidth * (widthsize / 100);
+        var finalHeight = finalWidth / 16 * 9;
+        video.style.width = finalWidth + 'px';
+        video.style.height = finalHeight + 'px';
         window.addEventListener("resize", function () {
             speedDropdown.style.display = 'none';
             if (isFullscreen) {
@@ -621,9 +625,12 @@ async function main() {
             videoListe.classList.add('animeWatchingEpisodeList');
             document.getElementById("anotherVideoBox").appendChild(categorybox);
             videoListe.style.display = "block";
+            var finalWidth = window.innerWidth * (widthsize / 100);
+            var finalHeight = (finalWidth / 16 * 9) - 75;
+            videoListe.style.height = finalHeight + "px";
             window.addEventListener("resize", function () {
                 var finalWidth = window.innerWidth * (widthsize / 100);
-                var finalHeight = (finalWidth / 16 * 9) - 71;
+                var finalHeight = (finalWidth / 16 * 9) - 75;
                 videoListe.style.height = finalHeight + "px";
             });
         }
