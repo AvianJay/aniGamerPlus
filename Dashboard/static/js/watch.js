@@ -701,7 +701,8 @@ async function main() {
             watchedVideoList.classList.add('animeEpisodeList');
             watchedVideoBox.appendChild(watchedVideoList);
             document.body.appendChild(watchedVideoBox);
-            for (var i = 0; i < userWatchedVideos.length; i++) {
+            var limit = 10;
+            for (var i = 0; i < userWatchedVideos.length || i < limit; i++) {
                 var videoItem = userWatchedVideos[i];
                 var videoId = videoItem.sn;
                 var videoTitle = videoItem.title;
@@ -729,6 +730,7 @@ async function main() {
 
                 watchedVideoList.appendChild(videoListItem);
             }
+            document.appendChild(document.createElement("hr"));
         }
 
         // 分類影片
