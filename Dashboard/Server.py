@@ -437,7 +437,7 @@ if settings["dashboard"]["online_watch"]:
             reqdata = request.args.copy()
         gettype = reqdata.get('type')
         sn = reqdata.get('sn')
-        ended = reqdata.get('ended', "false").lower() == "true"
+        ended = str(reqdata.get('ended', "false")).lower() == "true"
         token = request.cookies.get('token')
         userdata = json.load(open(os.path.join(Config.get_working_dir(), 'Dashboard', 'userdata.json'), 'r'))
         if gettype == 'set':

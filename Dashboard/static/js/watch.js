@@ -50,10 +50,12 @@ async function getAllTimes() {
 }
 
 let lastSetTime = 0;
-async function setTime(sn, time, ended) {
+async function setTime(sn, time, ended, force=false) {
     let currentTime = new Date().getTime();
-    if (currentTime - lastSetTime < 10000) {
-        return;
+    if (!force) {
+        if (currentTime - lastSetTime < 10000) {
+            return;
+        }
     }
     lastSetTime = currentTime;
     if (getCookieByName('logined') == 'true') {
@@ -333,6 +335,7 @@ async function main() {
         video.addEventListener('pause', function () {
             playPauseButton.innerHTML = '<svg height="100%" version="1.1" viewBox="0 0 36 36" width="100%"><path d="M 12,26 18.5,22 18.5,14 12,10 z M 18.5,22 25,18 25,18 18.5,14 z"></path></svg>';
             showControls();
+            setTime(videoData.sn, video.currentTime, false, true);
         })
         if (videoData.danmu) {
             danmuButton.addEventListener('click', function () {
@@ -360,17 +363,13 @@ async function main() {
         // i like yt
 
         video.addEventListener("ended", async function (event) {
-            await setTime(videoId, 0, true);
+            await setTime(videoId, 0, true, true);
             ended = true;
             var nextEpisode = (Number(videoData.episode) + 1).toString();
             var nextObj = videoSeries.find(value => value.episode == nextEpisode);
             if (nextObj) {
                 // todo: display message and countdown
-                if (isFullscreen) {
-                    window.location.href = "./watch?id=" + nextObj.sn + "&res=" + nextObj.resolution + "&fullscreen=true";
-                } else {
-                    window.location.href = "./watch?id=" + nextObj.sn + "&res=" + nextObj.resolution;
-                }
+                window.location.href = "./watch?id=" + nextObj.sn + "&res=" + nextObj.resolution;
             }
         });
 
@@ -443,9 +442,9 @@ async function main() {
                     screen.orientation.lock("landscape-primary");
                 } catch (e) { }
             } else {
-                try {
-                    screen.orientation.lock("portrait-primary");
-                } catch (e) { }
+                // try {
+                //     screen.orientation.lock("portrait-primary");
+                // } catch (e) { }
                 if (document.exitFullscreen) {
                     document.exitFullscreen();
                 } else if (document.mozCancelFullScreen) {
@@ -642,11 +641,6 @@ async function main() {
         videoDetail.appendChild(videoTitle);
         videoDetail.appendChild(videoSource);
         document.body.appendChild(videoDetail);
-
-        var needFullscreen = urlParams.get('fullscreen');
-        if (needFullscreen == 'true') {
-            toggleFullscreen();
-        }
     } else {
         var searchBox = document.createElement("div");
         searchBox.classList.add('row');
