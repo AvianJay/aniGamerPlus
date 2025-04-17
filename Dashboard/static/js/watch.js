@@ -704,6 +704,9 @@ async function main() {
             var limit = 10;
             for (var i = 0; i < userWatchedVideos.length || i < limit; i++) {
                 var videoItem = userWatchedVideos[i];
+                if (!videoItem) {
+                    break;
+                }
                 var videoId = videoItem.sn;
                 var videoTitle = videoItem.title;
 
@@ -730,7 +733,7 @@ async function main() {
 
                 watchedVideoList.appendChild(videoListItem);
             }
-            document.appendChild(document.createElement("hr"));
+            document.body.appendChild(document.createElement("hr"));
         }
 
         // 分類影片
