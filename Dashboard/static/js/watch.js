@@ -50,7 +50,7 @@ async function getAllTimes() {
 }
 
 let lastSetTime = 0;
-async function setTime(sn, time, ended, force=false) {
+async function setTime(sn, time, ended, force = false) {
     let currentTime = new Date().getTime();
     if (!force) {
         if (currentTime - lastSetTime < 10000) {
@@ -683,26 +683,41 @@ async function main() {
         // get user watched videos
         if (watchedTimes) {
             var userWatchedVideos = videos.filter(video => watchedTimes[video.sn] && watchedTimes[video.sn].time > 0);
-            userWatchedVideos.sort((a, b) => a.timestamp - b.timestamp);
+            var lastWatchAnimeGroups = {};
+            userWatchedVideos.forEach(video => {
+                video.timestamp = watchedTimes[video.sn].timestamp;
+                if (lastWatchAnimeGroups[video.anime_name]) {
+                    if (lastWatchAnimeGroups[video.anime_name].timestamp < video.timestamp) {
+                        lastWatchAnimeGroups[video.anime_name] = video;
+                    }
+                } else {
+                    lastWatchAnimeGroups[video.anime_name] = video;
+                }
+            })
+            userWatchedVideos.sort((a, b) => b.timestamp - a.timestamp);
             var watchedVideoBox = document.createElement('div');
             watchedVideoBox.classList.add('row');
             watchedVideoBox.classList.add('animeCategory');
             var watchedVideoTitle = document.createElement('h2');
             watchedVideoTitle.classList.add('animeCategoryTitle');
-            watchedVideoTitle.textContent = "最近觀看";
+            watchedVideoTitle.textContent = "繼續觀看";
             watchedVideoBox.appendChild(watchedVideoTitle);
             var watchedVideoList = document.createElement('ul');
             watchedVideoList.classList.add('animeEpisodeList');
             watchedVideoBox.appendChild(watchedVideoList);
             document.body.appendChild(watchedVideoBox);
             var limit = 10;
-            for (var i = 0; i < userWatchedVideos.length || i < limit; i++) {
-                var videoItem = userWatchedVideos[i];
+            for (var anime in lastWatchAnimeGroups) {
+                limit--;
+                if (limit < 0) {
+                    break;
+                }
+                var videoItem = lastWatchAnimeGroups[anime];
                 if (!videoItem) {
                     break;
                 }
                 var videoId = videoItem.sn;
-                var videoTitle = videoItem.title;
+                var videoTitle = videoItem.anime_name;
 
                 // 創建影片清單項目
                 var videoListItem = document.createElement('li');
@@ -718,9 +733,9 @@ async function main() {
                     var watchedText = document.createElement('p');
                     watchedText.classList.add('watchedText');
                     if (watchedTimes[videoId].ended) {
-                        watchedText.textContent = "看完了";
+                        watchedText.textContent = "看到第 " + videoItem.episode + " 集 "
                     } else {
-                        watchedText.textContent = "看到 " + convertTime(watchedTimes[videoId].time);
+                        watchedText.textContent = "看到第 " + videoItem.episode + " 集 " + convertTime(watchedTimes[videoId].time);
                     }
                     videoListItem.appendChild(watchedText);
                 }
