@@ -689,7 +689,7 @@ async function main() {
 
         // get user watched videos
         if (watchedTimes) {
-            var userWatchedVideos = videos.filter(video => watchedTimes[video.sn] && watchedTimes[video.sn].time > 0);
+            var userWatchedVideos = videos.filter(video => watchedTimes[video.sn]);
             userWatchedVideos.sort((a, b) => watchedTimes[b.sn].timestamp - watchedTimes[a.sn].timestamp);
             var lastWatchAnimeGroups = {};
             userWatchedVideos.forEach(video => {
