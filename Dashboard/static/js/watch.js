@@ -689,7 +689,7 @@ async function main() {
         // get user watched videos
         if (watchedTimes) {
             var userWatchedVideos = videos.filter(video => watchedTimes[video.sn] && watchedTimes[video.sn].time > 0);
-            userWatchedVideos.sort((a, b) => b.timestamp - a.timestamp);
+            userWatchedVideos.sort((a, b) => a.timestamp - b.timestamp);
             var watchedVideoBox = document.createElement('div');
             watchedVideoBox.classList.add('row');
             watchedVideoBox.classList.add('animeCategory');
