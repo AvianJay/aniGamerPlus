@@ -686,6 +686,51 @@ async function main() {
         var data = await getVideoList();
         var videos = data.videos;
 
+        // get user watched videos
+        if (watchedTimes) {
+            var userWatchedVideos = videos.filter(video => watchedTimes[video.sn] && watchedTimes[video.sn].time > 0);
+            userWatchedVideos.sort((a, b) => b.timestamp - a.timestamp);
+            var watchedVideoBox = document.createElement('div');
+            watchedVideoBox.classList.add('row');
+            watchedVideoBox.classList.add('animeCategory');
+            var watchedVideoTitle = document.createElement('h2');
+            watchedVideoTitle.classList.add('animeCategoryTitle');
+            watchedVideoTitle.textContent = "最近觀看";
+            watchedVideoBox.appendChild(watchedVideoTitle);
+            var watchedVideoList = document.createElement('ul');
+            watchedVideoList.classList.add('animeEpisodeList');
+            watchedVideoBox.appendChild(watchedVideoList);
+            document.body.appendChild(watchedVideoBox);
+            for (var i = 0; i < userWatchedVideos.length; i++) {
+                var videoItem = userWatchedVideos[i];
+                var videoId = videoItem.sn;
+                var videoTitle = videoItem.title;
+
+                // 創建影片清單項目
+                var videoListItem = document.createElement('li');
+                videoListItem.classList.add('animeEpisodeItem');
+
+                // 創建影片連結
+                var videoLink = document.createElement('a');
+                videoLink.href = './watch?id=' + encodeURIComponent(videoId) + '&res=' + encodeURIComponent(videoItem.resolution);
+                videoLink.textContent = `${videoTitle}`;
+                videoListItem.appendChild(videoLink);
+
+                if (watchedTimes[videoId]) {
+                    var watchedText = document.createElement('p');
+                    watchedText.classList.add('watchedText');
+                    if (watchedTimes[videoId].ended) {
+                        watchedText.textContent = "看完了";
+                    } else {
+                        watchedText.textContent = "看到 " + convertTime(watchedTimes[videoId].time);
+                    }
+                    videoListItem.appendChild(watchedText);
+                }
+
+                watchedVideoList.appendChild(videoListItem);
+            }
+        }
+
         // 分類影片
         var videoGroups = {};
         for (var i = 0; i < videos.length; i++) {
@@ -725,7 +770,7 @@ async function main() {
 
                 // 創建影片清單項目
                 var videoListItem = document.createElement('li');
-                 videoListItem.classList.add('animeEpisodeItem');
+                videoListItem.classList.add('animeEpisodeItem');
 
                 // 創建影片連結
                 var videoLink = document.createElement('a');
