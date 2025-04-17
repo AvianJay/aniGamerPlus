@@ -679,6 +679,10 @@ def run():
             except AttributeError:
                 # print('my_wrap_socket_and_handle AttributeError')
                 pass
+            except TypeError:
+                pass
+            except ConnectionResetError:
+                pass
 
         server.wrap_socket = my_wrap_socket
         server.wrap_socket_and_handle = my_wrap_socket_and_handle
