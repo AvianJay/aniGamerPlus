@@ -683,6 +683,7 @@ async function main() {
         // get user watched videos
         if (watchedTimes) {
             var userWatchedVideos = videos.filter(video => watchedTimes[video.sn] && watchedTimes[video.sn].time > 0);
+            userWatchedVideos.sort((a, b) => watchedTimes[b.sn].timestamp - watchedTimes[a.sn].timestamp);
             var lastWatchAnimeGroups = {};
             userWatchedVideos.forEach(video => {
                 video.timestamp = watchedTimes[video.sn].timestamp;
@@ -694,7 +695,6 @@ async function main() {
                     lastWatchAnimeGroups[video.anime_name] = video;
                 }
             })
-            userWatchedVideos.sort((a, b) => b.timestamp - a.timestamp);
             var watchedVideoBox = document.createElement('div');
             watchedVideoBox.classList.add('row');
             watchedVideoBox.classList.add('animeCategory');
