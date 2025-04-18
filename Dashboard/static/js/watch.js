@@ -691,7 +691,7 @@ async function main() {
         var lastBahamutVideos = videos.filter(video => video.source == "巴哈姆特動畫瘋").slice(-10);
 
         // get user watched videos
-        if (watchedTimes) {
+        if (watchedTimes && Object.keys(watchedTimes).length > 0) {
             var userWatchedVideos = videos.filter(video => watchedTimes[video.sn]);
             userWatchedVideos.sort((a, b) => watchedTimes[b.sn].timestamp - watchedTimes[a.sn].timestamp);
             var lastWatchAnimeGroups = {};
