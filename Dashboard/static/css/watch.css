@@ -241,9 +241,18 @@ a:hover {
 .animeEpisodeItem {
     width: 100%;
     display: flex;
+    align-items: center;
+}
+
+.animeEpisodeItem a {
+    flex: 1;
+    overflow: hidden;
+    white-space: nowrap;
+    text-overflow: ellipsis;
 }
 
 .watchedText {
-    flex: 1;
+    flex: 0 0 auto;
     text-align: end;
+    margin: 0;
 }
