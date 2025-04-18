@@ -687,6 +687,9 @@ async function main() {
         var data = await getVideoList();
         var videos = data.videos;
 
+        // get "巴哈姆特動畫瘋" source last 10 videos
+        var lastBahamutVideos = videos.filter(video => video.source == "巴哈姆特動畫瘋").slice(-10);
+
         // get user watched videos
         if (watchedTimes) {
             var userWatchedVideos = videos.filter(video => watchedTimes[video.sn]);
@@ -748,6 +751,52 @@ async function main() {
                 }
 
                 watchedVideoList.appendChild(videoListItem);
+            }
+            if (!lastBahamutVideos) {
+                document.body.appendChild(document.createElement("hr"));
+            }
+        }
+
+        // 顯示巴哈姆特動畫瘋的最新影片
+        if (lastBahamutVideos) {
+            var lastBahamutBox = document.createElement('div');
+            lastBahamutBox.classList.add('row');
+            lastBahamutBox.classList.add('animeCategory');
+            var lastBahamutTitle = document.createElement('h2');
+            lastBahamutTitle.classList.add('animeCategoryTitle');
+            lastBahamutTitle.textContent = "近期更新";
+            lastBahamutBox.appendChild(lastBahamutTitle);
+            var lastBahamutList = document.createElement('ul');
+            lastBahamutList.classList.add('animeEpisodeList');
+            lastBahamutBox.appendChild(lastBahamutList);
+            document.body.appendChild(lastBahamutBox);
+            for (var i = 0; i < lastBahamutVideos.length; i++) {
+                var videoItem = lastBahamutVideos[i];
+                var videoId = videoItem.sn;
+                var videoTitle = videoItem.anime_name;
+
+                // 創建影片清單項目
+                var videoListItem = document.createElement('li');
+                videoListItem.classList.add('animeEpisodeItem');
+
+                // 創建影片連結
+                var videoLink = document.createElement('a');
+                videoLink.href = './watch?id=' + encodeURIComponent(videoId) + '&res=' + encodeURIComponent(videoItem.resolution);
+                videoLink.textContent = `${videoTitle}`;
+                videoListItem.appendChild(videoLink);
+
+                if (watchedTimes[videoId]) {
+                    var watchedText = document.createElement('p');
+                    watchedText.classList.add('watchedText');
+                    if (watchedTimes[videoId].ended) {
+                        watchedText.textContent = "看完了";
+                    } else {
+                        watchedText.textContent = "看到 " + convertTime(watchedTimes[videoId].time);
+                    }
+                    videoListItem.appendChild(watchedText);
+                }
+
+                lastBahamutList.appendChild(videoListItem);
             }
             document.body.appendChild(document.createElement("hr"));
         }
