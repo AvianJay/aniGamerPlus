@@ -688,7 +688,56 @@ async function main() {
         var videos = data.videos;
 
         // get "巴哈姆特動畫瘋" source last 10 videos
-        var lastBahamutVideos = videos.filter(video => video.source == "巴哈姆特動畫瘋").slice(-10);
+        var bahamutVideos = videos.filter(video => video.source == "巴哈姆特動畫瘋");
+        var lastBahamutVideos = {};
+        for (var i = bahamutVideos.length - 1; i >= 0; i--) {
+            if (Object.keys(lastBahamutVideos).length >= 10) {
+                break;
+            }
+            if (!lastBahamutVideos[bahamutVideos[i].anime_name]) {
+                lastBahamutVideos[bahamutVideos[i].anime_name] = bahamutVideos[i];
+            } else {
+                if (lastBahamutVideos[bahamutVideos[i].anime_name].episode < bahamutVideos[i].episode) {
+                    lastBahamutVideos[bahamutVideos[i].anime_name] = bahamutVideos[i];
+                }
+            }
+        }
+        lastBahamutVideos = Object.values(lastBahamutVideos);
+        // get user watched videos if exists
+        var lastBahamutWatchedVideos = []
+        for (var i = 0; i < lastBahamutVideos.length; i++) {
+            var videoItem = lastBahamutVideos[i];
+            var videoSeries = await getVideoSeries(videoItem.sn);
+            var userWatchedVideos = videos.filter(video => watchedTimes[video.sn]);
+            userWatchedVideos.sort((a, b) => watchedTimes[b.sn].timestamp - watchedTimes[a.sn].timestamp);
+            var lastWatchAnimeGroups = {};
+            userWatchedVideos.forEach(video => {
+                video.timestamp = watchedTimes[video.sn].timestamp;
+                if (lastWatchAnimeGroups[video.anime_name]) {
+                    if (lastWatchAnimeGroups[video.anime_name].timestamp < video.timestamp) {
+                        lastWatchAnimeGroups[video.anime_name] = video;
+                    }
+                } else {
+                    lastWatchAnimeGroups[video.anime_name] = video;
+                }
+            })
+            lastWatchAnimeGroups = Object.values(lastWatchAnimeGroups);
+            var foundVideo;
+            for (var j = 0; j < videoSeries.length; j++) {
+                var videoSeriesItem = videoSeries[j];
+                foundVideo = userWatchedVideos.find(video => video.sn == videoSeriesItem.sn);
+                if (foundVideo) {
+                    break;
+                }
+            }
+            if (foundVideo) {
+                foundVideo.originalEpisode = videoItem.episode;
+                lastBahamutWatchedVideos.push(foundVideo);
+            } else {
+                videoItem.originalEpisode = videoItem.episode;
+                lastBahamutWatchedVideos.push(videoItem);
+            }
+        }
 
         // get user watched videos
         if (watchedTimes && Object.keys(watchedTimes).length > 0) {
@@ -743,9 +792,16 @@ async function main() {
                     var watchedText = document.createElement('p');
                     watchedText.classList.add('watchedText');
                     if (watchedTimes[videoId].ended) {
-                        watchedText.textContent = "看到第 " + videoItem.episode + " 集 "
+                        var videoSeries = await getVideoSeries(videoId);
+                        var videoSeriesItem = videoSeries.find(video => video.episode == videoItem.episode + 1);
+                        if (videoSeriesItem) {
+                            videoLink.href = './watch?id=' + encodeURIComponent(videoSeriesItem.sn) + '&res=' + encodeURIComponent(videoSeriesItem.resolution);
+                            watchedText.textContent = "看到第 " + videoSeriesItem.episode + " 集";
+                        } else {
+                            watchedText.textContent = "看完了";
+                        }
                     } else {
-                        watchedText.textContent = "看到第 " + videoItem.episode + " 集 " + convertTime(watchedTimes[videoId].time);
+                        watchedText.textContent = "看到 " + convertTime(watchedTimes[videoId].time);
                     }
                     videoListItem.appendChild(watchedText);
                 }
@@ -758,7 +814,7 @@ async function main() {
         }
 
         // 顯示巴哈姆特動畫瘋的最新影片
-        if (lastBahamutVideos) {
+        if (lastBahamutWatchedVideos && lastBahamutVideos.length > 0) {
             var lastBahamutBox = document.createElement('div');
             lastBahamutBox.classList.add('row');
             lastBahamutBox.classList.add('animeCategory');
@@ -789,16 +845,30 @@ async function main() {
                     var watchedText = document.createElement('p');
                     watchedText.classList.add('watchedText');
                     if (watchedTimes[videoId].ended) {
-                        watchedText.textContent = "看完了";
+                        var videoSeries = await getVideoSeries(videoId);
+                        var videoSeriesItem = videoSeries.find(video => video.episode == videoItem.episode + 1);
+                        if (videoSeriesItem) {
+                            videoLink.href = './watch?id=' + encodeURIComponent(videoSeriesItem.sn) + '&res=' + encodeURIComponent(videoSeriesItem.resolution);
+                            if (videoSeriesItem.episode == videoItem.episode && videoItem.episode == videoItem.originalEpisode) {
+                                watchedText.textContent = "更新至第 " + videoItem.originalEpisode + " 集";
+                            } else {
+                                watchedText.textContent = "更新至 " + videoItem.originalEpisode + " 集，看到 " + videoSeriesItem.episode + " 集";
+                            }
+                        } else {
+                            watchedText.textContent = "看完了";
+                        }
                     } else {
-                        watchedText.textContent = "看到 " + convertTime(watchedTimes[videoId].time);
+                        if (videoItem.episode == videoItem.originalEpisode) {
+                            watchedText.textContent = "看到第 " + videoItem.episode + " 集 " + convertTime(watchedTimes[videoId].time);
+                        } else {
+                            watchedText.textContent = "更新至 " + videoItem.originalEpisode + " 集，看到 " + videoItem.episode + " 集 " + convertTime(watchedTimes[videoId].time);
+                        }
                     }
                     videoListItem.appendChild(watchedText);
+                    lastBahamutList.appendChild(videoListItem);
                 }
-
-                lastBahamutList.appendChild(videoListItem);
+                document.body.appendChild(document.createElement("hr"));
             }
-            document.body.appendChild(document.createElement("hr"));
         }
 
         // 分類影片
