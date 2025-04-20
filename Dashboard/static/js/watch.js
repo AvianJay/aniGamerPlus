@@ -841,9 +841,9 @@ async function main() {
                 videoLink.textContent = `${videoTitle}`;
                 videoListItem.appendChild(videoLink);
 
+                var watchedText = document.createElement('p');
+                watchedText.classList.add('watchedText');
                 if (watchedTimes[videoId]) {
-                    var watchedText = document.createElement('p');
-                    watchedText.classList.add('watchedText');
                     if (watchedTimes[videoId].ended) {
                         var videoSeries = await getVideoSeries(videoId);
                         var videoSeriesItem = videoSeries.find(video => video.episode == videoItem.episode + 1);
@@ -864,12 +864,15 @@ async function main() {
                             watchedText.textContent = "更新至 " + videoItem.originalEpisode + " 集，看到 " + videoItem.episode + " 集 " + convertTime(watchedTimes[videoId].time);
                         }
                     }
-                    videoListItem.appendChild(watchedText);
-                    lastBahamutList.appendChild(videoListItem);
+                } else {
+                    watchedText.textContent = "更新至 " + videoItem.originalEpisode + " 集";
                 }
-                document.body.appendChild(document.createElement("hr"));
+                videoListItem.appendChild(watchedText);
+                lastBahamutList.appendChild(videoListItem);
             }
+            document.body.appendChild(document.createElement("hr"));
         }
+
 
         // 分類影片
         var videoGroups = {};
