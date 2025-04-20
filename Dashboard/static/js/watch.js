@@ -793,7 +793,8 @@ async function main() {
                     watchedText.classList.add('watchedText');
                     if (watchedTimes[videoId].ended) {
                         var videoSeries = await getVideoSeries(videoId);
-                        var videoSeriesItem = videoSeries.find(video => video.episode == videoItem.episode + 1);
+                        var nextEpisode = (Number(videoItem.episode) + 1).toString();
+                        var videoSeriesItem = videoSeries.find(video => video.episode == nextEpisode);
                         if (videoSeriesItem) {
                             videoLink.href = './watch?id=' + encodeURIComponent(videoSeriesItem.sn) + '&res=' + encodeURIComponent(videoSeriesItem.resolution);
                             watchedText.textContent = "看到第 " + videoSeriesItem.episode + " 集";
@@ -801,7 +802,7 @@ async function main() {
                             watchedText.textContent = "看完了";
                         }
                     } else {
-                        watchedText.textContent = "看到 " + convertTime(watchedTimes[videoId].time);
+                        watchedText.textContent = "看到第 " + videoItem.episode + " 集 " + convertTime(watchedTimes[videoId].time);
                     }
                     videoListItem.appendChild(watchedText);
                 }
@@ -846,7 +847,8 @@ async function main() {
                 if (watchedTimes[videoId]) {
                     if (watchedTimes[videoId].ended) {
                         var videoSeries = await getVideoSeries(videoId);
-                        var videoSeriesItem = videoSeries.find(video => video.episode == videoItem.episode + 1);
+                        var nextEpisode = (Number(videoItem.episode) + 1).toString();
+                        var videoSeriesItem = videoSeries.find(video => video.episode == nextEpisode);
                         if (videoSeriesItem) {
                             videoLink.href = './watch?id=' + encodeURIComponent(videoSeriesItem.sn) + '&res=' + encodeURIComponent(videoSeriesItem.resolution);
                             if (videoSeriesItem.episode == videoItem.episode && videoItem.episode == videoItem.originalEpisode) {
