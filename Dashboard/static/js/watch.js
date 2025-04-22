@@ -226,6 +226,27 @@ async function main() {
         // 將速度選單加入控制列
         ctrldiv.appendChild(speedDropdown);
         ctrldiv.appendChild(fullscreenButton);
+
+        var overlay = document.createElement('div');
+        overlay.setAttribute("id", "overlay");
+        overlay.style.display = 'none'; // 預設隱藏
+        videoPlayer.appendChild(overlay);
+        var endBox = document.createElement('div');
+        endBox.setAttribute("id", "endBox");
+        endBox.style.display = 'none'; // 預設隱藏
+        var endText = document.createElement('h2');
+        endBox.appendChild(endText);
+        var endButtonContainer = document.createElement('div');
+        endButtonContainer.classList.add('button-container');
+        var endCancelButton = document.createElement('button');
+        endCancelButton.innerText = "取消";
+        var endNextButton = document.createElement('button');
+        endNextButton.innerText = "下一集";
+        endButtonContainer.appendChild(endCancelButton);
+        endButtonContainer.appendChild(endNextButton);
+        endBox.appendChild(endButtonContainer);
+        videoPlayer.appendChild(endBox);
+
         videoPlayer.appendChild(ctrldiv);
         var controlsTimeout;
         var widthsize;
@@ -369,8 +390,38 @@ async function main() {
             var nextObj = videoSeries.find(value => value.episode == nextEpisode);
             if (nextObj) {
                 // todo: display message and countdown
-                window.location.href = "./watch?id=" + nextObj.sn + "&res=" + nextObj.resolution;
+                endText.innerText = "5秒後自動播放下一集"
+                endNextButton.addEventListener("click", () => {
+                    window.location.href = "./watch?id=" + nextObj.sn + "&res=" + nextObj.resolution;
+                })
+                endNextButton.style.display = "block";
+                endCancelButton.addEventListener("click", () => {
+                    endBox.style.display = "none";
+                    overlay.style.display = "none";
+                })
+                endCancelButton.style.display = "block";
+                var countdown = 5;
+                var countdownInterval = setInterval(() => {
+                    countdown--;
+                    endText.innerText = countdown + "秒後自動播放下一集";
+                    if (countdown <= 0) {
+                        clearInterval(countdownInterval);
+                        endText.innerText = "正在載入下一集...";
+                        window.location.href = "./watch?id=" + nextObj.sn + "&res=" + nextObj.resolution;
+                    }
+                }, 1000);
+            } else {
+                endText.innerText = "您已播放至最後一集。";
+                endNextButton.style.display = "none";
+                endCancelButton.addEventListener("click", () => {
+                    endBox.style.display = "none";
+                    overlay.style.display = "none";
+                })
+                endCancelButton.innerText = "關閉";
+                endCancelButton.style.display = "block";
             }
+            endBox.style.display = "block";
+            overlay.style.display = "block";
         });
 
         if (isMobileDevice()) {
@@ -799,7 +850,11 @@ async function main() {
                             videoLink.href = './watch?id=' + encodeURIComponent(videoSeriesItem.sn) + '&res=' + encodeURIComponent(videoSeriesItem.resolution);
                             watchedText.textContent = "看到第 " + videoSeriesItem.episode + " 集";
                         } else {
-                            watchedText.textContent = "看完了";
+                            //watchedText.textContent = "看完了";
+                            limit++;
+                            videoListItem.remove();
+                            watchedText.remove();
+                            continue;
                         }
                     } else {
                         watchedText.textContent = "看到第 " + videoItem.episode + " 集 " + convertTime(watchedTimes[videoId].time);
