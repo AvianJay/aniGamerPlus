@@ -398,6 +398,7 @@ async function main() {
                 endCancelButton.addEventListener("click", () => {
                     endBox.style.display = "none";
                     overlay.style.display = "none";
+                    clearInterval(countdownInterval);
                 })
                 endCancelButton.style.display = "block";
                 var countdown = 5;

@@ -308,3 +308,13 @@ a:hover {
   background-color: rgba(0,0,0,0.5);
   position: absolute;
 }
+
+#top-overlay {
+  top: 0;
+  left: 0;
+  position: absolute;
+  width: 100%;
+  height: 30%;
+  background: linear-gradient(black, transparent);
+  z-index: 9999; /* 確保在最上層 */
+}
