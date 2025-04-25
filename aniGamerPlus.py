@@ -20,6 +20,7 @@ import platform
 import socket
 import requests
 import json
+from datetime import datetime
 
 import Config
 from Anime import Anime, TryTooManyTimeError
@@ -99,7 +100,8 @@ def read_db_all():
                        'remote_status': values[i][5],
                        'resolution': values[i][6],
                        'file_size': values[i][7],
-                       'local_file_path': values[i][8]}
+                       'local_file_path': values[i][8],
+                       'timestamp': int(datetime.strptime(values[i][9], "%Y-%m-%d %H:%M:%S").timestamp())}
 
     cursor.close()
     conn.close()
@@ -130,7 +132,8 @@ def read_db(sn):
                 'remote_status': values[5],
                 'resolution': values[6],
                 'file_size': values[7],
-                'local_file_path': values[8]}
+                'local_file_path': values[8],
+                'timestamp': int(datetime.strptime(values[9], "%Y-%m-%d %H:%M:%S").timestamp())}
 
     cursor.close()
     conn.close()
@@ -918,7 +921,8 @@ def updatelist():
                 'episode': anime['episode'],
                 'resolution': anime['resolution'],
                 'path': anime['local_file_path'],
-                'source': '巴哈姆特動畫瘋'
+                'source': '巴哈姆特動畫瘋',
+                'timestamp': anime['timestamp']
             }
             danmupath = anime['local_file_path'].replace('.mp4', '.ass')
             if os.path.exists(danmupath):
@@ -932,10 +936,11 @@ def updatelist():
     bangumi_dir = settings["bangumi_dir"]
     for dirpath, _, filenames in os.walk(bangumi_dir):
         if ".aniGamerPlus.json" in filenames:
-            customVideos = json.load(open(os.path.join(dirpath, ".aniGamerPlus.json"), "r"))
+            datapath = os.path.join(dirpath, ".aniGamerPlus.json")
+            customVideos = json.load(open(datapath, "r"))
             anime_name = customVideos["anime_name"]
             unique_sn = str(customVideos["unique_sn"])
-            source = customVideos["source"]
+            source = customVideos.get("source")
             for v in customVideos["videos"]:
                 if v["type"] == "normal":
                     anime_name2 = anime_name
@@ -952,7 +957,8 @@ def updatelist():
                     'path': os.path.join(dirpath, v["filename"]),
                     'source': "未知" if source is None else source,
                     'danmu_path': None,
-                    'danmu': False
+                    'danmu': False,
+                    'timestamp': int(os.path.getmtime(datapath))
                 }
                 my_list['videos'].append(video_data)
     with open(os.path.join(working_dir, 'video_list.json'), 'w') as f:
