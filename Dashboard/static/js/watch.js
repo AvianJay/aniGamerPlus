@@ -299,16 +299,26 @@ async function main() {
             }
         }
 
-        function skipBackward() {
-            video.currentTime -= 10; // 倒退10秒
+        // anti lag
+        var skipTimeout;
+        var _skipTime = 0;
+
+        function _skipVideoTime() {
+            video.currentTime += _skipTime;
+            _skipTime = 0;
             timeSlider.value = video.currentTime;
             syncTime(video.currentTime);
         }
+        function skipBackward() {
+            _skipTime -= 10;
+            clearTimeout(skipTimeout);
+            skipTimeout = setTimeout(_skipVideoTime, 300);
+        }
 
         function skipForward() {
-            video.currentTime += 10; // 快轉10秒
-            timeSlider.value = video.currentTime;
-            syncTime(video.currentTime);
+            _skipTime += 10;
+            clearTimeout(skipTimeout);
+            skipTimeout = setTimeout(_skipVideoTime, 300);
         }
 
 
