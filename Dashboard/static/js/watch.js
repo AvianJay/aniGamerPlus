@@ -123,7 +123,7 @@ async function main() {
         var videoData = await fetchVideoData(videoId);
         var videoSeries = await getVideoSeries(videoId);
         var videoSrc = './get_video.mp4?id=' + encodeURIComponent(videoId) + '&res=' + videoResolution;
-        var subtitleSrc = './get_danmu.ass?id=' + encodeURIComponent(videoId);
+        var subtitleSrc = './get_danmu.ass?id=' + encodeURIComponent(videoId) + "&t=" + new Date().getTime();
         var videoPlayer = document.getElementById('videobox');
         var video = document.createElement('video');
         var ctrldiv = document.createElement('div');
