@@ -330,7 +330,7 @@ async function main() {
                 // 使用 navigator.sendBeacon 發送資料
                 navigator.sendBeacon('./watch/time', JSON.stringify({
                     type: 'set',
-                    sn: videoId,
+                    sn: videoData.sn,
                     time: video.currentTime,
                     ended: ended
                 }));
@@ -384,7 +384,7 @@ async function main() {
         // i like yt
 
         video.addEventListener("ended", async function (event) {
-            await setTime(videoId, 0, true, true);
+            await setTime(videoData, 0, true, true);
             ended = true;
             var nextEpisode = (Number(videoData.episode) + 1).toString();
             var nextObj = videoSeries.find(value => value.episode == nextEpisode);
@@ -483,7 +483,11 @@ async function main() {
             //videoPlayer.style.height = finalHeight + 'px';
         });
 
+        let lastFullscreen = 0;
+
         function toggleFullscreen() {
+            const currentTime = new Date().getTime();
+            lastFullscreen = currentTime;
             if (!isFullscreen) {
                 if (videoPlayer.requestFullscreen) {
                     videoPlayer.requestFullscreen();
@@ -564,7 +568,8 @@ async function main() {
             const ct = convertTime(video.currentTime);
             timetext.innerHTML = ct + '/' + dt;
             setTime(videoData.sn, time, false);
-            if (video.currentTime >= video.duration - 5) {
+            if (video.currentTime >= video.duration - 10) {
+                ended = true;
                 setTime(videoData.sn, 0, true);
             }
         }
@@ -619,7 +624,8 @@ async function main() {
                 if (getOrientation !== previousOrientation) {
                     previousOrientation = getOrientation();
                     if (Math.abs(previousOrientation) == 90) {
-                        if (!isFullscreen) {
+                        const currentTime = new Date().getTime();
+                        if (!isFullscreen && currentTime - lastFullscreen >= 300) {
                             toggleFullscreen();
                         }
                     }
