@@ -302,22 +302,32 @@ async function main() {
         // anti lag
         var skipTimeout;
         var _skipTime = 0;
+        var videoPreviousStatus; // !video.paused
 
         function _skipVideoTime() {
             video.currentTime += _skipTime;
             _skipTime = 0;
             timeSlider.value = video.currentTime;
+            if (videoPreviousStatus) {
+                video.play();
+            }
             syncTime(video.currentTime);
         }
         function skipBackward() {
             _skipTime -= 10;
             clearTimeout(skipTimeout);
+            videoPreviousStatus = !video.paused;
+            loadingSpinner.style.display = 'block';
+            video.pause();
             skipTimeout = setTimeout(_skipVideoTime, 300);
         }
 
         function skipForward() {
             _skipTime += 10;
             clearTimeout(skipTimeout);
+            videoPreviousStatus = !video.paused;
+            loadingSpinner.style.display = 'block';
+            video.pause();
             skipTimeout = setTimeout(_skipVideoTime, 300);
         }
 
