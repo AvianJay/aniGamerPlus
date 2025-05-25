@@ -376,7 +376,8 @@ async function main() {
         video.addEventListener('pause', function () {
             playPauseButton.innerHTML = '<svg height="100%" version="1.1" viewBox="0 0 36 36" width="100%"><path d="M 12,26 18.5,22 18.5,14 12,10 z M 18.5,22 25,18 25,18 18.5,14 z"></path></svg>';
             showControls();
-            setTime(videoData.sn, video.currentTime, false, true);
+            ended = (video.currentTime >= video.duration - 10)
+            setTime(videoData.sn, video.currentTime, ended, true);
         })
         if (videoData.danmu) {
             danmuButton.addEventListener('click', function () {
@@ -587,11 +588,8 @@ async function main() {
             const dt = convertTime(video.duration);
             const ct = convertTime(video.currentTime);
             timetext.innerHTML = ct + '/' + dt;
-            setTime(videoData.sn, time, false);
-            if (video.currentTime >= video.duration - 10) {
-                ended = true;
-                setTime(videoData.sn, 0, true);
-            }
+            ended = (video.currentTime >= video.duration - 10)
+            setTime(videoData.sn, time, ended);
         }
 
         videoPlayer.addEventListener('mouseenter', handleMouseEnter);
