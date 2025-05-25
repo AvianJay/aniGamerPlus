@@ -24,7 +24,7 @@ sn_list_path = os.path.join(working_dir, 'sn_list.txt')
 cookie_path = os.path.join(working_dir, 'cookie.txt')
 logs_dir = os.path.join(working_dir, 'logs')
 aniGamerPlus_version = 'v25.0'
-latest_config_version = 18.0
+latest_config_version = 18.1
 latest_database_version = 2.0
 cookie = None
 max_multi_thread = 5
@@ -163,6 +163,7 @@ def __init_settings():
                     'username': 'admin',
                     'password': 'admin',
                     'online_watch': False,
+                    'online_watch_requires_login': False,
                     'user_control': {
                         'enabled': False,
                         'allow_register': False,
@@ -457,6 +458,10 @@ def __update_settings(old_settings):  # 升级配置文件
     if 'use_wdm' not in new_settings['auto_login'].keys():
         # option to use webdriver manager
         new_settings['auto_login']['use_wdm'] = True
+    
+    if 'online_watch_requires_login' not in new_settings['dashboard'].keys():
+        # online watch require login
+        new_settings['dashboard']['online_watch_requires_login'] = False
 
     new_settings['config_version'] = latest_config_version
     with open(config_path, 'w', encoding='utf-8') as f:

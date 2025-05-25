@@ -375,7 +375,7 @@ def home():
     if settings["dashboard"]["online_watch"]:
         return render_template('index.html')
     else:
-        return redirect("/control")
+        return redirect("./control")
 
 
 @app.route('/favicon.ico')
@@ -386,12 +386,20 @@ def favicon():
 if settings["dashboard"]["online_watch"]:
     @app.route('/watch')
     def watch():
+        if settings['dashboard']['online_watch_requires_login']:
+            vaild_user, user_role = verify_user(request.cookies.get("token"))
+            if not vaild_user:
+                return redirect("./login?error=2")
         # return open(f'{template_path}/watch.html', 'r').read()
         return render_template('watch.html')
 
 
     @app.route('/get_video.mp4')
     def getvid():
+        if settings['dashboard']['online_watch_requires_login']:
+            vaild_user, user_role = verify_user(request.cookies.get("token"))
+            if not vaild_user:
+                return jsonify({"error": "login required"}), 403
         sn = request.args.get('id')
         res = request.args.get('res')
         path = Config.getpath(sn, 'video', resolution=res)
@@ -469,6 +477,7 @@ def get_server_info():
         "user_control": settings['dashboard']['user_control']['enabled'],
         "user_control_allow_register": settings['dashboard']['user_control']['allow_register'],
         "online_watch": settings['dashboard']['online_watch'],
+        "online_watch_requires_login": settings['dashboard']['online_watch_requires_login'],
     })
 
 
@@ -499,6 +508,15 @@ if settings['dashboard']['user_control']['enabled']:
             u["videotimes"] = {}
     with open(os.path.join(Config.get_working_dir(), 'Dashboard', 'userdata.json'), 'w', encoding='utf-8') as f:
         json.dump(userdata, f, ensure_ascii=False, indent=4)
+
+    def verify_user(token):
+        if not token:
+            return False, None
+        userdata = json.load(open(os.path.join(Config.get_working_dir(), 'Dashboard', 'userdata.json'), 'r'))
+        for user in userdata['users']:
+            if user['token'] == request.cookies.get('token'):
+                return True, user["role"]
+        return False, None
 
     @app.route('/logout')
     def logout():
