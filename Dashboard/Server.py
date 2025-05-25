@@ -433,6 +433,10 @@ if settings["dashboard"]["online_watch"]:
 
     @app.route('/video_list.json')
     def videolist():
+        if settings['dashboard']['online_watch_requires_login']:
+            vaild_user, user_role = verify_user(request.cookies.get("token"))
+            if not vaild_user:
+                return jsonify({"error": "login required"}), 403
         video_json = json.load(open(os.path.join(Config.get_working_dir(), 'video_list.json'), 'r'))
         return jsonify(video_json)
 
