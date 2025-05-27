@@ -556,13 +556,20 @@ if settings['dashboard']['user_control']['enabled']:
             # print("DEBUG:", reqdata)
             if not reqdata:
                 return '<script>alert("Empty request!");history.back();</script>'
+            elif not reqdata.get('username') or not reqdata.get('pw1') or not reqdata.get('pw2'):
+                return '<script>alert("請填寫完整的註冊信息!");history.back();</script>'
             if not reqdata.get('pw1') == reqdata.get('pw2'):
                 return '<script>window.location.href = "./register?error=2"</script>'
             username = reqdata.get('username')
+            # verify username
+            if not re.match(r'^[a-zA-Z0-9_]{3,20}$', username):
+                return '<script>alert("用戶名只能包含字母、數字和下劃線，且長度在3到20個字符之間!");history.back();</script>'
+            if not re.match(r'^[a-zA-Z0-9_]{6,20}$', reqdata.get('pw1')):
+                return '<script>alert("密碼只能包含字母、數字和下劃線，且長度在6到20個字符之間!");history.back();</script>'
             password = reqdata.get('pw1')
             userdata = json.load(open(os.path.join(Config.get_working_dir(), 'Dashboard', 'userdata.json'), 'r'))
             for user in userdata['users']:
-                if user['username'] == username:
+                if user['username'].lower() == username.lower():
                     return '<script>window.location.href = "./register?error=1"</script>'
             newuser = {'username': username, 'password': password, 'token': ''.join(random.sample(string.ascii_letters + string.digits, 32)), 'videotimes': {}, 'role': 'user'}
             userdata['users'].append(newuser)
@@ -574,6 +581,11 @@ if settings['dashboard']['user_control']['enabled']:
         
     @app.route('/usermanage', methods=['GET', 'POST'])
     def usermanage():
+        logined, user_role = verify_user(request.cookies.get('token'))
+        if not logined:
+            return '<script>alert("請先登錄!");window.location.href = "./login"</script>'
+        if user_role != 'admin':
+            return '<script>alert("權限不足!");window.location.href = "./watch"</script>'
         if request.method == 'POST':
             if request.form:
                 reqdata = request.form.copy()
