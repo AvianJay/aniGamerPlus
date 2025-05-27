@@ -11,7 +11,7 @@ from gevent import spawn
 
 import json, sys, os, re, time
 import threading, traceback
-import random, string
+import random, string, hashlib
 
 from aniGamerPlus import Config
 from flask import Flask, request, jsonify, Response, redirect
@@ -541,6 +541,11 @@ if settings['dashboard']['user_control']['enabled']:
             for user in userdata['users']:
                 if user['username'] == username and user['password'] == password:
                     return f"<script>document.cookie = 'token={user['token']}; expires=Fri, 31 Dec 9999 23:59:59 GMT';document.cookie = 'logined=true; expires=Fri, 31 Dec 9999 23:59:59 GMT';window.location.href = './watch'</script>"
+                # test 假設password sha256
+                # if user['username'] == username:
+                #     hashes = [hashlib.sha256((user['password'].encode() + str(int(time.time()) + t)).encode()).hexdigest() for t in range(-5, 6)]
+                #     if password in hashes:
+                #         return f"<script>document.cookie = 'token={user['token']}; expires=Fri, 31 Dec 9999 23:59:59 GMT';document.cookie = 'logined=true; expires=Fri, 31 Dec 9999 23:59:59 GMT';window.location.href = './watch'</script>"
             return '<script>window.location.href = "./login?error=1"</script>'
         else:
             return render_template('login.html')
