@@ -11,6 +11,33 @@
     <meta name="viewport" content="user-scalable=no, width=device-width, initial-scale=1.0" />
     <link rel="shortcut icon" href="./static/img/aniGamerPlus.ico" type="image/x-icon" />
     <title>登入 - aniGamerPlus+</title>
+    <script>
+        // test
+        function login() {
+            var username = document.getElementById("username").value;
+            var password = document.getElementById("password").value;
+            if (username === "" || password === "") {
+                alert("請輸入帳號和密碼");
+                return false;
+            }
+            // 使用 SHA-256 雜湊密碼
+            const encoder = new TextEncoder();
+            const data = encoder.encode(password);
+            window.crypto.subtle.digest('SHA-256', data).then(hashBuffer => {
+                const hashArray = Array.from(new Uint8Array(hashBuffer));
+                const hashedPassword = hashArray.map(b => b.toString(16).padStart(2, '0')).join('');
+                const currentTime = Math.floor(Date.now() / 1000);
+                const finalData = hashedPassword + currentTime.toString();
+                // sha256 again
+                window.crypto.subtle.digest('SHA-256', encoder.encode(finalData)).then(finalHashBuffer => {
+                    const finalHashArray = Array.from(new Uint8Array(finalHashBuffer));
+                    const finalHashedPassword = finalHashArray.map(b => b.toString(16).padStart(2, '0')).join('');
+                    document.getElementById("password").value = finalHashedPassword;
+                    document.forms[0].submit();
+                });
+            });
+        }
+    </script>
 </head>
 
 <body>
