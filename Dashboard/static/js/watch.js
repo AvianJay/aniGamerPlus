@@ -288,6 +288,34 @@ async function main() {
                 skipForward();
             } else if (event.key === 'f' || event.key === 'F') {
                 toggleFullscreen();
+            } else if (event.key === 'Escape') {
+                if (isFullscreen) {
+                    toggleFullscreen();
+                }
+            } else if (event.key === '<') {
+                // playrate down
+                let currentRate = parseFloat(video.playbackRate);
+                for (let i = 0; i < speeds.length; i++) {
+                    if (speeds[i] === currentRate) {
+                        if (i > 0) {
+                            video.playbackRate = speeds[i - 1];
+                            speedDropdown.value = speeds[i - 1];
+                        }
+                        break;
+                    }
+                }
+            } else if (event.key === '>') {
+                // playrate up
+                let currentRate = parseFloat(video.playbackRate);
+                for (let i = 0; i < speeds.length; i++) {
+                    if (speeds[i] === currentRate) {
+                        if (i < speeds.length - 1) {
+                            video.playbackRate = speeds[i + 1];
+                            speedDropdown.value = speeds[i + 1];
+                        }
+                        break;
+                    }
+                }
             }
         });
 
