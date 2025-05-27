@@ -337,7 +337,22 @@ async function main() {
             _skipTime = 0;
             timeSlider.value = video.currentTime;
             if (videoPreviousStatus) {
-                video.play();
+                try {
+                    video.play();
+                } catch (e) {
+                    if (e.name === 'AbortError') {
+                        console.warn("播放中斷，稍後重試...");
+                        setTimeout(() => {
+                            try {
+                                video.play();
+                            } catch (retryError) {
+                                console.error("重試播放失敗，請手動點擊播放按鈕。", retryError);
+                            }
+                        }, 500); // 等待500毫秒後重試
+                    } else {
+                        console.error("無法自動播放影片，請手動點擊播放按鈕。", e);
+                    }
+                }
             }
             syncTime(video.currentTime);
         }
