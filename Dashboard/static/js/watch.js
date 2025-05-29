@@ -333,31 +333,36 @@ async function main() {
         var videoPreviousStatus; // !video.paused
 
         function _skipVideoTime() {
+            if (videoPreviousStatus) {
+                video.play();
+            }
             video.currentTime += _skipTime;
             _skipTime = 0;
             timeSlider.value = video.currentTime;
-            if (videoPreviousStatus) {
-                try {
-                    video.play();
-                } catch (e) {
-                    if (e.name === 'AbortError') {
-                        console.warn("播放中斷，稍後重試...");
-                        setTimeout(() => {
-                            try {
-                                video.play();
-                            } catch (retryError) {
-                                console.error("重試播放失敗，請手動點擊播放按鈕。", retryError);
-                            }
-                        }, 500); // 等待500毫秒後重試
-                    } else {
-                        console.error("無法自動播放影片，請手動點擊播放按鈕。", e);
-                    }
-                }
-            }
+            // if (videoPreviousStatus) {
+            //     try {
+            //         video.play();
+            //     } catch (e) {
+            //         if (e.name === 'AbortError') {
+            //             console.warn("播放中斷，稍後重試...");
+            //             setTimeout(() => {
+            //                 try {
+            //                     video.play();
+            //                 } catch (retryError) {
+            //                     console.error("重試播放失敗，請手動點擊播放按鈕。", retryError);
+            //                 }
+            //             }, 500); // 等待500毫秒後重試
+            //         } else {
+            //             console.error("無法自動播放影片，請手動點擊播放按鈕。", e);
+            //         }
+            //     }
+            // }
             syncTime(video.currentTime);
         }
         function skipBackward() {
             _skipTime -= 10;
+            timeSlider.value = video.currentTime + _skipTime;
+            syncTime(video.currentTime + _skipTime);
             clearTimeout(skipTimeout);
             videoPreviousStatus = !video.paused;
             loadingSpinner.style.display = 'block';
@@ -367,6 +372,8 @@ async function main() {
 
         function skipForward() {
             _skipTime += 10;
+            timeSlider.value = video.currentTime + _skipTime;
+            syncTime(video.currentTime + _skipTime);
             clearTimeout(skipTimeout);
             videoPreviousStatus = !video.paused;
             loadingSpinner.style.display = 'block';
@@ -414,6 +421,7 @@ async function main() {
 
         video.addEventListener('play', function () {
             playPauseButton.innerHTML = '<svg height="100%" version="1.1" viewBox="0 0 36 36" width="100%"><path d="M 12,26 16,26 16,10 12,10 z M 21,26 25,26 25,10 21,10 z"></path></svg>';
+            showControls();
         });
 
         video.addEventListener('pause', function () {
