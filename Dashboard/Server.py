@@ -374,7 +374,7 @@ else:
 def home():
     if settings["dashboard"]["online_watch"]:
         if settings["dashboard"]["user_control"]["enabled"]:
-            logined, user_role = verify_user(request.cookies.get('token'))
+            logined, user_role = verify_user(request.cookies)
             if logined and user_role == 'user':
                 return redirect("./watch")
         return render_template('index.html')
@@ -391,7 +391,7 @@ if settings["dashboard"]["online_watch"]:
     @app.route('/watch')
     def watch():
         if settings['dashboard']['online_watch_requires_login']:
-            vaild_user, user_role = verify_user(request.cookies.get("token"))
+            vaild_user, user_role = verify_user(request.cookies)
             if not vaild_user:
                 return redirect("./login?error=2")
         # return open(f'{template_path}/watch.html', 'r').read()
@@ -401,7 +401,7 @@ if settings["dashboard"]["online_watch"]:
     @app.route('/get_video.mp4')
     def getvid():
         if settings['dashboard']['online_watch_requires_login']:
-            vaild_user, user_role = verify_user(request.cookies.get("token"))
+            vaild_user, user_role = verify_user(request.cookies)
             if not vaild_user:
                 return jsonify({"error": "login required"}), 403
         sn = request.args.get('id')
@@ -517,12 +517,12 @@ if settings['dashboard']['user_control']['enabled']:
     with open(os.path.join(Config.get_working_dir(), 'Dashboard', 'userdata.json'), 'w', encoding='utf-8') as f:
         json.dump(userdata, f, ensure_ascii=False, indent=4)
 
-    def verify_user(token):
-        if not token:
+    def verify_user(cookies):
+        if not cookies.get('logined') or cookies.get('logined') != 'true' or not cookies.get('token'):
             return False, None
         userdata = json.load(open(os.path.join(Config.get_working_dir(), 'Dashboard', 'userdata.json'), 'r'))
         for user in userdata['users']:
-            if user['token'] == request.cookies.get('token'):
+            if user['token'] == cookies.get('token'):
                 return True, user["role"]
         return False, None
 
@@ -590,7 +590,7 @@ if settings['dashboard']['user_control']['enabled']:
         
     @app.route('/usermanage', methods=['GET', 'POST'])
     def usermanage():
-        logined, user_role = verify_user(request.cookies.get('token'))
+        logined, user_role = verify_user(request.cookies)
         if not logined:
             return redirect("./login?error=2")
         if user_role != 'admin':
