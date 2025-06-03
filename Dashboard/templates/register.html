@@ -9,7 +9,7 @@
 		<link rel="stylesheet" href="./static/css/aniGamerPlus.css"/>
 		<meta name="viewport" content="user-scalable=no, width=device-width, initial-scale=1.0" />
 		<link rel="shortcut icon" href="./static/img/aniGamerPlus.ico" type="image/x-icon" />
-		<title>注冊 - aniGamerPlus+</title>
+		<title>註冊 - aniGamerPlus+</title>
 	</head>
 	<body>
 		<div class="login-wrapper">
@@ -18,9 +18,27 @@
 				<input type="text" class="form-control" id="username" name="username" placeholder="輸入帳號" />
 				<input type="password" class="form-control" id="pw1" name="pw1" placeholder="輸入密碼" />
 				<input type="password" class="form-control" id="pw2" name="pw2" placeholder="再次輸入密碼" />
-				<button type="submit" class="btn btn-success">注冊</button>
+				<button type="submit" class="btn btn-success">註冊</button>
 			</form>
 		</div>
-		
+		{% if request.args.get('error') %}
+        {% set error_code = request.args.get('error') %}
+        <div class="error-pw alert alert-danger alert-dismissible fade show">
+            <button type="button" class="close" data-dismiss="alert">&times;</button>
+            {% if error_code == '1' %}
+            <strong>ERROR</strong> 這個使用者名稱已經被使用
+            {% elif error_code == '2' %}
+            <strong>ERROR</strong> 密碼不一致
+            {% elif error_code == '3' %}
+            <strong>ERROR</strong> 請填寫完整的註冊信息!
+            {% elif error_code == '4' %}
+            <strong>ERROR</strong> 用戶名只能包含字母、數字和下劃線，且長度在3到20個字符之間!
+            {% elif error_code == '5' %}
+            <strong>ERROR</strong> 密碼只能包含字母、數字和特殊字符，且長度在6到20個字符之間!
+            {% else %}
+            <strong>ERROR</strong> 發生未知錯誤
+            {% endif %}
+        </div>
+        {% endif %}
 	</body>
 </html>
