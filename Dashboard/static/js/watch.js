@@ -360,22 +360,26 @@ async function main() {
             syncTime(video.currentTime);
         }
         function skipBackward() {
+            if (_skipTime) {
+                videoPreviousStatus = !video.paused;
+            }
             _skipTime -= 10;
             timeSlider.value = video.currentTime + _skipTime;
             syncTime(video.currentTime + _skipTime);
             clearTimeout(skipTimeout);
-            videoPreviousStatus = !video.paused;
             loadingSpinner.style.display = 'block';
             video.pause();
             skipTimeout = setTimeout(_skipVideoTime, 300);
         }
 
         function skipForward() {
+            if (_skipTime) {
+                videoPreviousStatus = !video.paused;
+            }
             _skipTime += 10;
             timeSlider.value = video.currentTime + _skipTime;
             syncTime(video.currentTime + _skipTime);
             clearTimeout(skipTimeout);
-            videoPreviousStatus = !video.paused;
             loadingSpinner.style.display = 'block';
             video.pause();
             skipTimeout = setTimeout(_skipVideoTime, 300);
