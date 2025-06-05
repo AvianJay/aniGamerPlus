@@ -360,7 +360,7 @@ async function main() {
             syncTime(video.currentTime);
         }
         function skipBackward() {
-            if (_skipTime) {
+            if (_skipTime == 0) {
                 videoPreviousStatus = !video.paused;
             }
             _skipTime -= 10;
@@ -373,7 +373,7 @@ async function main() {
         }
 
         function skipForward() {
-            if (_skipTime) {
+            if (_skipTime == 0) {
                 videoPreviousStatus = !video.paused;
             }
             _skipTime += 10;
