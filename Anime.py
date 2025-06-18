@@ -1060,7 +1060,7 @@ class Anime:
         # 推送 CQ 通知
         if self._settings['coolq_notify']:
             try:
-                msg = '【aniGamerPlusPlus消息】\n《' + self._video_filename + '》下载完成, 本集 ' + str(self.video_size) + ' MB'
+                msg = '【aniGamerPlus消息】\n《' + self._video_filename + '》下载完成, 本集 ' + str(self.video_size) + ' MB'
                 if self._settings['coolq_settings']['message_suffix']:
                     # 追加用户信息
                     msg = msg + '\n\n' + self._settings['coolq_settings']['message_suffix']
@@ -1078,7 +1078,7 @@ class Anime:
         # 推送 TG 通知
         if self._settings['telebot_notify']:
             try:
-                msg = '【aniGamerPlusPlus消息】\n《' + self._video_filename + '》下载完成, 本集 ' + str(self.video_size) + ' MB'
+                msg = '【aniGamerPlus消息】\n《' + self._video_filename + '》下载完成, 本集 ' + str(self.video_size) + ' MB'
                 vApiTokenTelegram = self._settings['telebot_token']
                 try:
                     if self._settings['telebot_use_chat_id'] and self._settings['telebot_chat_id']:  #手动指定发送目标
@@ -1109,7 +1109,7 @@ class Anime:
         # 推送通知至 Discord
         if self._settings['discord_notify']:
             try:
-                msg = '【aniGamerPlusPlus消息】\n《' + self._video_filename + '》下載完成，本集 ' + str(self.video_size) + ' MB'
+                msg = '【aniGamerPlus消息】\n《' + self._video_filename + '》下載完成，本集 ' + str(self.video_size) + ' MB'
                 url = self._settings['discord_token']
                 data = {
                     'content': None,
