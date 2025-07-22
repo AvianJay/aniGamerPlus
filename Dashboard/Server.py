@@ -18,7 +18,6 @@ from flask import Flask, request, jsonify, Response, redirect
 from flask import render_template, send_file
 from flask_basicauth import BasicAuth
 from aniGamerPlus import __cui as cui
-from aniGamerPlus import checknow
 import logging, termcolor
 from ColorPrint import err_print
 from logging.handlers import TimedRotatingFileHandler
@@ -100,6 +99,21 @@ def get_chunk(path, byte1=None, byte2=None):
         f.seek(start)
         chunk = f.read(length)
     return chunk, start, length, file_size
+
+
+checknow = lambda e: None
+
+caches = {}
+def cache(id, time=600, set=None):
+    now = int(datetime.now().timestamp())
+    # Clean up expired cache
+    if id in caches:
+        if caches[id]["expire"] < now:
+            del caches[id]
+            return None
+    if set is not None:
+        caches[id] = {"expire": now + time, "data": set}
+    return caches.get(id, {}).get("data")
 
 
 # 读取web需要的配置名称列表
@@ -406,7 +420,14 @@ if settings["dashboard"]["online_watch"]:
                 return jsonify({"error": "login required"}), 403
         sn = request.args.get('id')
         res = request.args.get('res')
-        path = Config.getpath(sn, 'video', resolution=res)
+        c = cache(f"{str(sn)}_{str(res)}")
+        if c:
+            path = c
+        else:
+            path = Config.getpath(sn, 'video', resolution=res)
+            cache(f"{str(sn)}_{str(res)}", time=3600, set=path)
+        if not os.path.exists(path):
+            return jsonify({"error": "File not found"}), 404
         range_header = request.headers.get('Range', None)
         byte1, byte2 = 0, None
         if range_header:
@@ -417,6 +438,8 @@ if settings["dashboard"]["online_watch"]:
                 byte1 = int(groups[0])
             if groups[1]:
                 byte2 = int(groups[1])
+        else:
+            return send_file(path, mimetype='video/mp4', attachment_filename=f"{sn}.mp4")
         
         chunk, start, length, file_size = get_chunk(path, byte1, byte2)
         resp = Response(chunk, 206, mimetype='video/mp4',
