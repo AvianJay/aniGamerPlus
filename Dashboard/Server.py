@@ -439,7 +439,7 @@ if settings["dashboard"]["online_watch"]:
             if groups[1]:
                 byte2 = int(groups[1])
         else:
-            return send_file(path, mimetype='video/mp4', attachment_filename=f"{sn}.mp4")
+            return send_file(path, mimetype='video/mp4', download_name=f"{sn}.mp4")
         
         chunk, start, length, file_size = get_chunk(path, byte1, byte2)
         resp = Response(chunk, 206, mimetype='video/mp4',
