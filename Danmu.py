@@ -25,7 +25,7 @@ class Danmu():
         # 確認不是匹配到空字串
         return result and result.group(0)
 
-    def download(self, ban_words):
+    def download(self, ban_words, display=True):
         h = {
             'Content-Type':
             'application/x-www-form-urlencoded;charset=utf-8',
@@ -137,7 +137,7 @@ class Danmu():
             output.write(text)
             output.write('\n')
 
-        err_print(self._sn, '彈幕下載完成', self._full_filename, status=2)
+        err_print(self._sn, '彈幕下載完成', self._full_filename, status=2, display=display)
 
 
 if __name__ == '__main__':

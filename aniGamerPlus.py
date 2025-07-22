@@ -414,7 +414,7 @@ def update_danmu():
                     and not anime_db["local_file_path"] is None \
                     and os.path.exists(anime_db["local_file_path"]):
                 a = threading.Thread(target=__get_danmu_only, args=(
-                    anime_db["sn"], anime_db["anime_name"], anime_db["local_file_path"]))
+                    anime_db["sn"], anime_db["anime_name"], anime_db["local_file_path"], False))
                 a.daemon = True
                 thread_tasks.append(a)
                 a.start()
@@ -503,7 +503,7 @@ def __get_info_only(sn):
     thread_limiter.release()
 
 
-def __get_danmu_only(sn, bangumi_name, video_path):
+def __get_danmu_only(sn, bangumi_name, video_path, display=True):
     thread_limiter.acquire()
 
     download_dir = settings['bangumi_dir']
@@ -517,9 +517,9 @@ def __get_danmu_only(sn, bangumi_name, video_path):
     try:
         if os.path.exists(download_dir):
             d = Danmu(sn, video_path.replace('.' + settings['video_filename_extension'], '.ass'), Config.read_cookie())
-            d.download(settings['danmu_ban_words'])
+            d.download(settings['danmu_ban_words'], display=display)
         else:
-            err_print(sn, '彈幕下載異常', '番劇資料夾不存在: ' + download_dir, status=1)
+            err_print(sn, '彈幕下載異常', '番劇資料夾不存在: ' + download_dir, status=1, display=False)
     except Exception as e:
         err_print(sn, '彈幕下載異常', '出現未知異常: ' + str(e), status=1)
     # 彈幕下載冷却
@@ -895,6 +895,8 @@ def run_dashboard():
         return
 
     from Dashboard.Server import run as dashboard
+    from Dashboard.Server import checknow as dashboard_checknow
+    dashboard_checknow = checknow
     server = threading.Thread(target=dashboard)
     server.daemon = True
     server.start()
