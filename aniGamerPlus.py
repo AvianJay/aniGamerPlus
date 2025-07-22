@@ -313,7 +313,13 @@ def worker(sn, sn_info, realtime_show_file_size=False):
 
     download_cd.join()
     queue.pop(sn)  # 从任务列队中移除
-    processing_queue.remove(sn)  # 从当前任务列队中移除 
+    processing_queue.remove(sn)  # 从当前任务列队中移除
+
+    # videolist
+    if settings['dashboard']['online_watch']:
+        err_print(sn, '更新videolist')
+        updatelist()
+
     err_print(sn, '任務完成', status=2)
 
 
@@ -1166,9 +1172,9 @@ if __name__ == '__main__':
                     processing_queue.append(task_sn)
                     new_tasks_counter = new_tasks_counter + 1
                     err_print(task_sn, '加入任务列隊')
-        if settings['dashboard']['online_watch']:
-            err_print(0, '開始更新videolist.json', no_sn=True)
-            updatelist()
+        # if settings['dashboard']['online_watch']:
+        #     err_print(0, '開始更新videolist.json', no_sn=True)
+        #     updatelist()
         if settings['check_sn_ended']:
             err_print(0, '開始檢查動漫是否已完結', no_sn=True)
             Config.check_sn_ended()
