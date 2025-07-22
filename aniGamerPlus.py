@@ -507,6 +507,7 @@ def __get_info_only(sn):
 
 
 def __get_danmu_only(sn, bangumi_name, video_path, display=True):
+    global danmu_tasks_counter
     thread_limiter.acquire()
 
     download_dir = settings['bangumi_dir']
