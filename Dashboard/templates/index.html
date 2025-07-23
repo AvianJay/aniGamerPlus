@@ -22,10 +22,31 @@
             return /Android|webOS|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini/i.test(navigator.userAgent);
         }
 
+        // 簡單暴力 lol
+        let animations = [
+            "歡迎使用anGP+",
+            "歡迎使用aniGP+",
+            "歡迎使用aniGaP+",
+            "歡迎使用aniGamP+",
+            "歡迎使用aniGameP+",
+            "歡迎使用aniGamerP+",
+            "歡迎使用aniGamerPl+",
+            "歡迎使用aniGamerPlu+",
+            "歡迎使用aniGamerPlus+"
+        ];
+
         $(document).ready(function () {
-            title = document.querySelector("h1");
+            let title = document.querySelector("h1");
             if (!isMobileDevice()) {
-                title.textContent = "歡迎使用aniGamerPlus+";
+                setTimeout(() => {
+                    animations.forEach((v, i) => {
+                        setTimeout(() => {
+                            window.requestAnimationFrame(() => {
+                                title.textContent = v;
+                            });
+                        }, 300 * i);
+                    });
+                }, 1000)
             }
         });
     </script>
