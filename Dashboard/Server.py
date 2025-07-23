@@ -220,31 +220,6 @@ if settings['dashboard']['BasicAuth']:
         return websocket_token, '200 ok'
 
 
-    @sockets.route('/data/tasks_progress')
-    def tasks_progress(ws):
-        # 鉴权
-        global websocket_token
-        token = request.args.get('token')
-        if token != websocket_token:
-            ws.send('Unauthorized')
-            ws.close()
-        else:
-            # 一次性 token
-            websocket_token = ''
-
-        # 推送任务进度数据
-        # https://blog.csdn.net/sinat_32651363/article/details/87912701
-        while not ws.closed:
-            msg = json.dumps(Config.tasks_progress_rate)
-            try:
-                ws.send(msg)
-                time.sleep(1)
-            except WebSocketError:
-                # 连接中断
-                ws.close()
-                break
-
-
     @app.route('/sn_list', methods=['POST'])
     @basic_auth.required
     def set_sn_list():
@@ -344,31 +319,6 @@ else:
         return websocket_token, '200 ok'
 
 
-    @sockets.route('/data/tasks_progress')
-    def tasks_progress(ws):
-        # 鉴权
-        global websocket_token
-        token = request.args.get('token')
-        if token != websocket_token:
-            ws.send('Unauthorized')
-            ws.close()
-        else:
-            # 一次性 token
-            websocket_token = ''
-
-        # 推送任务进度数据
-        # https://blog.csdn.net/sinat_32651363/article/details/87912701
-        while not ws.closed:
-            msg = json.dumps(Config.tasks_progress_rate)
-            try:
-                ws.send(msg)
-                time.sleep(1)
-            except WebSocketError:
-                # 连接中断
-                ws.close()
-                break
-
-
     @app.route('/sn_list', methods=['POST'])
     def set_sn_list():
         data = request.get_data(as_text=True)
@@ -382,6 +332,32 @@ else:
         err_print(0, 'Dashboard', '通過 Web 控制臺發出了立即更新的請求', no_sn=True, status=2)
         checknow(True)
         return '{"status":"200"}'
+
+
+# todo: 修好websocket
+@sockets.route('/data/tasks_progress')
+def tasks_progress(ws):
+    # 鉴权
+    global websocket_token
+    token = request.args.get('token')
+    if token != websocket_token:
+        ws.send('Unauthorized')
+        ws.close()
+    else:
+        # 一次性 token
+        websocket_token = ''
+
+    # 推送任务进度数据
+    # https://blog.csdn.net/sinat_32651363/article/details/87912701
+    while not ws.closed:
+        msg = json.dumps(Config.tasks_progress_rate)
+        try:
+            ws.send(msg)
+            time.sleep(1)
+        except WebSocketError:
+            # 连接中断
+            ws.close()
+            break
 
 
 @app.route('/')

@@ -145,6 +145,7 @@ docker run -td --name anigamerplus \
  - [ ] 從YouTube搜尋並下載以得到1080P畫質(或許)
  - [ ] 自動更新彈幕(持續完善中)
  - [x] 從動畫瘋首頁獲取更新中動漫並自動把沒有在上面的sn註釋掉(BETA)
+ - [ ] 修好websocket
 
 ## 配置説明
 
