@@ -23,12 +23,16 @@ jobs:
           python-version: ${{ matrix.python }}
 
     - name: Set up ENV
+      shell: bash
       run: |
-        chcp 65001
-        echo ("RELEASE_VERSION=" + $env:GITHUB_REF.replace('refs/tags/', '')) >> $env:GITHUB_ENV
-        echo ("RELEASE_TITLE=aniGamerPlus_" + $env:GITHUB_REF.replace('refs/tags/', '')) >> $env:GITHUB_ENV
-        echo ("RELEASE_WINDOWS_FILENAME=aniGamerPlus_" + $env:GITHUB_REF.replace('refs/tags/', '') + "_windows_64bit.zip") >> $env:GITHUB_ENV
-        echo ("RELEASE_LINUX_FILENAME=aniGamerPlus_" + $env:GITHUB_REF.replace('refs/tags/', '') + "_linux_64bit.zip") >> $env:GITHUB_ENV
+        RELEASE_VERSION="${GITHUB_REF#refs/tags/}"
+        RELEASE_TITLE="aniGamerPlus_${RELEASE_VERSION}"
+        RELEASE_WINDOWS_FILENAME="aniGamerPlus_${RELEASE_VERSION}_windows_64bit.zip"
+        RELEASE_LINUX_FILENAME="aniGamerPlus_${RELEASE_VERSION}_linux_64bit.zip"
+        echo "RELEASE_VERSION=$RELEASE_VERSION" >> $GITHUB_ENV
+        echo "RELEASE_TITLE=$RELEASE_TITLE" >> $GITHUB_ENV
+        echo "RELEASE_WINDOWS_FILENAME=$RELEASE_WINDOWS_FILENAME" >> $GITHUB_ENV
+        echo "RELEASE_LINUX_FILENAME=$RELEASE_LINUX_FILENAME" >> $GITHUB_ENV
         git fetch --tags --force
     - name: Get tag message
       id: tag_data
