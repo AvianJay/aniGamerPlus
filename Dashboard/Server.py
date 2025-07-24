@@ -24,7 +24,7 @@ from logging.handlers import TimedRotatingFileHandler
 import mimetypes
 # ws 支持
 import ssl
-from flask_sockets import Sockets
+from flask_sock import Sock
 from gevent.pywsgi import WSGIServer
 from geventwebsocket.exceptions import WebSocketError
 from geventwebsocket.handler import WebSocketHandler
@@ -36,7 +36,7 @@ template_path = os.path.join(Config.get_working_dir(), 'Dashboard', 'templates')
 static_path = os.path.join(Config.get_working_dir(), 'Dashboard', 'static')
 app = Flask(__name__, template_folder=template_path, static_folder=static_path)
 app.debug = False
-sockets = Sockets(app)
+sock = Sock(app)
 basic_auth = BasicAuth(app)
 
 # 日志处理
@@ -335,7 +335,7 @@ else:
 
 
 # todo: 修好websocket
-@sockets.route('/data/tasks_progress')
+@sock.route('/data/tasks_progress')
 def tasks_progress(ws):
     # 鉴权
     global websocket_token
@@ -349,7 +349,7 @@ def tasks_progress(ws):
 
     # 推送任务进度数据
     # https://blog.csdn.net/sinat_32651363/article/details/87912701
-    while not ws.closed:
+    while True:
         msg = json.dumps(Config.tasks_progress_rate)
         try:
             ws.send(msg)
