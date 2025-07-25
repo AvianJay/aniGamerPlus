@@ -66,7 +66,7 @@ def login(driver, username, password, save_cookie=False):
     except NoSuchElementException:
         pass
     login_button.click()
-    time.sleep(.5)
+    time.sleep(5)
     if driver.current_url == 'https://user.gamer.com.tw/login.php':
         # 還在登入頁面
         message = driver.find_element(By.CSS_SELECTOR, '#loginFormDiv > div.caption-text.red.margin-bottom.msgdiv-alert')
