@@ -26,6 +26,7 @@ import Config
 from Anime import Anime, TryTooManyTimeError
 from ColorPrint import err_print
 from Danmu import Danmu
+import Loginer
 
 
 def port_is_available(port):
@@ -1169,6 +1170,17 @@ if __name__ == '__main__':
         print()
         err_print(0, '開始更新', no_sn=True)
         Config.test_cookie()  # 测试cookie
+        cookies = Config.read_cookie(force_reload=True)
+        if not cookies or 'nologinuser' in cookies.keys():
+            err_print(0, 'cookie狀態', '偵測到已登出', no_sn=True, display=False)
+            if settings["auto_login"]["enabled"]:
+                err_print(0, 'cookie狀態', '已開啟自動登入，嘗試透過瀏覽器登入...', no_sn=True, display=True)
+                loginer_return = Loginer.do_all(settings["auto_login"]["username"], settings["auto_login"]["password"], settings["auto_login"]["headless"], settings["auto_login"]["save_browser_cookie"])
+                if loginer_return:
+                    open('cookie.txt', 'w').write(loginer_return)
+                    err_print(0, 'cookie狀態', '登入成功！已更新cookie。', no_sn=True, display=True)
+                else:
+                    err_print(0, 'cookie狀態', '使用瀏覽器登入失敗！', no_sn=True, display=True)
         if settings['read_sn_list_when_checking_update']:
             sn_dict = Config.read_sn_list()
         if settings['read_config_when_checking_update']:
