@@ -42,7 +42,7 @@ def get_driver(headless=False):
 
 def login(driver, username, password, save_cookie=False):
     __color_print(0, "登入狀態", detail='正在登入', no_sn=True)
-    driver.get("https://user.gamer.com.tw/login.php")
+    driver.get("https://gamer.com.tw/")
     if os.path.exists('cookies.pkl'):
         __color_print(0, "登入狀態", details='找到cookie檔案', no_sn=True)
         cookies = pickle.load(open("cookies.pkl", "rb"))
@@ -65,7 +65,7 @@ def login(driver, username, password, save_cookie=False):
         solver.click_recaptcha_v2(iframe=recaptcha_iframe)
     except NoSuchElementException:
         pass
-    login_button.click()
+    ActionChains(driver).move_to_element(login_button).click().perform()
     time.sleep(5)
     if driver.current_url == 'https://user.gamer.com.tw/login.php':
         # 還在登入頁面
