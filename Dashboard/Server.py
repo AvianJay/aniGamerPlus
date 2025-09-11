@@ -83,6 +83,16 @@ termcolor.colored = colored
 app.logger.addHandler(handler)
 
 
+# ssl log ignore
+class SafeWebSocketHandler(WebSocketHandler):
+    def log_exception(self, exc_info):
+        if isinstance(exc_info[1], ssl.SSLEOFError):
+            # print("[忽略] SSL EOF 發生，來自客戶端非正常斷開")
+            pass
+        else:
+            super().log_exception(exc_info)
+
+
 def get_chunk(path, byte1=None, byte2=None):
     full_path = path
     file_size = os.stat(full_path).st_size
