@@ -22,6 +22,8 @@ import logging, termcolor
 from ColorPrint import err_print
 from logging.handlers import TimedRotatingFileHandler
 import mimetypes
+from werkzeug.http import http_date
+import urllib.parse
 # ws 支持
 import ssl
 from flask_sock import Sock
@@ -93,22 +95,32 @@ class SafeWebSocketHandler(WebSocketHandler):
             super().log_exception(exc_info)
 
 
-def get_chunk(path, byte1=None, byte2=None):
-    full_path = path
-    file_size = os.stat(full_path).st_size
-    start = 0
-    
-    if byte1 < file_size:
-        start = byte1
-    if byte2:
-        length = byte2 + 1 - byte1
-    else:
-        length = file_size - start
-
-    with open(full_path, 'rb') as f:
+def generate_file(path, start, length, chunk_size=8192):
+    """逐步讀取檔案 (generator)，避免一次讀整份進 memory"""
+    with open(path, 'rb') as f:
         f.seek(start)
-        chunk = f.read(length)
-    return chunk, start, length, file_size
+        remaining = length
+        while remaining > 0:
+            read_size = min(chunk_size, remaining)
+            data = f.read(read_size)
+            if not data:
+                break
+            yield data
+            remaining -= len(data)
+
+
+def get_file_headers(path):
+    """產生 ETag 和 Last-Modified"""
+    stat = os.stat(path)
+
+    # Last-Modified
+    last_modified = http_date(stat.st_mtime)
+
+    # ETag (依檔案大小 + 修改時間)
+    etag_base = f"{stat.st_mtime}-{stat.st_size}".encode()
+    etag = hashlib.md5(etag_base).hexdigest()
+
+    return etag, last_modified, stat.st_size
 
 
 checknow = lambda e: None
@@ -401,36 +413,75 @@ if settings["dashboard"]["online_watch"]:
     @app.route('/get_video.mp4')
     def getvid():
         if settings['dashboard']['online_watch_requires_login']:
-            vaild_user, user_role = verify_user(request.cookies)
-            if not vaild_user:
+            valid_user, user_role = verify_user(request.cookies)
+            if not valid_user:
                 return jsonify({"error": "login required"}), 403
+
         sn = request.args.get('id')
         res = request.args.get('res')
-        c = cache(f"{str(sn)}_{str(res)}")
-        if c:
-            path = c
-        else:
-            path = Config.getpath(sn, 'video', resolution=res)
-            cache(f"{str(sn)}_{str(res)}", time=3600, set=path)
-        if not os.path.exists(path):
-            return jsonify({"error": "File not found"}), 404
-        range_header = request.headers.get('Range', None)
-        byte1, byte2 = 0, None
-        if range_header:
-            match = re.search(r'(\d+)-(\d*)', range_header)
-            groups = match.groups()
+        path = Config.getpath(sn, 'video', resolution=res)
+        filename = os.path.basename(path)
+        ascii_filename = re.sub(r'[^a-zA-Z0-9._-]', '_', filename)
+        utf8_filename = urllib.parse.quote(filename)
+        content_disposition = (
+            f'inline; filename="{ascii_filename}"; filename*=UTF-8\'\'{utf8_filename}'
+        )
 
-            if groups[0]:
-                byte1 = int(groups[0])
-            if groups[1]:
-                byte2 = int(groups[1])
+        etag, last_modified, file_size = get_file_headers(path)
+
+        # 我不知道 ChatGPT一直問我就一直回好啊
+        # 然後就變成這樣了 lol
+        # --- 瀏覽器快取檢查 ---
+        if request.headers.get("If-None-Match") == etag or \
+        request.headers.get("If-Modified-Since") == last_modified:
+            resp = Response(status=304)  # Not Modified
+            resp.headers['ETag'] = etag
+            resp.headers['Last-Modified'] = last_modified
+            resp.headers['Cache-Control'] = 'public, max-age=3600'
+            return resp
+
+        # 檢查 Range header
+        range_header = request.headers.get('Range', None)
+
+        # --- Case 1: 沒有 Range → 直接回傳整份檔案 ---
+        if not range_header:
+            resp = send_file(path, mimetype='video/mp4', as_attachment=True, download_name=filename)
+            resp.headers['Cache-Control'] = 'public, max-age=3600'
+            resp.headers['ETag'] = etag
+            resp.headers['Last-Modified'] = last_modified
+            resp.headers['Accept-Ranges'] = 'bytes'
+            resp.headers['Content-Disposition'] = content_disposition
+            return resp
+
+        # --- Case 2: 有 Range → 部分內容串流回傳 ---
+        byte1, byte2 = 0, None
+        match = re.search(r'(\d+)-(\d*)', range_header)
+        groups = match.groups()
+        if groups[0]:
+            byte1 = int(groups[0])
+        if groups[1]:
+            byte2 = int(groups[1])
+
+        if byte2 is not None:
+            length = byte2 + 1 - byte1
         else:
-            return send_file(path, mimetype='video/mp4', download_name=f"{sn}.mp4")
-        
-        chunk, start, length, file_size = get_chunk(path, byte1, byte2)
-        resp = Response(chunk, 206, mimetype='video/mp4',
-                        content_type='video/mp4', direct_passthrough=True)
-        resp.headers.add('Content-Range', 'bytes {0}-{1}/{2}'.format(start, start + length - 1, file_size))
+            length = file_size - byte1
+
+        resp = Response(
+            stream_with_context(generate_file(path, byte1, length)),
+            status=206,
+            mimetype='video/mp4',
+            direct_passthrough=True,
+        )
+
+        resp.headers.add('Content-Range', f'bytes {byte1}-{byte1 + length - 1}/{file_size}')
+        resp.headers.add('Accept-Ranges', 'bytes')
+        resp.headers.add('Content-Length', str(length))
+        resp.headers['Cache-Control'] = 'public, max-age=3600'
+        resp.headers['ETag'] = etag
+        resp.headers['Last-Modified'] = last_modified
+        resp.headers['Content-Disposition'] = content_disposition
+
         return resp
 
 
