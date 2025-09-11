@@ -15,7 +15,7 @@ import random, string, hashlib
 
 from aniGamerPlus import Config
 from flask import Flask, request, jsonify, Response, redirect
-from flask import render_template, send_file
+from flask import render_template, send_file, stream_with_context
 from flask_basicauth import BasicAuth
 from aniGamerPlus import __cui as cui
 import logging, termcolor
