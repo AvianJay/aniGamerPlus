@@ -171,6 +171,7 @@ class VideoPlayer {
         if (this.video.paused) {
             this.showCenterIcon(this.getIcon('play'), false);
             this.centerIcon.style.opacity = '1';
+            this.playBtn.innerHTML = this.getIcon('play');
         }
     }
 
@@ -186,6 +187,9 @@ class VideoPlayer {
         this.centerIcon = document.createElement('div');
         this.centerIcon.className = 'center-icon';
         this.centerOverlay.appendChild(this.centerIcon);
+        if (isMobileDevice()) {
+            this.centerOverlay.classList.add('mobile-center-overlay');
+        }
         this.container.appendChild(this.centerOverlay);
 
         // ASS Container
@@ -369,10 +373,14 @@ class VideoPlayer {
             });
         }
 
+        if (isMobileDevice()) {
+            this.centerIcon.addEventListener('click', (e) => { e.stopPropagation(); this.togglePlay(); });
+        }
+
         // Mouse/Touch Interaction for Controls Visibility
         this.container.addEventListener('mousemove', () => this.showControls());
         this.container.addEventListener('mouseleave', () => this.hideControls());
-        this.container.addEventListener('touchstart', () => this.showControls());
+        this.container.addEventListener('touchstart', (e) => { e.stopPropagation(); this.toggleControls(); });
 
         // Double Tap Handling
         let lastTap = 0;
@@ -404,10 +412,14 @@ class VideoPlayer {
     togglePlay() {
         if (this.video.paused) {
             this.video.play();
-            this.showCenterIcon(this.getIcon('play'), true);
+            if (!isMobileDevice()) {
+                this.showCenterIcon(this.getIcon('play'), true);
+            }
         } else {
             this.video.pause();
-            this.showCenterIcon(this.getIcon('pause'), true);
+            if (!isMobileDevice()) {
+                this.showCenterIcon(this.getIcon('pause'), true);
+            }
         }
     }
 
@@ -415,14 +427,20 @@ class VideoPlayer {
         this.playBtn.innerHTML = this.getIcon('pause');
         this.showControls();
         this.centerIcon.style.opacity = '0';
+        if (isMobileDevice()) {
+            this.showCenterIcon(this.getIcon('pause'), false);
+            this.centerIcon.style.opacity = '1';
+        }
     }
 
     onPause() {
         this.playBtn.innerHTML = this.getIcon('play');
         this.showControls();
         setTime(this.videoData.sn, this.video.currentTime, false, true);
-        this.showCenterIcon(this.getIcon('play'), false);
-        this.centerIcon.style.opacity = '1';
+        if (isMobileDevice()) {
+            this.showCenterIcon(this.getIcon('play'), false);
+            this.centerIcon.style.opacity = '1';
+        }
     }
 
     onTimeUpdate() {
@@ -452,6 +470,9 @@ class VideoPlayer {
         clearTimeout(this.controlsTimeout);
         this.controlsTimeout = setTimeout(() => this.hideControls(), 3000);
         this.container.style.cursor = 'auto';
+        if (isMobileDevice()) {
+            this.centerIcon.style.opacity = '1';
+        }
     }
 
     hideControls() {
@@ -459,6 +480,17 @@ class VideoPlayer {
             this.container.classList.remove('show-controls');
             this.container.style.cursor = 'none';
             this.settingsMenu.classList.remove('active');
+            if (isMobileDevice()) {
+                this.centerIcon.style.opacity = '0';
+            }
+        }
+    }
+
+    toggleControls() {
+        if (this.container.classList.contains('show-controls')) {
+            this.hideControls();
+        } else {
+            this.showControls();
         }
     }
 
@@ -601,7 +633,7 @@ async function main() {
         var videoSeries = await getVideoSeries(videoId);
 
         // Initialize Player
-        new VideoPlayer('videobox', videoData, videoSeries);
+        window.videoPlayer = new VideoPlayer('videobox', videoData, videoSeries);
 
         // Update Page Title and Info
         document.title = videoData.title + " | aGP+";

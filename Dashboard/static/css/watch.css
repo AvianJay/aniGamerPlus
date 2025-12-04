@@ -57,6 +57,11 @@ video {
   pointer-events: auto;
 }
 
+.show-controls .mobile-center-overlay {
+  opacity: 1;
+  pointer-events: all;
+}
+
 /* Control Elements */
 .control-btn {
   background: none;
@@ -218,6 +223,10 @@ video {
 .center-icon.animate {
   opacity: 1;
   transform: scale(1.2);
+}
+
+.center-icon svg {
+  fill: white;
 }
 
 /* Loading Spinner */
