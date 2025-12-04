@@ -18,154 +18,323 @@
   position: relative;
   overflow: hidden;
   background-color: black;
-  justify-content: center;
-  align-items: center;
-  object-fit: contain;
-}
-
-
-video {
-  object-fit: fill;
   display: flex;
   justify-content: center;
   align-items: center;
-  object-fit: contain;
+  width: 100%;
+  height: 100%;
+  aspect-ratio: 16/9;
 }
 
-/* Controls */
+video {
+  width: 100%;
+  height: 100%;
+  max-width: 100%;
+  max-height: 100%;
+}
+
+/* Controls Container */
 #controls {
   position: absolute;
   bottom: 0;
   left: 0;
-  background-color: rgba(0, 0, 0, 0.5);
   width: 100%;
-  padding: 10px;
+  background: linear-gradient(to top, rgba(0, 0, 0, 0.8), transparent);
+  padding: 10px 15px;
   box-sizing: border-box;
   color: #fff;
   display: flex;
-  justify-content: center;
+  flex-wrap: wrap;
   align-items: center;
   opacity: 0;
   transition: opacity 0.3s ease;
-}
-
-#controls a {
-  color: white;
-}
-
-#playPauseButton,
-#fullscreenButton,
-#playrateButton,
-#danmuButton {
-  margin: 0 5px;
-  background-color: transparent;
-  border: none;
-  color: #fff;
-  cursor: pointer;
-  outline: none;
-}
-
-#fullscreenButton {
-  right: 1;
-}
-
-#volumeSlider {
-  width: 15%;
-  margin: 0 10px;
-}
-
-#timeSlider {
-  width: 100%;
-  margin: 0 10px;
-}
-
-.fullscreen {
-  position: fixed;
-  top: 0;
-  left: 0;
-  width: 100%;
-  height: 100%;
-  z-index: 9999;
+  z-index: 20;
+  pointer-events: none;
 }
 
 .show-controls #controls {
   opacity: 1;
+  pointer-events: auto;
 }
 
-#playPauseButton svg,
-#fullscreenButton svg,
-#playrateButton svg,
-#danmuButton svg {
-  margin: 0 5px;
+/* Control Elements */
+.control-btn {
+  background: none;
+  border: none;
+  color: white;
+  cursor: pointer;
+  padding: 8px;
+  margin: 0 2px;
+  border-radius: 50%;
+  transition: background-color 0.2s;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 40px;
+  height: 40px;
+}
+
+.control-btn:hover {
+  background-color: rgba(255, 255, 255, 0.2);
+}
+
+.control-btn svg {
   width: 24px;
   height: 24px;
   fill: white;
 }
 
-/* General Styling */
-body {
-  margin: 0;
-  padding: 0;
-  font-family: Arial, sans-serif;
-  background-color: #f0f0f0;
-}
-
-h2 {
-  font-size: 20px;
-  margin: 20px 0 10px;
-}
-
-ul {
-  list-style: none;
-  padding: 0;
-  margin: 0;
-}
-
-li {
+/* Time Slider */
+.time-control {
+  width: 100%;
+  display: flex;
+  align-items: center;
   margin-bottom: 5px;
 }
 
-a {
-  color: #000;
-  text-decoration: none;
+#timeSlider {
+  flex-grow: 1;
+  margin: 0 10px;
+  cursor: pointer;
+  height: 4px;
+  background: rgba(255, 255, 255, 0.3);
+  border-radius: 2px;
+  appearance: none;
 }
 
-a:hover {
-  text-decoration: underline;
+#timeSlider::-webkit-slider-thumb {
+  appearance: none;
+  width: 12px;
+  height: 12px;
+  background: #f00;
+  border-radius: 50%;
+  cursor: pointer;
+  transition: transform 0.1s;
 }
 
-#ass-container {
+#timeSlider:hover::-webkit-slider-thumb {
+  transform: scale(1.2);
+}
+
+.time-text {
+  font-size: 12px;
+  white-space: nowrap;
+  min-width: 80px;
+  text-align: center;
+}
+
+/* Bottom Row Controls */
+.controls-row {
+  display: flex;
+  width: 100%;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.controls-left,
+.controls-right {
+  display: flex;
+  align-items: center;
+}
+
+/* Volume Slider */
+.volume-container {
+  display: flex;
+  align-items: center;
+  width: 0;
+  overflow: hidden;
+  transition: width 0.3s;
+  margin-left: 5px;
+}
+
+.volume-container:hover,
+.controls-left:hover .volume-container {
+  width: 80px;
+}
+
+#volumeSlider {
+  width: 100%;
+  height: 4px;
+  cursor: pointer;
+}
+
+/* Settings Menu */
+.settings-menu {
   position: absolute;
-  top: 0;
-  left: 0;
+  bottom: 60px;
+  right: 10px;
+  background-color: rgba(28, 28, 28, 0.9);
+  border-radius: 8px;
+  padding: 5px 0;
+  min-width: 150px;
+  display: none;
+  flex-direction: column;
+  z-index: 30;
+  backdrop-filter: blur(5px);
 }
 
-#loading-spinner {
+.settings-menu.active {
+  display: flex;
+}
+
+.settings-item {
+  padding: 8px 15px;
+  cursor: pointer;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  font-size: 14px;
+  color: #eee;
+}
+
+.settings-item:hover {
+  background-color: rgba(255, 255, 255, 0.1);
+}
+
+/* Center Overlay */
+.center-overlay {
   position: absolute;
   top: 50%;
   left: 50%;
+  transform: translate(-50%, -50%);
+  pointer-events: none;
+  z-index: 10;
+  display: flex;
+  justify-content: center;
+  align-items: center;
+}
+
+.center-icon {
+  width: 60px;
+  height: 60px;
+  background-color: rgba(0, 0, 0, 0.6);
+  border-radius: 50%;
+  padding: 15px;
+  opacity: 0;
+  transition: opacity 0.2s, transform 0.2s;
+  transform: scale(0.8);
+}
+
+.center-icon.animate {
+  opacity: 1;
+  transform: scale(1.2);
+}
+
+/* Loading Spinner */
+#loading-spinner {
   width: 50px;
   height: 50px;
-  border: 5px solid rgba(255, 255, 255, 0.3);
-  border-top: 5px solid white;
+  border: 4px solid rgba(255, 255, 255, 0.3);
+  border-top: 4px solid white;
   border-radius: 50%;
   animation: spin 1s linear infinite;
-  transform: translate(-50%, -50%);
   display: none;
 }
 
 @keyframes spin {
   0% {
-    transform: translate(-50%, -50%) rotate(0deg);
+    transform: rotate(0deg);
   }
 
   100% {
-    transform: translate(-50%, -50%) rotate(360deg);
+    transform: rotate(360deg);
   }
 }
 
+/* Mobile Specifics */
+@media (max-width: 768px) {
+  #controls {
+    padding: 5px 10px;
+  }
+
+  .control-btn {
+    padding: 5px;
+    width: 36px;
+    height: 36px;
+  }
+
+  .volume-container {
+    display: none;
+  }
+
+  #timeSlider {
+    height: 6px;
+    margin: 10px 0;
+  }
+
+  #timeSlider::-webkit-slider-thumb {
+    width: 16px;
+    height: 16px;
+  }
+}
+
+/* Fullscreen Overrides */
+.fullscreen {
+  position: fixed;
+  top: 0;
+  left: 0;
+  width: 100% !important;
+  height: 100% !important;
+  z-index: 9999;
+  background: black;
+}
+
+.fullscreen video {
+  width: 100%;
+  height: 100%;
+}
+
+/* End Box */
+#endBox {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  background: rgba(20, 20, 20, 0.95);
+  padding: 20px;
+  border-radius: 12px;
+  text-align: center;
+  z-index: 40;
+  display: none;
+  min-width: 280px;
+  box-shadow: 0 4px 20px rgba(0, 0, 0, 0.5);
+}
+
+#endBox h2 {
+  margin-top: 0;
+  font-size: 18px;
+  color: #fff;
+}
+
+.end-buttons {
+  display: flex;
+  gap: 10px;
+  margin-top: 20px;
+}
+
+.end-btn {
+  flex: 1;
+  padding: 10px;
+  border: none;
+  border-radius: 6px;
+  cursor: pointer;
+  font-weight: bold;
+}
+
+.end-btn.primary {
+  background-color: #f00;
+  color: white;
+}
+
+.end-btn.secondary {
+  background-color: #444;
+  color: white;
+}
+
+/* --- New Grid Layout & Card Styles --- */
+
 .animeCategory {
-  border: 1px solid #ccc;
+  border: 1px solid #eee;
   padding: 10px;
   margin: 10px 1rem 0 1rem;
   cursor: pointer;
@@ -175,146 +344,119 @@ a:hover {
 }
 
 .animeCategoryTitle {
-  margin: 0;
-  padding: 10px;
-  font-size: 18px;
-  font-weight: bold;
-  background-color: #ddd;
-  border-radius: 5px;
+  font-size: 24px;
+  margin-bottom: 15px;
+  color: #333;
+  border-left: 5px solid #007bff;
+  padding-left: 10px;
+  cursor: pointer;
   width: 100%;
 }
 
 .animeEpisodeList {
+  display: none;
+  grid-template-columns: repeat(auto-fill, minmax(200px, 100%));
+  gap: 15px;
   list-style: none;
   padding: 0;
   margin: 0;
-  display: none;
+}
+
+.animeEpisodeItem {
+  background: white;
+  border-radius: 8px;
   overflow: hidden;
-  width: 100%;
+  box-shadow: 0 2px 5px rgba(0, 0, 0, 0.1);
+  transition: transform 0.2s, box-shadow 0.2s;
+  border: 1px solid #eee;
+  display: flex;
+  flex-direction: column;
 }
 
-.animeEpisodeList li {
-  padding: 5px 10px;
-  border-bottom: 1px solid #eee;
+.animeEpisodeItem:hover {
+  transform: translateY(-5px);
+  box-shadow: 0 5px 15px rgba(0, 0, 0, 0.15);
 }
 
-.animeEpisodeList li:last-child {
-  border-bottom: none;
+.animeEpisodeItem a {
+  display: block;
+  padding: 15px;
+  color: #333;
+  text-decoration: none;
+  font-weight: bold;
+  font-size: 16px;
+  flex-grow: 1;
+  background: #f9f9f9;
+}
+
+.animeEpisodeItem a:hover {
+  color: #007bff;
+}
+
+.watchedText {
+  font-size: 12px;
+  color: #666;
+  padding: 0 15px 10px;
+  margin: 0;
+  background: #f9f9f9;
+}
+
+/* Dark Mode Support (optional, but good for "beautification") */
+@media (prefers-color-scheme: dark) {
+  body {
+    background-color: #121212;
+    color: #e0e0e0;
+  }
+
+  .animeCategory {
+    border-color: #333;
+    background-color: #222;
+  }
+
+  .animeCategoryTitle {
+    color: #e0e0e0;
+  }
+
+  .animeEpisodeItem {
+    background: #1e1e1e;
+    border-color: #333;
+  }
+
+  .animeEpisodeItem a {
+    color: #e0e0e0;
+    background: #1e1e1e;
+  }
+
+  .animeEpisodeItem a:hover {
+    color: #64b5f6;
+  }
+
+  .watchedText {
+    color: #aaa;
+    background: #1e1e1e;
+  }
+
+  .setting-content {
+    color: #e0e0e0;
+  }
+
+  hr {
+    border-color: #333;
+  }
+
+  input {
+    background-color: #222 !important;
+    color: #e0e0e0;
+    border: 1px solid #333 !important;
+  }
 }
 
 .animeWatchingCategory {
   flex: 1;
-  flex-direction: column;
-  overflow: auto;
-}
-
-.animeWatchingTitle {
-  height: fit-content;
-}
-
-.animeWatchingEpisodeList {
   overflow-y: auto;
 }
 
-.anotherVideoBox {
-  display: flex;
-}
-
-.progress {
+.animeWatchingEpisodeList {
+  display: grid;
   width: 100%;
-}
-
-#speedDropdown {
-    position: absolute;
-    top: -50px; /* 調整選單浮在按鈕上方 */
-    left: 0;
-    padding: 5px;
-    cursor: pointer;
-    z-index: 1000; /* 確保選單顯示在最上層 */
-    background-color: white;
-    border: 1px solid #ccc;
-    border-radius: 4px;
-    display: none; /* 預設隱藏 */
-    box-shadow: 0px 4px 6px rgba(0, 0, 0, 0.1); /* 增加陰影效果 */
-}
-
-.animeEpisodeItem {
-    width: 100%;
-    display: flex;
-    align-items: center;
-}
-
-.animeEpisodeItem a {
-    flex: 1;
-    overflow: hidden;
-    white-space: nowrap;
-    text-overflow: ellipsis;
-}
-
-.watchedText {
-    flex: 0 0 auto;
-    text-align: end;
-    margin: 0;
-}
-
-#endBox {
-  position: absolute;
-  top: 50%;
-  left: 50%;
-  width: 300px;
-  height: auto; /* 自動調整高度 */
-  background-color: black;
-  border: 1px solid;
-  padding: 20px;
-  border-radius: 20px;
-  transform: translate(-50%, -50%);
-  display: flex;
-  flex-direction: column; /* 垂直排列內容 */
-  align-items: center; /* 水平置中 */
-}
-
-#endBox h2 {
-  color: white;
-  text-align: center;
-  margin-bottom: 20px;
-}
-
-#endBox .button-container {
-  display: flex;
-  justify-content: space-between; /* 按鈕左右分開 */
-  width: 100%; /* 讓按鈕容器寬度填滿 */
-  gap: 10px; /* 按鈕之間的間距 */
-}
-
-#endBox button {
-  background-color: #adadad;
-  color: white;
-  border: none;
-  padding: 10px 20px;
-  text-align: center;
-  text-decoration: none;
-  display: inline-block;
-  font-size: 16px;
-  cursor: pointer;
-  border-radius: 5px;
-  flex: 1; /* 讓按鈕等寬 */
-}
-
-#overlay {
-  top: 0;
-  left: 0;
-  width: 100%;
-  height: 100%;
-  background-color: rgba(0,0,0,0.5);
-  position: absolute;
-}
-
-#top-overlay {
-  top: 0;
-  left: 0;
-  position: absolute;
-  width: 100%;
-  height: 30%;
-  background: linear-gradient(black, transparent);
-  z-index: 9999; /* 確保在最上層 */
 }
