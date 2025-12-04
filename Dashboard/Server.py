@@ -519,7 +519,7 @@ if settings["dashboard"]["online_watch"]:
         if gettype == 'set':
             for user in userdata['users']:
                 if user['token'] == token:
-                    user['videotimes'][sn] = {"time": int(float(request.args.get('time'))), "ended": ended, "timestamp": int(datetime.now().timestamp())}
+                    user['videotimes'][sn] = {"time": int(float(reqdata.get('time'))), "ended": ended, "timestamp": int(datetime.now().timestamp())}
                     with open(os.path.join(Config.get_working_dir(), 'Dashboard', 'userdata.json'), 'w', encoding='utf-8') as f:
                         json.dump(userdata, f, ensure_ascii=False, indent=4)
                     return '{"status":"200"}'
