@@ -337,7 +337,6 @@ class VideoPlayer {
 
     attachEvents() {
         // Video Events
-        this.video.addEventListener('click', () => this.togglePlay());
         this.video.addEventListener('play', () => this.onPlay());
         this.video.addEventListener('pause', () => this.onPause());
         this.video.addEventListener('timeupdate', () => this.onTimeUpdate());
@@ -932,6 +931,7 @@ function createEpisodeList(videoSeries) {
         });
     } else {
         document.getElementById("videobox").style.width = "70%";
+        document.getElementById("anotherVideoBox").style.display = "flex";
         categorybox.classList.add('animeWatchingCategory');
         categoryTitle.classList.add('animeWatchingTitle');
         videoListe.classList.add('animeWatchingEpisodeList');
@@ -942,7 +942,7 @@ function createEpisodeList(videoSeries) {
         const resizeList = () => {
             var widthsize = 70; // Desktop width percentage
             var finalWidth = window.innerWidth * (widthsize / 100);
-            var finalHeight = (finalWidth / 16 * 9) - 75;
+            var finalHeight = (finalWidth / 16 * 9) - 15;
             categorybox.style.height = finalHeight + 'px';
         };
         resizeList();
