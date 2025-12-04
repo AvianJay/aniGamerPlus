@@ -238,6 +238,7 @@ video {
   border-radius: 50%;
   animation: spin 1s linear infinite;
   display: none;
+  position: absolute;
 }
 
 @keyframes spin {
