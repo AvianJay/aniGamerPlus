@@ -334,7 +334,7 @@ video {
 /* --- New Grid Layout & Card Styles --- */
 
 .animeCategory {
-  border: 1px solid #eee;
+  border: 10px solid #eee;
   padding: 10px;
   margin: 10px 1rem 0 1rem;
   cursor: pointer;
@@ -458,5 +458,9 @@ video {
 
 .animeWatchingEpisodeList {
   display: grid;
+  width: 100%;
+}
+
+.progress {
   width: 100%;
 }

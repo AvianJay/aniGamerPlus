@@ -667,7 +667,7 @@ async function renderFullVideoList() {
         loadingBar.style.display = "flex";
         loadingBar.style.justifyContent = "center";
         loadingBar.style.color = "white";
-        loadingBar.innerText = "載入清單中...";
+        loadingBar.innerHTML = '<div id="progdiv" class="progress"><div id="prog" class="progress-bar progress-bar-striped progress-bar-animated" role="progressbar" aria-valuenow="1" aria-valuemin="0" aria-valuemax="1" style="width: 100%">載入清單中...</div></div>';
         container.appendChild(loadingBar);
 
         // Get Data
