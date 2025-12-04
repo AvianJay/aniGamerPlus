@@ -346,6 +346,9 @@ class VideoPlayer {
         this.video.addEventListener('playing', () => this.loadingSpinner.style.display = 'none');
         this.video.addEventListener('canplay', () => this.loadingSpinner.style.display = 'none');
         this.video.addEventListener('ended', () => this.onEnded());
+        if (!isMobileDevice()) {
+            this.video.addEventListener('click', () => this.togglePlay());
+        }
 
         // Control Events
         this.playBtn.addEventListener('click', (e) => { e.stopPropagation(); this.togglePlay(); });
