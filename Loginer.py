@@ -98,7 +98,7 @@ def do_all(username, password, headless, save_cookie):
     try:
         driver = get_driver(headless)
     except Exception as e:
-        __color_print(0, "登入狀態", detail='啟動瀏覽器時發生異常: ' + e, status=1, no_sn=True)
+        __color_print(0, "登入狀態", detail='啟動瀏覽器時發生異常: ' + str(e), status=1, no_sn=True)
         return False
     try:
         if login(driver, username, password, save_cookie):
@@ -108,7 +108,7 @@ def do_all(username, password, headless, save_cookie):
         driver.close()
         return raw_cookie
     except Exception as e:
-        __color_print(0, "登入狀態", detail='登入時發生異常: ' + e, status=1, no_sn=True)
+        __color_print(0, "登入狀態", detail='登入時發生異常: ' + str(e), status=1, no_sn=True)
         return False
 
 
