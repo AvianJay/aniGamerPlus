@@ -69,10 +69,16 @@ async function setTime(sn, time, ended, force = false) {
     return 0;
 }
 
+let videoList = null;
+
 async function getVideoList() {
     try {
+        if (videoList) {
+            return videoList;
+        }
         let response = await fetch('./video_list.json');
         let data = await response.json();
+        videoList = data;
         return data;
     } catch (error) {
         console.error("發生錯誤：", error);
