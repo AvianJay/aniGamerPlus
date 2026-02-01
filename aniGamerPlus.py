@@ -799,9 +799,17 @@ def kill_gost():
 
 
 def user_exit(signum, frame):
-    err_print(0, '你終止了程序!', '\n', status=1, no_sn=True, prefix='\n\n')
-    kill_gost()  # 结束 gost
-    sys.exit(255)
+    # 避免在信號處理器中使用可能阻塞的函數（如 subprocess、logging 等）
+    # 這在 gevent 環境中會導致 BlockingSwitchOutError
+    try:
+        print('\n\n你終止了程序!\n', flush=True)
+    except:
+        pass
+    try:
+        kill_gost()  # 结束 gost
+    except:
+        pass
+    os._exit(255)  # 使用 os._exit 強制退出，避免 gevent 清理過程中的阻塞
 
 
 def check_new_version():

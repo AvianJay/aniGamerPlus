@@ -5,7 +5,7 @@
 # @File    : Color.py
 # @Software: PyCharm
 
-import ctypes, subprocess, platform, os, json, re
+import ctypes, subprocess, platform, os, json, re, sys
 from termcolor import cprint
 from datetime import datetime
 import Config
@@ -48,9 +48,15 @@ def err_print(sn, err_msg, detail='', status=0, no_sn=False, prefix='', display=
     green = False
 
     def succeed_or_failed_print():
-        check_tty = subprocess.Popen('tty', shell=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-        check_tty_return_str = check_tty.stdout.read().decode("utf-8")[0:-1]
-        if 'Windows' in platform.system() and check_tty_return_str in ('/dev/cons0', ''):
+        # 避免使用 subprocess.Popen 檢測 tty，因為在 gevent 信號處理中會導致 BlockingSwitchOutError
+        # 改用 sys.stdout.isatty() 和 platform 判斷
+        is_windows = 'Windows' in platform.system()
+        try:
+            is_tty = sys.stdout.isatty()
+        except:
+            is_tty = False
+        
+        if is_windows and is_tty:
             clr = Color()
             if green:
                 clr.print_green_text(msg)
