@@ -215,6 +215,33 @@
 		<div class="setting-wrapper mx-auto" style="padding-top: 70px;">
 			<form>
 				<div class="row">
+					<h2 class="col">網頁控制台</h2>
+				</div>
+				<div class="row setting-content">
+					<div class="input-group">
+						<div class="input-group-prepend">
+							<span class="input-group-text">指令</span>
+						</div>
+						<input id="web_console_command" type="text" class="form-control input-group-prepend-form-control" placeholder="help..." />
+						<div class="input-group-append">
+							<button class="btn btn-success" type="button" onclick="runWebConsoleCommand()">執行</button>
+						</div>
+					</div>
+				</div>
+				<div class="row setting-content">
+					<div class="col">
+						<button class="btn btn-outline-primary my-1" type="button" onclick="runQuickCommand('checknow')">立即更新</button>
+						<button class="btn btn-outline-primary my-1" type="button" onclick="runQuickCommand('update-videolist')">立即更新影片清單</button>
+						<button class="btn btn-outline-secondary my-1" type="button" onclick="runQuickCommand('help')">指令說明</button>
+					</div>
+				</div>
+				<div class="row setting-content">
+					<div class="input-group">
+						<textarea id="web_console_output" class="form-control" rows="6" readonly placeholder="指令輸出..."></textarea>
+					</div>
+				</div>
+
+				<div class="row">
 					<h2 class="col">路徑設定</h2>
 				</div>
 				<div class="row setting-content">

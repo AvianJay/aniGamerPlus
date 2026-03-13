@@ -9,6 +9,7 @@
 # 非阻塞 (Web)
 from gevent import monkey
 
+
 monkey.patch_all()
 
 import os, sys, time, re, random, traceback, argparse
@@ -21,6 +22,7 @@ import socket
 import requests
 import json
 from datetime import datetime
+import queue as _queue
 
 import Config
 from Anime import Anime, TryTooManyTimeError
@@ -307,6 +309,8 @@ def _list_console_commands():
 
 
 def run_command_console():
+    import threading
+    print(f'[DEBUG] console thread id: {threading.current_thread().name}, type: {type(threading.current_thread())}')
     print('\n=== aniGamerPlus 指令控制台 ===')
     base_commands, plugin_commands = _list_console_commands()
     print('可用指令:')
@@ -328,32 +332,60 @@ def run_command_console():
 
         part = raw.split()
         command_name = part[0].lower()
-        args = [x.lower() for x in part[1:]]
 
         if command_name in ('exit', 'quit'):
             print('離開控制台')
             return
 
-        builtin_result = _run_builtin_command(command_name, args)
-        if builtin_result.get('handled', False):
-            if command_name in ('help', '?'):
-                base_commands, plugin_commands = _list_console_commands()
-                for cmd, desc in base_commands:
-                    print(f'  {cmd:<28} -> {desc}')
-                for cmd in plugin_commands:
-                    print(f"  {cmd['name']:<28} -> {cmd.get('help', '')}")
-            else:
-                print(builtin_result.get('message', ''))
-            continue
+        # 把完整原始字串丟進佇列，由主執行緒處理
+        _command_queue.put(raw)
 
-        plugin_manager.reload(Config.read_settings())
-        plugin_result = plugin_manager.run_command(command_name, args, _console_context(show_detail=True))
-        if plugin_result.get('handled', False):
-            print(plugin_result.get('message', '執行完成'))
-            continue
+def _dispatch_console_command(raw):
+    result = execute_control_command(raw, show_detail=True)
+    if result.get('help', False):
+        commands = result.get('commands', [])
+        for cmd in commands:
+            print(f"  {cmd.get('name', ''):<28} -> {cmd.get('help', '')}")
+        return
+    print(result.get('message', ''))
 
-        if command_name:
-            print('未知指令，輸入 help 查看可用指令')
+
+def execute_control_command(raw_command, show_detail=False):
+    raw = (raw_command or '').strip()
+    if not raw:
+        return {'success': False, 'message': '請輸入指令'}
+
+    part = raw.split()
+    command_name = part[0].lower()
+    args = [x.lower() for x in part[1:]]
+
+    if command_name in ('help', '?'):
+        base_commands, plugin_commands = _list_console_commands()
+        commands = [{'name': cmd, 'help': desc} for cmd, desc in base_commands]
+        commands.extend(plugin_commands)
+        return {
+            'success': True,
+            'help': True,
+            'message': '可用指令列表',
+            'commands': commands,
+        }
+
+    builtin_result = _run_builtin_command(command_name, args)
+    if builtin_result.get('handled', False):
+        return {
+            'success': bool(builtin_result.get('success', False)),
+            'message': builtin_result.get('message', ''),
+        }
+
+    plugin_manager.reload(Config.read_settings())
+    plugin_result = plugin_manager.run_command(command_name, args, _console_context(show_detail=show_detail))
+    if plugin_result.get('handled', False):
+        return {
+            'success': bool(plugin_result.get('success', False)),
+            'message': plugin_result.get('message', '執行完成'),
+        }
+
+    return {'success': False, 'message': '未知指令，輸入 help 查看可用指令'}
 
 
 def worker(sn, sn_info, realtime_show_file_size=False):
@@ -1058,10 +1090,10 @@ def run_dashboard():
         err_print(0, 'Web控制面板啓動失敗', 'Port已被占用! 請到配置文件更換', status=1, no_sn=True)
         return
 
-    from Dashboard.Server import run as dashboard
-    from Dashboard.Server import checknow as dashboard_checknow
-    dashboard_checknow = checknow
-    server = threading.Thread(target=dashboard)
+    from Dashboard import Server
+    Server.checknow = checknow
+    Server.command_handler = execute_control_command
+    server = threading.Thread(target=Server.run)
     server.daemon = True
     server.start()
     if settings['dashboard']['SSL']:
@@ -1142,11 +1174,9 @@ def updatelist():
         json.dump(my_list, f)
 
 
-check_cd = 0
 def checknow():
     err_print(0, '立即更新', no_sn=True)
-    global check_cd
-    check_cd = 0
+    _checknow_event.set()
 
 
 signal.signal(signal.SIGINT, user_exit)
@@ -1165,6 +1195,74 @@ gost_subprocess = None  # 存放 gost 的 subprocess.Popen 对象, 用于结束�
 gost_port = gost_port()  # gost 端口
 sn_dict = Config.read_sn_list()
 danmu = settings['danmu']
+_command_queue   = _queue.Queue()   # console 指令佇列
+_checknow_event  = threading.Event()  # checknow 觸發事件
+
+def auto_update_loop():
+    global settings, sn_dict, danmu
+    while True:
+        print()
+        err_print(0, '開始更新', no_sn=True)
+        Config.test_cookie()  # 测试cookie
+        cookies = Config.read_cookie(force_reload=True)
+        if not cookies or 'nologinuser' in cookies.keys():
+            err_print(0, 'cookie狀態', '偵測到已登出', no_sn=True, display=False)
+            if settings["auto_login"]["enabled"]:
+                err_print(0, 'cookie狀態', '已開啟自動登入，嘗試透過瀏覽器登入...', no_sn=True, display=True)
+                loginer_return = Loginer.do_all(settings["auto_login"]["username"], settings["auto_login"]["password"], settings["auto_login"]["headless"], settings["auto_login"]["save_browser_cookie"])
+                if loginer_return:
+                    open('cookie.txt', 'w').write(loginer_return)
+                    err_print(0, 'cookie狀態', '登入成功！已更新cookie。', no_sn=True, display=True)
+                else:
+                    err_print(0, 'cookie狀態', '使用瀏覽器登入失敗！', no_sn=True, display=True)
+        if settings['read_sn_list_when_checking_update']:
+            sn_dict = Config.read_sn_list()
+        if settings['read_config_when_checking_update']:
+            settings = Config.read_settings()
+            plugin_manager.reload(settings)
+        danmu = settings['danmu']  # 避免手動加入工作時，global 覆寫掉 config 的 danmu 設定
+        check_tasks()  # 检查更新，生成任务列队
+        new_tasks_counter = 0  # 新增任务计数器
+        if queue:
+            for task_sn in queue.keys():
+                if task_sn not in processing_queue:  # 如果该任务没有在进行中，则启动
+                    task = threading.Thread(target=worker, args=(task_sn, queue[task_sn]))
+                    task.daemon = True
+                    task.start()
+                    processing_queue.append(task_sn)
+                    new_tasks_counter = new_tasks_counter + 1
+                    err_print(task_sn, '加入任务列隊')
+        if settings['dashboard']['online_watch']:
+            err_print(0, '開始更新videolist.json', no_sn=True)
+            updatelist()
+        if settings['check_sn_ended']:
+            err_print(0, '開始檢查動漫是否已完結', no_sn=True)
+            Config.check_sn_ended()
+        if settings['auto_update_danmu']:
+            err_print(0, '開始更新彈幕', no_sn=True)
+            danmu_tasks_counter = update_danmu()
+            new_tasks_counter += danmu_tasks_counter
+        info = '本次更新添加了 ' + str(new_tasks_counter) + ' 個新任務, 目前列隊中共有 ' + str(
+            len(processing_queue)) + ' 個任務'
+        err_print(0, '更新資訊', info, no_sn=True)
+        err_print(0, '更新终了', no_sn=True)
+        print()
+        wait_total = settings['check_frequency'] * 60
+        waited = 0
+        while waited < wait_total:
+            # 每次最多等 1 秒，或被 checknow event 喚醒
+            triggered = _checknow_event.wait(timeout=1)
+            if triggered:
+                _checknow_event.clear()
+                break  # 立刻進入下一輪更新
+            waited += 1
+            # 順便處理 console 指令（不阻塞）
+            while not _command_queue.empty():
+                try:
+                    raw = _command_queue.get_nowait()
+                    _dispatch_console_command(raw)
+                except _queue.Empty:
+                    break
 
 if __name__ == '__main__':
     if settings['check_latest_version']:
@@ -1324,60 +1422,9 @@ if __name__ == '__main__':
     if settings['use_dashboard']:
         run_dashboard()
 
-    if settings.get('command_console', False):
-        console_thread = threading.Thread(target=run_command_console)
-        console_thread.daemon = True
-        console_thread.start()
-        err_print(0, '指令控制台', '已在自動模式啟用', no_sn=True, status=2)
+    update_thread = threading.Thread(target=auto_update_loop)
+    update_thread.daemon = True
+    update_thread.start()
 
-    while True:
-        print()
-        err_print(0, '開始更新', no_sn=True)
-        Config.test_cookie()  # 测试cookie
-        cookies = Config.read_cookie(force_reload=True)
-        if not cookies or 'nologinuser' in cookies.keys():
-            err_print(0, 'cookie狀態', '偵測到已登出', no_sn=True, display=False)
-            if settings["auto_login"]["enabled"]:
-                err_print(0, 'cookie狀態', '已開啟自動登入，嘗試透過瀏覽器登入...', no_sn=True, display=True)
-                loginer_return = Loginer.do_all(settings["auto_login"]["username"], settings["auto_login"]["password"], settings["auto_login"]["headless"], settings["auto_login"]["save_browser_cookie"])
-                if loginer_return:
-                    open('cookie.txt', 'w').write(loginer_return)
-                    err_print(0, 'cookie狀態', '登入成功！已更新cookie。', no_sn=True, display=True)
-                else:
-                    err_print(0, 'cookie狀態', '使用瀏覽器登入失敗！', no_sn=True, display=True)
-        if settings['read_sn_list_when_checking_update']:
-            sn_dict = Config.read_sn_list()
-        if settings['read_config_when_checking_update']:
-            settings = Config.read_settings()
-            plugin_manager.reload(settings)
-        danmu = settings['danmu']  # 避免手動加入工作時，global 覆寫掉 config 的 danmu 設定
-        check_tasks()  # 检查更新，生成任务列队
-        new_tasks_counter = 0  # 新增任务计数器
-        if queue:
-            for task_sn in queue.keys():
-                if task_sn not in processing_queue:  # 如果该任务没有在进行中，则启动
-                    task = threading.Thread(target=worker, args=(task_sn, queue[task_sn]))
-                    task.daemon = True
-                    task.start()
-                    processing_queue.append(task_sn)
-                    new_tasks_counter = new_tasks_counter + 1
-                    err_print(task_sn, '加入任务列隊')
-        if settings['dashboard']['online_watch']:
-            err_print(0, '開始更新videolist.json', no_sn=True)
-            updatelist()
-        if settings['check_sn_ended']:
-            err_print(0, '開始檢查動漫是否已完結', no_sn=True)
-            Config.check_sn_ended()
-        if settings['auto_update_danmu']:
-            err_print(0, '開始更新彈幕', no_sn=True)
-            danmu_tasks_counter = update_danmu()
-            new_tasks_counter += danmu_tasks_counter
-        info = '本次更新添加了 ' + str(new_tasks_counter) + ' 個新任務, 目前列隊中共有 ' + str(
-            len(processing_queue)) + ' 個任務'
-        err_print(0, '更新資訊', info, no_sn=True)
-        err_print(0, '更新终了', no_sn=True)
-        print()
-        check_cd = settings['check_frequency'] * 60
-        while check_cd > 0:
-            time.sleep(1)  # cool down, 這麽寫是爲了可以 Ctrl+C 馬上退出
-            check_cd -= 1
+    # 主執行緒只負責讓 gevent 的 dashboard 跑，永遠阻塞在這裡
+    update_thread.join()

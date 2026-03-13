@@ -125,6 +125,34 @@ def get_file_headers(path):
 
 
 checknow = lambda e: None
+command_handler = None
+
+
+def _handle_web_console_command():
+    payload = request.get_json(silent=True) or {}
+    raw_command = str(payload.get('command', '')).strip()
+    if not raw_command:
+        return jsonify({'success': False, 'message': '請輸入指令'}), 400
+
+    if not callable(command_handler):
+        return jsonify({'success': False, 'message': '指令處理器尚未初始化'}), 503
+
+    try:
+        result = command_handler(raw_command, show_detail=False)
+    except BaseException as e:
+        return jsonify({'success': False, 'message': str(e)}), 500
+
+    success = bool(result.get('success', False))
+    body = {
+        'success': success,
+        'message': result.get('message', ''),
+    }
+    if result.get('help', False):
+        body['help'] = True
+        body['commands'] = result.get('commands', [])
+
+    err_print(0, 'Dashboard', f'通過 Web 控制臺執行指令: {raw_command}', no_sn=True, status=2 if success else 1)
+    return jsonify(body), 200 if success else 400
 
 caches = {}
 def cache(id, time=600, set=None):
@@ -259,6 +287,12 @@ if settings['dashboard']['BasicAuth']:
         err_print(0, 'Dashboard', '通過 Web 控制臺發出了立即更新的請求', no_sn=True, status=2)
         checknow(True)
         return '{"status":"200"}'
+
+
+    @app.route('/console/command', methods=['POST'])
+    @basic_auth.required
+    def web_console_command():
+        return _handle_web_console_command()
 else:
     @app.route('/control')
     def control():
@@ -356,6 +390,11 @@ else:
         err_print(0, 'Dashboard', '通過 Web 控制臺發出了立即更新的請求', no_sn=True, status=2)
         checknow(True)
         return '{"status":"200"}'
+
+
+    @app.route('/console/command', methods=['POST'])
+    def web_console_command():
+        return _handle_web_console_command()
 
 
 # todo: 修好websocket

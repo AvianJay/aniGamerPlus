@@ -252,3 +252,76 @@ function showSnList(){
 		$("#sn_list").val(data);
 	})
 }
+
+
+function appendWebConsoleOutput(text) {
+	var output = $('#web_console_output');
+	if (output.length === 0) return;
+	var current = output.val();
+	var next = current.length ? (current + "\n" + text) : text;
+	output.val(next);
+	output.scrollTop(output[0].scrollHeight);
+}
+
+
+function formatCommandHelp(commands) {
+	if (!commands || !commands.length) {
+		return '沒有可用指令';
+	}
+	var lines = ['可用指令:'];
+	for (var i = 0; i < commands.length; i++) {
+		var item = commands[i];
+		lines.push('- ' + item.name + ' : ' + (item.help || ''));
+	}
+	return lines.join('\n');
+}
+
+
+function runWebConsoleCommand(command) {
+	var cmd = command || $('#web_console_command').val().trim();
+	if (!cmd) {
+		appendWebConsoleOutput('[錯誤] 請輸入指令');
+		return;
+	}
+
+	appendWebConsoleOutput('> ' + cmd);
+
+	$.ajax({
+		url: '/console/command',
+		type: 'post',
+		dataType: 'json',
+		headers: {
+			"Content-Type": "application/json;charset=utf-8"
+		},
+		contentType: 'application/json; charset=utf-8',
+		data: JSON.stringify({ command: cmd }),
+		success: function(data) {
+			if (data.help) {
+				appendWebConsoleOutput(formatCommandHelp(data.commands));
+			} else {
+				appendWebConsoleOutput((data.success ? '[成功] ' : '[失敗] ') + (data.message || ''));
+			}
+		},
+		error: function(xhr) {
+			var msg = '指令執行失敗';
+			if (xhr.responseJSON && xhr.responseJSON.message) {
+				msg = xhr.responseJSON.message;
+			}
+			appendWebConsoleOutput('[失敗] ' + msg);
+		}
+	});
+}
+
+
+function runQuickCommand(command) {
+	$('#web_console_command').val(command);
+	runWebConsoleCommand(command);
+}
+
+
+$(document).on('keydown', '#web_console_command', function(e) {
+	if (e.key === 'Enter') {
+		e.preventDefault();
+		runWebConsoleCommand();
+	}
+});
