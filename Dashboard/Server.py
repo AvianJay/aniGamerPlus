@@ -32,6 +32,7 @@ from geventwebsocket.exceptions import WebSocketError
 from geventwebsocket.handler import WebSocketHandler
 from datetime import datetime
 from plugin_system import PluginManager
+from Danmu import Danmu
 
 mimetypes.add_type('text/css', '.css')
 mimetypes.add_type('application/x-javascript', '.js')
@@ -541,6 +542,16 @@ if settings["dashboard"]["online_watch"]:
         sn = request.args.get('id')
         if settings['danmu']:
             path = Config.getpath(sn, 'danmu')
+            if path:
+                try:
+                    latest_settings = Config.read_settings()
+                    danmu_ban_words = list(latest_settings.get('danmu_ban_words', []))
+                    d = Danmu(sn, path, Config.read_cookie())
+                    d.download(danmu_ban_words, display=False)
+                except BaseException as e:
+                    err_print(sn, '彈幕更新失敗', '線上觀看請求時自動更新失敗: ' + str(e), status=1, display=False)
+            if not path or not os.path.exists(path):
+                return jsonify({"error": "danmu not found"}), 404
             return send_file(path)
         else:
             return 'Danmu is not enabled'
