@@ -27,6 +27,7 @@ from Anime import Anime, TryTooManyTimeError
 from ColorPrint import err_print
 from Danmu import Danmu
 import Loginer
+from plugin_system import PluginManager
 
 
 def port_is_available(port):
@@ -212,6 +213,149 @@ def update_db(anime):
     db_locker.release()
 
 
+def upload_video(anime, bangumi_tag=''):
+    try:
+        plugin_result = plugin_manager.upload(anime, bangumi_tag=bangumi_tag)
+        if plugin_result.get('handled', False):
+            return plugin_result.get('success', False)
+    except BaseException:
+        err_print(anime.get_sn(), '插件上傳異常', traceback.format_exc(), status=1, display=False)
+    return anime.upload(bangumi_tag)
+
+
+def _read_video_list():
+    video_list_path = os.path.join(working_dir, 'video_list.json')
+    if not os.path.exists(video_list_path):
+        return {'videos': []}
+    with open(video_list_path, 'r', encoding='utf-8') as f:
+        return json.load(f)
+
+
+def _console_context(show_detail=True):
+    return {
+        'updatelist': updatelist,
+        'read_video_list': _read_video_list,
+        'show_detail': show_detail,
+    }
+
+
+def _set_dashboard_user_control(value):
+    global settings
+    cfg = Config.read_settings()
+    cfg['dashboard']['user_control']['enabled'] = bool(value)
+    Config.write_settings(cfg)
+    settings = Config.read_settings()
+    return settings['dashboard']['user_control']['enabled']
+
+
+def _set_dashboard_allow_register(value):
+    global settings
+    cfg = Config.read_settings()
+    cfg['dashboard']['user_control']['allow_register'] = bool(value)
+    Config.write_settings(cfg)
+    settings = Config.read_settings()
+    return settings['dashboard']['user_control']['allow_register']
+
+
+def _run_builtin_command(command_name, args):
+    if command_name in ('help', '?'):
+        return {'handled': True, 'success': True, 'message': 'help'}
+    if command_name == 'update-videolist':
+        updatelist()
+        return {'handled': True, 'success': True, 'message': 'video_list.json 已更新'}
+    if command_name == 'checknow':
+        checknow()
+        return {'handled': True, 'success': True, 'message': '已觸發立即更新'}
+    if command_name == 'reload-config':
+        global settings
+        settings = Config.read_settings()
+        plugin_manager.reload(settings)
+        return {'handled': True, 'success': True, 'message': '設定與插件已重載'}
+    if command_name == 'dashboard-user-control':
+        if len(args) < 1 or args[0] not in ('on', 'off'):
+            return {'handled': True, 'success': False, 'message': '用法: dashboard-user-control on|off'}
+        value = _set_dashboard_user_control(args[0] == 'on')
+        return {
+            'handled': True,
+            'success': True,
+            'message': f"dashboard.user_control.enabled = {value} (重啟 Dashboard 後完整生效)",
+        }
+    if command_name == 'dashboard-allow-register':
+        if len(args) < 1 or args[0] not in ('on', 'off'):
+            return {'handled': True, 'success': False, 'message': '用法: dashboard-allow-register on|off'}
+        value = _set_dashboard_allow_register(args[0] == 'on')
+        return {
+            'handled': True,
+            'success': True,
+            'message': f"dashboard.user_control.allow_register = {value} (重啟 Dashboard 後完整生效)",
+        }
+    return {'handled': False}
+
+
+def _list_console_commands():
+    base_commands = [
+        ('help', '顯示所有指令'),
+        ('update-videolist', '立即更新 video_list.json'),
+        ('checknow', '觸發立即更新(自動模式)'),
+        ('reload-config', '重載 config 與插件'),
+        ('dashboard-user-control on|off', '切換 Dashboard 使用者控制'),
+        ('dashboard-allow-register on|off', '切換 Dashboard 註冊開關'),
+        ('exit', '離開控制台'),
+    ]
+    plugin_commands = plugin_manager.get_commands()
+    return base_commands, plugin_commands
+
+
+def run_command_console():
+    print('\n=== aniGamerPlus 指令控制台 ===')
+    base_commands, plugin_commands = _list_console_commands()
+    print('可用指令:')
+    for cmd, desc in base_commands:
+        print(f'  {cmd:<28} -> {desc}')
+    for cmd in plugin_commands:
+        print(f"  {cmd['name']:<28} -> {cmd.get('help', '')}")
+    print('')
+
+    while True:
+        try:
+            raw = input('aGP> ').strip()
+        except (KeyboardInterrupt, EOFError):
+            print('\n離開控制台')
+            return
+
+        if not raw:
+            continue
+
+        part = raw.split()
+        command_name = part[0].lower()
+        args = [x.lower() for x in part[1:]]
+
+        if command_name in ('exit', 'quit'):
+            print('離開控制台')
+            return
+
+        builtin_result = _run_builtin_command(command_name, args)
+        if builtin_result.get('handled', False):
+            if command_name in ('help', '?'):
+                base_commands, plugin_commands = _list_console_commands()
+                for cmd, desc in base_commands:
+                    print(f'  {cmd:<28} -> {desc}')
+                for cmd in plugin_commands:
+                    print(f"  {cmd['name']:<28} -> {cmd.get('help', '')}")
+            else:
+                print(builtin_result.get('message', ''))
+            continue
+
+        plugin_manager.reload(Config.read_settings())
+        plugin_result = plugin_manager.run_command(command_name, args, _console_context(show_detail=True))
+        if plugin_result.get('handled', False):
+            print(plugin_result.get('message', '執行完成'))
+            continue
+
+        if command_name:
+            print('未知指令，輸入 help 查看可用指令')
+
+
 def worker(sn, sn_info, realtime_show_file_size=False):
     bangumi_tag = sn_info['tag']
     rename = sn_info['rename']
@@ -245,7 +389,7 @@ def worker(sn, sn_info, realtime_show_file_size=False):
         anime.video_resolution = anime_in_db['resolution']  # 避免更新时把分辨率变成0
 
         try:
-            if not anime.upload(bangumi_tag):  # 如果上传失败
+            if not upload_video(anime, bangumi_tag):  # 如果上传失败
                 err_msg_detail = 'title=\"' + anime.get_title() + '\" 從任務列隊中移除, 等待下次更新重試.'
                 err_print(sn, '上传失敗', err_msg_detail, 1)
             else:
@@ -301,7 +445,7 @@ def worker(sn, sn_info, realtime_show_file_size=False):
         upload_limiter.acquire()  # 并发上传限制器
 
         try:
-            anime.upload(bangumi_tag)  # 上传至服务器
+            upload_video(anime, bangumi_tag)  # 上传至服务器
         except BaseException as e:
             # 兜一下各种奇奇怪怪的错误
             err_print(sn, '上傳異常', '發生未知錯誤, 從任務列隊中移除, 等待下次更新重試: ' + str(e), status=1)
@@ -940,20 +1084,22 @@ def updatelist():
     my_list = {'videos': []}
     # my_list['danmu'] = settings['danmu']
     for index, anime in enumerate(db):
-        if not anime['local_file_path'] is None and os.path.exists(anime['local_file_path']):
-            # 创建一个包含所有键的字典
-            video_data = {
-                'sn': str(anime['sn']),
-                'title': anime['title'],
-                'anime_name': anime['anime_name'],
-                'episode': anime['episode'],
-                'resolution': anime['resolution'],
-                'path': anime['local_file_path'],
-                'source': '巴哈姆特動畫瘋',
-                'timestamp': anime['timestamp']
-            }
+        # 创建一个包含所有键的字典
+        video_data = {
+            'sn': str(anime['sn']),
+            'title': anime['title'],
+            'anime_name': anime['anime_name'],
+            'episode': anime['episode'],
+            'resolution': anime['resolution'],
+            'path': anime['local_file_path'],
+            'source': '巴哈姆特動畫瘋',
+            'timestamp': anime['timestamp']
+        }
+        local_exists = (anime['local_file_path'] is not None and os.path.exists(anime['local_file_path']))
+        remote_exists = plugin_manager.has_remote(video_data)
+        if local_exists or remote_exists:
             danmupath = anime['local_file_path'].replace('.mp4', '.ass')
-            if os.path.exists(danmupath):
+            if local_exists and os.path.exists(danmupath):
                 video_data['danmu_path'] = danmupath
                 video_data['danmu'] = True
             else:
@@ -988,7 +1134,10 @@ def updatelist():
                     'danmu': False,
                     'timestamp': int(os.path.getmtime(datapath))
                 }
-                my_list['videos'].append(video_data)
+                local_exists = os.path.exists(video_data['path'])
+                remote_exists = plugin_manager.has_remote(video_data)
+                if local_exists or remote_exists:
+                    my_list['videos'].append(video_data)
     with open(os.path.join(working_dir, 'video_list.json'), 'w') as f:
         json.dump(my_list, f)
 
@@ -1004,6 +1153,7 @@ signal.signal(signal.SIGINT, user_exit)
 signal.signal(signal.SIGTERM, user_exit)
 settings = Config.read_settings()
 working_dir = settings['working_dir']
+plugin_manager = PluginManager(settings)
 db_path = os.path.join(working_dir, 'aniGamer.db')
 queue = {}  # 储存 sn 相关信息, {'tag': TAG, 'rename': RENAME}, rename,
 processing_queue = []
@@ -1174,6 +1324,12 @@ if __name__ == '__main__':
     if settings['use_dashboard']:
         run_dashboard()
 
+    if settings.get('command_console', {}).get('enabled', False):
+        console_thread = threading.Thread(target=run_command_console)
+        console_thread.daemon = True
+        console_thread.start()
+        err_print(0, '指令控制台', '已在自動模式啟用', no_sn=True, status=2)
+
     while True:
         print()
         err_print(0, '開始更新', no_sn=True)
@@ -1193,6 +1349,7 @@ if __name__ == '__main__':
             sn_dict = Config.read_sn_list()
         if settings['read_config_when_checking_update']:
             settings = Config.read_settings()
+            plugin_manager.reload(settings)
         danmu = settings['danmu']  # 避免手動加入工作時，global 覆寫掉 config 的 danmu 設定
         check_tasks()  # 检查更新，生成任务列队
         new_tasks_counter = 0  # 新增任务计数器

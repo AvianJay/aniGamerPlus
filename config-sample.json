@@ -37,6 +37,9 @@
         "show_error_detail": false,
         "max_retry_num": 15
     },
+    "plugins": {
+        "enabled": []
+    },
     "user_command": "shutdown -s -t 60",
     "coolq_notify": false,
     "coolq_settings": {
@@ -57,6 +60,9 @@
     "ads_time": 25,
 	"mobile_ads_time": 25,
     "use_dashboard": true,
+    "command_console": {
+        "enabled": false
+    },
     "dashboard": {
         "host": "127.0.0.1",
         "port": 5000,

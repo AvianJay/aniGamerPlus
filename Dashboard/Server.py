@@ -31,6 +31,7 @@ from gevent.pywsgi import WSGIServer
 from geventwebsocket.exceptions import WebSocketError
 from geventwebsocket.handler import WebSocketHandler
 from datetime import datetime
+from plugin_system import PluginManager
 
 mimetypes.add_type('text/css', '.css')
 mimetypes.add_type('application/x-javascript', '.js')
@@ -151,6 +152,7 @@ def after_request(response):
 
 
 settings = Config.read_settings()
+plugin_manager = PluginManager(settings)
 if settings['dashboard']['BasicAuth']:
     @app.route('/control')
     @basic_auth.required
@@ -412,6 +414,7 @@ if settings["dashboard"]["online_watch"]:
 
     @app.route('/get_video.mp4')
     def getvid():
+        plugin_manager.reload(Config.read_settings())
         if settings['dashboard']['online_watch_requires_login']:
             valid_user, user_role = verify_user(request.cookies)
             if not valid_user:
@@ -419,7 +422,16 @@ if settings["dashboard"]["online_watch"]:
 
         sn = request.args.get('id')
         res = request.args.get('res')
+        playback_source = plugin_manager.resolve_playback_source({
+            'sn': str(sn),
+            'resolution': int(res) if res and str(res).isdigit() else 0,
+        })
+        if playback_source and playback_source.get('url'):
+            return redirect(playback_source['url'])
+
         path = Config.getpath(sn, 'video', resolution=res)
+        if not path or not os.path.exists(path):
+            return jsonify({"error": "video not found"}), 404
         filename = os.path.basename(path)
         ascii_filename = re.sub(r'[^a-zA-Z0-9._-]', '_', filename)
         utf8_filename = urllib.parse.quote(filename)

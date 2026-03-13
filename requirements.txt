@@ -16,3 +16,4 @@ yt-dlp
 selenium-recaptcha-solver~=1.9.0
 webdriver-manager
 selenium~=4.8.0
+msal

@@ -123,6 +123,9 @@ def __init_settings():
                     'show_error_detail': False,
                     'max_retry_num': 15
                 },
+                'plugins': {
+                    'enabled': []
+                },
                 'user_command': 'shutdown -s -t 60',
                 'coolq_notify': False,
                 'coolq_settings': {
@@ -155,6 +158,9 @@ def __init_settings():
                 'ads_time': 25,
                 'mobile_ads_time': 25,
                 'use_dashboard': True,
+                'command_console': {
+                    'enabled': False
+                },
                 'dashboard': {
                     'host': '127.0.0.1',
                     'port': 5000,
@@ -462,6 +468,17 @@ def __update_settings(old_settings):  # 升级配置文件
     if 'online_watch_requires_login' not in new_settings['dashboard'].keys():
         # online watch require login
         new_settings['dashboard']['online_watch_requires_login'] = False
+
+    if 'command_console' not in new_settings.keys():
+        new_settings['command_console'] = {'enabled': False}
+    if 'enabled' not in new_settings['command_console'].keys():
+        new_settings['command_console']['enabled'] = False
+
+    if 'plugins' not in new_settings.keys():
+        new_settings['plugins'] = {'enabled': []}
+
+    if 'enabled' not in new_settings['plugins'].keys():
+        new_settings['plugins']['enabled'] = []
 
     new_settings['config_version'] = latest_config_version
     with open(config_path, 'w', encoding='utf-8') as f:
