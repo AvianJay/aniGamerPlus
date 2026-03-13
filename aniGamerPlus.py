@@ -1324,7 +1324,7 @@ if __name__ == '__main__':
     if settings['use_dashboard']:
         run_dashboard()
 
-    if settings.get('command_console', {}).get('enabled', False):
+    if settings.get('command_console', False):
         console_thread = threading.Thread(target=run_command_console)
         console_thread.daemon = True
         console_thread.start()

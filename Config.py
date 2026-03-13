@@ -24,7 +24,7 @@ sn_list_path = os.path.join(working_dir, 'sn_list.txt')
 cookie_path = os.path.join(working_dir, 'cookie.txt')
 logs_dir = os.path.join(working_dir, 'logs')
 aniGamerPlus_version = 'v25.0'
-latest_config_version = 18.1
+latest_config_version = 18.2
 latest_database_version = 2.0
 cookie = None
 max_multi_thread = 5
@@ -194,7 +194,11 @@ def __init_settings():
                     'username': 'My_Bahamut_Username',
                     'password': 'My_Bahamut_Password'
                 },
-                'check_sn_ended': False
+                'check_sn_ended': False,
+                'command_console': False,
+                'plugins': {
+                    'enabled': []
+                }
                 }
     with open(config_path, 'w', encoding='utf-8') as f:
         json.dump(settings, f, ensure_ascii=False, indent=4)
@@ -470,9 +474,7 @@ def __update_settings(old_settings):  # 升级配置文件
         new_settings['dashboard']['online_watch_requires_login'] = False
 
     if 'command_console' not in new_settings.keys():
-        new_settings['command_console'] = {'enabled': False}
-    if 'enabled' not in new_settings['command_console'].keys():
-        new_settings['command_console']['enabled'] = False
+        new_settings['command_console'] = False
 
     if 'plugins' not in new_settings.keys():
         new_settings['plugins'] = {'enabled': []}
