@@ -350,7 +350,7 @@ def _dispatch_console_command(raw):
     print(result.get('message', ''))
 
 
-def execute_control_command(raw_command, show_detail=False):
+def execute_control_command(raw_command, show_detail=True):
     raw = (raw_command or '').strip()
     if not raw:
         return {'success': False, 'message': '請輸入指令'}

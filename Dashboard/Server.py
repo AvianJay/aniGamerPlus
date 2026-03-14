@@ -18,6 +18,7 @@ from flask import Flask, request, jsonify, Response, redirect
 from flask import render_template, send_file, stream_with_context
 from flask_basicauth import BasicAuth
 from aniGamerPlus import __cui as cui
+from aniGamerPlus import __get_danmu_only
 import logging, termcolor
 from ColorPrint import err_print
 from logging.handlers import TimedRotatingFileHandler
@@ -32,7 +33,6 @@ from geventwebsocket.exceptions import WebSocketError
 from geventwebsocket.handler import WebSocketHandler
 from datetime import datetime
 from plugin_system import PluginManager
-from Danmu import Danmu
 
 mimetypes.add_type('text/css', '.css')
 mimetypes.add_type('application/x-javascript', '.js')
@@ -139,7 +139,7 @@ def _handle_web_console_command():
         return jsonify({'success': False, 'message': '指令處理器尚未初始化'}), 503
 
     try:
-        result = command_handler(raw_command, show_detail=False)
+        result = command_handler(raw_command, show_detail=True)
     except BaseException as e:
         return jsonify({'success': False, 'message': str(e)}), 500
 
@@ -156,6 +156,37 @@ def _handle_web_console_command():
     return jsonify(body), 200 if success else 400
 
 caches = {}
+danmu_update_timestamps = {}
+DANMU_UPDATE_INTERVAL_SECONDS = 6 * 60 * 60
+
+
+def _read_video_list_file():
+    video_list_path = os.path.join(Config.get_working_dir(), 'video_list.json')
+    if not os.path.exists(video_list_path):
+        return {'videos': []}
+    with open(video_list_path, 'r', encoding='utf-8') as f:
+        return json.load(f)
+
+
+def _find_video_entry(sn):
+    video_data = _read_video_list_file()
+    sn_str = str(sn)
+    for video in video_data.get('videos', []):
+        if str(video.get('sn')) == sn_str:
+            return video
+    return None
+
+
+def _should_update_danmu(sn):
+    now = int(datetime.now().timestamp())
+    last_updated = danmu_update_timestamps.get(str(sn), 0)
+    return now - last_updated >= DANMU_UPDATE_INTERVAL_SECONDS
+
+
+def _mark_danmu_updated(sn):
+    danmu_update_timestamps[str(sn)] = int(datetime.now().timestamp())
+
+
 def cache(id, time=600, set=None):
     now = int(datetime.now().timestamp())
     # Clean up expired cache
@@ -541,15 +572,23 @@ if settings["dashboard"]["online_watch"]:
     def getsub():
         sn = request.args.get('id')
         if settings['danmu']:
+            video = _find_video_entry(sn)
             path = Config.getpath(sn, 'danmu')
-            if path:
-                try:
-                    latest_settings = Config.read_settings()
-                    danmu_ban_words = list(latest_settings.get('danmu_ban_words', []))
-                    d = Danmu(sn, path, Config.read_cookie())
-                    d.download(danmu_ban_words, display=False)
-                except BaseException as e:
-                    err_print(sn, '彈幕更新失敗', '線上觀看請求時自動更新失敗: ' + str(e), status=1, display=False)
+
+            if video and _should_update_danmu(sn):
+                video_path = video.get('path')
+                anime_name = video.get('anime_name')
+                if video_path and anime_name and os.path.exists(video_path):
+                    try:
+                        __get_danmu_only(sn, anime_name, video_path, False)
+                        if path and os.path.exists(path):
+                            _mark_danmu_updated(sn)
+                    except BaseException as e:
+                        err_print(sn, '彈幕更新失敗', '線上觀看請求時自動更新失敗: ' + str(e), status=1, display=True)
+
+            if path and os.path.exists(path) and str(sn) not in danmu_update_timestamps:
+                _mark_danmu_updated(sn)
+
             if not path or not os.path.exists(path):
                 return jsonify({"error": "danmu not found"}), 404
             return send_file(path)
