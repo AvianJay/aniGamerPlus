@@ -1131,7 +1131,7 @@ def updatelist():
         remote_exists = plugin_manager.has_remote(video_data)
         if local_exists or remote_exists:
             danmupath = anime['local_file_path'].replace('.mp4', '.ass')
-            if os.path.exists(danmupath):
+            if local_exists and os.path.exists(danmupath):
                 video_data['danmu_path'] = danmupath
                 video_data['danmu'] = True
             else:
