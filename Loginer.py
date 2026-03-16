@@ -24,7 +24,7 @@ async def get_driver(headless=False):
     browser_args = [f'--user-agent={ua}']
     if headless:
         browser_args.append('--headless=new')
-    return await uc.start(headless=headless, browser_args=browser_args)
+    return await uc.start(headless=headless, browser_args=browser_args, no_sandbox=True, disable_gpu=True)
 
 
 async def login(browser, username, password, save_cookie=False):
