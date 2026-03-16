@@ -13,7 +13,5 @@ markupsafe~=2.1.2
 greenlet~=3.2.3
 pyhttpx
 yt-dlp
-selenium-recaptcha-solver~=1.9.0
-webdriver-manager
-selenium~=4.8.0
+nodriver~=0.48.1
 msal
