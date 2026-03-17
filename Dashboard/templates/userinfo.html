@@ -76,10 +76,10 @@
 
             // 修改密碼按鈕
             $('#change-password-btn').click(function () {
-                const oldPassword = document.getElementById('old_password')
-                const newPassword1 = document.getElementById('new_password1')
-                const newPassword2 = document.getElementById('new_password2')
-                if (newPassword) {
+                const oldPassword = document.getElementById('old_password').value;
+                const newPassword1 = document.getElementById('new_password1').value;
+                const newPassword2 = document.getElementById('new_password2').value;
+                if (newPassword1 && newPassword2) {
                     $.ajax({
                         url: './userinfo',
                         method: 'POST',
@@ -87,7 +87,7 @@
                         data: JSON.stringify({ action: 'change', old_password: oldPassword, new_password1: newPassword1, new_password2: newPassword2 }),
                         success: function (response) {
                             alert(response.message);
-                            if (response.status === '200') {
+                            if (response.status === '200' || response.logout) {
                                 window.location.href = "./logout";
                             }
                         },

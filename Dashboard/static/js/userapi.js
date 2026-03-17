@@ -53,7 +53,7 @@ async function userMain() {
         }
         if (await getServerInfo('user_control')) {
             var login = getCookieByName('logined');
-            if (login == 'true' && getCookieByName('token') != null) {
+            if (login == 'true') {
                 fetch('./userinfo', {
                     method: 'POST',
                     credentials: 'include',

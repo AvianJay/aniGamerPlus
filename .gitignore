@@ -145,3 +145,6 @@ screenlog.*
 
 Dashboard/sslkey/server.key
 Dashboard/sslkey/server.crt
+
+plugins/*.py
+plugins/*.json

@@ -11,12 +11,11 @@ from gevent import spawn
 
 import json, sys, os, re, time
 import threading, traceback
-import random, string, hashlib
+import random, string, hashlib, secrets
 
 from aniGamerPlus import Config
-from flask import Flask, request, jsonify, Response, redirect
+from flask import Flask, request, jsonify, Response, redirect, make_response, g
 from flask import render_template, send_file, stream_with_context
-from flask_basicauth import BasicAuth
 from aniGamerPlus import __cui as cui
 from aniGamerPlus import __get_danmu_only
 import logging, termcolor
@@ -24,7 +23,9 @@ from ColorPrint import err_print
 from logging.handlers import TimedRotatingFileHandler
 import mimetypes
 from werkzeug.http import http_date
+from werkzeug.security import generate_password_hash, check_password_hash
 import urllib.parse
+from functools import wraps
 # ws 支持
 import ssl
 from flask_sock import Sock
@@ -41,7 +42,6 @@ static_path = os.path.join(Config.get_working_dir(), 'Dashboard', 'static')
 app = Flask(__name__, template_folder=template_path, static_folder=static_path)
 app.debug = False
 sock = Sock(app)
-basic_auth = BasicAuth(app)
 
 # 日志处理
 # logger = logging.getLogger('werkzeug')
@@ -127,6 +127,224 @@ def get_file_headers(path):
 
 checknow = lambda e: None
 command_handler = None
+userdata_lock = threading.Lock()
+userdata_path = os.path.join(Config.get_working_dir(), 'Dashboard', 'userdata.json')
+
+
+def _generate_token():
+    return secrets.token_urlsafe(32)
+
+
+def _normalize_username(value):
+    return str(value or '').strip()
+
+
+def _normalize_role(value):
+    return 'admin' if str(value).lower() == 'admin' else 'user'
+
+
+def _hash_password(password):
+    return generate_password_hash(str(password))
+
+
+def _verify_password(user, password):
+    password = str(password or '')
+    password_hash = user.get('password_hash')
+    if password_hash and check_password_hash(password_hash, password):
+        return True
+    legacy_password = user.get('password')
+    return legacy_password is not None and secrets.compare_digest(str(legacy_password), password)
+
+
+def _normalize_user(user, fallback_role='user'):
+    changed = False
+    normalized = dict(user or {})
+
+    username = normalized.get('username', normalized.get('name'))
+    username = _normalize_username(username)
+    if normalized.get('username') != username:
+        normalized['username'] = username
+        changed = True
+    if 'name' in normalized:
+        normalized.pop('name', None)
+        changed = True
+
+    role = _normalize_role(normalized.get('role', fallback_role))
+    if normalized.get('role') != role:
+        normalized['role'] = role
+        changed = True
+
+    if not isinstance(normalized.get('videotimes'), dict):
+        normalized['videotimes'] = {}
+        changed = True
+
+    if not isinstance(normalized.get('token'), str) or not normalized.get('token'):
+        normalized['token'] = _generate_token()
+        changed = True
+
+    if not normalized.get('password_hash') and normalized.get('password') is not None:
+        normalized['password_hash'] = _hash_password(normalized.get('password'))
+        changed = True
+    if normalized.get('password_hash') and 'password' in normalized:
+        normalized.pop('password', None)
+        changed = True
+
+    return normalized, changed
+
+
+def _build_default_user(default_user):
+    normalized, _ = _normalize_user(default_user, default_user.get('role', 'user'))
+    if not normalized.get('password_hash'):
+        normalized['password_hash'] = _hash_password(default_user.get('password', 'admin'))
+    normalized.pop('password', None)
+    return normalized
+
+
+def save_user_data(userdata):
+    with userdata_lock:
+        with open(userdata_path, 'w', encoding='utf-8') as f:
+            json.dump(userdata, f, ensure_ascii=False, indent=4)
+
+
+def load_user_data():
+    settings = Config.read_settings()
+    default_users = settings['dashboard']['user_control']['default_user']
+    changed = False
+
+    if os.path.exists(userdata_path):
+        try:
+            with open(userdata_path, 'r', encoding='utf-8') as f:
+                userdata = json.load(f)
+        except (json.JSONDecodeError, OSError, ValueError):
+            userdata = {"users": []}
+            changed = True
+    else:
+        userdata = {"users": []}
+        changed = True
+
+    raw_users = userdata.get('users')
+    if not isinstance(raw_users, list):
+        raw_users = []
+        changed = True
+
+    users = []
+    existing_by_name = {}
+    for raw_user in raw_users:
+        normalized_user, user_changed = _normalize_user(raw_user)
+        if not normalized_user['username']:
+            changed = True
+            continue
+        user_key = normalized_user['username'].lower()
+        if user_key in existing_by_name:
+            changed = True
+            continue
+        users.append(normalized_user)
+        existing_by_name[user_key] = normalized_user
+        changed = changed or user_changed
+
+    for default_user in default_users:
+        normalized_default = _build_default_user(default_user)
+        user_key = normalized_default['username'].lower()
+        existing_user = existing_by_name.get(user_key)
+        if existing_user is None:
+            users.append(normalized_default)
+            existing_by_name[user_key] = normalized_default
+            changed = True
+            continue
+        default_role = normalized_default.get('role', 'user')
+        if existing_user.get('role') != default_role:
+            existing_user['role'] = default_role
+            changed = True
+
+    userdata = {"users": users}
+    if changed:
+        save_user_data(userdata)
+    return userdata
+
+
+def find_user_by_token(token, userdata=None):
+    if not token:
+        return None
+    userdata = userdata or load_user_data()
+    for user in userdata['users']:
+        if user.get('token') == token:
+            return user
+    return None
+
+
+def find_user_by_username(username, userdata=None):
+    username = _normalize_username(username)
+    if not username:
+        return None
+    userdata = userdata or load_user_data()
+    for user in userdata['users']:
+        if user.get('username', '').lower() == username.lower():
+            return user
+    return None
+
+
+def verify_user(cookies):
+    user = find_user_by_token(cookies.get('token'))
+    if not user:
+        return False, None
+    return True, user["role"]
+
+
+def _set_login_cookies(response, token):
+    secure_cookie = bool(Config.read_settings()['dashboard'].get('SSL'))
+    response.set_cookie('token', token, max_age=60 * 60 * 24 * 30, httponly=True, samesite='Lax', secure=secure_cookie)
+    response.set_cookie('logined', 'true', max_age=60 * 60 * 24 * 30, httponly=False, samesite='Lax', secure=secure_cookie)
+    return response
+
+
+def _clear_login_cookies(response):
+    response.delete_cookie('token')
+    response.delete_cookie('logined')
+    return response
+
+
+def user_page_required(view):
+    @wraps(view)
+    def wrapped(*args, **kwargs):
+        if not Config.read_settings()['dashboard']['user_control']['enabled']:
+            return view(*args, **kwargs)
+        user = find_user_by_token(request.cookies.get('token'))
+        if not user:
+            return redirect("./login?error=2")
+        g.current_user = user
+        return view(*args, **kwargs)
+    return wrapped
+
+
+def admin_page_required(view):
+    @wraps(view)
+    def wrapped(*args, **kwargs):
+        if not Config.read_settings()['dashboard']['user_control']['enabled']:
+            return view(*args, **kwargs)
+        user = find_user_by_token(request.cookies.get('token'))
+        if not user:
+            return redirect("./login?error=2")
+        if user.get('role') != 'admin':
+            destination = "./watch" if Config.read_settings()['dashboard'].get('online_watch') else "/"
+            return redirect(destination)
+        g.current_user = user
+        return view(*args, **kwargs)
+    return wrapped
+
+
+def admin_api_required(view):
+    @wraps(view)
+    def wrapped(*args, **kwargs):
+        if not Config.read_settings()['dashboard']['user_control']['enabled']:
+            return view(*args, **kwargs)
+        user = find_user_by_token(request.cookies.get('token'))
+        if not user:
+            return jsonify({'success': False, 'message': 'login required'}), 401
+        if user.get('role') != 'admin':
+            return jsonify({'success': False, 'message': 'admin required'}), 403
+        g.current_user = user
+        return view(*args, **kwargs)
+    return wrapped
 
 
 def _handle_web_console_command():
@@ -213,220 +431,117 @@ def after_request(response):
 
 settings = Config.read_settings()
 plugin_manager = PluginManager(settings)
-if settings['dashboard']['BasicAuth']:
-    @app.route('/control')
-    @basic_auth.required
-    def control():
-        return render_template('control.html')
+@app.route('/control')
+@admin_page_required
+def control():
+    return render_template('control.html')
 
 
-    @app.route('/monitor')
-    @basic_auth.required
-    def monitor():
-        return render_template('monitor.html')
+@app.route('/monitor')
+@admin_page_required
+def monitor():
+    return render_template('monitor.html')
 
 
-    @app.route('/data/config.json', methods=['GET'])
-    @basic_auth.required
-    def config():
-        settings = Config.read_settings()
-        web_settings = {}
-        for id in id_list:
-            web_settings[id] = settings[id]  # 仅返回 web 需要的配置
+@app.route('/data/config.json', methods=['GET'])
+@admin_api_required
+def config():
+    settings = Config.read_settings()
+    web_settings = {}
+    for id in id_list:
+        web_settings[id] = settings[id]  # 仅返回 web 需要的配置
 
-        return jsonify(web_settings)
-
-
-    @app.route('/uploadConfig', methods=['POST'])
-    @basic_auth.required
-    def recv_config():
-        data = json.loads(request.get_data(as_text=True))
-        new_settings = Config.read_settings()
-        for id in id_list:
-            new_settings[id] = data[id]  # 更新配置
-        Config.write_settings(new_settings)  # 保存配置
-        err_print(0, 'Dashboard', '通過 Web 控制臺更新了 config.json', no_sn=True, status=2)
-        return '{"status":"200"}'
+    return jsonify(web_settings)
 
 
-    @app.route('/manualTask', methods=['POST'])
-    @basic_auth.required
-    def manual_task():
-        data = json.loads(request.get_data(as_text=True))
-        settings = Config.read_settings()
-
-        # 下载清晰度
-        if data['resolution'] not in ('360', '480', '540', '720', '1080'):
-            # 如果不是合法清晰度
-            resolution = settings['download_resolution']
-        else:
-            resolution = data['resolution']
-
-        # 下载模式
-        if data['mode'] not in ('single', 'latest', 'all', 'largest-sn'):
-            mode = 'single'
-        else:
-            mode = data['mode']
-
-        # 下载线程数
-        if data['thread']:
-            thread = int(data['thread'])
-        else:
-            thread = 1
-        if thread > Config.get_max_multi_thread():
-            # 是否超过最大允许线程数
-            thread_limit = Config.get_max_multi_thread()
-        else:
-            thread_limit = thread
-
-        def run_cui():
-            cui(data['sn'], resolution, mode, thread_limit, [], classify=data['classify'], realtime_show=False,
-                cui_danmu=data['danmu'])
-
-        server = threading.Thread(target=run_cui)
-        err_print(0, 'Dashboard', '通過 Web 控制臺下達了手動任務', no_sn=True, status=2)
-        server.start()  # 启动手动任务线程
-        return '{"status":"200"}'
+@app.route('/uploadConfig', methods=['POST'])
+@admin_api_required
+def recv_config():
+    data = json.loads(request.get_data(as_text=True))
+    new_settings = Config.read_settings()
+    for id in id_list:
+        new_settings[id] = data[id]  # 更新配置
+    Config.write_settings(new_settings)  # 保存配置
+    err_print(0, 'Dashboard', '通過 Web 控制臺更新了 config.json', no_sn=True, status=2)
+    return '{"status":"200"}'
 
 
-    @app.route('/data/sn_list', methods=['GET'])
-    @basic_auth.required
-    def show_sn_list():
-        return Config.get_sn_list_content()
+@app.route('/manualTask', methods=['POST'])
+@admin_api_required
+def manual_task():
+    data = json.loads(request.get_data(as_text=True))
+    settings = Config.read_settings()
+
+    # 下载清晰度
+    if data['resolution'] not in ('360', '480', '540', '720', '1080'):
+        # 如果不是合法清晰度
+        resolution = settings['download_resolution']
+    else:
+        resolution = data['resolution']
+
+    # 下载模式
+    if data['mode'] not in ('single', 'latest', 'all', 'largest-sn'):
+        mode = 'single'
+    else:
+        mode = data['mode']
+
+    # 下载线程数
+    if data['thread']:
+        thread = int(data['thread'])
+    else:
+        thread = 1
+    if thread > Config.get_max_multi_thread():
+        # 是否超过最大允许线程数
+        thread_limit = Config.get_max_multi_thread()
+    else:
+        thread_limit = thread
+
+    def run_cui():
+        cui(data['sn'], resolution, mode, thread_limit, [], classify=data['classify'], realtime_show=False,
+            cui_danmu=data['danmu'])
+
+    server = threading.Thread(target=run_cui)
+    err_print(0, 'Dashboard', '通過 Web 控制臺下達了手動任務', no_sn=True, status=2)
+    server.start()  # 启动手动任务线程
+    return '{"status":"200"}'
 
 
-    @app.route('/data/get_token', methods=['GET'])
-    @basic_auth.required
-    def get_token():
-        global websocket_token
-        # 生成 32 位随机字符串作为token
-        websocket_token = ''.join(random.sample(string.ascii_letters + string.digits, 32))
-        return websocket_token, '200 ok'
+@app.route('/data/sn_list', methods=['GET'])
+@admin_api_required
+def show_sn_list():
+    return Config.get_sn_list_content()
 
 
-    @app.route('/sn_list', methods=['POST'])
-    @basic_auth.required
-    def set_sn_list():
-        data = request.get_data(as_text=True)
-        Config.write_sn_list(data)
-        err_print(0, 'Dashboard', '通過 Web 控制臺更新了 sn_list', no_sn=True, status=2)
-        return '{"status":"200"}'
+@app.route('/data/get_token', methods=['GET'])
+@admin_api_required
+def get_token():
+    global websocket_token
+    # 生成 32 位随机字符串作为token
+    websocket_token = ''.join(random.sample(string.ascii_letters + string.digits, 32))
+    return websocket_token, '200 ok'
 
 
-    @app.route('/checknow')
-    @basic_auth.required
-    def checknowctrl():
-        err_print(0, 'Dashboard', '通過 Web 控制臺發出了立即更新的請求', no_sn=True, status=2)
-        checknow(True)
-        return '{"status":"200"}'
+@app.route('/sn_list', methods=['POST'])
+@admin_api_required
+def set_sn_list():
+    data = request.get_data(as_text=True)
+    Config.write_sn_list(data)
+    err_print(0, 'Dashboard', '通過 Web 控制臺更新了 sn_list', no_sn=True, status=2)
+    return '{"status":"200"}'
 
 
-    @app.route('/console/command', methods=['POST'])
-    @basic_auth.required
-    def web_console_command():
-        return _handle_web_console_command()
-else:
-    @app.route('/control')
-    def control():
-        return render_template('control.html')
+@app.route('/checknow')
+@admin_api_required
+def checknowctrl():
+    err_print(0, 'Dashboard', '通過 Web 控制臺發出了立即更新的請求', no_sn=True, status=2)
+    checknow(True)
+    return '{"status":"200"}'
 
 
-    @app.route('/monitor')
-    def monitor():
-        return render_template('monitor.html')
-
-
-    @app.route('/data/config.json', methods=['GET'])
-    def config():
-        settings = Config.read_settings()
-        web_settings = {}
-        for id in id_list:
-            web_settings[id] = settings[id]  # 仅返回 web 需要的配置
-
-        return jsonify(web_settings)
-
-
-    @app.route('/uploadConfig', methods=['POST'])
-    def recv_config():
-        data = json.loads(request.get_data(as_text=True))
-        new_settings = Config.read_settings()
-        for id in id_list:
-            new_settings[id] = data[id]  # 更新配置
-        Config.write_settings(new_settings)  # 保存配置
-        err_print(0, 'Dashboard', '通過 Web 控制臺更新了 config.json', no_sn=True, status=2)
-        return '{"status":"200"}'
-
-
-    @app.route('/manualTask', methods=['POST'])
-    def manual_task():
-        data = json.loads(request.get_data(as_text=True))
-        settings = Config.read_settings()
-
-        # 下载清晰度
-        if data['resolution'] not in ('360', '480', '540', '720', '1080'):
-            # 如果不是合法清晰度
-            resolution = settings['download_resolution']
-        else:
-            resolution = data['resolution']
-
-        # 下载模式
-        if data['mode'] not in ('single', 'latest', 'all', 'largest-sn'):
-            mode = 'single'
-        else:
-            mode = data['mode']
-
-        # 下载线程数
-        if data['thread']:
-            thread = int(data['thread'])
-        else:
-            thread = 1
-        if thread > Config.get_max_multi_thread():
-            # 是否超过最大允许线程数
-            thread_limit = Config.get_max_multi_thread()
-        else:
-            thread_limit = thread
-
-        def run_cui():
-            cui(data['sn'], resolution, mode, thread_limit, [], classify=data['classify'], realtime_show=False,
-                cui_danmu=data['danmu'])
-
-        server = threading.Thread(target=run_cui)
-        err_print(0, 'Dashboard', '通過 Web 控制臺下達了手動任務', no_sn=True, status=2)
-        server.start()  # 启动手动任务线程
-        return '{"status":"200"}'
-
-
-    @app.route('/data/sn_list', methods=['GET'])
-    def show_sn_list():
-        return Config.get_sn_list_content()
-
-
-    @app.route('/data/get_token', methods=['GET'])
-    def get_token():
-        global websocket_token
-        # 生成 32 位随机字符串作为token
-        websocket_token = ''.join(random.sample(string.ascii_letters + string.digits, 32))
-        return websocket_token, '200 ok'
-
-
-    @app.route('/sn_list', methods=['POST'])
-    def set_sn_list():
-        data = request.get_data(as_text=True)
-        Config.write_sn_list(data)
-        err_print(0, 'Dashboard', '通過 Web 控制臺更新了 sn_list', no_sn=True, status=2)
-        return '{"status":"200"}'
-
-
-    @app.route('/checknow')
-    def checknowctrl():
-        err_print(0, 'Dashboard', '通過 Web 控制臺發出了立即更新的請求', no_sn=True, status=2)
-        checknow(True)
-        return '{"status":"200"}'
-
-
-    @app.route('/console/command', methods=['POST'])
-    def web_console_command():
-        return _handle_web_console_command()
+@app.route('/console/command', methods=['POST'])
+@admin_api_required
+def web_console_command():
+    return _handle_web_console_command()
 
 
 # todo: 修好websocket
@@ -616,13 +731,12 @@ if settings["dashboard"]["online_watch"]:
         sn = reqdata.get('sn')
         ended = str(reqdata.get('ended', "false")).lower() == "true"
         token = request.cookies.get('token')
-        userdata = json.load(open(os.path.join(Config.get_working_dir(), 'Dashboard', 'userdata.json'), 'r'))
+        userdata = load_user_data()
         if gettype == 'set':
             for user in userdata['users']:
                 if user['token'] == token:
                     user['videotimes'][sn] = {"time": int(float(reqdata.get('time'))), "ended": ended, "timestamp": int(datetime.now().timestamp())}
-                    with open(os.path.join(Config.get_working_dir(), 'Dashboard', 'userdata.json'), 'w', encoding='utf-8') as f:
-                        json.dump(userdata, f, ensure_ascii=False, indent=4)
+                    save_user_data(userdata)
                     return '{"status":"200"}'
         elif gettype == 'get':
             for user in userdata['users']:
@@ -649,8 +763,183 @@ def get_server_info():
         "online_watch_requires_login": settings['dashboard']['online_watch_requires_login'],
     })
 
-
 if settings['dashboard']['user_control']['enabled']:
+    load_user_data()
+
+    @app.route('/logout')
+    def logout():
+        response = make_response(redirect('./login'))
+        return _clear_login_cookies(response)
+
+    @app.route('/login', methods=['GET', 'POST'])
+    def login():
+        if request.method == 'GET':
+            return render_template('login.html')
+
+        reqdata = request.form.copy() if request.form else (request.get_json(silent=True) or {})
+        if not reqdata:
+            return '<script>alert("Empty request!");history.back();</script>'
+
+        username = _normalize_username(reqdata.get('username'))
+        password = reqdata.get('password')
+        userdata = load_user_data()
+        user = find_user_by_username(username, userdata)
+        if not user or not _verify_password(user, password):
+            return redirect('./login?error=1')
+
+        if user.get('password') is not None:
+            user['password_hash'] = _hash_password(password)
+            user.pop('password', None)
+            save_user_data(userdata)
+
+        destination = './watch' if Config.read_settings()['dashboard'].get('online_watch') else './control'
+        response = make_response(redirect(destination))
+        return _set_login_cookies(response, user['token'])
+
+
+    @app.route('/register', methods=['GET', 'POST'])
+    def register():
+        current_settings = Config.read_settings()
+        if not current_settings['dashboard']['user_control']['allow_register']:
+            return '<script>alert("隡箸??冽????刻酉??");history.back();</script>'
+        if request.method == 'GET':
+            return render_template('register.html')
+
+        reqdata = request.get_json(silent=True) or request.form.copy()
+        if not reqdata:
+            return '<script>alert("Empty request!");history.back();</script>'
+        if not reqdata.get('username') or not reqdata.get('pw1') or not reqdata.get('pw2'):
+            return redirect('./register?error=3')
+        if reqdata.get('pw1') != reqdata.get('pw2'):
+            return redirect('./register?error=2')
+
+        username = _normalize_username(reqdata.get('username'))
+        password = str(reqdata.get('pw1'))
+        if not re.match(r'^[a-zA-Z0-9_]{3,20}$', username):
+            return redirect('./register?error=4')
+        if not re.match(r'^[a-zA-Z0-9_]{6,64}$', password):
+            return redirect('./register?error=5')
+
+        userdata = load_user_data()
+        if find_user_by_username(username, userdata):
+            return redirect('./register?error=1')
+
+        userdata['users'].append({
+            'username': username,
+            'password_hash': _hash_password(password),
+            'token': _generate_token(),
+            'videotimes': {},
+            'role': 'user',
+        })
+        save_user_data(userdata)
+        return redirect('./login?error=3')
+
+    @app.route('/usermanage', methods=['GET', 'POST'])
+    @admin_page_required
+    def usermanage_v2():
+        userdata = load_user_data()
+        if request.method == 'GET':
+            users = []
+            for user in userdata['users']:
+                safe_user = user.copy()
+                safe_user.pop('password', None)
+                safe_user.pop('password_hash', None)
+                safe_user.pop('token', None)
+                users.append(safe_user)
+            return render_template('usermanage.html', users=users)
+
+        reqdata = request.form.copy() if request.form else (request.get_json(silent=True) or {})
+        if not reqdata:
+            return jsonify({'status': '400', 'message': 'Empty request!'}), 400
+
+        action = reqdata.get('action')
+        username = _normalize_username(reqdata.get('username'))
+        target_user = find_user_by_username(username, userdata)
+
+        if action == 'delete':
+            if not target_user:
+                return jsonify({'status': '404', 'message': 'User not found'}), 404
+            if target_user['username'].lower() == g.current_user['username'].lower():
+                return jsonify({'status': '403', 'message': 'Cannot delete current user'}), 403
+            userdata['users'] = [user for user in userdata['users'] if user['username'].lower() != username.lower()]
+            save_user_data(userdata)
+            return jsonify({'status': '200', 'message': 'User deleted'})
+
+        if action == 'change':
+            if not target_user:
+                return jsonify({'status': '404', 'message': 'User not found'}), 404
+            new_password = reqdata.get('password')
+            if new_password:
+                target_user['password_hash'] = _hash_password(new_password)
+                target_user.pop('password', None)
+                target_user['token'] = _generate_token()
+            target_user['role'] = _normalize_role(reqdata.get('role', target_user.get('role')))
+            save_user_data(userdata)
+            return jsonify({'status': '200', 'message': 'User updated'})
+
+        if action == 'add':
+            if not username or not reqdata.get('password'):
+                return jsonify({'status': '400', 'message': 'Username and password are required'}), 400
+            if find_user_by_username(username, userdata):
+                return jsonify({'status': '409', 'message': 'User already exists'}), 409
+            userdata['users'].append({
+                'username': username,
+                'password_hash': _hash_password(reqdata.get('password')),
+                'token': _generate_token(),
+                'videotimes': {},
+                'role': _normalize_role(reqdata.get('role')),
+            })
+            save_user_data(userdata)
+            return jsonify({'status': '200', 'message': 'User created'})
+
+        return jsonify({'status': '400', 'message': 'Invalid action'}), 400
+
+    @app.route('/userinfo', methods=['GET', 'POST'])
+    @user_page_required
+    def userinfo_v2():
+        userdata = load_user_data()
+        user = find_user_by_token(request.cookies.get('token'), userdata)
+        if not user:
+            return redirect('/login')
+
+        if request.method == 'GET':
+            safe_user = user.copy()
+            safe_user.pop('password', None)
+            safe_user.pop('password_hash', None)
+            safe_user.pop('token', None)
+            return render_template('userinfo.html', user=safe_user)
+
+        reqdata = request.form.copy() if request.form else (request.get_json(silent=True) or {})
+        if not reqdata:
+            return jsonify({'status': '400', 'message': 'Empty request!'}), 400
+
+        action = reqdata.get('action')
+        if action == 'get':
+            ret_data = user.copy()
+            ret_data['status'] = '200'
+            ret_data.pop('token', None)
+            ret_data.pop('password', None)
+            ret_data.pop('password_hash', None)
+            return jsonify(ret_data)
+
+        if action in ('changepassword', 'change'):
+            original_pw = reqdata.get('original_password', reqdata.get('old_password'))
+            new_pw1 = reqdata.get('new_password1')
+            new_pw2 = reqdata.get('new_password2')
+            if not _verify_password(user, original_pw):
+                return jsonify({"status": "403", "message": "??蝣潮?霅仃??"}), 403
+            if not new_pw1 or new_pw1 != new_pw2:
+                return jsonify({"status": "403", "message": "?啣?蝣潔?銝?湛?"}), 403
+            user['password_hash'] = _hash_password(new_pw1)
+            user.pop('password', None)
+            user['token'] = _generate_token()
+            save_user_data(userdata)
+            return jsonify({"status": "200", "message": "靽格??!", "logout": True})
+
+        return jsonify({'status': '400', 'message': 'Invalid action'}), 400
+
+
+if False and settings['dashboard']['user_control']['enabled']:
     # init user
     settings = Config.read_settings()
     if os.path.exists(os.path.join(Config.get_working_dir(), 'Dashboard', 'userdata.json')):
@@ -832,13 +1121,6 @@ if settings['dashboard']['user_control']['enabled']:
 
 def run():
     settings = Config.read_settings()  # 读取配置
-
-    if settings['dashboard']['BasicAuth']:
-        # BasicAuth 配置
-        app.config['BASIC_AUTH_USERNAME'] = settings['dashboard']['username']  # BasicAuth user
-        app.config['BASIC_AUTH_PASSWORD'] = settings['dashboard']['password']  # BasicAuth password
-        app.config['BASIC_AUTH_FORCE'] = False  # 關閉全站验证
-        basic_auth = BasicAuth(app)
 
     port = settings['dashboard']['port']
     host = settings['dashboard']['host']

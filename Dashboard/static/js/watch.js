@@ -506,6 +506,11 @@ class VideoPlayer {
             this.container.classList.remove('fullscreen');
             try { screen.orientation.unlock(); } catch (e) { }
         }
+        if (this.danmuEnabled) {
+            this.ass.show();
+        } else {
+            this.ass.hide();
+        }
     }
 
     toggleSettings() {
