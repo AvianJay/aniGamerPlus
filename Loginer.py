@@ -44,7 +44,7 @@ def login(driver, username, password, save_cookie=False):
     __color_print(0, "登入狀態", detail='正在登入', no_sn=True)
     driver.get("https://gamer.com.tw/")
     if os.path.exists('cookies.pkl'):
-        __color_print(0, "登入狀態", details='找到cookie檔案', no_sn=True)
+        __color_print(0, "登入狀態", detail='找到cookie檔案', no_sn=True)
         cookies = pickle.load(open("cookies.pkl", "rb"))
         for cookie in cookies:
             driver.add_cookie(cookie)
