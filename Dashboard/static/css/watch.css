@@ -13,6 +13,14 @@
   margin: 0 5px;
 }
 
+.anotherVideoBox {
+  display: block;
+  width: 100%;
+  align-items: flex-start;
+  gap: 16px;
+  box-sizing: border-box;
+}
+
 /* Video Box */
 #videobox {
   position: relative;
@@ -192,8 +200,20 @@ video {
   color: #eee;
 }
 
+.settings-group-title {
+  padding: 8px 15px 4px;
+  font-size: 12px;
+  letter-spacing: 0.08em;
+  color: rgba(255, 255, 255, 0.55);
+}
+
 .settings-item:hover {
   background-color: rgba(255, 255, 255, 0.1);
+}
+
+.settings-item.active {
+  background-color: rgba(255, 255, 255, 0.16);
+  color: #fff;
 }
 
 /* Center Overlay */
@@ -351,6 +371,7 @@ video {
   transition: all 0.3s;
   background-color: #f9f9f9;
   border-radius: 5px;
+  display: block;
 }
 
 .animeCategoryTitle {
@@ -361,15 +382,19 @@ video {
   padding-left: 10px;
   cursor: pointer;
   width: 100%;
+  display: block;
+  align-self: flex-start;
+  height: auto;
 }
 
 .animeEpisodeList {
   display: none;
-  grid-template-columns: repeat(auto-fill, minmax(200px, 100%));
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
   gap: 15px;
   list-style: none;
   padding: 0;
   margin: 0;
+  align-items: start;
 }
 
 .animeEpisodeItem {
@@ -381,6 +406,8 @@ video {
   border: 1px solid #eee;
   display: flex;
   flex-direction: column;
+  min-width: 0;
+  height: auto;
 }
 
 .animeEpisodeItem:hover {
@@ -395,8 +422,9 @@ video {
   text-decoration: none;
   font-weight: bold;
   font-size: 16px;
-  flex-grow: 1;
+  flex: 0 0 auto;
   background: #f9f9f9;
+  word-break: break-word;
 }
 
 .animeEpisodeItem a:hover {
@@ -409,6 +437,7 @@ video {
   padding: 0 15px 10px;
   margin: 0;
   background: #f9f9f9;
+  word-break: break-word;
 }
 
 /* Dark Mode Support (optional, but good for "beautification") */
@@ -462,13 +491,30 @@ video {
 }
 
 .animeWatchingCategory {
-  flex: 1;
+  flex: 0 0 calc(30% - 8px);
   overflow-y: auto;
+  min-width: 0;
+  width: calc(30% - 8px);
+  max-width: calc(30% - 8px);
+  margin-left: 0;
 }
 
 .animeWatchingEpisodeList {
   display: grid;
   width: 100%;
+  grid-template-columns: 1fr;
+  gap: 12px;
+  align-items: start;
+}
+
+.animeWatchingEpisodeList .animeEpisodeItem {
+  width: 100%;
+}
+
+.animeWatchingEpisodeList .animeEpisodeItem a {
+  font-size: 22px;
+  line-height: 1.35;
+  padding: 16px 18px;
 }
 
 .progress {

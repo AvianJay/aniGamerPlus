@@ -131,6 +131,13 @@ class VideoPlayer {
         this.isFullscreen = false;
         this.controlsTimeout = null;
         this.speeds = [0.25, 0.5, 1, 1.25, 1.5, 2];
+        this.aspectModes = [
+            { key: 'contain', label: '原始比例' },
+            { key: 'cover', label: '裁切填滿' },
+            { key: 'fill', label: '完整填滿' }
+        ];
+        this.centerIconResetTimer = null;
+        this.currentAspectMode = 'contain';
 
         this.init();
     }
@@ -145,6 +152,7 @@ class VideoPlayer {
         this.video.controls = false;
         this.video.preload = 'metadata';
         this.video.src = './get_video.mp4?id=' + encodeURIComponent(this.videoData.sn) + '&res=' + this.videoData.resolution;
+        this.video.style.objectFit = this.currentAspectMode;
         this.container.appendChild(this.video);
 
         // Create UI Elements
@@ -283,17 +291,44 @@ class VideoPlayer {
         this.settingsMenu = document.createElement('div');
         this.settingsMenu.className = 'settings-menu';
 
+        const speedTitle = document.createElement('div');
+        speedTitle.className = 'settings-group-title';
+        speedTitle.innerText = '播放速度';
+        this.settingsMenu.appendChild(speedTitle);
+
         this.speeds.forEach(speed => {
             const item = document.createElement('div');
             item.className = 'settings-item';
+            item.dataset.type = 'speed';
+            item.dataset.value = speed;
             item.innerText = speed + 'x';
             item.onclick = () => {
-                this.video.playbackRate = speed;
+                this.applyPlaybackRate(speed);
                 this.settingsMenu.classList.remove('active');
             };
             this.settingsMenu.appendChild(item);
         });
 
+        const aspectTitle = document.createElement('div');
+        aspectTitle.className = 'settings-group-title';
+        aspectTitle.innerText = '畫面比例';
+        this.settingsMenu.appendChild(aspectTitle);
+
+        this.aspectModes.forEach(mode => {
+            const item = document.createElement('div');
+            item.className = 'settings-item';
+            item.dataset.type = 'aspect';
+            item.dataset.value = mode.key;
+            item.innerText = mode.label;
+            item.onclick = () => {
+                this.applyAspectMode(mode.key);
+                this.settingsMenu.classList.remove('active');
+            };
+            this.settingsMenu.appendChild(item);
+        });
+
+        this.applyPlaybackRate(1);
+        this.applyAspectMode(this.currentAspectMode);
         this.container.appendChild(this.settingsMenu);
     }
 
@@ -349,6 +384,7 @@ class VideoPlayer {
         this.video.addEventListener('playing', () => this.loadingSpinner.style.display = 'none');
         this.video.addEventListener('canplay', () => this.loadingSpinner.style.display = 'none');
         this.video.addEventListener('ended', () => this.onEnded());
+        document.addEventListener('fullscreenchange', () => this.syncFullscreenState());
         if (!isMobileDevice()) {
             this.video.addEventListener('click', () => this.togglePlay());
         }
@@ -424,6 +460,7 @@ class VideoPlayer {
     }
 
     onPlay() {
+        clearTimeout(this.centerIconResetTimer);
         this.playBtn.innerHTML = this.getIcon('pause');
         this.showControls();
         this.centerIcon.style.opacity = '0';
@@ -434,6 +471,7 @@ class VideoPlayer {
     }
 
     onPause() {
+        clearTimeout(this.centerIconResetTimer);
         this.playBtn.innerHTML = this.getIcon('play');
         this.showControls();
         setTime(this.videoData.sn, this.video.currentTime, false, true);
@@ -499,17 +537,50 @@ class VideoPlayer {
             this.container.requestFullscreen().catch(err => {
                 console.log(`Error attempting to enable full-screen mode: ${err.message} (${err.name})`);
             });
-            this.container.classList.add('fullscreen');
             try { screen.orientation.lock("landscape-primary"); } catch (e) { }
         } else {
-            document.exitFullscreen();
-            this.container.classList.remove('fullscreen');
+            document.exitFullscreen().catch(() => { });
             try { screen.orientation.unlock(); } catch (e) { }
         }
-        if (this.danmuEnabled) {
-            this.ass.show();
-        } else {
-            this.ass.hide();
+    }
+
+    syncFullscreenState() {
+        this.isFullscreen = document.fullscreenElement === this.container;
+        this.container.classList.toggle('fullscreen', this.isFullscreen);
+        this.fullscreenBtn.innerHTML = this.getIcon(this.isFullscreen ? 'fullscreenExit' : 'fullscreen');
+        this.applyAspectMode(this.currentAspectMode, false);
+        if (this.ass) {
+            if (this.danmuEnabled) {
+                this.ass.show();
+            } else {
+                this.ass.hide();
+            }
+        }
+    }
+
+    applyPlaybackRate(speed) {
+        this.video.playbackRate = speed;
+        this.settingsMenu.querySelectorAll('[data-type="speed"]').forEach(item => {
+            item.classList.toggle('active', Number(item.dataset.value) === Number(speed));
+        });
+    }
+
+    applyAspectMode(mode, refreshSubtitle = true) {
+        this.currentAspectMode = mode;
+        if (this.video) {
+            this.video.style.objectFit = mode;
+        }
+        if (this.settingsMenu) {
+            this.settingsMenu.querySelectorAll('[data-type="aspect"]').forEach(item => {
+                item.classList.toggle('active', item.dataset.value === mode);
+            });
+        }
+        if (refreshSubtitle && this.ass) {
+            if (this.danmuEnabled) {
+                this.ass.show();
+            } else {
+                this.ass.hide();
+            }
         }
     }
 
@@ -537,23 +608,32 @@ class VideoPlayer {
 
         if (touchX < width / 3) {
             this.video.currentTime -= 10;
-            this.showCenterIcon(this.getIcon('rewind'), true);
+            this.showCenterIcon(this.getIcon('rewind'), true, true);
         } else if (touchX > width * 2 / 3) {
             this.video.currentTime += 10;
-            this.showCenterIcon(this.getIcon('forward'), true);
+            this.showCenterIcon(this.getIcon('forward'), true, true);
         } else {
             this.togglePlay();
         }
     }
 
-    showCenterIcon(svg, animate) {
+    showCenterIcon(svg, animate, restoreState = false) {
+        clearTimeout(this.centerIconResetTimer);
         this.centerIcon.innerHTML = svg;
         this.centerIcon.style.opacity = '1';
         if (animate) {
             this.centerIcon.classList.remove('animate');
             void this.centerIcon.offsetWidth; // Trigger reflow
             this.centerIcon.classList.add('animate');
-            setTimeout(() => {
+            this.centerIconResetTimer = setTimeout(() => {
+                if (restoreState) {
+                    this.centerIcon.innerHTML = this.getIcon(this.video.paused ? 'play' : 'pause');
+                    this.centerIcon.classList.remove('animate');
+                    if (!isMobileDevice() && !this.video.paused) {
+                        this.centerIcon.style.opacity = '0';
+                    }
+                    return;
+                }
                 this.centerIcon.style.opacity = '0';
                 this.centerIcon.classList.remove('animate');
             }, 500);
@@ -571,9 +651,11 @@ class VideoPlayer {
                 break;
             case 'ArrowLeft':
                 this.video.currentTime -= 5;
+                this.showCenterIcon(this.getIcon('rewind'), true, true);
                 break;
             case 'ArrowRight':
                 this.video.currentTime += 5;
+                this.showCenterIcon(this.getIcon('forward'), true, true);
                 break;
         }
     }
@@ -618,6 +700,7 @@ class VideoPlayer {
             play: '<svg viewBox="0 0 24 24"><path d="M8 5v14l11-7z"/></svg>',
             pause: '<svg viewBox="0 0 24 24"><path d="M6 19h4V5H6v14zm8-14v14h4V5h-4z"/></svg>',
             fullscreen: '<svg viewBox="0 0 24 24"><path d="M7 14H5v5h5v-2H7v-3zm-2-4h2V7h3V5H5v5zm12 7h-3v2h5v-5h-2v3zM14 5v2h3v3h2V5h-5z"/></svg>',
+            fullscreenExit: '<svg viewBox="0 0 24 24"><path d="M5 16h2v3h3v2H5v-5zm12 3v-3h2v5h-5v-2h3zM7 5v3H5V3h5v2H7zm12 3V5h-3V3h5v5h-2z"/></svg>',
             speed: '<svg viewBox="0 0 24 24"><path d="M20.38 8.57l-1.23 1.85a8 8 0 0 1-.22 7.58H5.07A8 8 0 0 1 15.58 6.85l1.85-1.23A10 10 0 0 0 3.35 19a2 2 0 0 0 1.72 1h13.85a2 2 0 0 0 1.74-1 10 10 0 0 0-.27-10.44zm-9.79 6.84a2 2 0 0 0 2.83 0l5.66-8.49-8.49 5.66a2 2 0 0 0 0 2.83z"/></svg>',
             danmuOn: '<svg viewBox="0 0 24 24"><path d="M20 2H4c-1.1 0-2 .9-2 2v18l4-4h14c1.1 0 2-.9 2-2V4c0-1.1-.9-2-2-2zm0 14H5.17L4 17.17V4h16v12z"/></svg>',
             rewind: '<svg viewBox="0 0 24 24"><path d="M11 18V6l-8.5 6 8.5 6zm.5-6l8.5 6V6l-8.5 6z"/></svg>',
@@ -967,20 +1050,23 @@ function createEpisodeList(videoSeries) {
             }
         });
     } else {
-        document.getElementById("videobox").style.width = "70%";
-        document.getElementById("anotherVideoBox").style.display = "flex";
+        const videobox = document.getElementById("videobox");
+        const layoutBox = document.getElementById("anotherVideoBox");
+        videobox.style.flex = "0 0 calc(70% - 8px)";
+        videobox.style.width = "calc(70% - 8px)";
+        videobox.style.maxWidth = "calc(70% - 8px)";
+        layoutBox.style.display = "flex";
         categorybox.classList.add('animeWatchingCategory');
         categoryTitle.classList.add('animeWatchingTitle');
         videoListe.classList.add('animeWatchingEpisodeList');
-        document.getElementById("anotherVideoBox").appendChild(categorybox);
+        layoutBox.appendChild(categorybox);
         videoListe.style.display = "grid";
 
         // Resize logic
         const resizeList = () => {
-            var widthsize = 70; // Desktop width percentage
-            var finalWidth = window.innerWidth * (widthsize / 100);
+            var finalWidth = videobox.getBoundingClientRect().width;
             var finalHeight = (finalWidth / 16 * 9) - 15;
-            categorybox.style.height = finalHeight + 'px';
+            categorybox.style.maxHeight = finalHeight + 'px';
         };
         resizeList();
         window.addEventListener("resize", resizeList);
