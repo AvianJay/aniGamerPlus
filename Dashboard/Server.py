@@ -518,7 +518,7 @@ def get_token():
     global websocket_token
     # 生成 32 位随机字符串作为token
     websocket_token = ''.join(random.sample(string.ascii_letters + string.digits, 32))
-    return websocket_token, '200 ok'
+    return jsonify({'token': websocket_token, 'legacy': True})
 
 
 @app.route('/sn_list', methods=['POST'])
@@ -545,8 +545,27 @@ def web_console_command():
 
 
 # todo: 修好websocket
-@sock.route('/data/tasks_progress')
-def tasks_progress(ws):
+@app.route('/data/tasks_progress')
+def tasks_progress():
+    ws = request.environ.get('wsgi.websocket')
+    if ws is None:
+        return jsonify({'success': False, 'message': 'websocket required'}), 400
+    current_settings = Config.read_settings()
+    if current_settings['dashboard']['user_control']['enabled']:
+        user = find_user_by_token(request.cookies.get('token'))
+        if not user or user.get('role') != 'admin':
+            ws.close()
+            return
+
+    while True:
+        msg = json.dumps(Config.tasks_progress_rate)
+        try:
+            ws.send(msg)
+            time.sleep(1)
+        except (WebSocketError, ConnectionError, OSError):
+            ws.close()
+            break
+    return
     # 鉴权
     global websocket_token
     token = request.args.get('token')
@@ -801,7 +820,7 @@ if settings['dashboard']['user_control']['enabled']:
     def register():
         current_settings = Config.read_settings()
         if not current_settings['dashboard']['user_control']['allow_register']:
-            return '<script>alert("隡箸??冽????刻酉??");history.back();</script>'
+            return '<script>alert("註冊功能未啟用");history.back();</script>'
         if request.method == 'GET':
             return render_template('register.html')
 
@@ -927,9 +946,9 @@ if settings['dashboard']['user_control']['enabled']:
             new_pw1 = reqdata.get('new_password1')
             new_pw2 = reqdata.get('new_password2')
             if not _verify_password(user, original_pw):
-                return jsonify({"status": "403", "message": "??蝣潮?霅仃??"}), 403
+                return jsonify({"status": "403", "message": "錯誤的原密碼"}), 403
             if not new_pw1 or new_pw1 != new_pw2:
-                return jsonify({"status": "403", "message": "?啣?蝣潔?銝?湛?"}), 403
+                return jsonify({"status": "403", "message": "新密碼不一致"}), 403
             user['password_hash'] = _hash_password(new_pw1)
             user.pop('password', None)
             user['token'] = _generate_token()

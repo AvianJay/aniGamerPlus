@@ -69,6 +69,10 @@ async function userMain() {
                             adminlink.className = 'nav-item my-navbar';
                             adminlink.innerHTML = '<a class="nav-link" href="./control">主控台</a>';
                             navbar.appendChild(adminlink);
+                            var usermanagelink = document.createElement('li');
+                            usermanagelink.className = 'nav-item my-navbar';
+                            usermanagelink.innerHTML = '<a class="nav-link" href="./usermanage">用戶管理</a>';
+                            navbar.appendChild(usermanagelink);
                         }
                         var userlink = document.createElement('li');
                         userlink.className = 'nav-item my-navbar';
