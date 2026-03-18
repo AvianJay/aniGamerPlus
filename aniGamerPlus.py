@@ -1225,6 +1225,7 @@ def auto_update_loop():
         new_tasks_counter = 0  # 新增任务计数器
         plugin_update_result = plugin_manager.auto_update({
             'updatelist': updatelist,
+            'upload_video': upload_video,
             'show_detail': False,
         })
         new_tasks_counter += int(plugin_update_result.get('scheduled', 0) or 0)
