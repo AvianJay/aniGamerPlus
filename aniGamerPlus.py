@@ -1223,6 +1223,11 @@ def auto_update_loop():
         danmu = settings['danmu']  # 避免手動加入工作時，global 覆寫掉 config 的 danmu 設定
         check_tasks()  # 检查更新，生成任务列队
         new_tasks_counter = 0  # 新增任务计数器
+        plugin_update_result = plugin_manager.auto_update({
+            'updatelist': updatelist,
+            'show_detail': False,
+        })
+        new_tasks_counter += int(plugin_update_result.get('scheduled', 0) or 0)
         if queue:
             for task_sn in queue.keys():
                 if task_sn not in processing_queue:  # 如果该任务没有在进行中，则启动

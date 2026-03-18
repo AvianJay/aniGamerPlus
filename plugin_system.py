@@ -131,3 +131,23 @@ class PluginManager:
                     return {'handled': True, **result}
                 return {'handled': True, 'success': False, 'message': 'Invalid plugin command result'}
         return {'handled': False, 'success': False, 'message': 'Command not found'}
+
+    def auto_update(self, context=None):
+        if context is None:
+            context = {}
+
+        scheduled = 0
+        for plugin in self._plugins:
+            runner = getattr(plugin, 'on_auto_update', None)
+            if not callable(runner):
+                continue
+            try:
+                result = runner(context)
+            except BaseException as e:
+                print(f'[PluginManager] auto_update failed: {e}')
+                continue
+
+            if isinstance(result, dict):
+                scheduled += int(result.get('scheduled', 0) or 0)
+
+        return {'scheduled': scheduled}
