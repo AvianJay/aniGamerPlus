@@ -129,6 +129,7 @@ checknow = lambda e: None
 command_handler = None
 userdata_lock = threading.Lock()
 userdata_path = os.path.join(Config.get_working_dir(), 'Dashboard', 'userdata.json')
+PLUGIN_RELOAD_INTERVAL_SECONDS = 30
 
 
 def _generate_token():
@@ -417,6 +418,111 @@ def cache(id, time=600, set=None):
     return caches.get(id, {}).get("data")
 
 
+def _get_current_settings():
+    return Config.read_settings()
+
+
+def _get_dashboard_flags(current_settings=None):
+    current_settings = current_settings or _get_current_settings()
+    dashboard_settings = current_settings.get('dashboard', {})
+    user_control_settings = dashboard_settings.get('user_control', {})
+    return {
+        "user_control": user_control_settings.get('enabled', False),
+        "user_control_allow_register": user_control_settings.get('allow_register', False),
+        "online_watch": dashboard_settings.get('online_watch', False),
+        "online_watch_requires_login": dashboard_settings.get('online_watch_requires_login', False),
+    }
+
+
+def _get_request_user(current_settings=None):
+    current_settings = current_settings or _get_current_settings()
+    if not current_settings.get('dashboard', {}).get('user_control', {}).get('enabled'):
+        return None
+    return find_user_by_token(request.cookies.get('token'))
+
+
+def _build_safe_user(user):
+    if not user:
+        return None
+    return {
+        'username': user.get('username'),
+        'role': user.get('role', 'user'),
+    }
+
+
+def _build_dashboard_bootstrap(extra=None, current_settings=None):
+    current_settings = current_settings or _get_current_settings()
+    user = _get_request_user(current_settings)
+    bootstrap = {
+        'serverInfo': _get_dashboard_flags(current_settings),
+        'loggedIn': bool(user),
+        'currentUser': _build_safe_user(user),
+    }
+    if extra:
+        bootstrap.update(extra)
+    return bootstrap
+
+
+def _build_watch_bootstrap(current_settings=None):
+    current_settings = current_settings or _get_current_settings()
+    requested_sn = str(request.args.get('id') or '').strip()
+    requested_resolution = str(request.args.get('res') or '').strip()
+    bootstrap = {
+        'requestedVideoId': requested_sn or None,
+        'requestedResolution': requested_resolution or None,
+        'initialVideoData': None,
+        'initialVideoSeries': [],
+        'resumeTime': 0,
+    }
+
+    if not requested_sn:
+        return bootstrap
+
+    video_list = _read_video_list_file().get('videos', [])
+    initial_video = None
+    for video in video_list:
+        if str(video.get('sn')) == requested_sn:
+            initial_video = dict(video)
+            break
+
+    if not initial_video:
+        return bootstrap
+
+    if requested_resolution and requested_resolution.isdigit():
+        initial_video['resolution'] = requested_resolution
+
+    bootstrap['initialVideoData'] = initial_video
+    bootstrap['initialVideoSeries'] = [video for video in video_list if video.get('anime_name') == initial_video.get('anime_name')]
+
+    user = _get_request_user(current_settings)
+    if user:
+        resume_state = user.get('videotimes', {}).get(requested_sn, {})
+        if not resume_state.get('ended'):
+            bootstrap['resumeTime'] = int(resume_state.get('time', 0) or 0)
+
+    return bootstrap
+
+
+def _settings_signature(current_settings):
+    return json.dumps(current_settings, ensure_ascii=False, sort_keys=True)
+
+
+def _sync_plugin_manager(force=False):
+    global plugin_manager_last_reload_at, plugin_manager_settings_signature, settings
+
+    current_settings = _get_current_settings()
+    signature = _settings_signature(current_settings)
+    now = time.monotonic()
+
+    if force or signature != plugin_manager_settings_signature or now - plugin_manager_last_reload_at >= PLUGIN_RELOAD_INTERVAL_SECONDS:
+        plugin_manager.reload(current_settings)
+        plugin_manager_settings_signature = signature
+        plugin_manager_last_reload_at = now
+        settings = current_settings
+
+    return current_settings
+
+
 # 读取web需要的配置名称列表
 id_list_path = os.path.join(Config.get_working_dir(), 'Dashboard', 'static', 'js', 'settings_id_list.js')
 with open(id_list_path, 'r', encoding='utf-8') as f:
@@ -429,8 +535,19 @@ def after_request(response):
     return response
 
 
-settings = Config.read_settings()
+settings = _get_current_settings()
 plugin_manager = PluginManager(settings)
+plugin_manager_settings_signature = _settings_signature(settings)
+plugin_manager_last_reload_at = time.monotonic()
+
+
+@app.context_processor
+def inject_dashboard_template_context():
+    return {
+        'dashboard_bootstrap': _build_dashboard_bootstrap(),
+    }
+
+
 @app.route('/control')
 @admin_page_required
 def control():
@@ -462,6 +579,7 @@ def recv_config():
     for id in id_list:
         new_settings[id] = data[id]  # 更新配置
     Config.write_settings(new_settings)  # 保存配置
+    _sync_plugin_manager(force=True)
     err_print(0, 'Dashboard', '通過 Web 控制臺更新了 config.json', no_sn=True, status=2)
     return '{"status":"200"}'
 
@@ -591,8 +709,9 @@ def tasks_progress():
 
 @app.route('/')
 def home():
-    if settings["dashboard"]["online_watch"]:
-        if settings["dashboard"]["user_control"]["enabled"]:
+    current_settings = _get_current_settings()
+    if current_settings["dashboard"]["online_watch"]:
+        if current_settings["dashboard"]["user_control"]["enabled"]:
             logined, user_role = verify_user(request.cookies)
             if logined and user_role == 'user':
                 return redirect("./watch")
@@ -609,18 +728,18 @@ def favicon():
 if settings["dashboard"]["online_watch"]:
     @app.route('/watch')
     def watch():
-        if settings['dashboard']['online_watch_requires_login']:
+        current_settings = _get_current_settings()
+        if current_settings['dashboard']['online_watch_requires_login']:
             vaild_user, user_role = verify_user(request.cookies)
             if not vaild_user:
                 return redirect("./login?error=2")
-        # return open(f'{template_path}/watch.html', 'r').read()
-        return render_template('watch.html')
+        return render_template('watch.html', watch_bootstrap=_build_watch_bootstrap(current_settings))
 
 
     @app.route('/get_video.mp4')
     def getvid():
-        plugin_manager.reload(Config.read_settings())
-        if settings['dashboard']['online_watch_requires_login']:
+        current_settings = _sync_plugin_manager()
+        if current_settings['dashboard']['online_watch_requires_login']:
             valid_user, user_role = verify_user(request.cookies)
             if not valid_user:
                 return jsonify({"error": "login required"}), 403
@@ -704,8 +823,9 @@ if settings["dashboard"]["online_watch"]:
 
     @app.route('/get_danmu.ass')
     def getsub():
+        current_settings = _get_current_settings()
         sn = request.args.get('id')
-        if settings['danmu']:
+        if current_settings['danmu']:
             video = _find_video_entry(sn)
             path = Config.getpath(sn, 'danmu')
 
@@ -732,7 +852,8 @@ if settings["dashboard"]["online_watch"]:
 
     @app.route('/video_list.json')
     def videolist():
-        if settings['dashboard']['online_watch_requires_login']:
+        current_settings = _get_current_settings()
+        if current_settings['dashboard']['online_watch_requires_login']:
             vaild_user, user_role = verify_user(request.cookies)
             if not vaild_user:
                 return jsonify({"error": "login required"}), 403
@@ -774,13 +895,7 @@ if settings["dashboard"]["online_watch"]:
 
 @app.route('/get_server_info')
 def get_server_info():
-    settings = Config.read_settings()
-    return jsonify({
-        "user_control": settings['dashboard']['user_control']['enabled'],
-        "user_control_allow_register": settings['dashboard']['user_control']['allow_register'],
-        "online_watch": settings['dashboard']['online_watch'],
-        "online_watch_requires_login": settings['dashboard']['online_watch_requires_login'],
-    })
+    return jsonify(_get_dashboard_flags())
 
 if settings['dashboard']['user_control']['enabled']:
     load_user_data()

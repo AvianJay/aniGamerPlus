@@ -22,123 +22,174 @@ function getCookieByName(name) {
     return value;
 }
 
+
+function getDashboardBootstrap() {
+    var bootstrapElement;
+    var bootstrap = window.__AGP_BOOTSTRAP__;
+    if (bootstrap && typeof bootstrap === 'object') {
+        return bootstrap;
+    }
+
+    bootstrapElement = document.getElementById('agp-dashboard-bootstrap');
+    if (bootstrapElement) {
+        try {
+            bootstrap = JSON.parse(bootstrapElement.textContent || '{}');
+            window.__AGP_BOOTSTRAP__ = bootstrap;
+            return bootstrap;
+        } catch (error) {
+            console.warn('Failed to parse dashboard bootstrap:', error);
+        }
+    }
+
+    return {};
+}
+
+
+function getBootstrappedServerInfo() {
+    return getDashboardBootstrap().serverInfo || null;
+}
+
+
+function getBootstrappedCurrentUser() {
+    return getDashboardBootstrap().currentUser || null;
+}
+
+
+function isLoggedIn() {
+    var bootstrap = getDashboardBootstrap();
+    if (typeof bootstrap.loggedIn === 'boolean') {
+        return bootstrap.loggedIn;
+    }
+    return getCookieByName('logined') === 'true';
+}
+
+
+window.dashboardApi = {
+    parseCookie: parseCookie,
+    getCookieByName: getCookieByName,
+    getBootstrap: getDashboardBootstrap,
+    getServerInfoSnapshot: getBootstrappedServerInfo,
+    getCurrentUserSnapshot: getBootstrappedCurrentUser,
+    isLoggedIn: isLoggedIn,
+};
+
+
 var serverinfo = null;
 async function getServerInfo(key) {
     if (serverinfo == null) {
-        serverinfo = await fetch('./get_server_info').then(res => res.json()).then(function (data) {
-            if (key) {
-                return data[key];
-            } else {
-                return data;
-            }
-        }).catch(function (error) {
-            console.error('Error:', error);
-        });
+        serverinfo = getBootstrappedServerInfo();
+        if (serverinfo == null) {
+            serverinfo = await fetch('./get_server_info')
+                .then(res => res.json())
+                .catch(function (error) {
+                    console.error('Error:', error);
+                    return {};
+                });
+        }
     }
-    return serverinfo;
+
+    if (key) {
+        return serverinfo ? serverinfo[key] : undefined;
+    }
+
+    return serverinfo || {};
 }
 
+
+function appendNavLink(navbar, href, text) {
+    var item = document.createElement('li');
+    item.className = 'nav-item my-navbar';
+
+    var link = document.createElement('a');
+    link.className = 'nav-link';
+    link.href = href;
+    link.textContent = text;
+
+    item.appendChild(link);
+    navbar.appendChild(item);
+}
+
+
+function markLoggedInCookie(value) {
+    document.cookie = 'logined=' + value + '; expires=Fri, 31 Dec 9999 23:59:59 GMT; path=/';
+}
+
+
+async function fetchCurrentUser() {
+    var currentUser = getBootstrappedCurrentUser();
+    if (currentUser) {
+        return currentUser;
+    }
+
+    if (!isLoggedIn()) {
+        return null;
+    }
+
+    return fetch('./userinfo', {
+        method: 'POST',
+        credentials: 'include',
+        headers: {
+            'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({ action: 'get' })
+    }).then(res => res.json()).then(function (data) {
+        if (data.status == '200') {
+            return data;
+        }
+        return null;
+    }).catch(function (error) {
+        console.error('Error:', error);
+        return null;
+    });
+}
+
+
 async function userMain() {
+    var navbar = document.querySelector('.navbar-nav');
+    if (!navbar) {
+        setTimeout(userMain, 100);
+        return;
+    }
+
+    navbar.innerHTML = '';
+
     try {
-        navbar = document.querySelector('.navbar-nav');
-        if (!navbar) {
-            setTimeout(userMain, 100);
+        var info = await getServerInfo();
+        if (info.online_watch) {
+            appendNavLink(navbar, './watch', '線上看');
+        }
+
+        if (!info.user_control) {
+            markLoggedInCookie('false');
             return;
         }
-        if (await getServerInfo('online_watch')) {
-            var watchlink = document.createElement('li');
-            watchlink.className = 'nav-item my-navbar';
-            watchlink.innerHTML = '<a class="nav-link" href="./watch">線上看</a>';
-            navbar.appendChild(watchlink);
+
+        var currentUser = await fetchCurrentUser();
+        if (currentUser) {
+            markLoggedInCookie('true');
+            if (currentUser.role == 'admin') {
+                appendNavLink(navbar, './control', '主控台');
+                appendNavLink(navbar, './usermanage', '用戶管理');
+            }
+            appendNavLink(navbar, './userinfo', currentUser.username || '帳號');
+            appendNavLink(navbar, './logout', '登出');
+            return;
         }
-        if (await getServerInfo('user_control')) {
-            var login = getCookieByName('logined');
-            if (login == 'true') {
-                fetch('./userinfo', {
-                    method: 'POST',
-                    credentials: 'include',
-                    headers: {
-                        'Content-Type': 'application/json'
-                    },
-                    body: JSON.stringify({ action: "get" })
-                }).then(res => res.json()).then(async function (data) {
-                    if (data.status == '200') {
-                        document.cookie = 'logined=true; expires=Fri, 31 Dec 9999 23:59:59 GMT';
-                        if (data.role == 'admin') {
-                            var adminlink = document.createElement('li');
-                            adminlink.className = 'nav-item my-navbar';
-                            adminlink.innerHTML = '<a class="nav-link" href="./control">主控台</a>';
-                            navbar.appendChild(adminlink);
-                            var usermanagelink = document.createElement('li');
-                            usermanagelink.className = 'nav-item my-navbar';
-                            usermanagelink.innerHTML = '<a class="nav-link" href="./usermanage">用戶管理</a>';
-                            navbar.appendChild(usermanagelink);
-                        }
-                        var userlink = document.createElement('li');
-                        userlink.className = 'nav-item my-navbar';
-                        userlink.innerHTML = '<a class="nav-link" href="./userinfo">' + data.username + '</a>';
-                        navbar.appendChild(userlink);
-                        var logoutlink = document.createElement('li');
-                        logoutlink.className = 'nav-item my-navbar';
-                        logoutlink.innerHTML = '<a class="nav-link" href="./logout">登出</a>';
-                        navbar.appendChild(logoutlink);
-                    } else {
-                        document.cookie = 'logined=false; expires=Fri, 31 Dec 9999 23:59:59 GMT';
-                        var loginlink = document.createElement('li');
-                        loginlink.className = 'nav-item my-navbar';
-                        loginlink.innerHTML = '<a class="nav-link" href="./login">登入</a>';
-                        navbar.appendChild(loginlink);
-                        if (await getServerInfo('user_control_allow_register') == true) {
-                            var registerlink = document.createElement('li');
-                            registerlink.className = 'nav-item my-navbar';
-                            registerlink.innerHTML = '<a class="nav-link" href="./register">註冊</a>';
-                            navbar.appendChild(registerlink);
-                        }
-                    }
-                }).catch(function (error) {
-                    console.error('Error:', error);
-                });
-            } else {
-                document.cookie = 'logined=false; expires=Fri, 31 Dec 9999 23:59:59 GMT';
-                var loginlink = document.createElement('li');
-                loginlink.className = 'nav-item my-navbar';
-                loginlink.innerHTML = '<a class="nav-link" href="./login">登入</a>';
-                navbar.appendChild(loginlink);
-                if (await getServerInfo('user_control_allow_register') == true) {
-                    var registerlink = document.createElement('li');
-                    registerlink.className = 'nav-item my-navbar';
-                    registerlink.innerHTML = '<a class="nav-link" href="./register">註冊</a>';
-                    navbar.appendChild(registerlink);
-                }
-            }
-        } else {
-            document.cookie = 'logined=false; expires=Fri, 31 Dec 9999 23:59:59 GMT';
-            var loginlink = document.createElement('li');
-            loginlink.className = 'nav-item my-navbar';
-            loginlink.innerHTML = '<a class="nav-link" href="./login">登入</a>';
-            navbar.appendChild(loginlink);
-            if (await getServerInfo('user_control_allow_register') == true) {
-                var registerlink = document.createElement('li');
-                registerlink.className = 'nav-item my-navbar';
-                registerlink.innerHTML = '<a class="nav-link" href="./register">註冊</a>';
-                navbar.appendChild(registerlink);
-            }
+
+        markLoggedInCookie('false');
+        appendNavLink(navbar, './login', '登入');
+        if (info.user_control_allow_register === true) {
+            appendNavLink(navbar, './register', '註冊');
         }
     } catch (err) {
-        document.cookie = 'logined=false; expires=Fri, 31 Dec 9999 23:59:59 GMT';
-        var loginlink = document.createElement('li');
-        loginlink.className = 'nav-item my-navbar';
-        loginlink.innerHTML = '<a class="nav-link" href="./login">登入</a>';
-        navbar.appendChild(loginlink);
-        if (await getServerInfo('user_control_allow_register') == 'true') {
-            var registerlink = document.createElement('li');
-            registerlink.className = 'nav-item my-navbar';
-            registerlink.innerHTML = '<a class="nav-link" href="./register">註冊</a>';
-            navbar.appendChild(registerlink);
+        markLoggedInCookie('false');
+        if (!navbar.children.length) {
+            appendNavLink(navbar, './login', '登入');
         }
         console.warn(err);
     }
 }
+
 
 $(document).ready(function () {
     userMain();

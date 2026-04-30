@@ -1,5 +1,7 @@
 // Helper Functions
-function parseCookie() {
+const dashboardApi = window.dashboardApi || {};
+
+function fallbackParseCookie() {
     var cookieObj = {};
     var cookieAry = document.cookie.split(';');
     var cookie;
@@ -14,15 +16,84 @@ function parseCookie() {
 }
 
 function getCookieByName(name) {
-    var value = parseCookie()[name];
+    if (dashboardApi.getCookieByName) {
+        return dashboardApi.getCookieByName(name);
+    }
+    var value = fallbackParseCookie()[name];
     if (value) {
         value = decodeURIComponent(value);
     }
     return value;
 }
 
+function isLoggedIn() {
+    if (dashboardApi.isLoggedIn) {
+        return dashboardApi.isLoggedIn();
+    }
+    return getCookieByName('logined') == 'true';
+}
+
+function getWatchBootstrap() {
+    var bootstrapElement;
+    var bootstrap = window.__AGP_WATCH_BOOTSTRAP__;
+    if (bootstrap && typeof bootstrap === 'object') {
+        return bootstrap;
+    }
+
+    bootstrapElement = document.getElementById('agp-watch-bootstrap');
+    if (bootstrapElement) {
+        try {
+            bootstrap = JSON.parse(bootstrapElement.textContent || '{}');
+            window.__AGP_WATCH_BOOTSTRAP__ = bootstrap;
+            return bootstrap;
+        } catch (error) {
+            console.warn('Failed to parse watch bootstrap:', error);
+        }
+    }
+
+    return {};
+}
+
+function getBootstrappedVideoData(sn) {
+    var bootstrap = getWatchBootstrap();
+    var videoData = bootstrap.initialVideoData;
+    if (videoData && String(videoData.sn) === String(sn)) {
+        return videoData;
+    }
+    return null;
+}
+
+function getBootstrappedSeries(sn) {
+    var bootstrap = getWatchBootstrap();
+    if (getBootstrappedVideoData(sn) && Array.isArray(bootstrap.initialVideoSeries) && bootstrap.initialVideoSeries.length > 0) {
+        return bootstrap.initialVideoSeries;
+    }
+    return [];
+}
+
+function getBootstrappedResumeTime(sn) {
+    var bootstrap = getWatchBootstrap();
+    if (String(bootstrap.requestedVideoId || '') !== String(sn)) {
+        return null;
+    }
+    var resumeTime = Number(bootstrap.resumeTime);
+    return Number.isFinite(resumeTime) ? resumeTime : null;
+}
+
+function setWatchStatusChip(text) {
+    var statusChip = document.getElementById('watchStatusChip');
+    if (statusChip) {
+        statusChip.textContent = text;
+    }
+}
+
 async function getTime(sn) {
-    if (getCookieByName('logined') == 'true') {
+    var bootstrappedResumeTime = getBootstrappedResumeTime(sn);
+    if (bootstrappedResumeTime !== null) {
+        return bootstrappedResumeTime;
+    }
+
+    if (isLoggedIn()) {
         let res = await fetch('./watch/time?sn=' + sn + '&type=get');
         let data = await res.json();
         if (data.time) {
@@ -39,7 +110,7 @@ async function getTime(sn) {
 }
 
 async function getAllTimes() {
-    if (getCookieByName('logined') == 'true') {
+    if (isLoggedIn()) {
         let res = await fetch('./watch/time?type=get');
         let data = await res.json();
         return data;
@@ -57,7 +128,7 @@ async function setTime(sn, time, ended, force = false) {
         }
     }
     lastSetTime = currentTime;
-    if (getCookieByName('logined') == 'true') {
+    if (isLoggedIn()) {
         if (ended) {
             await fetch('./watch/time?sn=' + sn + '&type=set&time=0&ended=true');
             return;
@@ -88,8 +159,13 @@ async function getVideoList() {
 }
 
 async function fetchVideoData(sn) {
+    let bootstrappedVideo = getBootstrappedVideoData(sn);
+    if (bootstrappedVideo) {
+        return bootstrappedVideo;
+    }
+
     let vl = await getVideoList();
-    let videolist = vl.videos;
+    let videolist = Array.isArray(vl.videos) ? vl.videos : [];
     let videodata = videolist.find(value => value.sn == sn);
 
     if (!videodata) {
@@ -101,13 +177,24 @@ async function fetchVideoData(sn) {
 }
 
 async function getVideoSeries(sn) {
+    let bootstrappedSeries = getBootstrappedSeries(sn);
+    if (bootstrappedSeries.length > 0) {
+        return bootstrappedSeries;
+    }
+
     let vd = await fetchVideoData(sn);
+    if (!vd) {
+        return [];
+    }
     let fullList = await getVideoList();
-    let series = fullList.videos.filter(value => value.anime_name == vd.anime_name);
+    let series = (fullList.videos || []).filter(value => value.anime_name == vd.anime_name);
     return series;
 }
 
 function convertTime(duration) {
+    if (!Number.isFinite(duration) || duration < 0) {
+        return '00:00';
+    }
     const h = Math.floor(duration / 60);
     const m = Math.round(duration % 60);
     const result = `${h.toString().padStart(2, '0')}:${m.toString().padStart(2, '0')}`;
@@ -371,6 +458,12 @@ class VideoPlayer {
                 } else {
                     this.ass.hide();
                 }
+            })
+            .catch((error) => {
+                console.warn('Danmu load failed:', error);
+                if (this.danmuBtn) {
+                    this.danmuBtn.style.display = 'none';
+                }
             });
     }
 
@@ -380,9 +473,20 @@ class VideoPlayer {
         this.video.addEventListener('pause', () => this.onPause());
         this.video.addEventListener('timeupdate', () => this.onTimeUpdate());
         this.video.addEventListener('loadedmetadata', () => this.onLoadedMetadata());
-        this.video.addEventListener('waiting', () => this.loadingSpinner.style.display = 'block');
-        this.video.addEventListener('playing', () => this.loadingSpinner.style.display = 'none');
-        this.video.addEventListener('canplay', () => this.loadingSpinner.style.display = 'none');
+        this.video.addEventListener('waiting', () => {
+            this.loadingSpinner.style.display = 'block';
+            setWatchStatusChip('緩衝中');
+        });
+        this.video.addEventListener('playing', () => {
+            this.loadingSpinner.style.display = 'none';
+            setWatchStatusChip('正在播放');
+        });
+        this.video.addEventListener('canplay', () => {
+            this.loadingSpinner.style.display = 'none';
+            if (!this.video.paused) {
+                setWatchStatusChip('正在播放');
+            }
+        });
         this.video.addEventListener('ended', () => this.onEnded());
         document.addEventListener('fullscreenchange', () => this.syncFullscreenState());
         if (!isMobileDevice()) {
@@ -464,6 +568,7 @@ class VideoPlayer {
         this.playBtn.innerHTML = this.getIcon('pause');
         this.showControls();
         this.centerIcon.style.opacity = '0';
+        setWatchStatusChip('正在播放');
         if (isMobileDevice()) {
             this.showCenterIcon(this.getIcon('pause'), false);
             this.centerIcon.style.opacity = '1';
@@ -475,6 +580,7 @@ class VideoPlayer {
         this.playBtn.innerHTML = this.getIcon('play');
         this.showControls();
         setTime(this.videoData.sn, this.video.currentTime, false, true);
+        setWatchStatusChip('已暫停');
         if (isMobileDevice()) {
             this.showCenterIcon(this.getIcon('play'), false);
             this.centerIcon.style.opacity = '1';
@@ -494,6 +600,7 @@ class VideoPlayer {
 
     onEnded() {
         setTime(this.videoData.sn, 0, true, true);
+        setWatchStatusChip('播放完成');
         this.showEndScreen();
     }
 
@@ -589,6 +696,15 @@ class VideoPlayer {
     }
 
     toggleDanmu() {
+        if (!this.ass) {
+            this.danmuEnabled = !this.danmuEnabled;
+            if (this.danmuBtn) {
+                this.danmuBtn.style.opacity = this.danmuEnabled ? '1' : '0.5';
+            }
+            document.cookie = 'disableDanmu=' + (!this.danmuEnabled) + '; path=/; expires=' + new Date(Date.now() + 365 * 24 * 60 * 60 * 1000).toUTCString();
+            return;
+        }
+
         if (this.danmuEnabled) {
             this.ass.hide();
             this.danmuEnabled = false;
@@ -641,6 +757,15 @@ class VideoPlayer {
     }
 
     handleKeydown(e) {
+        var activeTag = document.activeElement ? document.activeElement.tagName : '';
+        if (activeTag === 'INPUT' || activeTag === 'TEXTAREA') {
+            return;
+        }
+
+        if ([' ', 'k', 'f', 'ArrowLeft', 'ArrowRight'].includes(e.key)) {
+            e.preventDefault();
+        }
+
         switch (e.key) {
             case ' ':
             case 'k':
@@ -710,63 +835,171 @@ class VideoPlayer {
     }
 }
 
+function getWatchUserLabel() {
+    var currentUser = dashboardApi.getCurrentUserSnapshot ? dashboardApi.getCurrentUserSnapshot() : null;
+    if (currentUser && currentUser.username) {
+        if (currentUser.role === 'admin') {
+            return currentUser.username + ' / admin';
+        }
+        return currentUser.username;
+    }
+    return isLoggedIn() ? '已登入使用者' : '訪客模式';
+}
+
+function createMetaCard(label, value, link) {
+    var item = document.createElement('div');
+    item.className = 'watch-meta-card';
+
+    var labelNode = document.createElement('span');
+    labelNode.className = 'watch-meta-label';
+    labelNode.textContent = label;
+    item.appendChild(labelNode);
+
+    if (link) {
+        var anchor = document.createElement('a');
+        anchor.className = 'watch-meta-value watch-meta-link';
+        anchor.href = link.href;
+        anchor.target = '_blank';
+        anchor.rel = 'noreferrer';
+        anchor.textContent = link.text;
+        item.appendChild(anchor);
+    } else {
+        var valueNode = document.createElement('strong');
+        valueNode.className = 'watch-meta-value';
+        valueNode.textContent = value;
+        item.appendChild(valueNode);
+    }
+
+    return item;
+}
+
+function renderWatchMeta(videoData, videoSeries) {
+    var metaPanel = document.getElementById('video-meta-panel');
+    if (!metaPanel || !videoData) {
+        return;
+    }
+
+    metaPanel.classList.remove('watch-panel--hidden');
+    metaPanel.innerHTML = '';
+
+    var panelHeader = document.createElement('div');
+    panelHeader.className = 'watch-panel-header';
+
+    var titleGroup = document.createElement('div');
+    var title = document.createElement('h2');
+    title.textContent = videoData.title || videoData.anime_name || '線上播放器';
+    var subtitle = document.createElement('p');
+    subtitle.textContent = (videoData.anime_name || '未分類作品') + ' · 第 ' + videoData.episode + ' 集';
+
+    titleGroup.appendChild(title);
+    titleGroup.appendChild(subtitle);
+    panelHeader.appendChild(titleGroup);
+    metaPanel.appendChild(panelHeader);
+
+    var grid = document.createElement('div');
+    grid.className = 'watch-meta-grid';
+    grid.appendChild(createMetaCard('來源', videoData.source || '未知來源', videoData.source == '巴哈姆特動畫瘋' ? {
+        href: 'https://ani.gamer.com.tw/animeVideo.php?sn=' + videoData.sn,
+        text: '巴哈姆特動畫瘋'
+    } : null));
+    grid.appendChild(createMetaCard('解析度', String(videoData.resolution || '未知') + 'P'));
+    grid.appendChild(createMetaCard('集數數量', String(videoSeries.length || 0) + ' 集'));
+    grid.appendChild(createMetaCard('影片編號', String(videoData.sn)));
+    metaPanel.appendChild(grid);
+}
+
+function updateWatchShellState(mode, videoData, videoSeries) {
+    var watchLayout = document.getElementById('watchLayout');
+    var watchLibrary = document.getElementById('watch-library');
+    var watchHeadline = document.getElementById('watchHeadline');
+    var watchSubtitle = document.getElementById('watchSubtitle');
+    var watchUserChip = document.getElementById('watchUserChip');
+    var episodeSummary = document.getElementById('episodeSummary');
+    var librarySummary = document.getElementById('librarySummary');
+
+    if (watchUserChip) {
+        watchUserChip.textContent = getWatchUserLabel();
+    }
+
+    if (mode === 'player' && videoData) {
+        if (watchLayout) {
+            watchLayout.style.display = 'grid';
+        }
+        if (watchLibrary) {
+            watchLibrary.classList.add('watch-library--collapsed');
+        }
+        if (watchHeadline) {
+            watchHeadline.textContent = videoData.anime_name || videoData.title || '線上播放器';
+        }
+        if (watchSubtitle) {
+            watchSubtitle.textContent = '第 ' + videoData.episode + ' 集 · ' + (videoData.title || '已啟動播放器與續播資料');
+        }
+        if (episodeSummary) {
+            episodeSummary.textContent = '共 ' + videoSeries.length + ' 集';
+        }
+        setWatchStatusChip('播放器已就緒');
+        return;
+    }
+
+    if (watchLayout) {
+        watchLayout.style.display = 'none';
+    }
+    if (watchLibrary) {
+        watchLibrary.classList.remove('watch-library--collapsed');
+    }
+    if (watchHeadline) {
+        watchHeadline.textContent = '動畫片庫';
+    }
+    if (watchSubtitle) {
+        watchSubtitle.textContent = '可搜尋全部作品、查看近期更新，並從觀看紀錄直接續播。';
+    }
+    if (librarySummary) {
+        librarySummary.textContent = '支援搜尋、近期更新與續看紀錄。';
+    }
+    setWatchStatusChip('瀏覽片庫中');
+}
+
 // Main Initialization
 async function main() {
+    var bootstrap = getWatchBootstrap();
     var urlParams = new URLSearchParams(window.location.search);
-    var videoId = urlParams.get('id');
-    var videoResolution = urlParams.get('res');
+    var videoId = urlParams.get('id') || bootstrap.requestedVideoId;
+    var videoResolution = urlParams.get('res') || bootstrap.requestedResolution || (bootstrap.initialVideoData ? bootstrap.initialVideoData.resolution : null);
 
     if (videoId && videoResolution) {
         var videoData = await fetchVideoData(videoId);
         var videoSeries = await getVideoSeries(videoId);
 
+        updateWatchShellState('player', videoData, videoSeries);
+
         // Initialize Player
         window.videoPlayer = new VideoPlayer('videobox', videoData, videoSeries);
 
         // Update Page Title and Info
-        document.title = videoData.title + " | aGP+";
-
-        // Create Info Section
-        var videoDetail = document.createElement("div");
-        var videoTitle = document.createElement("h2");
-        var videoSource = document.createElement("p");
-        videoTitle.innerText = videoData.title;
-
-        if (videoData.source == "巴哈姆特動畫瘋") {
-            videoSource.innerHTML = '來源：<a href="https://ani.gamer.com.tw/animeVideo.php?sn=' + videoData.sn + '">巴哈姆特動畫瘋</a>';
-        } else {
-            videoSource.innerText = '來源：' + videoData.source;
-        }
-        videoDetail.appendChild(videoTitle);
-        videoDetail.appendChild(videoSource);
-        document.body.appendChild(videoDetail);
+        document.title = (videoData.title || videoData.anime_name || 'aGP+ Watch') + " | aGP+";
+        renderWatchMeta(videoData, videoSeries);
 
         // Create Episode List
         createEpisodeList(videoSeries);
     } else {
-        // Hide video box in list mode
-        const videobox = document.getElementById('videobox');
-        if (videobox) videobox.style.display = 'none';
-
+        updateWatchShellState('library');
         renderFullVideoList();
     }
 }
 
 async function renderFullVideoList() {
     try {
-        const container = document.querySelector('.container') || document.body;
+        const container = document.getElementById('watch-library-content') || document.body;
+        container.innerHTML = '';
 
         // Search Box
         var searchBox = document.createElement("div");
-        searchBox.classList.add('row');
-        searchBox.classList.add('setting-content');
+        searchBox.classList.add('watch-search-row');
         var searchInput = document.createElement("input");
         searchInput.type = "search";
         searchInput.classList.add('form-control');
-        searchInput.placeholder = "搜尋動漫...";
-        searchInput.style.width = "100%";
-        searchInput.style.padding = "10px";
-        searchInput.style.marginBottom = "20px";
+        searchInput.classList.add('watch-search-input');
+        searchInput.placeholder = "搜尋動畫名稱...";
         searchInput.addEventListener("input", (event) => {
             var query = event.target.value.toLowerCase();
             Array.prototype.forEach.call(document.getElementsByClassName("animeCategory"), (category) => {
@@ -784,18 +1017,27 @@ async function renderFullVideoList() {
 
         // Loading Bar
         var loadingBar = document.createElement("div");
-        loadingBar.classList.add('row');
-        loadingBar.classList.add('setting-content');
-        loadingBar.style.display = "flex";
-        loadingBar.style.justifyContent = "center";
-        loadingBar.style.color = "white";
-        loadingBar.innerHTML = '<div id="progdiv" class="progress"><div id="prog" class="progress-bar progress-bar-striped progress-bar-animated" role="progressbar" aria-valuenow="1" aria-valuemin="0" aria-valuemax="1" style="width: 100%">載入清單中...</div></div>';
+        loadingBar.classList.add('watch-loading');
+        loadingBar.innerHTML = '<div id="progdiv" class="progress"><div id="prog" class="progress-bar progress-bar-striped progress-bar-animated" role="progressbar" aria-valuenow="1" aria-valuemin="0" aria-valuemax="1" style="width: 100%">載入片庫中...</div></div>';
         container.appendChild(loadingBar);
 
         // Get Data
         var watchedTimes = await getAllTimes();
         var data = await getVideoList();
         var videos = data.videos || [];
+
+        const animeGroups = {};
+        videos.forEach(video => {
+            if (!animeGroups[video.anime_name]) {
+                animeGroups[video.anime_name] = [];
+            }
+            animeGroups[video.anime_name].push(video);
+        });
+
+        var librarySummary = document.getElementById('librarySummary');
+        if (librarySummary) {
+            librarySummary.textContent = '共 ' + Object.keys(animeGroups).length + ' 部作品 / ' + videos.length + ' 集';
+        }
 
         // --- Recently Updated (Bahamut Source) ---
         var bahamutVideos = videos.filter(video => video.source == "巴哈姆特動畫瘋");
@@ -943,14 +1185,6 @@ async function renderFullVideoList() {
         container.appendChild(document.createElement("hr"));
 
         // --- Render Full List ---
-        const animeGroups = {};
-        videos.forEach(video => {
-            if (!animeGroups[video.anime_name]) {
-                animeGroups[video.anime_name] = [];
-            }
-            animeGroups[video.anime_name].push(video);
-        });
-
         for (const [animeName, series] of Object.entries(animeGroups)) {
             series.sort((a, b) => a.episode - b.episode);
 
@@ -1006,15 +1240,36 @@ async function renderFullVideoList() {
 
     } catch (e) {
         console.error("Error in renderFullVideoList:", e);
+        const container = document.getElementById('watch-library-content');
+        const librarySummary = document.getElementById('librarySummary');
+        if (librarySummary) {
+            librarySummary.textContent = '片庫載入失敗';
+        }
+        if (container) {
+            container.innerHTML = '<p class="watch-empty-state">無法載入片庫，請稍後再試。</p>';
+        }
     }
 }
 
 function createEpisodeList(videoSeries) {
     videoSeries.sort((a, b) => a.episode - b.episode);
 
+    var panel = document.getElementById('episode-list-panel');
+    var sidebar = document.getElementById('watch-sidebar');
+    var episodeSummary = document.getElementById('episodeSummary');
+    var currentVideoId = new URLSearchParams(window.location.search).get('id') || getWatchBootstrap().requestedVideoId;
+    if (!panel || !sidebar) {
+        return;
+    }
+
+    panel.innerHTML = '';
+    sidebar.classList.remove('watch-panel--hidden');
+    if (episodeSummary) {
+        episodeSummary.textContent = '共 ' + videoSeries.length + ' 集';
+    }
+
     var categorybox = document.createElement('div');
     categorybox.classList.add('animeCategory');
-    categorybox.classList.add('row');
 
     var categoryTitle = document.createElement('h2');
     categoryTitle.classList.add('animeCategoryTitle');
@@ -1034,14 +1289,19 @@ function createEpisodeList(videoSeries) {
 
         var videoListItem = document.createElement('li');
         videoListItem.classList.add('animeEpisodeItem');
+        if (String(videoId) === String(currentVideoId)) {
+            videoListItem.classList.add('animeEpisodeItem--active');
+        }
         videoListItem.appendChild(videoLink);
         videoListe.appendChild(videoListItem);
     }
 
     categorybox.appendChild(videoListe);
 
+    panel.appendChild(categorybox);
+
     if (isMobileDevice()) {
-        document.body.appendChild(categorybox);
+        videoListe.style.display = 'none';
         categoryTitle.addEventListener('click', function () {
             if (videoListe.style.display === "grid") {
                 videoListe.style.display = "none";
@@ -1050,25 +1310,9 @@ function createEpisodeList(videoSeries) {
             }
         });
     } else {
-        const videobox = document.getElementById("videobox");
-        const layoutBox = document.getElementById("anotherVideoBox");
-        videobox.style.flex = "0 0 calc(70% - 8px)";
-        videobox.style.width = "calc(70% - 8px)";
-        videobox.style.maxWidth = "calc(70% - 8px)";
-        layoutBox.style.display = "flex";
         categorybox.classList.add('animeWatchingCategory');
         categoryTitle.classList.add('animeWatchingTitle');
         videoListe.classList.add('animeWatchingEpisodeList');
-        layoutBox.appendChild(categorybox);
         videoListe.style.display = "grid";
-
-        // Resize logic
-        const resizeList = () => {
-            var finalWidth = videobox.getBoundingClientRect().width;
-            var finalHeight = (finalWidth / 16 * 9) - 15;
-            categorybox.style.maxHeight = finalHeight + 'px';
-        };
-        resizeList();
-        window.addEventListener("resize", resizeList);
     }
 }

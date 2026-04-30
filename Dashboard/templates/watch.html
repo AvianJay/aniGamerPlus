@@ -2,9 +2,12 @@
 <html>
 
 <head>
+  <meta charset="utf-8">
   <title>aGP+ Watch</title>
   <link rel="shortcut icon" href="./static/img/aniGamerPlus.ico" type="image/x-icon" />
   <meta name="viewport" content="width=device-width, user-scalable=no, initial-scale=1, maximum-scale=1.0">
+  <script id="agp-dashboard-bootstrap" type="application/json">{{ dashboard_bootstrap|tojson }}</script>
+  <script id="agp-watch-bootstrap" type="application/json">{{ watch_bootstrap|tojson }}</script>
   <script src="./static/js/jquery-3.4.0.min.js"></script>
   <script src="./static/js/popper.min.js"></script>
   <link rel="stylesheet" href="./static/css/bootstrap.rfs.min.css">
@@ -15,10 +18,10 @@
   <script src="./static/js/bootstrap-select.min.js"></script>
   <link rel="stylesheet" href="./static/css/fontawesome.all.min.css" />
   <link rel="stylesheet" href="./static/css/aniGamerPlus.css" />
-  <link rel="stylesheet" href="./static/css/watch.css?v=11" />
+  <link rel="stylesheet" href="./static/css/watch.css?v=12" />
   <script src="./static/js/ass.global.min.js"></script>
-  <script src="./static/js/userapi.js"></script>
-  <script src="./static/js/watch.js?v=17"></script>
+  <script src="./static/js/userapi.js?v=2"></script>
+  <script src="./static/js/watch.js?v=18"></script>
 </head>
 
 <body onload="main()">
@@ -32,11 +35,48 @@
       </ul>
     </div>
   </nav>
-  <br><br><br>
-  <div class="anotherVideoBox" id="anotherVideoBox">
-    <div id="videobox" class="player-wrapper">
-    </div>
-  </div>
+  <main class="watch-page">
+    <section class="watch-hero">
+      <div>
+        <p class="watch-eyebrow">aniGamerPlus Online Watch</p>
+        <h1 class="watch-title" id="watchHeadline">片庫與播放器整合頁</h1>
+        <p class="watch-subtitle" id="watchSubtitle">直接播放、續看進度與集數切換整合在同一個版面。</p>
+      </div>
+      <div class="watch-hero-meta">
+        <span class="watch-chip" id="watchStatusChip">播放器待命</span>
+        <span class="watch-chip" id="watchUserChip">載入使用者資訊中</span>
+      </div>
+    </section>
+
+    <section class="watch-layout" id="watchLayout">
+      <div class="watch-main-column">
+        <div class="anotherVideoBox" id="anotherVideoBox">
+          <div id="videobox" class="player-wrapper"></div>
+        </div>
+        <section id="video-meta-panel" class="watch-panel watch-panel--hidden"></section>
+      </div>
+
+      <aside id="watch-sidebar" class="watch-panel watch-panel--hidden">
+        <div class="watch-panel-header">
+          <div>
+            <h2>集數列表</h2>
+            <p id="episodeSummary">選擇影片後會顯示同系列集數。</p>
+          </div>
+        </div>
+        <div id="episode-list-panel"></div>
+      </aside>
+    </section>
+
+    <section id="watch-library" class="watch-library watch-panel">
+      <div class="watch-panel-header">
+        <div>
+          <h2>動畫片庫</h2>
+          <p id="librarySummary">支援搜尋、近期更新與續看紀錄。</p>
+        </div>
+      </div>
+      <div id="watch-library-content"></div>
+    </section>
+  </main>
 </body>
 
 </html>

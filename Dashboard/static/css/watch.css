@@ -1,37 +1,168 @@
-.heada {
-  background-color: black;
-  color: white;
-  bottom: 0;
-  margin: 0 5px;
-  height: 100%;
+:root {
+  --watch-bg: #f5efe7;
+  --watch-surface: rgba(255, 255, 255, 0.88);
+  --watch-surface-strong: rgba(255, 255, 255, 0.96);
+  --watch-border: rgba(34, 48, 74, 0.08);
+  --watch-shadow: 0 20px 45px rgba(34, 48, 74, 0.12);
+  --watch-text: #1f2430;
+  --watch-muted: #667085;
+  --watch-accent: #c05736;
+  --watch-accent-soft: #ffe1d2;
+  --watch-success: #1f8f65;
 }
 
-.headu {
-  background-color: black;
-  color: white;
-  right: 0;
-  margin: 0 5px;
+body {
+  margin: 0;
+  min-height: 100vh;
+  background:
+    radial-gradient(circle at top left, rgba(255, 219, 191, 0.75), transparent 34%),
+    radial-gradient(circle at top right, rgba(241, 215, 195, 0.85), transparent 28%),
+    linear-gradient(180deg, #fffaf6 0%, var(--watch-bg) 100%);
+  color: var(--watch-text);
+  font-family: "Noto Sans TC", "Segoe UI", "Microsoft JhengHei", sans-serif;
+}
+
+body::before {
+  content: "";
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+  background: linear-gradient(135deg, rgba(255, 255, 255, 0.22), transparent 55%);
+  z-index: -1;
+}
+
+a {
+  color: var(--watch-accent);
+}
+
+a:hover {
+  color: #9f4426;
+}
+
+.watch-page {
+  max-width: 1440px;
+  margin: 0 auto;
+  padding: 94px 20px 36px;
+}
+
+.watch-hero {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 24px;
+  padding: 28px 32px;
+  border: 1px solid var(--watch-border);
+  border-radius: 28px;
+  background: linear-gradient(135deg, rgba(255, 255, 255, 0.96), rgba(255, 244, 236, 0.9));
+  box-shadow: var(--watch-shadow);
+  margin-bottom: 22px;
+}
+
+.watch-eyebrow {
+  margin: 0 0 10px;
+  font-size: 12px;
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+  color: var(--watch-muted);
+}
+
+.watch-title {
+  margin: 0;
+  font-size: clamp(30px, 4vw, 48px);
+  line-height: 1.05;
+}
+
+.watch-subtitle {
+  max-width: 720px;
+  margin: 12px 0 0;
+  font-size: 16px;
+  line-height: 1.7;
+  color: var(--watch-muted);
+}
+
+.watch-hero-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+  justify-content: flex-end;
+}
+
+.watch-chip {
+  display: inline-flex;
+  align-items: center;
+  min-height: 40px;
+  padding: 10px 14px;
+  border-radius: 999px;
+  border: 1px solid rgba(192, 87, 54, 0.12);
+  background: rgba(255, 255, 255, 0.82);
+  color: var(--watch-text);
+  font-size: 13px;
+  font-weight: 600;
+  box-shadow: 0 8px 20px rgba(34, 48, 74, 0.08);
+}
+
+.watch-layout {
+  display: grid;
+  grid-template-columns: minmax(0, 1.75fr) minmax(300px, 0.95fr);
+  gap: 20px;
+  align-items: start;
+}
+
+.watch-main-column {
+  display: grid;
+  gap: 20px;
+  min-width: 0;
+}
+
+.watch-panel {
+  padding: 20px;
+  border: 1px solid var(--watch-border);
+  border-radius: 24px;
+  background: var(--watch-surface);
+  backdrop-filter: blur(14px);
+  box-shadow: var(--watch-shadow);
+}
+
+.watch-panel--hidden,
+.watch-library--collapsed {
+  display: none;
+}
+
+.watch-panel-header {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  align-items: flex-start;
+  margin-bottom: 16px;
+}
+
+.watch-panel-header h2 {
+  margin: 0;
+  font-size: 26px;
+}
+
+.watch-panel-header p {
+  margin: 8px 0 0;
+  color: var(--watch-muted);
 }
 
 .anotherVideoBox {
   display: block;
   width: 100%;
-  align-items: flex-start;
-  gap: 16px;
   box-sizing: border-box;
 }
 
-/* Video Box */
 #videobox {
   position: relative;
   overflow: hidden;
-  background-color: black;
+  background: #000;
   display: flex;
   justify-content: center;
   align-items: center;
   width: 100%;
-  height: 100%;
   aspect-ratio: 16/9;
+  border-radius: 24px;
+  box-shadow: 0 24px 60px rgba(17, 24, 39, 0.2);
 }
 
 video {
@@ -41,14 +172,19 @@ video {
   max-height: 100%;
 }
 
-/* Controls Container */
+#ass-container {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+}
+
 #controls {
   position: absolute;
   bottom: 0;
   left: 0;
   width: 100%;
-  background: linear-gradient(to top, rgba(0, 0, 0, 0.8), transparent);
-  padding: 10px 15px;
+  background: linear-gradient(to top, rgba(0, 0, 0, 0.88), transparent);
+  padding: 12px 16px;
   box-sizing: border-box;
   color: #fff;
   display: flex;
@@ -70,7 +206,6 @@ video {
   pointer-events: all;
 }
 
-/* Control Elements */
 .control-btn {
   background: none;
   border: none;
@@ -79,7 +214,7 @@ video {
   padding: 8px;
   margin: 0 2px;
   border-radius: 50%;
-  transition: background-color 0.2s;
+  transition: background-color 0.2s ease, transform 0.2s ease;
   display: flex;
   align-items: center;
   justify-content: center;
@@ -88,7 +223,8 @@ video {
 }
 
 .control-btn:hover {
-  background-color: rgba(255, 255, 255, 0.2);
+  background-color: rgba(255, 255, 255, 0.18);
+  transform: translateY(-1px);
 }
 
 .control-btn svg {
@@ -97,7 +233,6 @@ video {
   fill: white;
 }
 
-/* Time Slider */
 .time-control {
   width: 100%;
   display: flex;
@@ -119,7 +254,7 @@ video {
   appearance: none;
   width: 12px;
   height: 12px;
-  background: #f00;
+  background: var(--watch-accent);
   border-radius: 50%;
   cursor: pointer;
   transition: transform 0.1s;
@@ -136,7 +271,6 @@ video {
   text-align: center;
 }
 
-/* Bottom Row Controls */
 .controls-row {
   display: flex;
   width: 100%;
@@ -150,7 +284,6 @@ video {
   align-items: center;
 }
 
-/* Volume Slider */
 .volume-container {
   display: flex;
   align-items: center;
@@ -171,15 +304,14 @@ video {
   cursor: pointer;
 }
 
-/* Settings Menu */
 .settings-menu {
   position: absolute;
-  bottom: 60px;
-  right: 10px;
-  background-color: rgba(28, 28, 28, 0.9);
-  border-radius: 8px;
-  padding: 5px 0;
-  min-width: 150px;
+  bottom: 72px;
+  right: 12px;
+  background-color: rgba(28, 28, 28, 0.92);
+  border-radius: 12px;
+  padding: 6px 0;
+  min-width: 170px;
   display: none;
   flex-direction: column;
   z-index: 30;
@@ -216,7 +348,6 @@ video {
   color: #fff;
 }
 
-/* Center Overlay */
 .center-overlay {
   position: absolute;
   top: 50%;
@@ -232,7 +363,7 @@ video {
 .center-icon {
   width: 60px;
   height: 60px;
-  background-color: rgba(0, 0, 0, 0.6);
+  background-color: rgba(0, 0, 0, 0.62);
   border-radius: 50%;
   padding: 15px;
   opacity: 0;
@@ -249,7 +380,6 @@ video {
   fill: white;
 }
 
-/* Loading Spinner */
 #loading-spinner {
   width: 50px;
   height: 50px;
@@ -271,8 +401,263 @@ video {
   }
 }
 
-/* Mobile Specifics */
+.fullscreen {
+  position: fixed;
+  top: 0;
+  left: 0;
+  width: 100% !important;
+  height: 100% !important;
+  z-index: 9999;
+  background: black;
+  border-radius: 0 !important;
+}
+
+.fullscreen video {
+  width: 100%;
+  height: 100%;
+}
+
+#endBox {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  background: rgba(20, 20, 20, 0.95);
+  padding: 20px;
+  border-radius: 18px;
+  text-align: center;
+  z-index: 40;
+  display: none;
+  min-width: 280px;
+  box-shadow: 0 12px 30px rgba(0, 0, 0, 0.45);
+}
+
+#endBox h2 {
+  margin-top: 0;
+  font-size: 18px;
+  color: #fff;
+}
+
+.end-buttons {
+  display: flex;
+  gap: 10px;
+  margin-top: 20px;
+}
+
+.end-btn {
+  flex: 1;
+  padding: 10px;
+  border: none;
+  border-radius: 10px;
+  cursor: pointer;
+  font-weight: bold;
+}
+
+.end-btn.primary {
+  background-color: var(--watch-accent);
+  color: white;
+}
+
+.end-btn.secondary {
+  background-color: #444;
+  color: white;
+}
+
+.watch-meta-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+  gap: 14px;
+}
+
+.watch-meta-card {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 16px;
+  border: 1px solid var(--watch-border);
+  border-radius: 18px;
+  background: var(--watch-surface-strong);
+}
+
+.watch-meta-label {
+  font-size: 12px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--watch-muted);
+}
+
+.watch-meta-value {
+  font-size: 18px;
+  font-weight: 700;
+  color: var(--watch-text);
+}
+
+.watch-meta-link {
+  text-decoration: none;
+}
+
+.watch-library {
+  margin-top: 22px;
+}
+
+.watch-search-row,
+.watch-loading {
+  display: flex;
+  justify-content: center;
+  margin-bottom: 18px;
+}
+
+.watch-search-input {
+  width: 100%;
+  padding: 12px 16px;
+  border-radius: 14px;
+  border: 1px solid rgba(34, 48, 74, 0.12);
+  box-shadow: inset 0 1px 2px rgba(34, 48, 74, 0.04);
+}
+
+.watch-search-input:focus {
+  border-color: rgba(192, 87, 54, 0.36);
+  box-shadow: 0 0 0 0.2rem rgba(192, 87, 54, 0.14);
+}
+
+.watch-empty-state {
+  margin: 0;
+  padding: 20px;
+  border-radius: 18px;
+  background: var(--watch-surface-strong);
+  color: var(--watch-muted);
+  text-align: center;
+}
+
+.animeCategory {
+  padding: 18px;
+  margin: 0 0 16px;
+  border: 1px solid var(--watch-border);
+  border-radius: 20px;
+  background: var(--watch-surface-strong);
+  box-shadow: 0 12px 28px rgba(34, 48, 74, 0.08);
+  display: block;
+}
+
+.animeCategory.row {
+  margin-left: 0;
+  margin-right: 0;
+}
+
+.animeCategoryTitle {
+  width: 100%;
+  margin: 0 0 16px;
+  padding-left: 14px;
+  border-left: 4px solid var(--watch-accent);
+  font-size: 24px;
+  color: var(--watch-text);
+  cursor: pointer;
+}
+
+.animeEpisodeList {
+  display: none;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: 14px;
+  list-style: none;
+  padding: 0;
+  margin: 0;
+  align-items: start;
+}
+
+.animeEpisodeItem {
+  background: white;
+  border-radius: 16px;
+  overflow: hidden;
+  box-shadow: 0 10px 22px rgba(34, 48, 74, 0.08);
+  transition: transform 0.2s, box-shadow 0.2s, border-color 0.2s;
+  border: 1px solid rgba(34, 48, 74, 0.08);
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  height: auto;
+}
+
+.animeEpisodeItem:hover {
+  transform: translateY(-4px);
+  box-shadow: 0 16px 26px rgba(34, 48, 74, 0.12);
+}
+
+.animeEpisodeItem--active {
+  border-color: rgba(192, 87, 54, 0.36);
+  box-shadow: 0 14px 28px rgba(192, 87, 54, 0.16);
+}
+
+.animeEpisodeItem a {
+  display: block;
+  padding: 15px;
+  color: var(--watch-text);
+  text-decoration: none;
+  font-weight: 700;
+  font-size: 16px;
+  flex: 0 0 auto;
+  background: #fff;
+  word-break: break-word;
+}
+
+.animeEpisodeItem a:hover {
+  color: var(--watch-accent);
+}
+
+.watchedText {
+  font-size: 12px;
+  color: var(--watch-muted);
+  padding: 0 15px 12px;
+  margin: 0;
+  background: #fff;
+  word-break: break-word;
+}
+
+.animeWatchingCategory {
+  margin-bottom: 0;
+}
+
+.animeWatchingEpisodeList {
+  display: grid;
+  width: 100%;
+  grid-template-columns: 1fr;
+  gap: 12px;
+  align-items: start;
+}
+
+.animeWatchingEpisodeList .animeEpisodeItem {
+  width: 100%;
+}
+
+.animeWatchingEpisodeList .animeEpisodeItem a {
+  font-size: 18px;
+  line-height: 1.35;
+  padding: 16px 18px;
+}
+
+.progress {
+  width: 100%;
+}
+
+@media (max-width: 1100px) {
+  .watch-layout {
+    grid-template-columns: 1fr;
+  }
+}
+
 @media (max-width: 768px) {
+  .watch-page {
+    padding: 84px 14px 24px;
+  }
+
+  .watch-hero {
+    flex-direction: column;
+    padding: 22px;
+  }
+
+  .watch-hero-meta {
+    justify-content: flex-start;
+  }
+
   #controls {
     padding: 5px 10px;
   }
@@ -296,227 +681,8 @@ video {
     width: 16px;
     height: 16px;
   }
-}
 
-/* Fullscreen Overrides */
-.fullscreen {
-  position: fixed;
-  top: 0;
-  left: 0;
-  width: 100% !important;
-  height: 100% !important;
-  z-index: 9999;
-  background: black;
-}
-
-.fullscreen video {
-  width: 100%;
-  height: 100%;
-}
-
-/* End Box */
-#endBox {
-  position: absolute;
-  top: 50%;
-  left: 50%;
-  transform: translate(-50%, -50%);
-  background: rgba(20, 20, 20, 0.95);
-  padding: 20px;
-  border-radius: 12px;
-  text-align: center;
-  z-index: 40;
-  display: none;
-  min-width: 280px;
-  box-shadow: 0 4px 20px rgba(0, 0, 0, 0.5);
-}
-
-#endBox h2 {
-  margin-top: 0;
-  font-size: 18px;
-  color: #fff;
-}
-
-.end-buttons {
-  display: flex;
-  gap: 10px;
-  margin-top: 20px;
-}
-
-.end-btn {
-  flex: 1;
-  padding: 10px;
-  border: none;
-  border-radius: 6px;
-  cursor: pointer;
-  font-weight: bold;
-}
-
-.end-btn.primary {
-  background-color: #f00;
-  color: white;
-}
-
-.end-btn.secondary {
-  background-color: #444;
-  color: white;
-}
-
-/* --- New Grid Layout & Card Styles --- */
-
-.animeCategory {
-  border: 10px solid #eee;
-  padding: 10px;
-  margin: 10px 1rem 0 1rem;
-  cursor: pointer;
-  transition: all 0.3s;
-  background-color: #f9f9f9;
-  border-radius: 5px;
-  display: block;
-}
-
-.animeCategoryTitle {
-  font-size: 24px;
-  margin-bottom: 15px;
-  color: #333;
-  border-left: 5px solid #007bff;
-  padding-left: 10px;
-  cursor: pointer;
-  width: 100%;
-  display: block;
-  align-self: flex-start;
-  height: auto;
-}
-
-.animeEpisodeList {
-  display: none;
-  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
-  gap: 15px;
-  list-style: none;
-  padding: 0;
-  margin: 0;
-  align-items: start;
-}
-
-.animeEpisodeItem {
-  background: white;
-  border-radius: 8px;
-  overflow: hidden;
-  box-shadow: 0 2px 5px rgba(0, 0, 0, 0.1);
-  transition: transform 0.2s, box-shadow 0.2s;
-  border: 1px solid #eee;
-  display: flex;
-  flex-direction: column;
-  min-width: 0;
-  height: auto;
-}
-
-.animeEpisodeItem:hover {
-  transform: translateY(-5px);
-  box-shadow: 0 5px 15px rgba(0, 0, 0, 0.15);
-}
-
-.animeEpisodeItem a {
-  display: block;
-  padding: 15px;
-  color: #333;
-  text-decoration: none;
-  font-weight: bold;
-  font-size: 16px;
-  flex: 0 0 auto;
-  background: #f9f9f9;
-  word-break: break-word;
-}
-
-.animeEpisodeItem a:hover {
-  color: #007bff;
-}
-
-.watchedText {
-  font-size: 12px;
-  color: #666;
-  padding: 0 15px 10px;
-  margin: 0;
-  background: #f9f9f9;
-  word-break: break-word;
-}
-
-/* Dark Mode Support (optional, but good for "beautification") */
-@media (prefers-color-scheme: dark) {
-  body {
-    background-color: #121212;
-    color: #e0e0e0;
+  .animeEpisodeList {
+    grid-template-columns: 1fr;
   }
-
-  .animeCategory {
-    border-color: #333;
-    background-color: #222;
-  }
-
-  .animeCategoryTitle {
-    color: #e0e0e0;
-  }
-
-  .animeEpisodeItem {
-    background: #1e1e1e;
-    border-color: #333;
-  }
-
-  .animeEpisodeItem a {
-    color: #e0e0e0;
-    background: #1e1e1e;
-  }
-
-  .animeEpisodeItem a:hover {
-    color: #64b5f6;
-  }
-
-  .watchedText {
-    color: #aaa;
-    background: #1e1e1e;
-  }
-
-  .setting-content {
-    color: #e0e0e0;
-  }
-
-  hr {
-    border-color: #333;
-  }
-
-  input {
-    background-color: #222 !important;
-    color: #e0e0e0;
-    border: 1px solid #333 !important;
-  }
-}
-
-.animeWatchingCategory {
-  flex: 0 0 calc(30% - 8px);
-  overflow-y: auto;
-  min-width: 0;
-  width: calc(30% - 8px);
-  max-width: calc(30% - 8px);
-  margin-left: 0;
-}
-
-.animeWatchingEpisodeList {
-  display: grid;
-  width: 100%;
-  grid-template-columns: 1fr;
-  gap: 12px;
-  align-items: start;
-}
-
-.animeWatchingEpisodeList .animeEpisodeItem {
-  width: 100%;
-}
-
-.animeWatchingEpisodeList .animeEpisodeItem a {
-  font-size: 22px;
-  line-height: 1.35;
-  padding: 16px 18px;
-}
-
-.progress {
-  width: 100%;
 }
