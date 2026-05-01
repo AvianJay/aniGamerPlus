@@ -1,150 +1,91 @@
+/* ======================================================
+   watch.css — aniGamerPlus+ Dark Video Platform Theme
+   ====================================================== */
+
 :root {
-  --watch-bg: #f5efe7;
-  --watch-surface: rgba(255, 255, 255, 0.88);
-  --watch-surface-strong: rgba(255, 255, 255, 0.96);
-  --watch-border: rgba(34, 48, 74, 0.08);
-  --watch-shadow: 0 20px 45px rgba(34, 48, 74, 0.12);
-  --watch-text: #1f2430;
-  --watch-muted: #667085;
-  --watch-accent: #c05736;
-  --watch-accent-soft: #ffe1d2;
-  --watch-success: #1f8f65;
+  --w-bg: #0f0f0f;
+  --w-surface: #1a1a2e;
+  --w-surface-hover: #222240;
+  --w-border: rgba(255, 255, 255, 0.06);
+  --w-border-hover: rgba(124, 106, 239, 0.4);
+  --w-text: #e8e8ec;
+  --w-text-secondary: #8b8b9e;
+  --w-accent: #7c6aef;
+  --w-accent-glow: rgba(124, 106, 239, 0.25);
+  --w-danger: #ef4444;
+  --w-radius: 10px;
+  --w-radius-lg: 14px;
+  --w-shadow: 0 4px 24px rgba(0, 0, 0, 0.4);
+  --w-transition: 0.2s ease;
 }
+
+/* ── Base ─────────────────────────────────────── */
 
 body {
   margin: 0;
   min-height: 100vh;
-  background:
-    radial-gradient(circle at top left, rgba(255, 219, 191, 0.75), transparent 34%),
-    radial-gradient(circle at top right, rgba(241, 215, 195, 0.85), transparent 28%),
-    linear-gradient(180deg, #fffaf6 0%, var(--watch-bg) 100%);
-  color: var(--watch-text);
-  font-family: "Noto Sans TC", "Segoe UI", "Microsoft JhengHei", sans-serif;
-}
-
-body::before {
-  content: "";
-  position: fixed;
-  inset: 0;
-  pointer-events: none;
-  background: linear-gradient(135deg, rgba(255, 255, 255, 0.22), transparent 55%);
-  z-index: -1;
+  background: var(--w-bg);
+  color: var(--w-text);
+  font-family: "Noto Sans TC", "Segoe UI", "Microsoft JhengHei", system-ui, sans-serif;
+  -webkit-font-smoothing: antialiased;
 }
 
 a {
-  color: var(--watch-accent);
+  color: var(--w-accent);
+  text-decoration: none;
+  transition: color var(--w-transition);
 }
 
 a:hover {
-  color: #9f4426;
+  color: #9d8ff5;
 }
+
+hr {
+  border: none;
+  border-top: 1px solid var(--w-border);
+  margin: 20px 0;
+}
+
+/* Override Bootstrap form-control for dark theme */
+.form-control {
+  background-color: var(--w-surface) !important;
+  color: var(--w-text) !important;
+  border-color: var(--w-border) !important;
+}
+
+.form-control:focus {
+  background-color: var(--w-surface-hover) !important;
+  color: var(--w-text) !important;
+  border-color: var(--w-accent) !important;
+  box-shadow: 0 0 0 3px var(--w-accent-glow) !important;
+}
+
+input, select, textarea {
+  color-scheme: dark;
+}
+
+/* ── Page Layout ──────────────────────────────── */
 
 .watch-page {
-  max-width: 1440px;
+  max-width: 1400px;
   margin: 0 auto;
-  padding: 94px 20px 36px;
-}
-
-.watch-hero {
-  display: flex;
-  align-items: flex-start;
-  justify-content: space-between;
-  gap: 24px;
-  padding: 28px 32px;
-  border: 1px solid var(--watch-border);
-  border-radius: 28px;
-  background: linear-gradient(135deg, rgba(255, 255, 255, 0.96), rgba(255, 244, 236, 0.9));
-  box-shadow: var(--watch-shadow);
-  margin-bottom: 22px;
-}
-
-.watch-eyebrow {
-  margin: 0 0 10px;
-  font-size: 12px;
-  letter-spacing: 0.18em;
-  text-transform: uppercase;
-  color: var(--watch-muted);
-}
-
-.watch-title {
-  margin: 0;
-  font-size: clamp(30px, 4vw, 48px);
-  line-height: 1.05;
-}
-
-.watch-subtitle {
-  max-width: 720px;
-  margin: 12px 0 0;
-  font-size: 16px;
-  line-height: 1.7;
-  color: var(--watch-muted);
-}
-
-.watch-hero-meta {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 12px;
-  justify-content: flex-end;
-}
-
-.watch-chip {
-  display: inline-flex;
-  align-items: center;
-  min-height: 40px;
-  padding: 10px 14px;
-  border-radius: 999px;
-  border: 1px solid rgba(192, 87, 54, 0.12);
-  background: rgba(255, 255, 255, 0.82);
-  color: var(--watch-text);
-  font-size: 13px;
-  font-weight: 600;
-  box-shadow: 0 8px 20px rgba(34, 48, 74, 0.08);
+  padding: 72px 20px 40px;
 }
 
 .watch-layout {
   display: grid;
-  grid-template-columns: minmax(0, 1.75fr) minmax(300px, 0.95fr);
-  gap: 20px;
+  grid-template-columns: 1fr 340px;
+  gap: 16px;
   align-items: start;
 }
 
 .watch-main-column {
   display: grid;
-  gap: 20px;
+  gap: 16px;
   min-width: 0;
 }
 
-.watch-panel {
-  padding: 20px;
-  border: 1px solid var(--watch-border);
-  border-radius: 24px;
-  background: var(--watch-surface);
-  backdrop-filter: blur(14px);
-  box-shadow: var(--watch-shadow);
-}
-
-.watch-panel--hidden,
-.watch-library--collapsed {
-  display: none;
-}
-
-.watch-panel-header {
-  display: flex;
-  justify-content: space-between;
-  gap: 12px;
-  align-items: flex-start;
-  margin-bottom: 16px;
-}
-
-.watch-panel-header h2 {
-  margin: 0;
-  font-size: 26px;
-}
-
-.watch-panel-header p {
-  margin: 8px 0 0;
-  color: var(--watch-muted);
-}
+/* ── Video Player Area ────────────────────────── */
 
 .anotherVideoBox {
   display: block;
@@ -160,9 +101,9 @@ a:hover {
   justify-content: center;
   align-items: center;
   width: 100%;
-  aspect-ratio: 16/9;
-  border-radius: 24px;
-  box-shadow: 0 24px 60px rgba(17, 24, 39, 0.2);
+  aspect-ratio: 16 / 9;
+  border-radius: var(--w-radius);
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.6);
 }
 
 video {
@@ -178,13 +119,15 @@ video {
   pointer-events: none;
 }
 
+/* ── Player Controls ──────────────────────────── */
+
 #controls {
   position: absolute;
   bottom: 0;
   left: 0;
   width: 100%;
-  background: linear-gradient(to top, rgba(0, 0, 0, 0.88), transparent);
-  padding: 12px 16px;
+  background: linear-gradient(to top, rgba(0, 0, 0, 0.85), transparent);
+  padding: 10px 14px;
   box-sizing: border-box;
   color: #fff;
   display: flex;
@@ -214,7 +157,7 @@ video {
   padding: 8px;
   margin: 0 2px;
   border-radius: 50%;
-  transition: background-color 0.2s ease, transform 0.2s ease;
+  transition: background-color var(--w-transition), transform var(--w-transition);
   display: flex;
   align-items: center;
   justify-content: center;
@@ -223,8 +166,8 @@ video {
 }
 
 .control-btn:hover {
-  background-color: rgba(255, 255, 255, 0.18);
-  transform: translateY(-1px);
+  background-color: rgba(255, 255, 255, 0.15);
+  transform: scale(1.08);
 }
 
 .control-btn svg {
@@ -233,11 +176,13 @@ video {
   fill: white;
 }
 
+/* ── Time Slider ──────────────────────────────── */
+
 .time-control {
   width: 100%;
   display: flex;
   align-items: center;
-  margin-bottom: 5px;
+  margin-bottom: 4px;
 }
 
 #timeSlider {
@@ -245,23 +190,26 @@ video {
   margin: 0 10px;
   cursor: pointer;
   height: 4px;
-  background: rgba(255, 255, 255, 0.3);
+  background: rgba(255, 255, 255, 0.25);
   border-radius: 2px;
   appearance: none;
+  -webkit-appearance: none;
 }
 
 #timeSlider::-webkit-slider-thumb {
   appearance: none;
-  width: 12px;
-  height: 12px;
-  background: var(--watch-accent);
+  -webkit-appearance: none;
+  width: 14px;
+  height: 14px;
+  background: var(--w-accent);
   border-radius: 50%;
   cursor: pointer;
-  transition: transform 0.1s;
+  transition: transform 0.15s ease;
+  box-shadow: 0 0 6px var(--w-accent-glow);
 }
 
 #timeSlider:hover::-webkit-slider-thumb {
-  transform: scale(1.2);
+  transform: scale(1.3);
 }
 
 .time-text {
@@ -269,7 +217,10 @@ video {
   white-space: nowrap;
   min-width: 80px;
   text-align: center;
+  font-variant-numeric: tabular-nums;
 }
+
+/* ── Controls Row ─────────────────────────────── */
 
 .controls-row {
   display: flex;
@@ -304,18 +255,22 @@ video {
   cursor: pointer;
 }
 
+/* ── Settings Menu ────────────────────────────── */
+
 .settings-menu {
   position: absolute;
-  bottom: 72px;
-  right: 12px;
-  background-color: rgba(28, 28, 28, 0.92);
-  border-radius: 12px;
+  bottom: 68px;
+  right: 10px;
+  background-color: rgba(22, 22, 40, 0.95);
+  border-radius: var(--w-radius);
   padding: 6px 0;
-  min-width: 170px;
+  min-width: 160px;
   display: none;
   flex-direction: column;
   z-index: 30;
-  backdrop-filter: blur(5px);
+  backdrop-filter: blur(12px);
+  border: 1px solid var(--w-border);
+  box-shadow: var(--w-shadow);
 }
 
 .settings-menu.active {
@@ -329,24 +284,29 @@ video {
   justify-content: space-between;
   align-items: center;
   font-size: 14px;
-  color: #eee;
+  color: #ccc;
+  transition: background-color var(--w-transition), color var(--w-transition);
 }
 
 .settings-group-title {
   padding: 8px 15px 4px;
-  font-size: 12px;
-  letter-spacing: 0.08em;
-  color: rgba(255, 255, 255, 0.55);
+  font-size: 11px;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--w-text-secondary);
 }
 
 .settings-item:hover {
-  background-color: rgba(255, 255, 255, 0.1);
+  background-color: rgba(124, 106, 239, 0.12);
+  color: #fff;
 }
 
 .settings-item.active {
-  background-color: rgba(255, 255, 255, 0.16);
-  color: #fff;
+  background-color: rgba(124, 106, 239, 0.2);
+  color: var(--w-accent);
 }
+
+/* ── Center Overlay / Play-Pause ──────────────── */
 
 .center-overlay {
   position: absolute;
@@ -363,7 +323,7 @@ video {
 .center-icon {
   width: 60px;
   height: 60px;
-  background-color: rgba(0, 0, 0, 0.62);
+  background-color: rgba(0, 0, 0, 0.55);
   border-radius: 50%;
   padding: 15px;
   opacity: 0;
@@ -373,33 +333,31 @@ video {
 
 .center-icon.animate {
   opacity: 1;
-  transform: scale(1.2);
+  transform: scale(1.15);
 }
 
 .center-icon svg {
   fill: white;
 }
 
+/* ── Loading Spinner ──────────────────────────── */
+
 #loading-spinner {
-  width: 50px;
-  height: 50px;
-  border: 4px solid rgba(255, 255, 255, 0.3);
-  border-top: 4px solid white;
+  width: 44px;
+  height: 44px;
+  border: 3px solid rgba(255, 255, 255, 0.2);
+  border-top: 3px solid var(--w-accent);
   border-radius: 50%;
-  animation: spin 1s linear infinite;
+  animation: spin 0.8s linear infinite;
   display: none;
   position: absolute;
 }
 
 @keyframes spin {
-  0% {
-    transform: rotate(0deg);
-  }
-
-  100% {
-    transform: rotate(360deg);
-  }
+  to { transform: rotate(360deg); }
 }
+
+/* ── Fullscreen ───────────────────────────────── */
 
 .fullscreen {
   position: fixed;
@@ -417,19 +375,23 @@ video {
   height: 100%;
 }
 
+/* ── End Box ──────────────────────────────────── */
+
 #endBox {
   position: absolute;
   top: 50%;
   left: 50%;
   transform: translate(-50%, -50%);
-  background: rgba(20, 20, 20, 0.95);
-  padding: 20px;
-  border-radius: 18px;
+  background: rgba(15, 15, 25, 0.95);
+  padding: 24px;
+  border-radius: var(--w-radius-lg);
   text-align: center;
   z-index: 40;
   display: none;
   min-width: 280px;
-  box-shadow: 0 12px 30px rgba(0, 0, 0, 0.45);
+  box-shadow: 0 16px 48px rgba(0, 0, 0, 0.6);
+  border: 1px solid var(--w-border);
+  backdrop-filter: blur(8px);
 }
 
 #endBox h2 {
@@ -448,95 +410,162 @@ video {
   flex: 1;
   padding: 10px;
   border: none;
-  border-radius: 10px;
+  border-radius: 8px;
   cursor: pointer;
-  font-weight: bold;
+  font-weight: 600;
+  font-size: 14px;
+  transition: background-color var(--w-transition), transform var(--w-transition);
+}
+
+.end-btn:hover {
+  transform: translateY(-1px);
 }
 
 .end-btn.primary {
-  background-color: var(--watch-accent);
+  background-color: var(--w-accent);
   color: white;
+}
+
+.end-btn.primary:hover {
+  background-color: #6b58e0;
 }
 
 .end-btn.secondary {
-  background-color: #444;
-  color: white;
+  background-color: #2a2a3e;
+  color: #ccc;
 }
 
-.watch-meta-grid {
-  display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
-  gap: 14px;
+.end-btn.secondary:hover {
+  background-color: #353550;
 }
 
-.watch-meta-card {
+/* ── Video Info Bar ───────────────────────────── */
+
+.watch-info-bar {
   display: flex;
-  flex-direction: column;
-  gap: 6px;
-  padding: 16px;
-  border: 1px solid var(--watch-border);
-  border-radius: 18px;
-  background: var(--watch-surface-strong);
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 14px 18px;
+  background: var(--w-surface);
+  border: 1px solid var(--w-border);
+  border-radius: var(--w-radius);
 }
 
-.watch-meta-label {
-  font-size: 12px;
-  letter-spacing: 0.08em;
-  text-transform: uppercase;
-  color: var(--watch-muted);
-}
-
-.watch-meta-value {
+.watch-info-title {
+  margin: 0;
   font-size: 18px;
   font-weight: 700;
-  color: var(--watch-text);
+  color: var(--w-text);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  min-width: 0;
 }
 
-.watch-meta-link {
-  text-decoration: none;
+.watch-info-detail {
+  font-size: 13px;
+  color: var(--w-text-secondary);
+  white-space: nowrap;
+  flex-shrink: 0;
 }
+
+/* ── Sidebar / Episode Panel ──────────────────── */
+
+.watch-panel {
+  background: var(--w-surface);
+  border: 1px solid var(--w-border);
+  border-radius: var(--w-radius-lg);
+  padding: 16px;
+}
+
+.watch-panel--hidden {
+  display: none;
+}
+
+.watch-panel-header {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  align-items: flex-start;
+  margin-bottom: 12px;
+}
+
+.watch-panel-header h2 {
+  margin: 0;
+  font-size: 18px;
+  font-weight: 700;
+  color: var(--w-text);
+}
+
+.watch-panel-header p {
+  margin: 4px 0 0;
+  font-size: 13px;
+  color: var(--w-text-secondary);
+}
+
+/* ── Library Section ──────────────────────────── */
 
 .watch-library {
-  margin-top: 22px;
+  margin-top: 16px;
 }
 
-.watch-search-row,
-.watch-loading {
+.watch-search-row {
   display: flex;
   justify-content: center;
-  margin-bottom: 18px;
+  margin-bottom: 14px;
 }
 
 .watch-search-input {
   width: 100%;
-  padding: 12px 16px;
-  border-radius: 14px;
-  border: 1px solid rgba(34, 48, 74, 0.12);
-  box-shadow: inset 0 1px 2px rgba(34, 48, 74, 0.04);
+  padding: 10px 14px;
+  border-radius: var(--w-radius);
+  border: 1px solid var(--w-border);
+  background: var(--w-surface);
+  color: var(--w-text);
+  font-size: 14px;
+  outline: none;
+  transition: border-color var(--w-transition), box-shadow var(--w-transition);
+}
+
+.watch-search-input::placeholder {
+  color: var(--w-text-secondary);
 }
 
 .watch-search-input:focus {
-  border-color: rgba(192, 87, 54, 0.36);
-  box-shadow: 0 0 0 0.2rem rgba(192, 87, 54, 0.14);
+  border-color: var(--w-accent);
+  box-shadow: 0 0 0 3px var(--w-accent-glow);
+}
+
+.watch-loading {
+  display: flex;
+  justify-content: center;
+  margin-bottom: 14px;
 }
 
 .watch-empty-state {
   margin: 0;
   padding: 20px;
-  border-radius: 18px;
-  background: var(--watch-surface-strong);
-  color: var(--watch-muted);
+  border-radius: var(--w-radius);
+  background: var(--w-surface);
+  color: var(--w-text-secondary);
   text-align: center;
 }
 
+/* ── Anime Category Cards ─────────────────────── */
+
 .animeCategory {
-  padding: 18px;
-  margin: 0 0 16px;
-  border: 1px solid var(--watch-border);
-  border-radius: 20px;
-  background: var(--watch-surface-strong);
-  box-shadow: 0 12px 28px rgba(34, 48, 74, 0.08);
+  padding: 16px;
+  margin: 0 0 12px;
+  border: 1px solid var(--w-border);
+  border-radius: var(--w-radius-lg);
+  background: var(--w-surface);
+  transition: border-color var(--w-transition);
   display: block;
+}
+
+.animeCategory:hover {
+  border-color: rgba(255, 255, 255, 0.1);
 }
 
 .animeCategory.row {
@@ -546,18 +575,27 @@ video {
 
 .animeCategoryTitle {
   width: 100%;
-  margin: 0 0 16px;
-  padding-left: 14px;
-  border-left: 4px solid var(--watch-accent);
-  font-size: 24px;
-  color: var(--watch-text);
+  margin: 0 0 12px;
+  padding-left: 12px;
+  border-left: 3px solid var(--w-accent);
+  font-size: 20px;
+  font-weight: 700;
+  color: var(--w-text);
   cursor: pointer;
+  transition: color var(--w-transition);
+  line-height: 1.3;
 }
+
+.animeCategoryTitle:hover {
+  color: var(--w-accent);
+}
+
+/* ── Episode List Grid ────────────────────────── */
 
 .animeEpisodeList {
   display: none;
-  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
-  gap: 14px;
+  grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
+  gap: 10px;
   list-style: none;
   padding: 0;
   margin: 0;
@@ -565,62 +603,68 @@ video {
 }
 
 .animeEpisodeItem {
-  background: white;
-  border-radius: 16px;
+  background: var(--w-surface-hover);
+  border-radius: var(--w-radius);
   overflow: hidden;
-  box-shadow: 0 10px 22px rgba(34, 48, 74, 0.08);
-  transition: transform 0.2s, box-shadow 0.2s, border-color 0.2s;
-  border: 1px solid rgba(34, 48, 74, 0.08);
+  border: 1px solid var(--w-border);
+  transition: transform var(--w-transition), border-color var(--w-transition), box-shadow var(--w-transition);
   display: flex;
   flex-direction: column;
   min-width: 0;
-  height: auto;
 }
 
 .animeEpisodeItem:hover {
-  transform: translateY(-4px);
-  box-shadow: 0 16px 26px rgba(34, 48, 74, 0.12);
+  transform: translateY(-2px);
+  border-color: var(--w-border-hover);
+  box-shadow: 0 4px 16px var(--w-accent-glow);
 }
 
 .animeEpisodeItem--active {
-  border-color: rgba(192, 87, 54, 0.36);
-  box-shadow: 0 14px 28px rgba(192, 87, 54, 0.16);
+  border-color: var(--w-accent) !important;
+  box-shadow: 0 0 12px var(--w-accent-glow);
 }
 
 .animeEpisodeItem a {
   display: block;
-  padding: 15px;
-  color: var(--watch-text);
+  padding: 12px 14px;
+  color: var(--w-text);
   text-decoration: none;
-  font-weight: 700;
-  font-size: 16px;
-  flex: 0 0 auto;
-  background: #fff;
+  font-weight: 600;
+  font-size: 14px;
   word-break: break-word;
+  transition: color var(--w-transition);
 }
 
 .animeEpisodeItem a:hover {
-  color: var(--watch-accent);
+  color: var(--w-accent);
 }
 
 .watchedText {
   font-size: 12px;
-  color: var(--watch-muted);
-  padding: 0 15px 12px;
+  color: var(--w-text-secondary);
+  padding: 0 14px 10px;
   margin: 0;
-  background: #fff;
   word-break: break-word;
 }
 
+/* ── Sidebar Episode List (Desktop) ───────────── */
+
 .animeWatchingCategory {
   margin-bottom: 0;
+  border: none;
+  padding: 0;
+  background: transparent;
+}
+
+.animeWatchingCategory:hover {
+  border-color: transparent;
 }
 
 .animeWatchingEpisodeList {
   display: grid;
   width: 100%;
   grid-template-columns: 1fr;
-  gap: 12px;
+  gap: 8px;
   align-items: start;
 }
 
@@ -629,14 +673,22 @@ video {
 }
 
 .animeWatchingEpisodeList .animeEpisodeItem a {
-  font-size: 18px;
-  line-height: 1.35;
-  padding: 16px 18px;
+  font-size: 15px;
+  line-height: 1.4;
+  padding: 12px 14px;
 }
 
 .progress {
   width: 100%;
+  background-color: #2a2a3e;
+  border-radius: 4px;
 }
+
+.progress-bar {
+  background-color: var(--w-accent);
+}
+
+/* ── Responsive ───────────────────────────────── */
 
 @media (max-width: 1100px) {
   .watch-layout {
@@ -646,16 +698,7 @@ video {
 
 @media (max-width: 768px) {
   .watch-page {
-    padding: 84px 14px 24px;
-  }
-
-  .watch-hero {
-    flex-direction: column;
-    padding: 22px;
-  }
-
-  .watch-hero-meta {
-    justify-content: flex-start;
+    padding: 64px 10px 20px;
   }
 
   #controls {
@@ -674,7 +717,7 @@ video {
 
   #timeSlider {
     height: 6px;
-    margin: 10px 0;
+    margin: 8px 0;
   }
 
   #timeSlider::-webkit-slider-thumb {
@@ -684,5 +727,15 @@ video {
 
   .animeEpisodeList {
     grid-template-columns: 1fr;
+  }
+
+  .watch-info-bar {
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 6px;
+  }
+
+  .watch-info-title {
+    white-space: normal;
   }
 }

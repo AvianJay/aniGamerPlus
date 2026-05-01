@@ -80,12 +80,7 @@ function getBootstrappedResumeTime(sn) {
     return Number.isFinite(resumeTime) ? resumeTime : null;
 }
 
-function setWatchStatusChip(text) {
-    var statusChip = document.getElementById('watchStatusChip');
-    if (statusChip) {
-        statusChip.textContent = text;
-    }
-}
+
 
 async function getTime(sn) {
     var bootstrappedResumeTime = getBootstrappedResumeTime(sn);
@@ -475,17 +470,12 @@ class VideoPlayer {
         this.video.addEventListener('loadedmetadata', () => this.onLoadedMetadata());
         this.video.addEventListener('waiting', () => {
             this.loadingSpinner.style.display = 'block';
-            setWatchStatusChip('緩衝中');
         });
         this.video.addEventListener('playing', () => {
             this.loadingSpinner.style.display = 'none';
-            setWatchStatusChip('正在播放');
         });
         this.video.addEventListener('canplay', () => {
             this.loadingSpinner.style.display = 'none';
-            if (!this.video.paused) {
-                setWatchStatusChip('正在播放');
-            }
         });
         this.video.addEventListener('ended', () => this.onEnded());
         document.addEventListener('fullscreenchange', () => this.syncFullscreenState());
@@ -568,7 +558,7 @@ class VideoPlayer {
         this.playBtn.innerHTML = this.getIcon('pause');
         this.showControls();
         this.centerIcon.style.opacity = '0';
-        setWatchStatusChip('正在播放');
+
         if (isMobileDevice()) {
             this.showCenterIcon(this.getIcon('pause'), false);
             this.centerIcon.style.opacity = '1';
@@ -580,7 +570,7 @@ class VideoPlayer {
         this.playBtn.innerHTML = this.getIcon('play');
         this.showControls();
         setTime(this.videoData.sn, this.video.currentTime, false, true);
-        setWatchStatusChip('已暫停');
+
         if (isMobileDevice()) {
             this.showCenterIcon(this.getIcon('play'), false);
             this.centerIcon.style.opacity = '1';
@@ -600,7 +590,7 @@ class VideoPlayer {
 
     onEnded() {
         setTime(this.videoData.sn, 0, true, true);
-        setWatchStatusChip('播放完成');
+
         this.showEndScreen();
     }
 
@@ -835,129 +825,25 @@ class VideoPlayer {
     }
 }
 
-function getWatchUserLabel() {
-    var currentUser = dashboardApi.getCurrentUserSnapshot ? dashboardApi.getCurrentUserSnapshot() : null;
-    if (currentUser && currentUser.username) {
-        if (currentUser.role === 'admin') {
-            return currentUser.username + ' / admin';
-        }
-        return currentUser.username;
-    }
-    return isLoggedIn() ? '已登入使用者' : '訪客模式';
-}
+function renderInfoBar(videoData, videoSeries) {
+    var bar = document.getElementById('video-info-bar');
+    if (!bar || !videoData) return;
 
-function createMetaCard(label, value, link) {
-    var item = document.createElement('div');
-    item.className = 'watch-meta-card';
+    bar.style.display = 'flex';
+    bar.innerHTML = '';
 
-    var labelNode = document.createElement('span');
-    labelNode.className = 'watch-meta-label';
-    labelNode.textContent = label;
-    item.appendChild(labelNode);
-
-    if (link) {
-        var anchor = document.createElement('a');
-        anchor.className = 'watch-meta-value watch-meta-link';
-        anchor.href = link.href;
-        anchor.target = '_blank';
-        anchor.rel = 'noreferrer';
-        anchor.textContent = link.text;
-        item.appendChild(anchor);
-    } else {
-        var valueNode = document.createElement('strong');
-        valueNode.className = 'watch-meta-value';
-        valueNode.textContent = value;
-        item.appendChild(valueNode);
-    }
-
-    return item;
-}
-
-function renderWatchMeta(videoData, videoSeries) {
-    var metaPanel = document.getElementById('video-meta-panel');
-    if (!metaPanel || !videoData) {
-        return;
-    }
-
-    metaPanel.classList.remove('watch-panel--hidden');
-    metaPanel.innerHTML = '';
-
-    var panelHeader = document.createElement('div');
-    panelHeader.className = 'watch-panel-header';
-
-    var titleGroup = document.createElement('div');
     var title = document.createElement('h2');
-    title.textContent = videoData.title || videoData.anime_name || '線上播放器';
-    var subtitle = document.createElement('p');
-    subtitle.textContent = (videoData.anime_name || '未分類作品') + ' · 第 ' + videoData.episode + ' 集';
+    title.className = 'watch-info-title';
+    title.textContent = (videoData.anime_name || videoData.title || '線上播放器') + ' — 第 ' + videoData.episode + ' 集';
+    bar.appendChild(title);
 
-    titleGroup.appendChild(title);
-    titleGroup.appendChild(subtitle);
-    panelHeader.appendChild(titleGroup);
-    metaPanel.appendChild(panelHeader);
-
-    var grid = document.createElement('div');
-    grid.className = 'watch-meta-grid';
-    grid.appendChild(createMetaCard('來源', videoData.source || '未知來源', videoData.source == '巴哈姆特動畫瘋' ? {
-        href: 'https://ani.gamer.com.tw/animeVideo.php?sn=' + videoData.sn,
-        text: '巴哈姆特動畫瘋'
-    } : null));
-    grid.appendChild(createMetaCard('解析度', String(videoData.resolution || '未知') + 'P'));
-    grid.appendChild(createMetaCard('集數數量', String(videoSeries.length || 0) + ' 集'));
-    grid.appendChild(createMetaCard('影片編號', String(videoData.sn)));
-    metaPanel.appendChild(grid);
+    var detail = document.createElement('span');
+    detail.className = 'watch-info-detail';
+    detail.textContent = (videoData.resolution || '?') + 'P · ' + videoSeries.length + ' 集 · SN ' + videoData.sn;
+    bar.appendChild(detail);
 }
 
-function updateWatchShellState(mode, videoData, videoSeries) {
-    var watchLayout = document.getElementById('watchLayout');
-    var watchLibrary = document.getElementById('watch-library');
-    var watchHeadline = document.getElementById('watchHeadline');
-    var watchSubtitle = document.getElementById('watchSubtitle');
-    var watchUserChip = document.getElementById('watchUserChip');
-    var episodeSummary = document.getElementById('episodeSummary');
-    var librarySummary = document.getElementById('librarySummary');
 
-    if (watchUserChip) {
-        watchUserChip.textContent = getWatchUserLabel();
-    }
-
-    if (mode === 'player' && videoData) {
-        if (watchLayout) {
-            watchLayout.style.display = 'grid';
-        }
-        if (watchLibrary) {
-            watchLibrary.classList.add('watch-library--collapsed');
-        }
-        if (watchHeadline) {
-            watchHeadline.textContent = videoData.anime_name || videoData.title || '線上播放器';
-        }
-        if (watchSubtitle) {
-            watchSubtitle.textContent = '第 ' + videoData.episode + ' 集 · ' + (videoData.title || '已啟動播放器與續播資料');
-        }
-        if (episodeSummary) {
-            episodeSummary.textContent = '共 ' + videoSeries.length + ' 集';
-        }
-        setWatchStatusChip('播放器已就緒');
-        return;
-    }
-
-    if (watchLayout) {
-        watchLayout.style.display = 'none';
-    }
-    if (watchLibrary) {
-        watchLibrary.classList.remove('watch-library--collapsed');
-    }
-    if (watchHeadline) {
-        watchHeadline.textContent = '動畫片庫';
-    }
-    if (watchSubtitle) {
-        watchSubtitle.textContent = '可搜尋全部作品、查看近期更新，並從觀看紀錄直接續播。';
-    }
-    if (librarySummary) {
-        librarySummary.textContent = '支援搜尋、近期更新與續看紀錄。';
-    }
-    setWatchStatusChip('瀏覽片庫中');
-}
 
 // Main Initialization
 async function main() {
@@ -970,19 +856,25 @@ async function main() {
         var videoData = await fetchVideoData(videoId);
         var videoSeries = await getVideoSeries(videoId);
 
-        updateWatchShellState('player', videoData, videoSeries);
+        // Hide library, show player layout
+        var watchLayout = document.getElementById('watchLayout');
+        var watchLibrary = document.getElementById('watch-library');
+        if (watchLayout) watchLayout.style.display = 'grid';
+        if (watchLibrary) watchLibrary.style.display = 'none';
 
         // Initialize Player
         window.videoPlayer = new VideoPlayer('videobox', videoData, videoSeries);
 
-        // Update Page Title and Info
+        // Update Page Title and Info Bar
         document.title = (videoData.title || videoData.anime_name || 'aGP+ Watch') + " | aGP+";
-        renderWatchMeta(videoData, videoSeries);
+        renderInfoBar(videoData, videoSeries);
 
         // Create Episode List
         createEpisodeList(videoSeries);
     } else {
-        updateWatchShellState('library');
+        // Library mode: hide player layout, show library
+        var watchLayout = document.getElementById('watchLayout');
+        if (watchLayout) watchLayout.style.display = 'none';
         renderFullVideoList();
     }
 }
