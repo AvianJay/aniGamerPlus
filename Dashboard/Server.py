@@ -829,16 +829,20 @@ if settings["dashboard"]["online_watch"]:
             video = _find_video_entry(sn)
             path = Config.getpath(sn, 'danmu')
 
+            # Trigger danmu update in background thread to avoid Cloudflare 524 timeout
             if video and _should_update_danmu(sn):
                 video_path = video.get('path')
                 anime_name = video.get('anime_name')
                 if video_path and anime_name and os.path.exists(video_path):
-                    try:
-                        __get_danmu_only(sn, anime_name, video_path, False)
-                        if path and os.path.exists(path):
-                            _mark_danmu_updated(sn)
-                    except BaseException as e:
-                        err_print(sn, '彈幕更新失敗', '線上觀看請求時自動更新失敗: ' + str(e), status=1, display=True)
+                    def _bg_update_danmu(sn=sn, anime_name=anime_name, video_path=video_path):
+                        try:
+                            __get_danmu_only(sn, anime_name, video_path, False)
+                            updated_path = Config.getpath(sn, 'danmu')
+                            if updated_path and os.path.exists(updated_path):
+                                _mark_danmu_updated(sn)
+                        except BaseException as e:
+                            err_print(sn, '彈幕更新失敗', '線上觀看請求時自動更新失敗: ' + str(e), status=1, display=True)
+                    threading.Thread(target=_bg_update_danmu, daemon=True).start()
 
             if path and os.path.exists(path) and str(sn) not in danmu_update_timestamps:
                 _mark_danmu_updated(sn)

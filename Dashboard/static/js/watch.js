@@ -440,26 +440,50 @@ class VideoPlayer {
     }
 
     initDanmu() {
-        const subtitleSrc = './get_danmu.ass?id=' + encodeURIComponent(this.videoData.sn) + "&t=" + new Date().getTime();
-        fetch(subtitleSrc)
-            .then(res => res.text())
-            .then((text) => {
-                this.ass = new ASS(text, this.video, {
-                    container: this.assContainer,
-                    resampling: 'video_width',
+        const maxRetries = 3;
+        const retryDelay = 5000; // 5 seconds between retries
+
+        const attemptLoad = (retryCount) => {
+            const subtitleSrc = './get_danmu.ass?id=' + encodeURIComponent(this.videoData.sn) + "&t=" + new Date().getTime();
+            fetch(subtitleSrc)
+                .then(res => {
+                    if (!res.ok) {
+                        throw new Error('HTTP ' + res.status);
+                    }
+                    return res.text();
+                })
+                .then((text) => {
+                    if (!text || text.length < 50 || text.indexOf('[Events]') === -1) {
+                        throw new Error('Invalid ASS content');
+                    }
+                    // Destroy previous ASS instance if any
+                    if (this.ass) {
+                        try { this.ass.destroy(); } catch(e) {}
+                        this.ass = null;
+                    }
+                    this.ass = new ASS(text, this.video, {
+                        container: this.assContainer,
+                        resampling: 'video_width',
+                    });
+                    if (this.danmuEnabled) {
+                        this.ass.show();
+                    } else {
+                        this.ass.hide();
+                    }
+                })
+                .catch((error) => {
+                    console.warn('Danmu load failed (attempt ' + (maxRetries - retryCount + 1) + '/' + maxRetries + '):', error.message || error);
+                    if (retryCount > 0) {
+                        setTimeout(() => attemptLoad(retryCount - 1), retryDelay);
+                    } else {
+                        if (this.danmuBtn) {
+                            this.danmuBtn.style.opacity = '0.3';
+                        }
+                    }
                 });
-                if (this.danmuEnabled) {
-                    this.ass.show();
-                } else {
-                    this.ass.hide();
-                }
-            })
-            .catch((error) => {
-                console.warn('Danmu load failed:', error);
-                if (this.danmuBtn) {
-                    this.danmuBtn.style.display = 'none';
-                }
-            });
+        };
+
+        attemptLoad(maxRetries);
     }
 
     attachEvents() {
