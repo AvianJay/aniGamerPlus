@@ -1,66 +1,75 @@
 <!DOCTYPE html>
-<html>
+<html lang="zh-Hant">
 
 <head>
   <meta charset="utf-8">
-  <title>aGP+ Watch</title>
-  <link rel="shortcut icon" href="./static/img/aniGamerPlus.ico" type="image/x-icon" />
-  <meta name="viewport" content="width=device-width, user-scalable=no, initial-scale=1, maximum-scale=1.0">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="theme-color" content="#0b0d0e">
+  <title>aniGamerPlus+ Watch</title>
+  <link rel="shortcut icon" href="./static/img/aniGamerPlus.ico" type="image/x-icon">
+
   <script id="agp-dashboard-bootstrap" type="application/json">{{ dashboard_bootstrap|tojson }}</script>
   <script id="agp-watch-bootstrap" type="application/json">{{ watch_bootstrap|tojson }}</script>
+
   <script src="./static/js/jquery-3.4.0.min.js"></script>
   <script src="./static/js/popper.min.js"></script>
   <link rel="stylesheet" href="./static/css/bootstrap.rfs.min.css">
   <script src="./static/js/bootstrap.min.js"></script>
-  <link rel="stylesheet" href="./static/css/bootstrap-switch.min.css" />
-  <script src="./static/js/bootstrap-switch.min-3.3.4.js"></script>
-  <link rel="stylesheet" href="./static/css/bootstrap-select.min.css" />
-  <script src="./static/js/bootstrap-select.min.js"></script>
-  <link rel="stylesheet" href="./static/css/fontawesome.all.min.css" />
-  <link rel="stylesheet" href="./static/css/aniGamerPlus.css" />
-  <link rel="stylesheet" href="./static/css/watch.css?v=13" />
+  <link rel="stylesheet" href="./static/css/fontawesome.all.min.css">
+  <link rel="stylesheet" href="./static/css/watch.css?v=14">
   <script src="./static/js/ass.global.min.js"></script>
   <script src="./static/js/userapi.js?v=2"></script>
-  <script src="./static/js/watch.js?v=19"></script>
+  <script src="./static/js/watch.js?v=20"></script>
 </head>
 
-<body onload="main()">
-  <nav class="navbar navbar-expand-md bg-dark navbar-dark fixed-top">
-    <a class="navbar-brand" href="/"><img src="./static/img/aniGamerPlus.ico"></a>
-    <button class="navbar-toggler" type="button" data-toggle="collapse" data-target="#collapsibleNavbar">
-      <span class="navbar-toggler-icon"></span>
-    </button>
-    <div class="collapse navbar-collapse" id="collapsibleNavbar">
-      <ul class="navbar-nav">
-      </ul>
-    </div>
-  </nav>
+<body class="watch-body" onload="main()">
+  <header class="watch-topbar">
+    <nav class="navbar navbar-expand-md navbar-dark watch-navbar" aria-label="主要導覽">
+      <a class="navbar-brand watch-brand" href="/" aria-label="aniGamerPlus+ 首頁">
+        <img src="./static/img/aniGamerPlus.ico" alt="">
+        <span>aniGamerPlus+</span>
+        <strong>WATCH</strong>
+      </a>
+      <button class="navbar-toggler watch-nav-toggle" type="button" data-toggle="collapse"
+        data-target="#collapsibleNavbar" aria-controls="collapsibleNavbar" aria-expanded="false" aria-label="展開導覽">
+        <span class="navbar-toggler-icon"></span>
+      </button>
+      <div class="collapse navbar-collapse" id="collapsibleNavbar">
+        <ul class="navbar-nav ml-auto"></ul>
+      </div>
+    </nav>
+  </header>
+
   <main class="watch-page">
-    <section class="watch-layout" id="watchLayout">
+    <section class="watch-layout" id="watchLayout" aria-label="播放器">
       <div class="watch-main-column">
-        <div class="anotherVideoBox" id="anotherVideoBox">
-          <div id="videobox" class="player-wrapper"></div>
+        <div class="player-shell">
+          <div class="anotherVideoBox" id="anotherVideoBox">
+            <div id="videobox" class="player-wrapper"></div>
+          </div>
         </div>
-        <div id="video-info-bar" class="watch-info-bar" style="display:none;"></div>
+        <div id="video-info-bar" class="watch-info-bar" hidden></div>
       </div>
 
-      <aside id="watch-sidebar" class="watch-panel watch-panel--hidden">
+      <aside id="watch-sidebar" class="watch-panel watch-panel--hidden" aria-labelledby="episodeHeading">
         <div class="watch-panel-header">
           <div>
-            <h2>集數列表</h2>
-            <p id="episodeSummary">選擇影片後顯示集數。</p>
+            <p class="watch-eyebrow">PLAYLIST</p>
+            <h2 id="episodeHeading">播放清單</h2>
+            <p id="episodeSummary">載入中...</p>
           </div>
         </div>
         <div id="episode-list-panel"></div>
       </aside>
     </section>
 
-    <section id="watch-library" class="watch-library watch-panel">
-      <div class="watch-panel-header">
+    <section id="watch-library" class="watch-library" aria-labelledby="libraryHeading">
+      <div class="watch-library-heading">
         <div>
-          <h2>動畫片庫</h2>
-          <p id="librarySummary">載入中...</p>
+          <p class="watch-eyebrow">LIBRARY</p>
+          <h1 id="libraryHeading">片庫</h1>
         </div>
+        <p id="librarySummary">載入中...</p>
       </div>
       <div id="watch-library-content"></div>
     </section>

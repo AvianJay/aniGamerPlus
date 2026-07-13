@@ -220,12 +220,18 @@ class VideoPlayer {
         ];
         this.centerIconResetTimer = null;
         this.currentAspectMode = 'contain';
+        this.pointerGesture = null;
+        this.lastTap = null;
+        this.singleTapTimer = null;
+        this.lastTouchInteraction = 0;
 
         this.init();
     }
 
     async init() {
         this.container.innerHTML = ''; // Clear container
+        this.container.tabIndex = 0;
+        this.container.setAttribute('aria-label', '影片播放器');
 
         // Create Video Element
         this.video = document.createElement('video');
@@ -301,6 +307,7 @@ class VideoPlayer {
         this.timeSlider.id = 'timeSlider';
         this.timeSlider.min = 0;
         this.timeSlider.value = 0;
+        this.timeSlider.setAttribute('aria-label', '播放進度');
 
         this.timeText = document.createElement('span');
         this.timeText.className = 'time-text';
@@ -318,7 +325,7 @@ class VideoPlayer {
         const leftControls = document.createElement('div');
         leftControls.className = 'controls-left';
 
-        this.playBtn = this.createButton('playPauseButton', this.getIcon('pause'));
+        this.playBtn = this.createButton('playPauseButton', this.getIcon('pause'), '播放或暫停');
         leftControls.appendChild(this.playBtn);
 
         if (!isMobileDevice()) {
@@ -331,6 +338,7 @@ class VideoPlayer {
             this.volSlider.max = 1;
             this.volSlider.step = 0.01;
             this.volSlider.value = 1;
+            this.volSlider.setAttribute('aria-label', '音量');
             volContainer.appendChild(this.volSlider);
             leftControls.appendChild(volContainer);
         }
@@ -342,14 +350,14 @@ class VideoPlayer {
         rightControls.className = 'controls-right';
 
         if (this.videoData.danmu) {
-            this.danmuBtn = this.createButton('danmuButton', this.getIcon('danmuOn'));
+            this.danmuBtn = this.createButton('danmuButton', this.getIcon('danmuOn'), '切換彈幕');
             rightControls.appendChild(this.danmuBtn);
         }
 
-        this.speedBtn = this.createButton('playrateButton', this.getIcon('speed'));
+        this.speedBtn = this.createButton('playrateButton', this.getIcon('speed'), '播放設定');
         rightControls.appendChild(this.speedBtn);
 
-        this.fullscreenBtn = this.createButton('fullscreenButton', this.getIcon('fullscreen'));
+        this.fullscreenBtn = this.createButton('fullscreenButton', this.getIcon('fullscreen'), '切換全螢幕');
         rightControls.appendChild(this.fullscreenBtn);
 
         btnRow.appendChild(rightControls);
@@ -361,11 +369,14 @@ class VideoPlayer {
         this.container.appendChild(this.controls);
     }
 
-    createButton(id, svgContent) {
+    createButton(id, svgContent, label) {
         const btn = document.createElement('button');
+        btn.type = 'button';
         btn.id = id;
         btn.className = 'control-btn';
         btn.innerHTML = svgContent;
+        btn.setAttribute('aria-label', label);
+        btn.title = label;
         return btn;
     }
 
@@ -503,9 +514,6 @@ class VideoPlayer {
         });
         this.video.addEventListener('ended', () => this.onEnded());
         document.addEventListener('fullscreenchange', () => this.syncFullscreenState());
-        if (!isMobileDevice()) {
-            this.video.addEventListener('click', () => this.togglePlay());
-        }
 
         // Control Events
         this.playBtn.addEventListener('click', (e) => { e.stopPropagation(); this.togglePlay(); });
@@ -527,24 +535,16 @@ class VideoPlayer {
             });
         }
 
-        if (isMobileDevice()) {
-            this.centerIcon.addEventListener('click', (e) => { e.stopPropagation(); this.togglePlay(); });
-        }
-
-        // Mouse/Touch Interaction for Controls Visibility
-        this.container.addEventListener('mousemove', () => this.showControls());
-        this.container.addEventListener('mouseleave', () => this.hideControls());
-        this.container.addEventListener('touchstart', (e) => { e.stopPropagation(); this.toggleControls(); });
-
-        // Double Tap Handling
-        let lastTap = 0;
-        this.container.addEventListener('touchend', (e) => {
-            const currentTime = new Date().getTime();
-            const tapLength = currentTime - lastTap;
-            if (tapLength < 300 && tapLength > 0) {
-                this.handleDoubleTap(e);
+        // Unified pointer handling prevents synthetic mouse events from
+        // reopening controls after a touch tap and distinguishes taps from drags.
+        this.container.addEventListener('pointerdown', (e) => this.handlePointerDown(e));
+        this.container.addEventListener('pointermove', (e) => this.handlePointerMove(e));
+        this.container.addEventListener('pointerup', (e) => this.handlePointerUp(e));
+        this.container.addEventListener('pointercancel', () => this.cancelPointerGesture());
+        this.container.addEventListener('pointerleave', (e) => {
+            if (e.pointerType === 'mouse') {
+                this.hideControls();
             }
-            lastTap = currentTime;
         });
 
         // Keyboard Shortcuts
@@ -580,6 +580,8 @@ class VideoPlayer {
     onPlay() {
         clearTimeout(this.centerIconResetTimer);
         this.playBtn.innerHTML = this.getIcon('pause');
+        this.playBtn.setAttribute('aria-label', '暫停');
+        this.playBtn.title = '暫停';
         this.showControls();
         this.centerIcon.style.opacity = '0';
 
@@ -592,6 +594,8 @@ class VideoPlayer {
     onPause() {
         clearTimeout(this.centerIconResetTimer);
         this.playBtn.innerHTML = this.getIcon('play');
+        this.playBtn.setAttribute('aria-label', '播放');
+        this.playBtn.title = '播放';
         this.showControls();
         setTime(this.videoData.sn, this.video.currentTime, false, true);
 
@@ -624,6 +628,92 @@ class VideoPlayer {
         this.timeText.innerText = `${current} / ${total}`;
     }
 
+    isInteractiveTarget(target) {
+        return target instanceof Element && Boolean(target.closest('#controls, .settings-menu, #endBox, button, input, a'));
+    }
+
+    handlePointerDown(event) {
+        if (!event.isPrimary || (event.pointerType === 'mouse' && event.button !== 0) || this.isInteractiveTarget(event.target)) {
+            this.pointerGesture = null;
+            return;
+        }
+
+        if (event.pointerType === 'touch' || event.pointerType === 'pen') {
+            this.lastTouchInteraction = Date.now();
+        }
+
+        this.pointerGesture = {
+            pointerId: event.pointerId,
+            pointerType: event.pointerType,
+            startX: event.clientX,
+            startY: event.clientY,
+            startedAt: performance.now(),
+            moved: false
+        };
+    }
+
+    handlePointerMove(event) {
+        if (event.pointerType === 'mouse' && Date.now() - this.lastTouchInteraction > 800) {
+            this.showControls();
+        }
+
+        const gesture = this.pointerGesture;
+        if (!gesture || gesture.pointerId !== event.pointerId) {
+            return;
+        }
+
+        if (Math.hypot(event.clientX - gesture.startX, event.clientY - gesture.startY) > 12) {
+            gesture.moved = true;
+        }
+    }
+
+    handlePointerUp(event) {
+        const gesture = this.pointerGesture;
+        this.pointerGesture = null;
+
+        if (!gesture || gesture.pointerId !== event.pointerId || gesture.moved || this.isInteractiveTarget(event.target)) {
+            return;
+        }
+        if (performance.now() - gesture.startedAt > 450) {
+            return;
+        }
+
+        this.handleTap(event.clientX, event.clientY, gesture.pointerType);
+    }
+
+    cancelPointerGesture() {
+        this.pointerGesture = null;
+    }
+
+    handleTap(clientX, clientY, pointerType) {
+        const now = Date.now();
+        const previousTap = this.lastTap;
+        const isDoubleTap = previousTap
+            && previousTap.pointerType === pointerType
+            && now - previousTap.time <= 320
+            && Math.hypot(clientX - previousTap.x, clientY - previousTap.y) <= 64;
+
+        if (isDoubleTap) {
+            clearTimeout(this.singleTapTimer);
+            this.singleTapTimer = null;
+            this.lastTap = null;
+            this.handleDoubleTap(clientX);
+            return;
+        }
+
+        this.lastTap = { time: now, x: clientX, y: clientY, pointerType: pointerType };
+        clearTimeout(this.singleTapTimer);
+        this.singleTapTimer = setTimeout(() => {
+            this.lastTap = null;
+            this.singleTapTimer = null;
+            if (pointerType === 'touch' || pointerType === 'pen') {
+                this.toggleControls();
+            } else {
+                this.togglePlay();
+            }
+        }, 320);
+    }
+
     showControls() {
         this.container.classList.add('show-controls');
         clearTimeout(this.controlsTimeout);
@@ -634,8 +724,8 @@ class VideoPlayer {
         }
     }
 
-    hideControls() {
-        if (!this.video.paused) {
+    hideControls(force = false) {
+        if (!this.video.paused || force) {
             this.container.classList.remove('show-controls');
             this.container.style.cursor = 'none';
             this.settingsMenu.classList.remove('active');
@@ -647,7 +737,7 @@ class VideoPlayer {
 
     toggleControls() {
         if (this.container.classList.contains('show-controls')) {
-            this.hideControls();
+            this.hideControls(true);
         } else {
             this.showControls();
         }
@@ -669,6 +759,8 @@ class VideoPlayer {
         this.isFullscreen = document.fullscreenElement === this.container;
         this.container.classList.toggle('fullscreen', this.isFullscreen);
         this.fullscreenBtn.innerHTML = this.getIcon(this.isFullscreen ? 'fullscreenExit' : 'fullscreen');
+        this.fullscreenBtn.setAttribute('aria-label', this.isFullscreen ? '離開全螢幕' : '進入全螢幕');
+        this.fullscreenBtn.title = this.isFullscreen ? '離開全螢幕' : '進入全螢幕';
         this.applyAspectMode(this.currentAspectMode, false);
         if (this.ass) {
             if (this.danmuEnabled) {
@@ -732,19 +824,24 @@ class VideoPlayer {
         }
     }
 
-    handleDoubleTap(e) {
-        const touchX = e.changedTouches[0].clientX;
-        const width = window.innerWidth;
+    handleDoubleTap(clientX) {
+        const rect = this.container.getBoundingClientRect();
+        const localX = Math.max(0, Math.min(rect.width, clientX - rect.left));
 
-        if (touchX < width / 3) {
-            this.video.currentTime -= 10;
+        if (localX < rect.width / 3) {
+            this.seekBy(-10);
             this.showCenterIcon(this.getIcon('rewind'), true, true);
-        } else if (touchX > width * 2 / 3) {
-            this.video.currentTime += 10;
+        } else if (localX > rect.width * 2 / 3) {
+            this.seekBy(10);
             this.showCenterIcon(this.getIcon('forward'), true, true);
         } else {
             this.togglePlay();
         }
+    }
+
+    seekBy(seconds) {
+        const duration = Number.isFinite(this.video.duration) ? this.video.duration : Infinity;
+        this.video.currentTime = Math.max(0, Math.min(duration, this.video.currentTime + seconds));
     }
 
     showCenterIcon(svg, animate, restoreState = false) {
@@ -789,11 +886,11 @@ class VideoPlayer {
                 this.toggleFullscreen();
                 break;
             case 'ArrowLeft':
-                this.video.currentTime -= 5;
+                this.seekBy(-5);
                 this.showCenterIcon(this.getIcon('rewind'), true, true);
                 break;
             case 'ArrowRight':
-                this.video.currentTime += 5;
+                this.seekBy(5);
                 this.showCenterIcon(this.getIcon('forward'), true, true);
                 break;
         }
@@ -853,7 +950,7 @@ function renderInfoBar(videoData, videoSeries) {
     var bar = document.getElementById('video-info-bar');
     if (!bar || !videoData) return;
 
-    bar.style.display = 'flex';
+    bar.hidden = false;
     bar.innerHTML = '';
 
     var title = document.createElement('h2');
