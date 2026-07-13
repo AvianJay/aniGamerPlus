@@ -593,11 +593,11 @@ def update_danmu():
                     and not anime_db["local_file_path"] is None \
                     and os.path.exists(anime_db["local_file_path"]):
                 a = threading.Thread(target=__get_danmu_only, args=(
-                    anime_db["sn"], anime_db["anime_name"], anime_db["local_file_path"], False))
+                    anime_db["sn"], anime_db["anime_name"], anime_db["local_file_path"], False, True))
                 a.daemon = True
                 thread_tasks.append(a)
-                a.start()
                 danmu_tasks_counter += 1
+                a.start()
             else:
                 err_print(anime_db["sn"], '彈幕更新失敗', "資料庫不存在番劇名稱或影片路徑",
                           status=1, display=False)
@@ -683,7 +683,7 @@ def __get_info_only(sn):
     thread_limiter.release()
 
 
-def __get_danmu_only(sn, bangumi_name, video_path, display=True):
+def __get_danmu_only(sn, bangumi_name, video_path, display=True, track_progress=False):
     global danmu_tasks_counter
     thread_limiter.acquire()
 
@@ -708,7 +708,7 @@ def __get_danmu_only(sn, bangumi_name, video_path, display=True):
         err_print("更新資訊", "彈幕下載冷卻 " + str(settings['danmu_download_cd']) + " 秒", no_sn=True, display=display)
         time.sleep(settings['danmu_download_cd'])
     
-    if not display:
+    if track_progress:
         danmu_tasks_counter -= 1
         if danmu_tasks_counter % 30 == 0 and danmu_tasks_counter != 0:
             err_print(0, "彈幕更新", "剩下 " + str(danmu_tasks_counter) + " 條彈幕待更新", no_sn=True)
