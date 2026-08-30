@@ -9,7 +9,7 @@ import ftplib
 import shutil
 import traceback
 import Config
-import pyhttpx
+from curl_cffi import requests as curl_requests
 from Danmu import Danmu
 from bs4 import BeautifulSoup
 import re, time, os, platform, subprocess, requests, random, sys
@@ -36,9 +36,13 @@ class Anime:
 
         self._session = requests.session()
         if 'firefox' in self._settings['ua'].lower():
-            self._pyhttpx_session = pyhttpx.HttpSession(browser_type='firefox')
+            impersonate = 'firefox'
         else:
-            self._pyhttpx_session = pyhttpx.HttpSession(browser_type='chrome')
+            impersonate = 'chrome'
+        bf = self._settings.get('browser_fingerprint', {})
+        self._fingerprint_session = curl_requests.Session(impersonate=impersonate
+                                                          , ja3=bf.get('ja3') or None
+                                                          , akamai=bf.get('akamai') or None)
         self._title = ''
         self._sn = sn
         self._bangumi_name = ''
@@ -139,7 +143,7 @@ class Anime:
             self._src = self.__request_json(f'https://api.gamer.com.tw/mobile_app/anime/v4/video.php?sn={self._sn}', no_cookies=True)
         else:
             req = f'https://ani.gamer.com.tw/animeVideo.php?sn={self._sn}'
-            f = self.__request(req, no_cookies=True, use_pyhttpx=True)
+            f = self.__request(req, no_cookies=True, verify_fingerprint=True)
             self._src = BeautifulSoup(f.content, "lxml")
 
     def __get_title(self):
@@ -276,7 +280,7 @@ class Anime:
         else:
             self._req_header = self._web_header
 
-    def __request(self, req, no_cookies=False, show_fail=True, max_retry=3, addition_header=None, use_pyhttpx = False):
+    def __request(self, req, no_cookies=False, show_fail=True, max_retry=3, addition_header=None, verify_fingerprint=False):
         # 设置 header
         current_header = self._req_header
         if addition_header is None:
@@ -293,12 +297,9 @@ class Anime:
             cookies = {}
         while True:
             try:
-                if use_pyhttpx:
-                    # https://github.com/miyouzi/aniGamerPlus/issues/249 pyhttpx 作者 在改動
-                    # https://github.com/zero3301/pyhttpx/commit/4735190df741f4c00287ec948f0734fd2c21bfee
-                    # 把 proxy 驗證放到了 proxies URL 裏面
-                    f = self._pyhttpx_session.get(req, headers=current_header, cookies=cookies, timeout=10,
-                                                  proxies=self._proxies)
+                if verify_fingerprint:
+                    proxies = self._proxies if self._proxies else None
+                    f = self._fingerprint_session.get(req, headers=current_header, cookies=cookies, timeout=10, proxies=proxies)
                 else:
                     f = self._session.get(req, headers=current_header, cookies=cookies, timeout=10)
             except requests.exceptions.RequestException as e:
@@ -388,11 +389,11 @@ class Anime:
 
         return f
 
-    def __request_json(self, req, no_cookies=False, show_fail=True, max_retry=3, addition_header=None, use_pyhttpx = False):
-        if use_pyhttpx:
-            return self.__request(req, no_cookies, show_fail, max_retry, addition_header, use_pyhttpx).json
+    def __request_json(self, req, no_cookies=False, show_fail=True, max_retry=3, addition_header=None, verify_fingerprint=False):
+        if verify_fingerprint:
+            return self.__request(req, no_cookies, show_fail, max_retry, addition_header, verify_fingerprint).json
         else:
-            return self.__request(req, no_cookies, show_fail, max_retry, addition_header, use_pyhttpx).json()
+            return self.__request(req, no_cookies, show_fail, max_retry, addition_header, verify_fingerprint).json()
 
     def __get_m3u8_dict(self):
         # m3u8获取模块参考自 https://github.com/c0re100/BahamutAnimeDownloader
@@ -405,7 +406,7 @@ class Anime:
             if self._settings['use_mobile_api']:
                 req = f'https://api.gamer.com.tw/mobile_app/anime/v3/m3u8.php?videoSn={str(self._sn)}&device={self._device_id}'
             else:
-                req = 'https://ani.gamer.com.tw/ajax/m3u8.php?sn=' + str(self._sn) + '&device=' + self._device_id
+                req = 'https://api.gamer.com.tw/anime/v1/video_src.php?videoSn=' + str(self._sn) + '&deviceid=' + self._device_id + '&deviceTypeUseCases=1'
             self._playlist = self.__request_json(req)
 
         def random_string(num):
@@ -481,11 +482,10 @@ class Anime:
                 sys.exit(1)
 
         def parse_playlist():
-            playlist_url = ""
             if self._settings['use_mobile_api']:
                 playlist_url = self._playlist['data']['src']
             else:
-                playlist_url = self._playlist['src']
+                playlist_url = self._playlist['data']['srcUseCases'][0]['src']['playlist']
             f = self.__request(playlist_url, no_cookies=True, addition_header={'origin': 'https://ani.gamer.com.tw'})
             url_prefix = re.sub(r'playlist.+', '', playlist_url)  # m3u8 URL 前缀
             m3u8_list = re.findall(r'=\d+x\d+\n.+', f.content.decode())  # 将包含分辨率和 m3u8 文件提取
@@ -1441,6 +1441,6 @@ class Anime:
 
 
 if __name__ == '__main__':
-    a = Anime('40035')
-    # print(a.get_m3u8_dict())
-    a.download('360')
+    a = Anime('49911')
+    print(a.get_m3u8_dict())
+    a.download('1080')

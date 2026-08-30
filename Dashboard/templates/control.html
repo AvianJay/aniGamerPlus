@@ -381,7 +381,7 @@
 						<div class="input-group-prepend">
 							<span class="input-group-text">SN解析冷卻時間(秒)</span>
 						</div>
-						<input id="parse_sn_cd" type="number" min="0" step="1" class="form-control input-group-prepend-form-control"
+						<input id="parse_sn_cd" type="number" min="3" step="1" class="form-control input-group-prepend-form-control"
 						 placeholder="正整數" />
 					</div>
 					<div class="input-group col-md-8 my-button">
@@ -390,6 +390,18 @@
 						</div>
 						<input id="ua" type="text" class="form-control input-group-prepend-form-control" placeholder="若有使用cookie請與取得cookie的瀏覽器保持一致" />
 						<button type="button" class="btn btn-dark" onclick="getUA()">取得當前UA</button>
+					</div>
+					<div class="input-group col-md-12 my-button">
+						<div class="input-group-prepend">
+							<span class="input-group-text">JA3 指紋　　　</span>
+						</div>
+						<input id="browser_fingerprint_ja3" type="text" class="form-control input-group-prepend-form-control" placeholder="手動填入 JA3 指紋字串" />
+					</div>
+					<div class="input-group col-md-12 my-button">
+						<div class="input-group-prepend">
+							<span class="input-group-text">Akamai 指紋　　</span>
+						</div>
+						<input id="browser_fingerprint_akamai" type="text" class="form-control input-group-prepend-form-control" placeholder="手動填入 Akamai 指紋字串" />
 					</div>
 				</div>
 

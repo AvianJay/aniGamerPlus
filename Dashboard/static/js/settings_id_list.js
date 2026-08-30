@@ -18,6 +18,7 @@ var id_list = [
 	'danmu',
 	'use_proxy', 
 	'proxy',
+	'browser_fingerprint',
 	'check_latest_version', 
 	'read_sn_list_when_checking_update',
 	'read_config_when_checking_update', 

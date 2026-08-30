@@ -1,5 +1,6 @@
 termcolor==3.1.0
 flask==3.1.1
+pip-system-certs==4.0
 requests~=2.31.0
 chardet==5.2.0
 gevent==25.5.1
@@ -7,10 +8,10 @@ flask-sock==0.7.0
 beautifulsoup4==4.11.1
 gevent_websocket==0.10.1
 pysocks==1.7.1
-lxml==4.9.1
+lxml==4.9.4
 markupsafe~=2.1.2
 greenlet~=3.2.3
-pyhttpx
+curl_cffi>=0.7.0
 yt-dlp
 selenium-recaptcha-solver~=1.9.0
 webdriver-manager

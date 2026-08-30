@@ -566,7 +566,11 @@ def config():
     settings = Config.read_settings()
     web_settings = {}
     for id in id_list:
-        web_settings[id] = settings[id]  # 仅返回 web 需要的配置
+        if id == 'browser_fingerprint':
+            web_settings['browser_fingerprint_ja3'] = settings[id]['ja3']
+            web_settings['browser_fingerprint_akamai'] = settings[id]['akamai']
+        else:
+            web_settings[id] = settings[id]  # 仅返回 web 需要的配置
 
     return jsonify(web_settings)
 
@@ -577,7 +581,13 @@ def recv_config():
     data = json.loads(request.get_data(as_text=True))
     new_settings = Config.read_settings()
     for id in id_list:
-        new_settings[id] = data[id]  # 更新配置
+        if id == 'browser_fingerprint':
+            new_settings[id] = {
+                'ja3': data.get('browser_fingerprint_ja3', ''),
+                'akamai': data.get('browser_fingerprint_akamai', '')
+            }
+        else:
+            new_settings[id] = data[id]  # 更新配置
     Config.write_settings(new_settings)  # 保存配置
     _sync_plugin_manager(force=True)
     err_print(0, 'Dashboard', '通過 Web 控制臺更新了 config.json', no_sn=True, status=2)

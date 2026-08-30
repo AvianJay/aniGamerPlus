@@ -137,6 +137,7 @@ docker run -td --name anigamerplus \
  - v16 支援将影片 metadata 前置, 此功能會在綫觀看时更快播放
  - v20 上綫Web控制面板
  - v20.2 支援命令行下載時同時下載彈幕
+ - v25.0 支援自定義ja3、akamai指紋
 
 ## 任務列表
  - [x] 下載使用代理
@@ -164,7 +165,7 @@ docker run -td --name anigamerplus \
     "classify_season": false,  // 控制是否建立季度子目錄
     "check_frequency": 5,  // 檢查更新頻率, 單位為分鐘
     "download_cd": 5,  // # 下載冷卻時間(秒)
-    "parse_sn_cd": 3,  // sn 页面(即播放界面)解析冷却时间(秒)
+    "parse_sn_cd": 3,  // sn 页面(即播放界面)解析冷却时间(秒)，必須大於3秒
     "download_resolution": "1080",  // 下載選取清晰度, 若該清晰度不存在將會選取最近可用清晰度, 可選 360 480 540 576 720 1080
     "lock_resolution": false,  // 鎖定清晰度, 如果指定清晰度不存在, 則放棄下載
     "only_use_vip": false,  // 锁定 VIP 账号下载
@@ -182,7 +183,11 @@ docker run -td --name anigamerplus \
     "customized_video_filename_suffix": "",  // 影片檔名後綴
     "video_filename_extension": "mp4",  // 影片檔副檔名, ts, mov, mkv 經過測試可以使用, 但 flv 不支援, 非 mp4 副檔名 faststart_movflags 將强制為 false
     "zerofill": 1,  // 劇集名補零, 填寫補足位數, 例: 填寫 2 劇集名為 01, 填寫 3 劇集名為 001
-    "ua": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/72.0.3626.96 Safari/537.36",  //  請求UA, 需要和獲取cookie的瀏覽器相同
+    "ua": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/138.0.0.0 Safari/537.36",  //  請求UA, 需要和獲取cookie的瀏覽器相同
+    "browser_fingerprint": {
+        "ja3": "771,4865-4866-4867-49195-49199-49196-49200-52393-52392-49171-49172-156-157-47-53,0-10-65281-17613-43-45-16-5-65037-13-35-27-18-23-11-51,4588-29-23-24,0",  // 請求附帶ja3指紋，用於避免人機驗證
+        "akamai": "1:65536;2:0;4:6291456;6:262144|15663105|0|m,a,s,p"  // 請求附帶akamai指紋，用於避免人機驗證
+    },
     "use_proxy": false,  // 代理開關
     "proxy": {"http://user:passwd@example.com:1000"},  // 代理配置
     "upload_to_server": false,  // 上傳功能開關
@@ -228,7 +233,7 @@ docker run -td --name anigamerplus \
     },
     "save_logs": true,  // 是否記錄日志, 一天一個日志
     "quantity_of_logs": 7,  // 日志保留數量, 正整數值, 必須大於等於 1, 默認為 7
-    "config_version": 14.0,  // 配置文件版本
+    "config_version": 18.3,  // 配置文件版本
     "database_version": 2.0  // 資料庫版本
 }
 ```
@@ -329,6 +334,18 @@ v8.0 影片下載模式新增分段下載, 其工作流程: 由 aniGamerPlus 讀
 
  - 將 UA 複製粘貼到```config.json```的```ua```項目
     ![](screenshot/how_to_use_my_ua.png)
+
+#### 配置ja3、akamai指紋，以規避人機驗證
+
+如果你遇到了`ERROR: 該 sn 下真的有動畫？`錯誤，那麽你有可能遇到了動畫瘋要求人機驗證的情況。
+
+**遇到該情況你需要收集你瀏覽器的UA、ja3指紋、akamai指紋（需要采集自同一個瀏覽器，如果你有使用Cookie，那麽應該采集抓取Cookie的瀏覽器指紋**
+
+ - **使用你的瀏覽器訪問動畫瘋（你可能會遇到人機驗證，請通過驗證）**
+ - 使用你的瀏覽器訪問 https://ja3.zone/check 獲取ja3、akamai指紋
+ - 將ua、ja3、akamai配置到 `config.json` 中（你可以使用 Web 控制臺進行配置）
+
+![img.png](screenshot/config_ja3.png)
 
 ### sn_list.txt
 

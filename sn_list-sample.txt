@@ -6,4 +6,4 @@
 11388 # BanG Dream！第二季
 11465 all <約會大作戰 III> # 約會大作戰 DATE A LIVE 第三季
 @
-11317 lastest # SSSS.GRIDMAN
+11317 latest # SSSS.GRIDMAN

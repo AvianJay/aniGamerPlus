@@ -5,6 +5,7 @@ var proxy_port;
 var proxy_user = '';
 var proxy_passwd = '';
 id_list.push('proxy_protocol', 'proxy_ip', 'proxy_port', 'proxy_user', 'proxy_passwd');
+id_list.push('browser_fingerprint_ja3', 'browser_fingerprint_akamai');
 
 $.ajax({
 	type: "get",
@@ -61,6 +62,7 @@ function readJson() {
 function renderJson() {
 	for (var id of id_list) {
 		if (id == 'proxy') continue; //代理设置已被分解
+		if (id == 'browser_fingerprint') continue; //指纹设置已被分解
 		var idType = document.getElementById(id).type;
 		switch (idType) {
 			case 'text':
@@ -85,12 +87,16 @@ function renderJson() {
 
 		}
 	}
+	// 渲染浏览器指纹子字段
+	$('#browser_fingerprint_ja3').val(dataArrays.browser_fingerprint_ja3);
+	$('#browser_fingerprint_akamai').val(dataArrays.browser_fingerprint_akamai);
 }
 
 
 function readSettings() {
 	for (var id of id_list) {
 		if (id == 'proxy') continue; //代理设置已被分解
+		if (id == 'browser_fingerprint') continue; //指纹设置已被分解
 
 		var idType = document.getElementById(id).type;
 		switch (idType) {
@@ -131,6 +137,11 @@ function readSettings() {
 
 		}
 	}
+	// 合并浏览器指纹配置
+	dataArrays["browser_fingerprint"] = {
+		"ja3": $("#browser_fingerprint_ja3").val(),
+		"akamai": $("#browser_fingerprint_akamai").val()
+	};
 
 	$.ajax({
 		url: './uploadConfig',

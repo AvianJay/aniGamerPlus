@@ -22,7 +22,11 @@
     "customized_video_filename_suffix": "",
     "video_filename_extension": "mp4",
     "zerofill": 1,
-    "ua": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/107.0.0.0 Safari/537.36",
+    "ua": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/138.0.0.0 Safari/537.36",
+    "browser_fingerprint": {
+        "ja3": "771,4865-4866-4867-49195-49199-49196-49200-52393-52392-49171-49172-156-157-47-53,0-10-65281-17613-43-45-16-5-65037-13-35-27-18-23-11-51,4588-29-23-24,0",
+        "akamai": "1:65536;2:0;4:6291456;6:262144|15663105|0|m,a,s,p"
+    },
     "use_proxy": false,
     "proxy": "http://user:passwd@example.com:1000",
     "no_proxy_akamai": false,
