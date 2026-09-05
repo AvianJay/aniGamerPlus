@@ -1,0 +1,715 @@
+/* ---------------------------------------------------------------------------
+   aniGamerPlus+ — shared shell
+   Design tokens, the sticky top bar / tab row, and the card language the home
+   page and the watch page both draw from. Loaded before every page-specific
+   sheet so a page only has to override, never restate.
+   --------------------------------------------------------------------------- */
+:root {
+  --agp-bg: #0b0c0e;
+  --agp-bg-elev: #131519;
+  --agp-bg-card: #191c21;
+  --agp-bg-card-hover: #21252b;
+  --agp-line: rgb(255 255 255 / 9%);
+  --agp-line-strong: rgb(255 255 255 / 16%);
+  --agp-fg: #f3f4f6;
+  --agp-fg-dim: rgb(255 255 255 / 64%);
+  --agp-fg-faint: rgb(255 255 255 / 40%);
+  --agp-accent: #ff0033;
+  --agp-accent-soft: rgb(255 0 51 / 14%);
+  --agp-radius: 12px;
+  --agp-radius-sm: 8px;
+  --agp-topbar-h: 56px;
+  --agp-shell-max: 1480px;
+  /* Home-screen web apps run under the status bar; every fixed edge has to pay
+     the notch back or the brand sits behind the clock. */
+  --agp-safe-t: env(safe-area-inset-top, 0px);
+  --agp-safe-b: env(safe-area-inset-bottom, 0px);
+  --agp-safe-l: env(safe-area-inset-left, 0px);
+  --agp-safe-r: env(safe-area-inset-right, 0px);
+  color-scheme: dark;
+}
+
+* { box-sizing: border-box; }
+
+html { -webkit-text-size-adjust: 100%; }
+
+body.agp-body {
+  background: var(--agp-bg);
+  color: var(--agp-fg);
+  font-family: "Noto Sans TC", "PingFang TC", "Microsoft JhengHei", "Microsoft YaHei", -apple-system,
+    BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  margin: 0;
+  min-height: 100vh;
+  /* iOS rubber-banding exposes the page background behind the app; matching it
+     keeps a standalone launch from flashing white at the edges. */
+  overscroll-behavior-y: none;
+  padding: 0;
+}
+
+body.agp-body a { color: inherit; text-decoration: none; }
+body.agp-body a:hover { color: inherit; text-decoration: none; }
+body.agp-body img { max-width: 100%; }
+
+.agp-shell {
+  margin: 0 auto;
+  max-width: var(--agp-shell-max);
+  padding-left: max(16px, var(--agp-safe-l));
+  padding-right: max(16px, var(--agp-safe-r));
+  width: 100%;
+}
+
+.agp-visually-hidden {
+  clip: rect(0 0 0 0);
+  clip-path: inset(50%);
+  height: 1px;
+  overflow: hidden;
+  position: absolute;
+  white-space: nowrap;
+  width: 1px;
+}
+
+/* --- Top bar ------------------------------------------------------------- */
+.agp-topbar {
+  backdrop-filter: saturate(150%) blur(14px);
+  background: rgb(11 12 14 / 92%);
+  border-bottom: 1px solid var(--agp-line);
+  left: 0;
+  padding-top: var(--agp-safe-t);
+  position: sticky;
+  right: 0;
+  top: 0;
+  z-index: 40;
+}
+
+.agp-topbar-inner {
+  align-items: center;
+  display: flex;
+  gap: 14px;
+  height: var(--agp-topbar-h);
+}
+
+.agp-brand {
+  align-items: center;
+  display: flex;
+  flex: none;
+  font-weight: 800;
+  gap: 9px;
+  letter-spacing: .01em;
+}
+
+.agp-brand img { height: 26px; width: 26px; }
+.agp-brand span { font-size: 17px; }
+.agp-brand b {
+  background: var(--agp-accent);
+  border-radius: 4px;
+  font-size: 10px;
+  font-weight: 800;
+  letter-spacing: .08em;
+  padding: 2px 5px;
+}
+
+.agp-search {
+  flex: 1;
+  max-width: 420px;
+  min-width: 0;
+  position: relative;
+}
+
+.agp-search input {
+  background: var(--agp-bg-card);
+  border: 1px solid var(--agp-line);
+  border-radius: 999px;
+  color: var(--agp-fg);
+  font-size: 14px;
+  height: 36px;
+  outline: 0;
+  padding: 0 38px 0 14px;
+  width: 100%;
+}
+
+.agp-search input::placeholder { color: var(--agp-fg-faint); }
+.agp-search input:focus {
+  background: var(--agp-bg-card-hover);
+  border-color: var(--agp-line-strong);
+}
+
+.agp-search button {
+  align-items: center;
+  background: transparent;
+  border: 0;
+  color: var(--agp-fg-dim);
+  cursor: pointer;
+  display: flex;
+  height: 32px;
+  justify-content: center;
+  position: absolute;
+  right: 2px;
+  top: 2px;
+  width: 34px;
+}
+
+.agp-topbar-actions {
+  align-items: center;
+  display: flex;
+  gap: 4px;
+  margin-left: auto;
+}
+
+/* userapi.js owns this list — it fills any `.navbar-nav` with the account
+   links the current session is entitled to, so the shell only has to dress it. */
+.agp-usernav {
+  align-items: center;
+  display: flex;
+  gap: 2px;
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.agp-usernav .nav-link {
+  border-radius: var(--agp-radius-sm);
+  color: var(--agp-fg-dim);
+  display: block;
+  font-size: 13px;
+  padding: 7px 10px;
+  white-space: nowrap;
+}
+
+.agp-usernav .nav-link:hover {
+  background: var(--agp-bg-card);
+  color: var(--agp-fg);
+}
+
+.agp-avatar {
+  align-items: center;
+  background: linear-gradient(135deg, #ff0033, #ff6a3d);
+  border-radius: 50%;
+  color: #fff;
+  display: flex;
+  flex: none;
+  font-size: 13px;
+  font-weight: 800;
+  height: 32px;
+  justify-content: center;
+  width: 32px;
+}
+
+/* --- Tab row ------------------------------------------------------------- */
+.agp-tabs {
+  background: var(--agp-bg);
+  border-bottom: 1px solid var(--agp-line);
+  position: sticky;
+  top: calc(var(--agp-topbar-h) + var(--agp-safe-t));
+  z-index: 30;
+}
+
+.agp-tabs-inner {
+  display: flex;
+  gap: 2px;
+  overflow-x: auto;
+  scrollbar-width: none;
+}
+
+.agp-tabs-inner::-webkit-scrollbar { display: none; }
+
+.agp-tab {
+  border-bottom: 3px solid transparent;
+  color: var(--agp-fg-dim);
+  flex: none;
+  font-size: 14px;
+  font-weight: 600;
+  padding: 12px 14px 9px;
+  white-space: nowrap;
+}
+
+.agp-tab:hover { color: var(--agp-fg); }
+.agp-tab.is-active {
+  border-bottom-color: var(--agp-accent);
+  color: var(--agp-fg);
+}
+
+/* --- Notice strip -------------------------------------------------------- */
+.agp-notice {
+  align-items: center;
+  background: var(--agp-bg-elev);
+  border: 1px solid var(--agp-line);
+  border-radius: var(--agp-radius-sm);
+  color: var(--agp-fg-dim);
+  display: flex;
+  font-size: 13px;
+  gap: 10px;
+  margin: 16px 0 0;
+  padding: 10px 14px;
+}
+
+.agp-notice b {
+  background: var(--agp-accent-soft);
+  border-radius: 4px;
+  color: #ff5c7a;
+  flex: none;
+  font-size: 11px;
+  font-weight: 800;
+  padding: 3px 7px;
+}
+
+.agp-notice span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* --- Hero banner --------------------------------------------------------- */
+.agp-banner {
+  border: 1px solid var(--agp-line);
+  border-radius: var(--agp-radius);
+  display: block;
+  margin-top: 16px;
+  min-height: 190px;
+  overflow: hidden;
+  position: relative;
+}
+
+.agp-banner-art { inset: 0; overflow: hidden; position: absolute; }
+.agp-banner-art::after {
+  background: linear-gradient(90deg, rgb(8 8 10 / 88%) 0%, rgb(8 8 10 / 55%) 46%, rgb(8 8 10 / 12%) 100%);
+  content: "";
+  inset: 0;
+  position: absolute;
+}
+
+.agp-banner-body {
+  max-width: 640px;
+  padding: 30px 24px;
+  position: relative;
+}
+
+.agp-banner-body .agp-eyebrow {
+  color: #ff5c7a;
+  font-size: 11px;
+  font-weight: 800;
+  letter-spacing: .14em;
+  margin: 0 0 8px;
+}
+
+.agp-banner-body h2 {
+  font-size: clamp(20px, 3.2vw, 32px);
+  font-weight: 800;
+  line-height: 1.25;
+  margin: 0 0 8px;
+}
+
+.agp-banner-body .agp-banner-sub {
+  color: var(--agp-fg-dim);
+  font-size: 14px;
+  margin: 0 0 16px;
+}
+
+/* --- Buttons ------------------------------------------------------------- */
+.agp-btn {
+  align-items: center;
+  background: var(--agp-accent);
+  border: 0;
+  border-radius: 999px;
+  color: #fff;
+  cursor: pointer;
+  display: inline-flex;
+  font-size: 14px;
+  font-weight: 700;
+  gap: 7px;
+  min-height: 38px;
+  padding: 0 18px;
+}
+
+.agp-btn:hover { background: #e60030; color: #fff; }
+.agp-btn--ghost {
+  background: rgb(255 255 255 / 10%);
+  border: 1px solid var(--agp-line-strong);
+}
+.agp-btn--ghost:hover { background: rgb(255 255 255 / 16%); }
+
+/* --- Sections ------------------------------------------------------------ */
+.agp-section { margin-top: 30px; }
+
+.agp-section-head {
+  align-items: baseline;
+  display: flex;
+  gap: 12px;
+  margin-bottom: 12px;
+}
+
+.agp-section-head h2 {
+  align-items: center;
+  display: flex;
+  font-size: 18px;
+  font-weight: 800;
+  gap: 9px;
+  margin: 0;
+}
+
+.agp-section-head h2::before {
+  background: var(--agp-accent);
+  border-radius: 2px;
+  content: "";
+  height: 18px;
+  width: 4px;
+}
+
+.agp-section-more {
+  color: var(--agp-fg-faint);
+  font-size: 13px;
+  margin-left: auto;
+}
+
+.agp-section-more:hover { color: var(--agp-fg); }
+
+/* --- Horizontal rail ----------------------------------------------------- */
+.agp-rail-wrap { position: relative; }
+
+.agp-rail {
+  -webkit-overflow-scrolling: touch;
+  display: grid;
+  gap: 14px;
+  grid-auto-columns: minmax(190px, 232px);
+  grid-auto-flow: column;
+  overflow-x: auto;
+  padding-bottom: 6px;
+  scroll-snap-type: x proximity;
+  scrollbar-width: thin;
+}
+
+.agp-rail::-webkit-scrollbar { height: 6px; }
+.agp-rail::-webkit-scrollbar-thumb {
+  background: rgb(255 255 255 / 14%);
+  border-radius: 999px;
+}
+.agp-rail > * { scroll-snap-align: start; }
+
+.agp-rail-nav {
+  align-items: center;
+  background: rgb(15 16 19 / 88%);
+  border: 1px solid var(--agp-line-strong);
+  border-radius: 50%;
+  color: var(--agp-fg);
+  cursor: pointer;
+  display: none;
+  height: 36px;
+  justify-content: center;
+  position: absolute;
+  top: 32%;
+  width: 36px;
+  z-index: 3;
+}
+
+.agp-rail-wrap:hover .agp-rail-nav { display: flex; }
+.agp-rail-nav[data-dir="prev"] { left: -14px; }
+.agp-rail-nav[data-dir="next"] { right: -14px; }
+.agp-rail-nav:hover { background: rgb(35 37 42 / 96%); }
+
+/* --- Episode card (16:9) ------------------------------------------------- */
+.agp-card { display: block; min-width: 0; }
+
+.agp-card-art {
+  aspect-ratio: 16 / 9;
+  display: block;
+  border: 1px solid var(--agp-line);
+  border-radius: var(--agp-radius-sm);
+  container-type: inline-size;
+  overflow: hidden;
+  position: relative;
+  transition: transform .16s, box-shadow .16s;
+}
+
+.agp-card:hover .agp-card-art {
+  box-shadow: 0 12px 30px rgb(0 0 0 / 45%);
+  transform: translateY(-3px);
+}
+
+.agp-card-art-fill { inset: 0; position: absolute; }
+
+/* The real frame, grabbed from the downloaded episode by /thumbnail.jpg. It
+   covers the generated plate when it loads and is removed on error, which is
+   what uncovers the plate again. */
+.agp-art-img {
+  display: block;
+  height: 100%;
+  inset: 0;
+  object-fit: cover;
+  position: absolute;
+  width: 100%;
+}
+
+/* The library JSON carries no artwork, so each title gets a stable generated
+   plate instead — same name, same colours, every visit. */
+.agp-card-art-glyph {
+  align-items: center;
+  display: flex;
+  font-size: clamp(20px, 17cqw, 40px);
+  font-weight: 900;
+  inset: 0;
+  justify-content: center;
+  letter-spacing: .04em;
+  opacity: .92;
+  position: absolute;
+  text-shadow: 0 2px 12px rgb(0 0 0 / 45%);
+}
+
+.agp-card-badge {
+  background: rgb(8 8 10 / 78%);
+  border-radius: 4px;
+  bottom: 6px;
+  color: #fff;
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+  font-weight: 700;
+  padding: 2px 6px;
+  position: absolute;
+  right: 6px;
+}
+
+.agp-card-ep {
+  background: var(--agp-accent);
+  border-radius: 4px;
+  color: #fff;
+  font-size: 11px;
+  font-weight: 800;
+  left: 6px;
+  padding: 2px 7px;
+  position: absolute;
+  top: 6px;
+}
+
+.agp-card-fav {
+  align-items: center;
+  background: rgb(8 8 10 / 62%);
+  border: 0;
+  border-radius: 50%;
+  color: rgb(255 255 255 / 82%);
+  cursor: pointer;
+  display: flex;
+  height: 28px;
+  justify-content: center;
+  position: absolute;
+  right: 6px;
+  top: 6px;
+  width: 28px;
+}
+
+.agp-card-fav:hover { background: rgb(8 8 10 / 86%); }
+.agp-card-fav.is-on { color: var(--agp-accent); }
+.agp-card-fav.is-on svg { fill: currentColor; }
+
+.agp-card-progress {
+  background: rgb(255 255 255 / 26%);
+  bottom: 0;
+  height: 3px;
+  left: 0;
+  position: absolute;
+  right: 0;
+}
+
+.agp-card-progress i {
+  background: var(--agp-accent);
+  display: block;
+  height: 100%;
+}
+
+.agp-card-title {
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  display: -webkit-box;
+  font-size: 14px;
+  font-weight: 600;
+  line-height: 1.4;
+  margin: 8px 0 3px;
+  overflow: hidden;
+}
+
+.agp-card:hover .agp-card-title { color: #ff5c7a; }
+
+.agp-card-meta {
+  align-items: center;
+  color: var(--agp-fg-faint);
+  display: flex;
+  font-size: 12px;
+  gap: 10px;
+}
+
+.agp-card-meta span { align-items: center; display: inline-flex; gap: 4px; }
+.agp-card-meta svg { height: 13px; width: 13px; }
+
+/* --- Poster card (3:4) --------------------------------------------------- */
+.agp-poster-grid {
+  display: grid;
+  gap: 16px;
+  grid-template-columns: repeat(auto-fill, minmax(158px, 1fr));
+}
+
+.agp-poster { display: block; min-width: 0; }
+
+.agp-poster-art {
+  aspect-ratio: 3 / 4;
+  display: block;
+  border: 1px solid var(--agp-line);
+  border-radius: var(--agp-radius-sm);
+  container-type: inline-size;
+  overflow: hidden;
+  position: relative;
+  transition: transform .16s, box-shadow .16s;
+}
+
+.agp-poster:hover .agp-poster-art {
+  box-shadow: 0 14px 34px rgb(0 0 0 / 48%);
+  transform: translateY(-3px);
+}
+
+.agp-poster-rank {
+  color: #fff;
+  font-size: 30px;
+  font-weight: 900;
+  left: 8px;
+  line-height: 1;
+  position: absolute;
+  text-shadow: 0 2px 10px rgb(0 0 0 / 70%);
+  top: 6px;
+}
+
+.agp-poster-foot {
+  background: linear-gradient(0deg, rgb(6 6 8 / 96%) 0%, rgb(6 6 8 / 82%) 42%, rgb(6 6 8 / 0%) 100%);
+  bottom: 0;
+  left: 0;
+  padding: 34px 9px 9px;
+  position: absolute;
+  right: 0;
+}
+
+.agp-poster-foot strong {
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  display: -webkit-box;
+  font-size: 13px;
+  line-height: 1.35;
+  overflow: hidden;
+}
+
+.agp-poster-foot small {
+  color: var(--agp-fg-faint);
+  display: block;
+  font-size: 11px;
+  margin-top: 3px;
+}
+
+/* --- Weekly timeline ----------------------------------------------------- */
+.agp-day + .agp-day { margin-top: 22px; }
+
+.agp-day-head {
+  align-items: center;
+  border-bottom: 1px solid var(--agp-line);
+  display: flex;
+  gap: 10px;
+  margin-bottom: 12px;
+  padding-bottom: 7px;
+}
+
+.agp-day-head strong { font-size: 15px; font-weight: 800; }
+.agp-day-head em {
+  background: var(--agp-bg-card);
+  border-radius: 4px;
+  color: var(--agp-fg-dim);
+  font-size: 11px;
+  font-style: normal;
+  font-weight: 700;
+  padding: 3px 7px;
+}
+.agp-day-head span { color: var(--agp-fg-faint); font-size: 12px; margin-left: auto; }
+
+/* --- Empty / loading states ---------------------------------------------- */
+.agp-empty {
+  border: 1px dashed var(--agp-line-strong);
+  border-radius: var(--agp-radius);
+  color: var(--agp-fg-faint);
+  font-size: 14px;
+  padding: 34px 18px;
+  text-align: center;
+}
+
+.agp-skeleton {
+  animation: agp-pulse 1.4s ease-in-out infinite;
+  background: var(--agp-bg-card);
+  border-radius: var(--agp-radius-sm);
+}
+
+@keyframes agp-pulse { 50% { opacity: .45; } }
+
+/* --- Footer -------------------------------------------------------------- */
+.agp-footer {
+  border-top: 1px solid var(--agp-line);
+  color: var(--agp-fg-faint);
+  font-size: 12px;
+  margin-top: 44px;
+  padding: 20px 0 calc(24px + var(--agp-safe-b));
+  text-align: center;
+}
+
+/* --- iOS add-to-home-screen hint ----------------------------------------- */
+.agp-a2hs {
+  align-items: center;
+  background: var(--agp-bg-elev);
+  border: 1px solid var(--agp-line-strong);
+  border-radius: var(--agp-radius);
+  bottom: calc(14px + var(--agp-safe-b));
+  box-shadow: 0 18px 44px rgb(0 0 0 / 52%);
+  display: flex;
+  gap: 12px;
+  left: max(14px, var(--agp-safe-l));
+  padding: 12px 14px;
+  position: fixed;
+  right: max(14px, var(--agp-safe-r));
+  z-index: 60;
+}
+
+.agp-a2hs[hidden] { display: none; }
+.agp-a2hs img { border-radius: 9px; flex: none; height: 40px; width: 40px; }
+.agp-a2hs-copy { flex: 1; min-width: 0; }
+.agp-a2hs strong { display: block; font-size: 14px; }
+.agp-a2hs p { color: var(--agp-fg-dim); font-size: 12px; line-height: 1.45; margin: 2px 0 0; }
+.agp-a2hs button {
+  background: transparent;
+  border: 0;
+  color: var(--agp-fg-faint);
+  cursor: pointer;
+  flex: none;
+  font-size: 20px;
+  line-height: 1;
+  padding: 4px 6px;
+}
+
+@media (max-width: 720px) {
+  /* The account nav alone is wider than a 390px bar, so it drops to a row of
+     its own rather than squeezing the search -- the only flex item here able to
+     shrink -- down to nothing. It wraps rather than being reordered so that the
+     tab order still walks the bar the way it looks. */
+  :root { --agp-topbar-h: 88px; }
+  .agp-topbar-inner { align-content: center; flex-wrap: wrap; gap: 8px 10px; }
+  .agp-brand span { display: none; }
+  .agp-search { max-width: none; }
+  .agp-topbar-actions {
+    flex: 1 0 100%;
+    min-width: 0;
+    overflow-x: auto;
+    scrollbar-width: none;
+  }
+  .agp-topbar-actions::-webkit-scrollbar { display: none; }
+  /* An auto margin rather than justify-content: it collapses to zero as soon as
+     the links overflow, so a long account name still scrolls from its first link. */
+  .agp-usernav { margin-left: auto; }
+  .agp-usernav .nav-link { font-size: 12px; padding: 6px 7px; }
+  .agp-banner-body { padding: 22px 16px; }
+  .agp-rail { gap: 10px; grid-auto-columns: minmax(150px, 190px); }
+  .agp-poster-grid { gap: 10px; grid-template-columns: repeat(auto-fill, minmax(116px, 1fr)); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .agp-card-art, .agp-poster-art { transition: none; }
+  .agp-card:hover .agp-card-art, .agp-poster:hover .agp-poster-art { transform: none; }
+  .agp-skeleton { animation: none; }
+}

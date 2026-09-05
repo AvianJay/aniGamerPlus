@@ -4,75 +4,105 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-  <meta name="theme-color" content="#0b0d0e">
-  <title>aniGamerPlus+ Watch</title>
+  <meta name="theme-color" content="#0b0c0e">
+  <meta name="description" content="aniGamerPlus+ 線上看，直接從本機片庫串流播放並顯示彈幕。">
+  <title>線上看 - aniGamerPlus+</title>
+
   <link rel="shortcut icon" href="./static/img/aniGamerPlus.ico" type="image/x-icon">
+  <link rel="manifest" href="./manifest.webmanifest">
+  <link rel="apple-touch-icon" href="./static/img/pwa/apple-touch-icon.png">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <meta name="apple-mobile-web-app-title" content="aniGamerPlus+">
+
+  <link rel="stylesheet" href="./static/css/agp.css?v=2">
+  <link rel="stylesheet" href="./static/css/watch.css?v=20">
 
   <script id="agp-dashboard-bootstrap" type="application/json">{{ dashboard_bootstrap|tojson }}</script>
   <script id="agp-watch-bootstrap" type="application/json">{{ watch_bootstrap|tojson }}</script>
 
   <script src="./static/js/jquery-3.4.0.min.js"></script>
-  <script src="./static/js/popper.min.js"></script>
-  <link rel="stylesheet" href="./static/css/bootstrap.rfs.min.css">
-  <script src="./static/js/bootstrap.min.js"></script>
-  <link rel="stylesheet" href="./static/css/fontawesome.all.min.css">
-  <link rel="stylesheet" href="./static/css/watch.css?v=14">
   <script src="./static/js/ass.global.min.js"></script>
-  <script src="./static/js/userapi.js?v=2"></script>
-  <script src="./static/js/watch.js?v=20"></script>
+  <script src="./static/js/userapi.js?v=3"></script>
+  <script src="./static/js/agp-shell.js?v=1"></script>
+  <script src="./static/js/watch.js?v=22"></script>
 </head>
 
-<body class="watch-body" onload="main()">
-  <header class="watch-topbar">
-    <nav class="navbar navbar-expand-md navbar-dark watch-navbar" aria-label="主要導覽">
-      <a class="navbar-brand watch-brand" href="/" aria-label="aniGamerPlus+ 首頁">
+<body class="agp-body watch-body">
+  <header class="agp-topbar">
+    <div class="agp-shell agp-topbar-inner">
+      <a class="agp-brand" href="./" aria-label="aniGamerPlus+ 首頁">
         <img src="./static/img/aniGamerPlus.ico" alt="">
-        <span>aniGamerPlus+</span>
-        <strong>WATCH</strong>
+        <span>aniGamerPlus</span>
+        <b>+</b>
       </a>
-      <button class="navbar-toggler watch-nav-toggle" type="button" data-toggle="collapse"
-        data-target="#collapsibleNavbar" aria-controls="collapsibleNavbar" aria-expanded="false" aria-label="展開導覽">
-        <span class="navbar-toggler-icon"></span>
-      </button>
-      <div class="collapse navbar-collapse" id="collapsibleNavbar">
-        <ul class="navbar-nav ml-auto"></ul>
+
+      <form class="agp-search" role="search" autocomplete="off" action="./" method="get">
+        <label class="agp-visually-hidden" for="watchSearch">搜尋作品</label>
+        <input id="watchSearch" name="q" type="search" placeholder="搜尋片庫中的作品…" enterkeyhint="search">
+        <button type="submit" aria-label="搜尋">
+          <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2"
+            stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <circle cx="11" cy="11" r="8" />
+            <path d="m21 21-4.3-4.3" />
+          </svg>
+        </button>
+      </form>
+
+      <div class="agp-topbar-actions">
+        <ul class="navbar-nav agp-usernav"></ul>
       </div>
-    </nav>
+    </div>
   </header>
 
-  <main class="watch-page">
-    <section class="watch-layout" id="watchLayout" aria-label="播放器">
-      <div class="watch-main-column">
-        <div class="player-shell">
-          <div class="anotherVideoBox" id="anotherVideoBox">
-            <div id="videobox" class="player-wrapper"></div>
-          </div>
-        </div>
-        <div id="video-info-bar" class="watch-info-bar" hidden></div>
+  <nav class="agp-tabs" aria-label="頁面區塊">
+    <div class="agp-shell agp-tabs-inner">
+      <a class="agp-tab" href="./">首頁</a>
+      <a class="agp-tab is-active" href="./watch">線上看</a>
+      <a class="agp-tab" href="./#continue">繼續觀看</a>
+      <a class="agp-tab" href="./#all">所有動畫</a>
+      <a class="agp-tab" href="./control">主控台</a>
+    </div>
+  </nav>
+
+  <main class="agp-shell watch-page">
+    <div class="watch-grid">
+      <div class="watch-main">
+        <div class="player-shell" id="playerShell"></div>
+
+        <div class="watch-titlebar" id="watchTitleBar"></div>
+
+        <section class="watch-episodes" id="episodeGrid" aria-label="選集"></section>
+
+        <section class="watch-info" id="animeInfo" aria-label="作品資訊"></section>
       </div>
 
-      <aside id="watch-sidebar" class="watch-panel watch-panel--hidden" aria-labelledby="episodeHeading">
-        <div class="watch-panel-header">
-          <div>
-            <p class="watch-eyebrow">PLAYLIST</p>
-            <h2 id="episodeHeading">播放清單</h2>
-            <p id="episodeSummary">載入中...</p>
+      <aside class="watch-side" aria-label="彈幕與設定">
+        <div class="watch-side-tabs" role="tablist">
+          <button class="watch-side-tab is-active" type="button" role="tab" aria-selected="true"
+            data-panel="danmakuPanel">彈幕列表 <em id="danmakuCount"></em></button>
+          <button class="watch-side-tab" type="button" role="tab" aria-selected="false"
+            data-panel="advancedTab">進階設定</button>
+        </div>
+
+        <div class="watch-side-panel is-active" id="danmakuPanel" role="tabpanel">
+          <div class="watch-side-scroll" id="danmakuList">
+            <p class="watch-side-empty">載入中…</p>
           </div>
         </div>
-        <div id="episode-list-panel"></div>
+
+        <div class="watch-side-panel" id="advancedTab" role="tabpanel">
+          <div class="watch-side-scroll" id="advancedPanel"></div>
+        </div>
       </aside>
-    </section>
+    </div>
 
-    <section id="watch-library" class="watch-library" aria-labelledby="libraryHeading">
-      <div class="watch-library-heading">
-        <div>
-          <p class="watch-eyebrow">LIBRARY</p>
-          <h1 id="libraryHeading">片庫</h1>
-        </div>
-        <p id="librarySummary">載入中...</p>
-      </div>
-      <div id="watch-library-content"></div>
-    </section>
+    <section class="watch-library" id="watchLibrary" aria-label="片庫"></section>
+
+    <footer class="agp-footer">
+      aniGamerPlus+ · 本機片庫 · <a href="./control">主控台</a>
+    </footer>
   </main>
 </body>
 

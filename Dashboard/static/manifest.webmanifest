@@ -1,0 +1,50 @@
+{
+  "name": "aniGamerPlus+ 動畫片庫",
+  "short_name": "aniGamerPlus+",
+  "description": "本機動畫片庫：線上觀看、彈幕播放與追番下載管理。",
+  "id": "/",
+  "start_url": "./",
+  "scope": "./",
+  "display": "standalone",
+  "display_override": ["standalone", "minimal-ui"],
+  "orientation": "any",
+  "background_color": "#0b0c0e",
+  "theme_color": "#0b0c0e",
+  "lang": "zh-Hant",
+  "dir": "ltr",
+  "categories": ["entertainment", "video"],
+  "icons": [
+    {
+      "src": "./static/img/pwa/icon-192.png",
+      "sizes": "192x192",
+      "type": "image/png",
+      "purpose": "any"
+    },
+    {
+      "src": "./static/img/pwa/icon-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "any"
+    },
+    {
+      "src": "./static/img/pwa/icon-512-maskable.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "maskable"
+    }
+  ],
+  "shortcuts": [
+    {
+      "name": "線上看",
+      "short_name": "線上看",
+      "url": "./watch",
+      "icons": [{ "src": "./static/img/pwa/icon-192.png", "sizes": "192x192" }]
+    },
+    {
+      "name": "主控台",
+      "short_name": "主控台",
+      "url": "./control",
+      "icons": [{ "src": "./static/img/pwa/icon-192.png", "sizes": "192x192" }]
+    }
+  ]
+}

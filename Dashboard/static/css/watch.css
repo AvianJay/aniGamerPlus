@@ -1,993 +1,1112 @@
-:root {
-  --watch-bg: #0b0d0e;
-  --watch-surface: #131718;
-  --watch-surface-raised: #1a2021;
-  --watch-surface-hover: #222a2b;
-  --watch-border: #2a3334;
-  --watch-border-strong: #3a4748;
-  --watch-text: #f4f7f6;
-  --watch-text-muted: #98a5a3;
-  --watch-accent: #25d0a5;
-  --watch-accent-strong: #0fb98e;
-  --watch-accent-soft: rgba(37, 208, 165, 0.14);
-  --watch-warm: #f1b94b;
-  --watch-danger: #f06a6a;
-  --watch-radius: 6px;
-  --watch-shadow: 0 18px 55px rgba(0, 0, 0, 0.42);
-  --watch-transition: 160ms ease;
-}
+/* ---------------------------------------------------------------------------
+   aniGamerPlus+ — watch page
+   The player surface is a port of the reference web player: a 16:9 shell with
+   an overlay that carries the caption band, the danmaku layer, the HUD and a
+   control bar that fades in only while the pointer is live. Below it sits the
+   title bar, the episode grid and the info card.
+   Depends on agp.css for tokens.
+   --------------------------------------------------------------------------- */
 
-* {
-  box-sizing: border-box;
-}
+/* --- Page layout ---------------------------------------------------------- */
+.watch-page { padding-bottom: 40px; padding-top: 18px; }
 
-html {
-  min-height: 100%;
-  background: var(--watch-bg);
-}
-
-body.watch-body {
-  min-height: 100vh;
-  margin: 0;
-  overflow-x: hidden;
-  background: var(--watch-bg);
-  color: var(--watch-text);
-  font-family: "Noto Sans TC", "Microsoft JhengHei", "Segoe UI", system-ui, sans-serif;
-  -webkit-font-smoothing: antialiased;
-}
-
-button,
-input {
-  font: inherit;
-}
-
-a {
-  color: inherit;
-  text-decoration: none;
-}
-
-a:hover {
-  color: var(--watch-accent);
-  text-decoration: none;
-}
-
-.watch-topbar {
-  position: sticky;
-  top: 0;
-  z-index: 1000;
-  border-bottom: 1px solid var(--watch-border);
-  background: rgba(11, 13, 14, 0.94);
-  backdrop-filter: blur(16px);
-}
-
-.watch-navbar {
-  width: min(1540px, 100%);
-  min-height: 62px;
-  margin: 0 auto;
-  padding: 8px 24px;
-}
-
-.watch-brand {
-  display: inline-flex;
-  align-items: center;
-  gap: 10px;
-  min-width: 0;
-  margin: 0;
-  color: var(--watch-text) !important;
-  font-size: 16px;
-  font-weight: 750;
-}
-
-.watch-brand img {
-  width: 34px;
-  height: 34px;
-  border-radius: 6px;
-}
-
-.watch-brand strong {
-  padding-left: 10px;
-  border-left: 1px solid var(--watch-border-strong);
-  color: var(--watch-accent);
-  font-size: 10px;
-  font-weight: 800;
-  letter-spacing: 0.14em;
-}
-
-.watch-navbar .navbar-nav {
-  align-items: center;
-  gap: 4px;
-}
-
-.watch-navbar .nav-item.my-navbar {
-  margin-left: 0;
-}
-
-.watch-navbar .nav-link {
-  padding: 8px 12px !important;
-  border-radius: 5px;
-  color: var(--watch-text-muted) !important;
-  font-size: 14px;
-  transition: background-color var(--watch-transition), color var(--watch-transition);
-}
-
-.watch-navbar .nav-link:hover,
-.watch-navbar .nav-link:focus-visible {
-  background: var(--watch-surface-raised);
-  color: var(--watch-text) !important;
-}
-
-.watch-nav-toggle {
-  border: 1px solid var(--watch-border-strong);
-  border-radius: 5px;
-}
-
-.watch-page {
-  width: min(1540px, 100%);
-  margin: 0 auto;
-  padding: 24px;
-}
-
-.watch-layout {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) 320px;
-  gap: 20px;
+.watch-grid {
   align-items: start;
+  display: grid;
+  gap: 20px;
+  grid-template-columns: minmax(0, 1fr) 340px;
 }
 
-.watch-main-column {
-  min-width: 0;
+.watch-main { min-width: 0; }
+
+@media (max-width: 1180px) {
+  .watch-grid { grid-template-columns: minmax(0, 1fr); }
 }
 
+/* --- Player shell --------------------------------------------------------- */
 .player-shell {
-  overflow: hidden;
-  border: 1px solid #202627;
-  border-radius: var(--watch-radius);
-  background: #000;
-  box-shadow: var(--watch-shadow);
-}
-
-.anotherVideoBox {
-  width: 100%;
-}
-
-#videobox {
-  position: relative;
-  display: flex;
-  width: 100%;
   aspect-ratio: 16 / 9;
-  align-items: center;
-  justify-content: center;
+  background: #080a0f;
+  border: 1px solid rgb(255 255 255 / 9%);
+  border-radius: 14px;
+  box-shadow: 0 24px 65px rgb(0 0 0 / 30%);
   overflow: hidden;
-  background: #000;
-  color: #fff;
-  outline: none;
-  touch-action: manipulation;
-  user-select: none;
-  -webkit-user-select: none;
-  -webkit-tap-highlight-color: transparent;
+  position: relative;
 }
 
-#videobox:focus-visible {
-  box-shadow: inset 0 0 0 2px var(--watch-accent);
-}
-
-#videobox video {
-  display: block;
-  width: 100%;
+.player-shell video {
+  border: 0;
   height: 100%;
-  max-width: 100%;
-  max-height: 100%;
-  background: #000;
+  object-fit: contain;
+  width: 100%;
 }
 
-#ass-container {
-  position: absolute;
+.player-shell.aspect-cover video { object-fit: cover; }
+.player-shell.aspect-fill video { object-fit: fill; }
+
+.player-shell.is-custom-player {
+  /* progress (18) + control row (38) + bottom padding (11) */
+  --controls-block: 67px;
+  container-type: inline-size;
+  outline: 0;
+}
+
+.player-shell.is-custom-player:not(.controls-visible) { cursor: none; }
+.player-shell.is-custom-player > video { pointer-events: none; }
+
+.player-shell.is-fullscreen {
+  aspect-ratio: auto;
+  border: 0;
+  border-radius: 0;
+  height: 100%;
+  width: 100%;
+}
+
+.desktop-player-surface {
+  background: transparent;
+  border: 0;
+  cursor: pointer;
   inset: 0;
-  z-index: 5;
-  pointer-events: none;
+  padding: 0;
+  position: absolute;
+  touch-action: manipulation;
+  z-index: 2;
 }
 
-#controls {
+.desktop-player-surface:focus-visible {
+  box-shadow: inset 0 0 0 3px rgb(255 255 255 / 82%);
+  outline: 0;
+}
+
+.desktop-player-overlay {
+  color: #fff;
+  inset: 0;
+  pointer-events: none;
   position: absolute;
-  right: 0;
+  z-index: 3;
+}
+
+.desktop-player-loader {
+  align-items: center;
+  background: rgb(10 10 12 / 76%);
+  border-radius: 50%;
+  display: flex;
+  height: 68px;
+  justify-content: center;
+  left: 50%;
+  position: absolute;
+  top: 50%;
+  transform: translate(-50%, -50%);
+  width: 68px;
+}
+
+.desktop-player-loader[hidden] { display: none; }
+.desktop-player-loader svg {
+  animation: agp-spin 1s linear infinite;
+  height: 34px;
+  width: 34px;
+}
+
+@keyframes agp-spin { to { transform: rotate(360deg); } }
+
+.desktop-player-caption {
+  align-items: center;
+  bottom: 22px;
+  display: flex;
+  font-size: clamp(16px, 2.4cqw, 36px);
+  font-weight: 650;
+  justify-content: center;
+  left: 5%;
+  line-height: 1.35;
+  pointer-events: none;
+  position: absolute;
+  right: 5%;
+  text-align: center;
+  text-shadow: 0 1px 2px rgb(0 0 0 / 94%);
+  transition: bottom .16s;
+  z-index: 4;
+}
+
+.desktop-player-caption[hidden] { display: none; }
+.player-shell.controls-visible .desktop-player-caption {
+  bottom: calc(var(--controls-block, 67px) + 20px);
+}
+
+.desktop-player-caption span {
+  background: rgb(8 8 10 / 78%);
+  -webkit-box-decoration-break: clone;
+  box-decoration-break: clone;
+  padding: .08em .28em .12em;
+}
+
+/* --- Control bar ---------------------------------------------------------- */
+.desktop-player-controls {
   bottom: 0;
   left: 0;
-  z-index: 20;
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  padding: 44px 14px 10px;
-  background: linear-gradient(to top, rgba(0, 0, 0, 0.92) 0%, rgba(0, 0, 0, 0.55) 58%, transparent 100%);
-  color: #fff;
   opacity: 0;
+  padding: 0 16px 11px;
   pointer-events: none;
+  position: absolute;
+  right: 0;
+  text-shadow: 0 1px 3px rgb(0 0 0 / 72%);
   transform: translateY(8px);
-  transition: opacity var(--watch-transition), transform var(--watch-transition);
+  transition: opacity .16s, transform .16s;
+  z-index: 5;
 }
 
-.show-controls #controls {
+.player-shell.controls-visible .desktop-player-controls {
   opacity: 1;
   pointer-events: auto;
   transform: translateY(0);
 }
 
-.control-btn {
-  display: inline-flex;
-  width: 40px;
-  height: 40px;
-  flex: 0 0 40px;
+/* The idle timer fades the bar out from under a control that still holds
+   keyboard focus, leaving Enter wired to an invisible button. Kept in its own
+   rule so engines without :has() only drop this one. */
+.desktop-player-controls:has(:focus-visible) {
+  opacity: 1;
+  pointer-events: auto;
+  transform: translateY(0);
+}
+
+/* Text shadows alone were not enough: a full-screen danmaku flood runs straight
+   through the bar and the icons on the right become unreadable. The scrim fades
+   in with the bar and is tall enough to cover the seek row above it. */
+.desktop-player-controls::before {
+  background: linear-gradient(0deg, rgb(4 4 6 / 95%) 0%, rgb(4 4 6 / 88%) 38%, rgb(4 4 6 / 55%) 70%, rgb(4 4 6 / 0%) 100%);
+  content: "";
+  height: calc(100% + 46px);
+  left: 0;
+  pointer-events: none;
+  position: absolute;
+  right: 0;
+  bottom: 0;
+  z-index: -1;
+}
+
+.desktop-player-controls svg { filter: drop-shadow(0 1px 2px rgb(0 0 0 / 72%)); }
+
+.desktop-player-progress {
   align-items: center;
-  justify-content: center;
-  margin: 0 1px;
-  padding: 8px;
-  border: 0;
-  border-radius: 50%;
-  background: transparent;
-  color: #fff;
-  cursor: pointer;
-  transition: background-color var(--watch-transition), transform var(--watch-transition);
-}
-
-.control-btn:hover,
-.control-btn:focus-visible {
-  background: rgba(255, 255, 255, 0.16);
-  color: #fff;
-  outline: none;
-}
-
-.control-btn:active {
-  transform: scale(0.92);
-}
-
-.control-btn svg {
-  display: block;
-  width: 23px;
-  height: 23px;
-  fill: currentColor;
-}
-
-.time-control {
-  display: grid;
+  display: flex;
+  height: 18px;
+  position: relative;
   width: 100%;
-  grid-template-columns: minmax(0, 1fr) auto;
-  gap: 12px;
-  align-items: center;
-  margin-bottom: 2px;
 }
 
-#timeSlider,
-#volumeSlider {
-  margin: 0;
+.desktop-player-progress input {
   appearance: none;
   -webkit-appearance: none;
   border: 0;
-  border-radius: 999px;
-  outline: none;
-  background: rgba(255, 255, 255, 0.28);
+  border-radius: 0;
   cursor: pointer;
-}
-
-#timeSlider {
-  width: 100%;
-  height: 5px;
-  touch-action: none;
-}
-
-#volumeSlider {
-  width: 78px;
   height: 4px;
+  margin: 0;
+  outline: 0;
+  padding: 0;
+  position: relative;
+  transition: height .12s;
+  width: 100%;
+  z-index: 2;
 }
 
-#timeSlider::-webkit-slider-thumb,
-#volumeSlider::-webkit-slider-thumb {
-  width: 14px;
-  height: 14px;
+.desktop-player-progress:hover input,
+.desktop-player-progress input:focus-visible { height: 6px; }
+
+.desktop-player-progress input::-webkit-slider-thumb {
   appearance: none;
   -webkit-appearance: none;
-  border: 2px solid #fff;
+  background: #ff0033;
+  border: 0;
   border-radius: 50%;
-  background: var(--watch-accent);
-  box-shadow: 0 0 0 4px rgba(37, 208, 165, 0.18);
+  height: 13px;
+  opacity: 0;
+  transition: opacity .12s, transform .12s;
+  width: 13px;
 }
 
-#timeSlider::-moz-range-thumb,
-#volumeSlider::-moz-range-thumb {
-  width: 12px;
-  height: 12px;
-  border: 2px solid #fff;
+.desktop-player-progress:hover input::-webkit-slider-thumb,
+.desktop-player-progress input:focus-visible::-webkit-slider-thumb { opacity: 1; }
+
+.desktop-player-progress input::-moz-range-thumb {
+  background: #ff0033;
+  border: 0;
   border-radius: 50%;
-  background: var(--watch-accent);
-  box-shadow: 0 0 0 4px rgba(37, 208, 165, 0.18);
+  height: 13px;
+  opacity: 0;
+  width: 13px;
 }
 
-.time-text {
-  min-width: 92px;
-  color: rgba(255, 255, 255, 0.88);
+.desktop-player-progress:hover input::-moz-range-thumb,
+.desktop-player-progress input:focus-visible::-moz-range-thumb { opacity: 1; }
+
+.desktop-player-progress output {
+  background: rgb(20 20 23 / 96%);
+  border-radius: 4px;
+  bottom: 21px;
+  color: #fff;
+  font-size: 11px;
+  font-weight: 700;
+  padding: 5px 7px;
+  pointer-events: none;
+  position: absolute;
+  transform: translateX(-50%);
+  z-index: 5;
+}
+
+.desktop-player-progress output[hidden] { display: none; }
+
+.desktop-player-control-row,
+.desktop-player-control-group,
+.desktop-player-volume {
+  align-items: center;
+  display: flex;
+}
+
+.desktop-player-control-row {
+  gap: 12px;
+  justify-content: space-between;
+  min-height: 38px;
+}
+
+.desktop-player-control-group { gap: 3px; min-width: 0; overflow: hidden; }
+.desktop-player-control-actions { flex: none; }
+
+.desktop-player-icon-button {
+  align-items: center;
+  background: transparent;
+  border: 0;
+  color: #fff;
+  cursor: pointer;
+  display: flex;
+  height: 36px;
+  justify-content: center;
+  padding: 6px;
+  position: relative;
+  width: 36px;
+}
+
+.desktop-player-icon-button:hover,
+.desktop-player-icon-button:focus-visible { transform: scale(1.08); }
+
+.desktop-player-icon-button:focus-visible {
+  outline: 2px solid rgb(255 255 255 / 88%);
+  outline-offset: -2px;
+}
+
+.desktop-player-icon-button svg { height: 23px; stroke-width: 2.2; width: 23px; }
+
+/* The red rule under an icon is the only "on" state the bar shows — it has to
+   survive a bright frame, so it never dims with the icon. */
+.desktop-player-icon-button.active::after {
+  background: #ff0033;
+  bottom: 2px;
+  content: "";
+  height: 3px;
+  left: 7px;
+  position: absolute;
+  right: 7px;
+}
+
+.desktop-player-volume input {
+  accent-color: #fff;
+  cursor: pointer;
+  opacity: 0;
+  overflow: hidden;
+  transition: opacity .14s, width .14s;
+  width: 0;
+}
+
+.desktop-player-volume:hover input,
+.desktop-player-volume:focus-within input { opacity: 1; width: 72px; }
+
+.desktop-player-time {
+  align-items: center;
+  display: flex;
+  flex: none;
   font-size: 12px;
   font-variant-numeric: tabular-nums;
-  text-align: right;
-  white-space: nowrap;
+  gap: 4px;
+  margin: 0 8px 0 4px;
+  text-shadow: 0 1px 2px rgb(0 0 0 / 80%);
 }
 
-.controls-row,
-.controls-left,
-.controls-right {
-  display: flex;
+.desktop-player-time b,
+.desktop-player-time i { font: inherit; }
+.desktop-player-time i { color: rgb(255 255 255 / 70%); }
+
+.desktop-player-chapter-button {
   align-items: center;
-}
-
-.controls-row {
-  width: 100%;
-  justify-content: space-between;
-}
-
-.volume-container {
-  display: flex;
-  width: 88px;
-  align-items: center;
-  margin-left: 3px;
-  overflow: hidden;
-}
-
-.settings-menu {
-  position: absolute;
-  right: 12px;
-  bottom: 62px;
-  z-index: 30;
-  display: none;
-  min-width: 184px;
-  max-height: min(340px, calc(100% - 80px));
-  overflow-y: auto;
-  padding: 6px;
-  border: 1px solid var(--watch-border-strong);
-  border-radius: var(--watch-radius);
-  background: rgba(19, 23, 24, 0.97);
-  box-shadow: 0 14px 40px rgba(0, 0, 0, 0.5);
-  backdrop-filter: blur(16px);
-}
-
-.settings-menu.active {
-  display: flex;
-  flex-direction: column;
-}
-
-.settings-group-title {
-  padding: 9px 10px 5px;
-  color: var(--watch-text-muted);
-  font-size: 10px;
-  font-weight: 800;
-  letter-spacing: 0.13em;
-}
-
-.settings-item {
-  display: flex;
-  min-height: 38px;
-  align-items: center;
-  justify-content: space-between;
-  padding: 8px 10px;
-  border-radius: 4px;
-  color: #dce3e1;
-  font-size: 14px;
-  cursor: pointer;
-}
-
-.settings-item:hover {
-  background: var(--watch-surface-hover);
-  color: #fff;
-}
-
-.settings-item.active {
-  background: var(--watch-accent-soft);
-  color: var(--watch-accent);
-}
-
-.settings-item.active::after {
-  content: "";
-  width: 7px;
-  height: 7px;
-  border-radius: 50%;
-  background: currentColor;
-}
-
-.center-overlay {
-  position: absolute;
-  top: 50%;
-  left: 50%;
-  z-index: 12;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  transform: translate(-50%, -50%);
-  pointer-events: none;
-}
-
-.center-icon {
-  display: grid;
-  width: 68px;
-  height: 68px;
-  place-items: center;
-  padding: 18px;
-  border: 1px solid rgba(255, 255, 255, 0.16);
-  border-radius: 50%;
-  background: rgba(0, 0, 0, 0.68);
-  opacity: 0;
-  transform: scale(0.84);
-  transition: opacity var(--watch-transition), transform var(--watch-transition);
-  backdrop-filter: blur(8px);
-}
-
-.center-icon.animate {
-  opacity: 1;
-  transform: scale(1.08);
-}
-
-.center-icon svg {
-  width: 100%;
-  height: 100%;
-  fill: #fff;
-}
-
-#loading-spinner {
-  position: absolute;
-  z-index: 15;
-  display: none;
-  width: 42px;
-  height: 42px;
-  border: 3px solid rgba(255, 255, 255, 0.2);
-  border-top-color: var(--watch-accent);
-  border-radius: 50%;
-  animation: watch-spin 700ms linear infinite;
-}
-
-@keyframes watch-spin {
-  to { transform: rotate(360deg); }
-}
-
-.fullscreen {
-  position: fixed !important;
-  inset: 0;
-  z-index: 9999;
-  width: 100% !important;
-  height: 100% !important;
-  aspect-ratio: auto !important;
-  border-radius: 0 !important;
-  background: #000;
-  touch-action: none;
-}
-
-.fullscreen #controls {
-  padding-right: max(18px, env(safe-area-inset-right));
-  padding-bottom: max(12px, env(safe-area-inset-bottom));
-  padding-left: max(18px, env(safe-area-inset-left));
-}
-
-#endBox {
-  position: absolute;
-  top: 50%;
-  left: 50%;
-  z-index: 40;
-  display: none;
-  width: min(340px, calc(100% - 32px));
-  padding: 22px;
-  border: 1px solid var(--watch-border-strong);
-  border-radius: var(--watch-radius);
-  background: rgba(19, 23, 24, 0.97);
-  box-shadow: 0 22px 70px rgba(0, 0, 0, 0.58);
-  text-align: center;
-  transform: translate(-50%, -50%);
-  backdrop-filter: blur(16px);
-}
-
-#endBox h2 {
-  margin: 0;
-  color: #fff;
-  font-size: 18px;
-  line-height: 1.45;
-}
-
-.end-buttons {
-  display: grid;
-  grid-template-columns: 1fr 1fr;
-  gap: 8px;
-  margin-top: 18px;
-}
-
-.end-btn {
-  min-height: 42px;
-  padding: 9px 12px;
-  border: 1px solid var(--watch-border-strong);
+  background: rgb(22 22 25 / 72%);
+  border: 0;
   border-radius: 5px;
-  font-size: 14px;
-  font-weight: 700;
+  color: #fff;
   cursor: pointer;
-}
-
-.end-btn.primary {
-  border-color: var(--watch-accent);
-  background: var(--watch-accent);
-  color: #07120f;
-}
-
-.end-btn.primary:hover {
-  background: var(--watch-accent-strong);
-}
-
-.end-btn.secondary {
-  background: var(--watch-surface-hover);
-  color: var(--watch-text);
-}
-
-.watch-info-bar {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) auto;
-  gap: 20px;
-  align-items: center;
-  padding: 18px 2px 0;
-}
-
-.watch-info-bar[hidden] {
-  display: none;
-}
-
-.watch-info-title {
+  display: flex;
+  font-size: 12px;
+  font-weight: 700;
+  gap: 3px;
+  height: 32px;
+  max-width: min(340px, 31vw);
   min-width: 0;
-  margin: 0;
+  padding: 0 7px 0 10px;
+}
+
+.desktop-player-chapter-button:hover,
+.desktop-player-chapter-button:focus-visible {
+  background: rgb(45 45 50 / 92%);
+  outline: 0;
+}
+
+.desktop-player-chapter-button span {
   overflow: hidden;
-  color: var(--watch-text);
-  font-size: 22px;
-  font-weight: 760;
-  line-height: 1.35;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
-.watch-info-detail {
-  color: var(--watch-text-muted);
+.desktop-player-chapter-button svg { flex: none; height: 16px; width: 16px; }
+
+/* The row is sized for a desktop-width player. Inside a phone-width one the two
+   groups want more than the row has, and because the right group is flex: none
+   the left one is simply painted over: the clock lands on the gear and the
+   episode chip on the PiP button, where taps then go to PiP. Nothing here can
+   shrink below its icon, so the row has to shed content instead. */
+@container (max-width: 560px) {
+  .desktop-player-control-row [data-action="prev"],
+  .desktop-player-control-row [data-action="next"] { display: none; }
+  .desktop-player-time i { display: none; }
+  .desktop-player-chapter-button { flex: 1 1 auto; }
+}
+
+@container (max-width: 460px) {
+  .desktop-player-control-row [data-action="pip"] { display: none; }
+  /* The slider is already gone on touch, so the button only mutes — a phone has
+     hardware keys for that, and the chip needs the room to show its label. */
+  .is-touch-player .desktop-player-volume { display: none; }
+}
+
+/* --- Danmaku layer -------------------------------------------------------- */
+/* Sits first inside the overlay so captions and controls always paint above the
+   crowd: a flood must never make the scrubber harder to read. */
+.danmaku-layer {
+  contain: strict;
+  inset: 0;
+  opacity: var(--danmaku-opacity, 1);
+  overflow: hidden;
+  pointer-events: none;
+  position: absolute;
+  transition: opacity .16s;
+}
+
+/* A popular episode puts three thousand comments on the picture at once, and
+   they run straight through the buttons. While the chrome is up the flood
+   drops back so the controls and the centre buttons stay readable; it comes
+   back to the viewer's own setting the moment the bar fades. */
+.player-shell.controls-visible .danmaku-layer { opacity: calc(var(--danmaku-opacity, 1) * .3); }
+
+.danmaku-layer[hidden] { display: none; }
+.player-shell[data-danmaku-area="75"] .danmaku-layer { bottom: 25%; }
+.player-shell[data-danmaku-area="50"] .danmaku-layer { bottom: 50%; }
+.player-shell[data-danmaku-area="25"] .danmaku-layer { bottom: 75%; }
+
+/* --- HUD ------------------------------------------------------------------ */
+.player-hud {
+  animation: player-hud-fade .85s ease forwards;
+  background: rgb(10 10 12 / 78%);
+  border-radius: 999px;
+  color: #fff;
+  font-size: clamp(13px, 1.7cqw, 21px);
+  font-weight: 700;
+  left: 50%;
+  padding: 9px 18px;
+  pointer-events: none;
+  position: absolute;
+  top: 17%;
+  transform: translateX(-50%);
+  white-space: nowrap;
+  z-index: 7;
+}
+
+.player-hud[hidden] { display: none; }
+
+@keyframes player-hud-fade {
+  0% { opacity: 0; transform: translateX(-50%) scale(.92); }
+  15% { opacity: 1; transform: translateX(-50%) scale(1); }
+  68% { opacity: 1; }
+  100% { opacity: 0; }
+}
+
+/* --- Menus ---------------------------------------------------------------- */
+.desktop-player-menu {
+  background: rgb(26 26 29 / 96%);
+  border: 1px solid rgb(255 255 255 / 12%);
+  border-radius: 6px;
+  bottom: 61px;
+  box-shadow: 0 14px 38px rgb(0 0 0 / 42%);
+  display: flex;
+  flex-direction: column;
+  max-height: min(360px, calc(100% - 84px));
+  overflow: hidden;
+  pointer-events: auto;
+  position: absolute;
+  z-index: 6;
+}
+
+.desktop-player-menu[hidden] { display: none; }
+
+.desktop-player-menu header {
+  align-items: center;
+  border-bottom: 1px solid rgb(255 255 255 / 12%);
+  display: flex;
+  flex: none;
   font-size: 13px;
-  font-variant-numeric: tabular-nums;
+  justify-content: space-between;
+  padding: 11px 13px;
+}
+
+.desktop-player-menu header strong { flex: 1; }
+.desktop-player-menu header span { color: rgb(255 255 255 / 66%); font-size: 11px; }
+
+/* The generic menu-button rule is one type more specific, so without the extra
+   class the back button takes its width: 100% and squeezes the title into a
+   vertical column. */
+.desktop-player-menu button.desktop-player-menu-back {
+  align-items: center;
+  background: transparent;
+  border: 0;
+  color: inherit;
+  cursor: pointer;
+  display: flex;
+  flex: none;
+  height: 28px;
+  justify-content: center;
+  margin: -6px 6px -6px -7px;
+  min-height: 28px;
+  padding: 4px;
+  width: 28px;
+}
+
+.desktop-player-menu button.desktop-player-menu-back[hidden] { display: none; }
+.desktop-player-menu-back svg { height: 17px; margin: 0; width: 17px; }
+
+/* The panel already caps its own height, so the scroll box has to be the item
+   that gives way. Capping it on its own instead hangs its lower rows below the
+   panel's clip, where nothing can scroll them back into view. */
+.desktop-player-menu > div {
+  flex: 1 1 auto;
+  max-height: 300px;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 5px;
+}
+
+.desktop-player-menu button {
+  align-items: center;
+  background: transparent;
+  border: 0;
+  border-radius: 4px;
+  color: #fff;
+  cursor: pointer;
+  display: flex;
+  font-size: 12px;
+  min-height: 34px;
+  padding: 7px 9px;
+  text-align: left;
+  width: 100%;
+}
+
+.desktop-player-menu button:hover,
+.desktop-player-menu button:focus-visible,
+.desktop-player-menu button.active {
+  background: rgb(255 255 255 / 11%);
+  outline: 0;
+}
+
+.desktop-player-menu button svg { flex: none; height: 15px; margin-left: auto; width: 15px; }
+
+.desktop-player-menu-note {
+  color: rgb(255 255 255 / 62%);
+  font-size: 11px;
+  line-height: 1.5;
+  margin: 0;
+  padding: 2px 9px 8px;
+}
+
+.settings-menu { right: 13px; width: 236px; }
+.settings-menu button { justify-content: space-between; }
+
+.desktop-player-setting-value {
+  align-items: center;
+  color: rgb(255 255 255 / 68%);
+  display: flex;
+  flex: none;
+  gap: 3px;
+  margin-left: 12px;
+}
+
+.settings-menu button .desktop-player-setting-value svg { margin-left: 0; }
+
+.shortcut-menu { right: 13px; width: min(340px, calc(100% - 26px)); }
+.shortcut-menu dl {
+  display: grid;
+  gap: 6px 12px;
+  grid-template-columns: auto minmax(0, 1fr);
+  margin: 0;
+  padding: 9px 11px;
+}
+.shortcut-menu dt {
+  color: rgb(255 255 255 / 92%);
+  font-size: 11px;
+  font-weight: 700;
+}
+.shortcut-menu dt kbd {
+  background: rgb(255 255 255 / 12%);
+  border-radius: 4px;
+  font-family: inherit;
+  padding: 2px 6px;
+}
+.shortcut-menu dd { color: rgb(255 255 255 / 66%); font-size: 12px; margin: 0; }
+
+.chapter-menu { left: 13px; width: min(380px, calc(100% - 26px)); }
+.chapter-menu button { gap: 10px; }
+.chapter-menu time { color: rgb(255 255 255 / 70%); flex: none; font-variant-numeric: tabular-nums; }
+.chapter-menu span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+/* --- Next-episode countdown ---------------------------------------------- */
+.player-next {
+  background: rgb(8 8 10 / 88%);
+  border: 1px solid rgb(255 255 255 / 14%);
+  border-radius: 10px;
+  bottom: calc(var(--controls-block, 67px) + 14px);
+  padding: 13px 15px;
+  pointer-events: auto;
+  position: absolute;
+  right: 16px;
+  width: min(300px, 62%);
+  z-index: 6;
+}
+
+.player-next[hidden] { display: none; }
+.player-next p { color: rgb(255 255 255 / 66%); font-size: 11px; margin: 0 0 3px; }
+.player-next strong {
+  display: block;
+  font-size: 14px;
+  margin-bottom: 10px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.player-next-actions { display: flex; gap: 8px; }
+.player-next button {
+  border: 0;
+  border-radius: 6px;
+  cursor: pointer;
+  font-size: 12px;
+  font-weight: 700;
+  min-height: 32px;
+  padding: 0 12px;
+}
+.player-next .is-primary { background: #ff0033; color: #fff; }
+.player-next .is-ghost { background: rgb(255 255 255 / 12%); color: #fff; }
+
+/* --- Touch player --------------------------------------------------------- */
+.player-shell.is-touch-player:not(.controls-visible) { cursor: auto; }
+
+.is-touch-player .desktop-player-controls { padding: 0 10px 9px; }
+
+.player-shell.is-touch-player {
+  /* progress (28) + control row (46) + bottom padding (9) */
+  --controls-block: 83px;
+}
+
+/* env() is viewport-global, so an in-flow player would pay the home indicator
+   twice — .agp-shell already insets the page. Only the fullscreen shell really
+   reaches the display edge, and there --controls-block has to grow with the
+   padding or the next-episode card and the caption land inside the bar. */
+.player-shell.is-touch-player.is-fullscreen {
+  --controls-block: calc(83px + env(safe-area-inset-bottom, 0px));
+}
+
+.player-shell.is-touch-player.is-fullscreen .desktop-player-controls {
+  padding-bottom: calc(9px + env(safe-area-inset-bottom, 0px));
+  padding-left: max(10px, env(safe-area-inset-left, 0px));
+  padding-right: max(10px, env(safe-area-inset-right, 0px));
+}
+
+.touch-player-center {
+  align-items: center;
+  display: flex;
+  gap: clamp(20px, 9cqw, 56px);
+  left: 50%;
+  opacity: 0;
+  pointer-events: none;
+  position: absolute;
+  top: 50%;
+  transform: translate(-50%, -50%);
+  transition: opacity .16s;
+  z-index: 5;
+}
+
+.touch-player-center[hidden] { display: none; }
+.player-shell.controls-visible .touch-player-center { opacity: 1; pointer-events: auto; }
+.touch-player-center:has(:focus-visible) { opacity: 1; pointer-events: auto; }
+
+/* On a phone-height player the bar is 40% of the picture and the play disc ends
+   up sitting on the scrubber. Lift the cluster by half the chrome it has to
+   clear, but only while the chrome is actually up. */
+@container (max-width: 560px) {
+  .player-shell.controls-visible .touch-player-center {
+    top: calc(50% - var(--controls-block, 83px) / 2);
+  }
+}
+
+.touch-player-center button {
+  align-items: center;
+  /* Dark translucent discs vanished into a dark scene: these need their own
+     edge and shadow to read against any frame. */
+  background: rgb(8 8 10 / 72%);
+  border: 1px solid rgb(255 255 255 / 16%);
+  box-shadow: 0 2px 16px rgb(0 0 0 / 45%);
+  border-radius: 50%;
+  color: #fff;
+  display: flex;
+  height: 52px;
+  justify-content: center;
+  padding: 0;
+  position: relative;
+  width: 52px;
+}
+
+.touch-player-center button svg { height: 26px; stroke-width: 2.2; width: 26px; }
+.touch-player-center button b {
+  font-size: 9px;
+  font-weight: 800;
+  line-height: 1;
+  position: absolute;
+  top: 22px;
+}
+.touch-player-center .touch-player-play { height: 68px; width: 68px; }
+.touch-player-center .touch-player-play svg { height: 33px; width: 33px; }
+
+.is-touch-player .desktop-player-progress { height: 28px; }
+
+/* A finger needs the whole row, not the hairline: the input fills all 28px and
+   its padding keeps the painted track thin. paintSeek() writes the played and
+   buffered gradient as an inline background shorthand, which resets the clip —
+   hence the !important, without which the track paints 28px tall. */
+.is-touch-player .desktop-player-progress input {
+  background-clip: content-box !important;
+  height: 28px;
+  padding: 11px 0;
+}
+
+.is-touch-player .desktop-player-progress input::-webkit-slider-thumb { height: 16px; opacity: 1; width: 16px; }
+.is-touch-player .desktop-player-progress input::-moz-range-thumb { height: 16px; opacity: 1; width: 16px; }
+.is-touch-player .desktop-player-progress output { bottom: 29px; font-size: 12px; padding: 6px 9px; }
+.is-touch-player .desktop-player-control-row { gap: 4px; min-height: 46px; }
+.is-touch-player .desktop-player-icon-button { height: 44px; padding: 10px; width: 44px; }
+.is-touch-player .desktop-player-icon-button svg { height: 24px; width: 24px; }
+.is-touch-player .desktop-player-icon-button:hover { transform: none; }
+.is-touch-player .desktop-player-icon-button.active::after { left: 11px; right: 11px; }
+.is-touch-player .desktop-player-time { font-size: 13px; margin: 0 0 0 6px; }
+.is-touch-player .desktop-player-volume input { display: none; }
+
+.is-touch-player .desktop-player-menu {
+  border-bottom: 0;
+  border-radius: 14px 14px 0 0;
+  bottom: 0;
+  left: 0;
+  max-height: min(70%, 360px);
+  right: 0;
+  width: auto;
+}
+
+.is-touch-player .desktop-player-menu header { font-size: 15px; padding: 14px 16px; }
+.is-touch-player .desktop-player-menu header span { font-size: 13px; }
+.is-touch-player .desktop-player-menu > div {
+  max-height: min(52vh, 268px);
+  padding: 4px 6px calc(10px + env(safe-area-inset-bottom, 0px));
+}
+.is-touch-player .desktop-player-menu button {
+  border-radius: 8px;
+  font-size: 15px;
+  min-height: 48px;
+  padding: 10px 14px;
+}
+.is-touch-player .desktop-player-menu button svg { height: 18px; width: 18px; }
+.is-touch-player .desktop-player-menu button.desktop-player-menu-back {
+  height: 36px;
+  min-height: 36px;
+  padding: 6px;
+  width: 36px;
+}
+.is-touch-player .desktop-player-menu button.desktop-player-menu-back svg { height: 21px; width: 21px; }
+
+/* --- Title bar ------------------------------------------------------------ */
+.watch-titlebar {
+  align-items: flex-start;
+  display: flex;
+  gap: 12px;
+  padding: 16px 2px 12px;
+}
+
+.watch-titlebar-main { flex: 1; min-width: 0; }
+
+.watch-titlebar h1 {
+  align-items: center;
+  display: flex;
+  flex-wrap: wrap;
+  font-size: 20px;
+  font-weight: 800;
+  gap: 9px;
+  line-height: 1.3;
+  margin: 0;
+}
+
+.watch-rating {
+  background: rgb(255 255 255 / 12%);
+  border-radius: 4px;
+  font-size: 11px;
+  font-weight: 800;
+  letter-spacing: .04em;
+  padding: 3px 7px;
+}
+
+.watch-subtitle {
+  color: var(--agp-fg-faint);
+  display: flex;
+  flex-wrap: wrap;
+  font-size: 13px;
+  gap: 12px;
+  margin: 7px 0 0;
+}
+
+.watch-subtitle span { align-items: center; display: inline-flex; gap: 5px; }
+.watch-subtitle svg { height: 14px; width: 14px; }
+
+.watch-subscribe {
+  align-items: center;
+  background: var(--agp-accent);
+  border: 0;
+  border-radius: 999px;
+  color: #fff;
+  cursor: pointer;
+  display: inline-flex;
+  flex: none;
+  font-size: 13px;
+  font-weight: 700;
+  gap: 6px;
+  min-height: 36px;
+  padding: 0 16px;
+}
+
+.watch-subscribe.is-on {
+  background: rgb(255 255 255 / 12%);
+  color: var(--agp-fg);
+}
+
+/* --- Episode grid --------------------------------------------------------- */
+.watch-episodes {
+  background: var(--agp-bg-elev);
+  border: 1px solid var(--agp-line);
+  border-radius: var(--agp-radius);
+  padding: 14px;
+}
+
+.watch-episodes-head {
+  align-items: center;
+  display: flex;
+  gap: 10px;
+  margin-bottom: 11px;
+}
+
+.watch-episodes-head h2 { font-size: 14px; font-weight: 800; margin: 0; }
+.watch-episodes-head span { color: var(--agp-fg-faint); font-size: 12px; margin-left: auto; }
+
+.watch-episode-grid {
+  display: grid;
+  gap: 7px;
+  grid-template-columns: repeat(auto-fill, minmax(52px, 1fr));
+}
+
+.watch-episode-btn {
+  align-items: center;
+  background: var(--agp-bg-card);
+  border: 1px solid var(--agp-line);
+  border-radius: 6px;
+  color: var(--agp-fg-dim);
+  display: flex;
+  font-size: 13px;
+  font-weight: 700;
+  justify-content: center;
+  min-height: 38px;
+  overflow: hidden;
+  padding: 0 4px;
+  position: relative;
+  text-overflow: ellipsis;
   white-space: nowrap;
 }
 
-.watch-panel {
-  position: sticky;
-  top: 86px;
-  max-height: calc(100vh - 110px);
+.watch-episode-btn:hover {
+  background: var(--agp-bg-card-hover);
+  color: var(--agp-fg);
+}
+
+.watch-episode-btn.is-current {
+  background: var(--agp-accent);
+  border-color: var(--agp-accent);
+  color: #fff;
+}
+
+.watch-episode-btn.is-watched::after {
+  background: var(--agp-accent);
+  border-radius: 50%;
+  content: "";
+  height: 5px;
+  position: absolute;
+  right: 4px;
+  top: 4px;
+  width: 5px;
+}
+
+.watch-episode-btn.is-current.is-watched::after { background: #fff; }
+
+/* --- Info card ------------------------------------------------------------ */
+.watch-info {
+  background: var(--agp-bg-elev);
+  border: 1px solid var(--agp-line);
+  border-radius: var(--agp-radius);
+  display: grid;
+  gap: 18px;
+  grid-template-columns: 148px minmax(0, 1fr);
+  margin-top: 16px;
+  padding: 18px;
+}
+
+.watch-info-cover {
+  aspect-ratio: 3 / 4;
+  border-radius: var(--agp-radius-sm);
+  container-type: inline-size;
   overflow: hidden;
-  border: 1px solid var(--watch-border);
-  border-radius: var(--watch-radius);
-  background: var(--watch-surface);
+  position: relative;
 }
 
-.watch-panel--hidden {
-  display: none;
+.watch-info-body { min-width: 0; }
+.watch-info-body h2 { font-size: 16px; font-weight: 800; margin: 0 0 12px; }
+
+.watch-info-meta {
+  display: grid;
+  gap: 8px 18px;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  margin: 0 0 14px;
 }
 
-.watch-panel-header {
-  padding: 17px 18px 14px;
-  border-bottom: 1px solid var(--watch-border);
-}
+.watch-info-meta div { display: flex; font-size: 13px; gap: 8px; }
+.watch-info-meta dt { color: var(--agp-fg-faint); flex: none; margin: 0; }
+.watch-info-meta dd { color: var(--agp-fg); margin: 0; min-width: 0; overflow-wrap: anywhere; }
 
-.watch-panel-header h2,
-.watch-library-heading h1 {
-  margin: 0;
-  color: var(--watch-text);
-  font-size: 19px;
-  font-weight: 760;
-  line-height: 1.3;
+.watch-tags { display: flex; flex-wrap: wrap; gap: 7px; margin-bottom: 12px; }
+.watch-tag {
+  background: var(--agp-bg-card);
+  border: 1px solid var(--agp-line);
+  border-radius: 999px;
+  color: var(--agp-fg-dim);
+  font-size: 12px;
+  padding: 4px 11px;
 }
+.watch-tag:hover { background: var(--agp-bg-card-hover); color: var(--agp-fg); }
 
-.watch-panel-header p:not(.watch-eyebrow),
-.watch-library-heading > p {
-  margin: 5px 0 0;
-  color: var(--watch-text-muted);
+.watch-info-desc {
+  color: var(--agp-fg-dim);
   font-size: 13px;
-}
-
-.watch-eyebrow {
-  margin: 0 0 5px;
-  color: var(--watch-accent);
-  font-size: 10px;
-  font-weight: 800;
-  letter-spacing: 0.15em;
-}
-
-#episode-list-panel {
-  max-height: calc(100vh - 205px);
-  overflow-y: auto;
-  overscroll-behavior: contain;
-  scrollbar-color: var(--watch-border-strong) transparent;
-}
-
-.watch-library {
-  width: min(1180px, 100%);
-  margin: 0 auto;
-}
-
-.watch-library-heading {
-  display: flex;
-  align-items: end;
-  justify-content: space-between;
-  gap: 24px;
-  margin-bottom: 20px;
-  padding-bottom: 15px;
-  border-bottom: 1px solid var(--watch-border);
-}
-
-.watch-library-heading h1 {
-  font-size: 28px;
-}
-
-.watch-search-row {
-  position: sticky;
-  top: 78px;
-  z-index: 20;
-  margin-bottom: 18px;
-  padding: 8px 0;
-  background: var(--watch-bg);
-}
-
-.watch-search-input,
-.form-control.watch-search-input {
-  width: 100%;
-  height: 46px;
-  padding: 0 15px;
-  border: 1px solid var(--watch-border-strong) !important;
-  border-radius: var(--watch-radius);
-  background: var(--watch-surface) !important;
-  color: var(--watch-text) !important;
-  font-size: 15px;
-  outline: none;
-}
-
-.watch-search-input::placeholder {
-  color: #75817f;
-}
-
-.watch-search-input:focus,
-.form-control.watch-search-input:focus {
-  border-color: var(--watch-accent) !important;
-  box-shadow: 0 0 0 3px var(--watch-accent-soft) !important;
-}
-
-#watch-library-content > hr {
-  display: none;
-}
-
-.watch-loading {
-  margin-bottom: 16px;
-}
-
-.watch-empty-state {
+  line-height: 1.7;
   margin: 0;
-  padding: 32px 18px;
-  border: 1px dashed var(--watch-border-strong);
-  border-radius: var(--watch-radius);
-  color: var(--watch-text-muted);
+}
+
+@media (max-width: 620px) {
+  .watch-info { grid-template-columns: 100px minmax(0, 1fr); padding: 14px; }
+}
+
+/* --- Gesture affordances -------------------------------------------------- */
+
+/* Screen brightness is not reachable from a web page on any platform, so the
+   left-edge gesture dims the picture with this overlay instead. It sits above
+   the video and the danmaku but below every control. */
+.player-dim {
+  background: #000;
+  inset: 0;
+  opacity: 0;
+  pointer-events: none;
+  position: absolute;
+  transition: opacity .08s linear;
+  /* Above the video and the danmaku, below the caption and every control:
+     dimming the picture must not dim the scrubber. */
+  z-index: 1;
+}
+
+.player-hud.is-bar {
+  align-items: center;
+  animation: none;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  white-space: normal;
+  min-width: min(280px, 68cqw);
+  opacity: 1;
+  padding: 11px 16px;
+}
+
+.player-hud.is-bar span { flex: 1; font-size: 13px; font-variant-numeric: tabular-nums; }
+.player-hud.is-bar svg { flex: none; }
+
+.player-hud-bar {
+  background: rgb(255 255 255 / 26%);
+  border-radius: 999px;
+  display: block;
+  flex-basis: 100%;
+  height: 4px;
+  order: 3;
+  overflow: hidden;
+}
+
+.player-hud-bar b {
+  background: var(--agp-accent);
+  display: block;
+  height: 100%;
+}
+
+/* The gesture pad must swallow the browser's own pan/zoom, or a vertical drag
+   scrolls the page instead of changing the volume. */
+.is-touch-player .desktop-player-surface { touch-action: none; }
+
+/* The bar covers the pad rather than sitting under it, and touch-action is not
+   inherited, so a drag begun in the gaps between the buttons is claimed by the
+   browser as a page pan — the player scrolls away and the gesture is cancelled.
+   The sheets keep their own vertical pan so their rows still scroll. */
+.is-touch-player .desktop-player-controls { touch-action: none; }
+.is-touch-player .desktop-player-menu,
+.is-touch-player .desktop-player-menu > div { touch-action: pan-y; }
+
+@media (prefers-reduced-motion: reduce) {
+  .player-dim { transition: none; }
+}
+
+/* --- Sidebar -------------------------------------------------------------- */
+.watch-side {
+  background: var(--agp-bg-elev);
+  border: 1px solid var(--agp-line);
+  border-radius: var(--agp-radius);
+  display: flex;
+  flex-direction: column;
+  max-height: calc(100vh - 120px);
+  overflow: hidden;
+  position: sticky;
+  top: calc(var(--agp-topbar-h) + var(--agp-safe-t) + 12px);
+}
+
+@media (max-width: 1180px) {
+  .watch-side { max-height: 520px; position: static; }
+}
+
+.watch-side-tabs {
+  border-bottom: 1px solid var(--agp-line);
+  display: flex;
+  flex: none;
+}
+
+.watch-side-tab {
+  background: transparent;
+  border: 0;
+  border-bottom: 2px solid transparent;
+  color: var(--agp-fg-faint);
+  cursor: pointer;
+  flex: 1;
+  font-size: 13px;
+  font-weight: 700;
+  padding: 12px 8px 10px;
+}
+
+.watch-side-tab.is-active { border-bottom-color: var(--agp-accent); color: var(--agp-fg); }
+
+.watch-side-panel { display: none; flex: 1; min-height: 0; overflow-y: auto; padding: 6px; }
+.watch-side-panel.is-active { display: block; }
+
+/* The panel itself is the scroll container; the inner wrapper only exists so
+   the render targets have stable ids. */
+.watch-side-scroll { display: contents; }
+
+.danmaku-row {
+  align-items: baseline;
+  background: transparent;
+  border: 0;
+  border-radius: 6px;
+  color: var(--agp-fg);
+  cursor: pointer;
+  display: flex;
+  font-size: 13px;
+  gap: 10px;
+  padding: 7px 9px;
+  text-align: left;
+  width: 100%;
+}
+
+.danmaku-row:hover { background: var(--agp-bg-card); }
+.danmaku-row.is-live { background: var(--agp-accent-soft); }
+.danmaku-row time {
+  color: var(--agp-fg-faint);
+  flex: none;
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+}
+.danmaku-row span { min-width: 0; overflow-wrap: anywhere; }
+
+.watch-side-empty {
+  color: var(--agp-fg-faint);
+  font-size: 13px;
+  padding: 26px 14px;
   text-align: center;
 }
 
-.animeCategory {
-  display: block;
-  margin: 0 0 12px !important;
-  padding: 0;
-  overflow: hidden;
-  border: 1px solid var(--watch-border);
-  border-radius: var(--watch-radius);
-  background: var(--watch-surface);
-}
-
-.animeCategory.row {
-  margin-right: 0;
-  margin-left: 0;
-}
-
-.animeCategoryTitle {
-  position: relative;
-  width: 100%;
-  margin: 0;
-  padding: 15px 46px 15px 17px;
-  color: var(--watch-text);
-  font-size: 16px;
-  font-weight: 720;
-  line-height: 1.35;
-  cursor: pointer;
-  transition: background-color var(--watch-transition), color var(--watch-transition);
-}
-
-.animeCategoryTitle::after {
-  content: "+";
-  position: absolute;
-  top: 50%;
-  right: 17px;
-  color: var(--watch-accent);
-  font-size: 20px;
-  font-weight: 400;
-  transform: translateY(-50%);
-}
-
-.animeCategoryTitle:hover {
-  background: var(--watch-surface-raised);
-  color: var(--watch-accent);
-}
-
-.animeEpisodeList {
-  display: none;
-  grid-template-columns: repeat(auto-fill, minmax(190px, 1fr));
-  gap: 8px;
-  margin: 0;
-  padding: 0 12px 12px;
-  list-style: none;
-}
-
-.animeEpisodeItem {
+.watch-setting-row {
+  align-items: center;
   display: flex;
-  min-width: 0;
-  min-height: 62px;
-  flex-direction: column;
-  justify-content: center;
-  overflow: hidden;
-  border: 1px solid var(--watch-border);
-  border-radius: 5px;
-  background: var(--watch-surface-raised);
-  transition: border-color var(--watch-transition), background-color var(--watch-transition), transform var(--watch-transition);
+  gap: 10px;
+  padding: 9px 10px;
 }
 
-.animeEpisodeItem:hover {
-  border-color: var(--watch-border-strong);
-  background: var(--watch-surface-hover);
-  transform: translateY(-1px);
+.watch-setting-row label { color: var(--agp-fg-dim); flex: none; font-size: 13px; width: 80px; }
+.watch-setting-row select,
+.watch-setting-row input[type="range"] { flex: 1; min-width: 0; }
+
+.watch-setting-row select {
+  background: var(--agp-bg-card);
+  border: 1px solid var(--agp-line);
+  border-radius: 6px;
+  color: var(--agp-fg);
+  font-size: 13px;
+  padding: 7px 9px;
 }
 
-.animeEpisodeItem--active {
-  border-color: var(--watch-accent);
-  background: var(--watch-accent-soft);
-}
+.watch-setting-row input[type="range"] { accent-color: var(--agp-accent); }
+.watch-setting-row output { color: var(--agp-fg-faint); flex: none; font-size: 12px; width: 44px; }
 
-.animeEpisodeItem a {
-  display: block;
-  padding: 11px 13px 8px;
-  overflow-wrap: anywhere;
-  color: var(--watch-text);
-  font-size: 14px;
-  font-weight: 650;
-  line-height: 1.4;
-}
-
-.animeEpisodeItem a:only-child {
-  padding-bottom: 11px;
-}
-
-.animeEpisodeItem--active a,
-.animeEpisodeItem a:hover {
-  color: var(--watch-accent);
-}
-
-.watchedText {
-  margin: 0;
-  padding: 0 13px 10px;
-  color: var(--watch-text-muted);
+.watch-setting-note {
+  color: var(--agp-fg-faint);
   font-size: 12px;
-  line-height: 1.35;
+  line-height: 1.6;
+  margin: 4px 10px 10px;
 }
 
-.animeWatchingCategory {
-  margin: 0 !important;
-  border: 0;
-  border-radius: 0;
-  background: transparent;
-}
-
-.animeWatchingCategory .animeCategoryTitle {
-  display: none;
-}
-
-.animeWatchingEpisodeList {
-  display: grid;
-  grid-template-columns: 1fr;
-  gap: 5px;
-  padding: 8px;
-}
-
-.animeWatchingEpisodeList .animeEpisodeItem {
-  min-height: 50px;
-  border-color: transparent;
-  background: transparent;
-}
-
-.animeWatchingEpisodeList .animeEpisodeItem:hover {
-  border-color: var(--watch-border);
-  background: var(--watch-surface-raised);
-  transform: none;
-}
-
-.animeWatchingEpisodeList .animeEpisodeItem--active {
-  border-color: rgba(37, 208, 165, 0.34);
-  background: var(--watch-accent-soft);
-}
-
-.progress {
-  width: 100%;
-  height: 28px;
-  overflow: hidden;
-  border-radius: var(--watch-radius);
-  background: var(--watch-surface-raised);
-}
-
-.progress-bar {
-  background: var(--watch-accent);
-  color: #06100d;
-  font-size: 12px;
-  font-weight: 700;
-}
-
-@media (max-width: 1080px) {
-  .watch-layout {
-    grid-template-columns: 1fr;
-  }
-
-  .watch-panel {
-    position: static;
-    max-height: none;
-  }
-
-  #episode-list-panel {
-    max-height: none;
-  }
-
-  .animeWatchingCategory .animeCategoryTitle {
-    display: block;
-  }
-
-  .animeWatchingEpisodeList {
-    grid-template-columns: repeat(auto-fill, minmax(170px, 1fr));
-    padding: 0 12px 12px;
-  }
-}
-
-@media (max-width: 767px) {
-  .watch-navbar {
-    min-height: 56px;
-    padding: 7px 12px;
-  }
-
-  .watch-brand {
-    gap: 8px;
-    font-size: 14px;
-  }
-
-  .watch-brand img {
-    width: 30px;
-    height: 30px;
-  }
-
-  .watch-brand strong {
-    display: none;
-  }
-
-  .watch-navbar .navbar-nav {
-    align-items: stretch;
-    padding: 8px 0 4px;
-  }
-
-  .watch-page {
-    padding: 14px 12px 28px;
-  }
-
-  .watch-layout {
-    gap: 14px;
-  }
-
-  .player-shell {
-    margin-right: -12px;
-    margin-left: -12px;
-    border-right: 0;
-    border-left: 0;
-    border-radius: 0;
-    box-shadow: 0 12px 34px rgba(0, 0, 0, 0.38);
-  }
-
-  #controls {
-    padding: 36px 8px max(5px, env(safe-area-inset-bottom));
-  }
-
-  .control-btn {
-    width: 38px;
-    height: 38px;
-    flex-basis: 38px;
-    padding: 8px;
-  }
-
-  .time-control {
-    gap: 8px;
-  }
-
-  #timeSlider {
-    height: 6px;
-  }
-
-  .time-text {
-    min-width: 82px;
-    font-size: 11px;
-  }
-
-  .volume-container {
-    display: none;
-  }
-
-  .center-icon {
-    width: 58px;
-    height: 58px;
-    padding: 16px;
-  }
-
-  .settings-menu {
-    right: 8px;
-    bottom: 54px;
-    min-width: 168px;
-  }
-
-  .watch-info-bar {
-    grid-template-columns: 1fr;
-    gap: 5px;
-    padding: 14px 2px 0;
-  }
-
-  .watch-info-title {
-    overflow: visible;
-    font-size: 18px;
-    text-overflow: clip;
-    white-space: normal;
-  }
-
-  .watch-panel-header {
-    padding: 15px;
-  }
-
-  .watch-library-heading {
-    align-items: flex-start;
-    flex-direction: column;
-    gap: 2px;
-    margin-bottom: 12px;
-  }
-
-  .watch-library-heading h1 {
-    font-size: 23px;
-  }
-
-  .watch-search-row {
-    top: 64px;
-  }
-
-  .animeEpisodeList,
-  .animeWatchingEpisodeList {
-    grid-template-columns: 1fr;
-  }
-
-  .animeCategoryTitle {
-    padding: 14px 44px 14px 14px;
-  }
-}
-
-@media (max-width: 420px) {
-  .controls-right .control-btn {
-    width: 36px;
-    height: 36px;
-    flex-basis: 36px;
-  }
-
-  .time-text {
-    min-width: 76px;
-    font-size: 10px;
-  }
-}
+/* --- Library below the fold ---------------------------------------------- */
+.watch-library { margin-top: 34px; }
 
 @media (prefers-reduced-motion: reduce) {
-  *,
-  *::before,
-  *::after {
-    scroll-behavior: auto !important;
-    transition-duration: 0.01ms !important;
-    animation-duration: 0.01ms !important;
-    animation-iteration-count: 1 !important;
-  }
+  .desktop-player-controls,
+  .desktop-player-caption,
+  .touch-player-center,
+  .danmaku-layer { transition: none; }
+  .desktop-player-loader svg { animation-duration: 2.4s; }
+  /* The HUD's only exit is its fade, so a near-zero duration would hide the
+     seek/volume feedback outright. Keep it static and let the timer clear it. */
+  .player-hud { animation: none; opacity: 1; }
 }

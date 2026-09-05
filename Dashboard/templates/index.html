@@ -1,76 +1,88 @@
-<!DOCTYPE HTML>
-<html>
+<!DOCTYPE html>
+<html lang="zh-Hant">
 
 <head>
-    <meta charset="utf-8">
-    <title>aniGamerPlus+</title>
-    <meta name="viewport" content="user-scalable=no, width=device-width, initial-scale=1.0" />
-    <link rel="shortcut icon" href="./static/img/aniGamerPlus.ico" type="image/x-icon" />
-    <script src="./static/js/jquery-3.4.0.min.js"></script>
-    <script src="./static/js/popper.min.js"></script>
-    <link rel="stylesheet" href="./static/css/bootstrap.rfs.min.css">
-    <script src="./static/js/bootstrap.min.js"></script>
-    <link rel="stylesheet" href="./static/css/bootstrap-switch.min.css" />
-    <script src="./static/js/bootstrap-switch.min-3.3.4.js"></script>
-    <link rel="stylesheet" href="./static/css/bootstrap-select.min.css" />
-    <script src="./static/js/bootstrap-select.min.js"></script>
-    <link rel="stylesheet" href="./static/css/fontawesome.all.min.css" />
-    <link rel="stylesheet" href="./static/css/aniGamerPlus.css" />
-    <script id="agp-dashboard-bootstrap" type="application/json">{{ dashboard_bootstrap|tojson }}</script>
-    <script src="./static/js/userapi.js?v=2"></script>
-    <script>
-        function isMobileDevice() {
-            return /Android|webOS|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini/i.test(navigator.userAgent);
-        }
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="theme-color" content="#0b0c0e">
+  <meta name="description" content="aniGamerPlus+ 本機動畫片庫，線上觀看、追番與下載管理。">
+  <title>aniGamerPlus+</title>
 
-        // 簡單暴力 lol
-        let animations = [
-            "歡迎使用anGP+",
-            "歡迎使用aniGP+",
-            "歡迎使用aniGaP+",
-            "歡迎使用aniGamP+",
-            "歡迎使用aniGameP+",
-            "歡迎使用aniGamerP+",
-            "歡迎使用aniGamerPl+",
-            "歡迎使用aniGamerPlu+",
-            "歡迎使用aniGamerPlus+"
-        ];
+  <link rel="shortcut icon" href="./static/img/aniGamerPlus.ico" type="image/x-icon">
+  <link rel="manifest" href="./manifest.webmanifest">
+  <link rel="apple-touch-icon" href="./static/img/pwa/apple-touch-icon.png">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <meta name="apple-mobile-web-app-title" content="aniGamerPlus+">
 
-        $(document).ready(function () {
-            let title = document.querySelector("h1");
-            if (!isMobileDevice()) {
-                setTimeout(() => {
-                    animations.forEach((v, i) => {
-                        setTimeout(() => {
-                            window.requestAnimationFrame(() => {
-                                title.textContent = v;
-                            });
-                        }, 300 * i);
-                    });
-                }, 1000)
-            }
-        });
-    </script>
+  <link rel="stylesheet" href="./static/css/agp.css?v=2">
+  <link rel="stylesheet" href="./static/css/home.css?v=1">
+
+  <script id="agp-dashboard-bootstrap" type="application/json">{{ dashboard_bootstrap|tojson }}</script>
+  <script src="./static/js/jquery-3.4.0.min.js"></script>
+  <script src="./static/js/userapi.js?v=3"></script>
+  <script src="./static/js/agp-shell.js?v=1"></script>
+  <script src="./static/js/home.js?v=2"></script>
 </head>
 
-<body>
-    <nav class="navbar navbar-expand-md bg-dark navbar-dark fixed-top">
-        <a class="navbar-brand" href="/"><img src="./static/img/aniGamerPlus.ico"></a>
-        <button class="navbar-toggler" type="button" data-toggle="collapse" data-target="#collapsibleNavbar">
-            <span class="navbar-toggler-icon"></span>
+<body class="agp-body is-loading">
+  <header class="agp-topbar">
+    <div class="agp-shell agp-topbar-inner">
+      <a class="agp-brand" href="./" aria-label="aniGamerPlus+ 首頁">
+        <img src="./static/img/aniGamerPlus.ico" alt="">
+        <span>aniGamerPlus</span>
+        <b>+</b>
+      </a>
+
+      <form class="agp-search" role="search" autocomplete="off">
+        <label class="agp-visually-hidden" for="homeSearch">搜尋作品</label>
+        <input id="homeSearch" name="q" type="search" placeholder="搜尋片庫中的作品…" enterkeyhint="search">
+        <button type="submit" aria-label="搜尋">
+          <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2"
+            stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <circle cx="11" cy="11" r="8" />
+            <path d="m21 21-4.3-4.3" />
+          </svg>
         </button>
-        <div class="collapse navbar-collapse" id="collapsibleNavbar">
-            <ul class="navbar-nav">
-            </ul>
-        </div>
-    </nav>
-    <br><br><br>
-    <center>
-        <h1>歡迎使用aGP+</h1>
-        <hr>
-        <button type="button" class="btn btn-success" onclick="window.location.href='./watch';">線上看</button>
-        <button type="button" class="btn btn-success" onclick="window.location.href='./control';">主控台</button>
-    </center>
+      </form>
+
+      <div class="agp-topbar-actions">
+        <ul class="navbar-nav agp-usernav"></ul>
+      </div>
+    </div>
+  </header>
+
+  <nav class="agp-tabs" aria-label="頁面區塊">
+    <div class="agp-shell agp-tabs-inner">
+      <a class="agp-tab is-active" href="#top">首頁</a>
+      <a class="agp-tab" href="#weekly">本季新番</a>
+      <a class="agp-tab" href="#continue">繼續觀看</a>
+      <a class="agp-tab" href="#hot">近期熱播</a>
+      <a class="agp-tab" href="#all">所有動畫</a>
+      <a class="agp-tab" href="./watch">線上看</a>
+    </div>
+  </nav>
+
+  <main class="agp-shell" id="top">
+    <div class="agp-notice" id="homeNotice">
+      <b>片庫</b>
+      <span>正在載入片庫…</span>
+    </div>
+
+    <div id="homeBanner">
+      <div class="agp-banner agp-skeleton" aria-hidden="true" style="min-height:190px"></div>
+    </div>
+
+    <div id="homeContinue"></div>
+    <div id="homeTimetable"></div>
+    <div id="homeHot"></div>
+    <div id="homeLibrary"></div>
+
+    <footer class="agp-footer">
+      aniGamerPlus+ · 本機片庫 · <a href="./control">主控台</a>
+    </footer>
+  </main>
 </body>
 
 </html>

@@ -1,0 +1,42 @@
+/* ---------------------------------------------------------------------------
+   aniGamerPlus+ — home page
+   Only what the landing page adds on top of agp.css.
+   --------------------------------------------------------------------------- */
+.agp-body.is-loading .agp-section { display: none; }
+
+#homeBanner .agp-skeleton { border-radius: var(--agp-radius); }
+
+/* "Continue watching" cards carry a next-episode shortcut under the art, so the
+   card itself stays a single link to where the viewer left off. */
+.agp-continue-item {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+
+.agp-continue-item .agp-card { flex: 1; }
+
+.agp-continue-next {
+  align-items: center;
+  align-self: flex-start;
+  background: rgb(255 255 255 / 8%);
+  border-radius: 999px;
+  color: var(--agp-fg-dim);
+  display: inline-flex;
+  font-size: 12px;
+  font-weight: 600;
+  gap: 5px;
+  margin-top: 7px;
+  padding: 5px 11px;
+}
+
+.agp-continue-next:hover {
+  background: var(--agp-accent-soft);
+  color: #ff5c7a;
+}
+
+.agp-day .agp-rail { grid-auto-columns: minmax(190px, 232px); }
+
+@media (max-width: 720px) {
+  .agp-day .agp-rail { grid-auto-columns: minmax(150px, 190px); }
+}
