@@ -655,6 +655,17 @@ def __download_only(sn, dl_resolution='', dl_save_dir='', realtime_show_file_siz
                 err_print(sn, '下載異常', '異常詳情:\n' + traceback.format_exc(), status=1, display=False)
                 anime.video_size = 0
 
+    # 手動任務原本完全不碰資料庫, 下載好的檔案因此不會進 video_list.json,
+    # 首頁片庫與線上看都看不到它. 這裡補登記一筆, 讓手動下載的劇集跟追番下載的
+    # 一樣可以直接線上觀看.
+    try:
+        insert_db(anime)
+        update_db(anime)
+        if settings['dashboard']['online_watch']:
+            updatelist()
+    except BaseException:
+        err_print(sn, 'ＤＢ错误', '手動任務登記失敗: ' + traceback.format_exc(), status=1, display=False)
+
     download_cd = threading.Thread(target=download_cd_counter)
     download_cd.start()
 

@@ -7,12 +7,14 @@
 
 # 非阻塞
 from gevent import monkey; monkey.patch_all()
-from gevent import spawn
+from gevent import spawn, get_hub
 
 import json, sys, os, re, time
 import threading, traceback
 import random, string, hashlib, secrets
+import platform, shutil, subprocess
 
+from curl_cffi import requests as curl_requests
 from aniGamerPlus import Config
 from flask import Flask, request, jsonify, Response, redirect, make_response, g
 from flask import render_template, send_file, stream_with_context
@@ -123,6 +125,17 @@ def get_file_headers(path):
     etag = hashlib.md5(etag_base).hexdigest()
 
     return etag, last_modified, stat.st_size
+
+
+def _apply_cache_headers(resp, current_settings, max_age):
+    # 要登入才能看的片库不能标成 public: 前面挂个共用快取 (Cloudflare 之类),
+    # 登入用户抓过的东西就会被原样发给没 cookie 的人
+    if current_settings['dashboard']['online_watch_requires_login']:
+        resp.headers['Cache-Control'] = 'private, max-age=%d' % max_age
+        resp.headers['Vary'] = 'Cookie'
+    else:
+        resp.headers['Cache-Control'] = 'public, max-age=%d' % max_age
+    return resp
 
 
 checknow = lambda e: None
@@ -394,6 +407,198 @@ def _find_video_entry(sn):
         if str(video.get('sn')) == sn_str:
             return video
     return None
+
+
+_ffmpeg_path_cache = None
+_ffmpeg_missing_logged = False
+_keyed_locks = {}
+_keyed_locks_guard = threading.Lock()
+_thumbnail_failures = {}
+
+# 官方的每集封面, 12 小时够新了
+ANIME_INFO_TTL = 12 * 60 * 60
+ANIME_INFO_API = 'https://api.gamer.com.tw/anime/v1/video.php?videoSn='
+# 只有从动画疯下的集数才有官方封面, 本地导入的 sn 是 aniGamerPlus 自己编的
+BAHAMUT_SOURCE = '巴哈姆特動畫瘋'
+# 抓不到就先记着, 否则首页每重绘一次 (搜索框每敲一个字) 就重来一轮上游请求
+THUMBNAIL_RETRY_INTERVAL = 10 * 60
+
+
+def _keyed_lock(name):
+    # 同一集同时被多个卡片请求时, 只干一次活
+    with _keyed_locks_guard:
+        if name not in _keyed_locks:
+            _keyed_locks[name] = threading.Lock()
+        return _keyed_locks[name]
+
+
+def _offload(func, *args, **kwargs):
+    # curl_cffi 的 socket I/O 在 C 里, monkey.patch_all 管不到, 直接在 greenlet
+    # 里调用会把整个 hub 停住 —— 下载器、WebSocket 进度、别的请求全一起冻结.
+    # 它在 libcurl perform 期间放开 GIL, 丢进 gevent 的真线程池就不挡别人.
+    return get_hub().threadpool.apply(func, args, kwargs)
+
+
+def _curl_perform(session_kwargs, url, request_kwargs):
+    session = curl_requests.Session(**session_kwargs)
+    return session.request('get', url, **request_kwargs)
+
+
+def _bahamut_get(url, timeout=10):
+    """跟 Config.bahamut_request 用同一套指纹, 但配置在 greenlet 上读完再下线程池.
+
+    read_settings() 顺手会删过期日志、必要时重写配置文件, 这些副作用一直只在
+    greenlet 里发生, 彼此不会交错; 搬到线程池里就可能两个线程同时删同一个文件.
+    所以线程池那一步只留 libcurl 的 perform.
+    """
+    settings = Config.read_settings()
+    fingerprint = settings.get('browser_fingerprint') or {}
+    session_kwargs = {
+        'impersonate': 'firefox' if 'firefox' in settings['ua'].lower() else 'chrome',
+        'ja3': fingerprint.get('ja3') or None,
+        'akamai': fingerprint.get('akamai') or None,
+    }
+    request_kwargs = {'headers': {'User-Agent': settings['ua']}, 'timeout': timeout}
+    if settings.get('use_proxy') and settings.get('proxy'):
+        request_kwargs['proxies'] = {'https': settings['proxy'], 'http': settings['proxy']}
+    return _offload(_curl_perform, session_kwargs, url, request_kwargs)
+
+
+def _get_ffmpeg_path():
+    # 与 Anime.py 一致: 先看系统 path, 再看工作目录
+    global _ffmpeg_path_cache, _ffmpeg_missing_logged
+    if not _ffmpeg_path_cache:  # 找不到时不记进缓存, 中途装上的 ffmpeg 才认得出来
+        found = shutil.which('ffmpeg') or ''
+        if not found:
+            local = os.path.join(Config.get_working_dir(),
+                                 'ffmpeg.exe' if 'Windows' in platform.system() else 'ffmpeg')
+            found = local if os.path.exists(local) else ''
+        _ffmpeg_path_cache = found
+        if not found and not _ffmpeg_missing_logged:
+            _ffmpeg_missing_logged = True  # 只吼一次, 不然每张卡片刷一行
+            err_print(0, '縮圖功能', '縮圖依賴於ffmpeg, 但ffmpeg未找到', status=1, no_sn=True)
+    return _ffmpeg_path_cache
+
+
+def _thumbnail_cache_path(sn):
+    cache_dir = os.path.join(Config.get_working_dir(), 'thumbnails')
+    if not os.path.exists(cache_dir):
+        os.makedirs(cache_dir, exist_ok=True)
+    return os.path.join(cache_dir, re.sub(r'[^0-9A-Za-z]', '', str(sn)) + '.jpg')
+
+
+def _make_thumbnail(video_path, output_path):
+    ffmpeg = _get_ffmpeg_path()
+    if not ffmpeg:
+        return False
+    tmp_path = output_path + '.tmp.jpg'
+    # 4 分钟处通常已过 OP, 片子太短就依次往前退
+    for seek in ('240', '30', '0'):
+        try:
+            subprocess.call([ffmpeg, '-y', '-loglevel', 'error', '-ss', seek,
+                             '-i', video_path, '-frames:v', '1',
+                             '-vf', 'scale=960:-2', '-q:v', '4', tmp_path],
+                            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        except BaseException:
+            err_print(0, '縮圖錯誤', traceback.format_exc(), status=1, no_sn=True, display=False)
+            return False
+        if os.path.exists(tmp_path) and os.path.getsize(tmp_path) > 0:
+            os.replace(tmp_path, output_path)
+            return True
+    if os.path.exists(tmp_path):
+        os.remove(tmp_path)
+    return False
+
+
+def _anime_info_cache_path(sn):
+    cache_dir = os.path.join(Config.get_working_dir(), 'anime_info')
+    if not os.path.exists(cache_dir):
+        os.makedirs(cache_dir, exist_ok=True)
+    return os.path.join(cache_dir, re.sub(r'[^0-9]', '', str(sn)) + '.json')
+
+
+def _read_anime_info_cache(cache_path):
+    if not os.path.exists(cache_path):
+        return None
+    if time.time() - os.path.getmtime(cache_path) >= ANIME_INFO_TTL:
+        return None
+    try:
+        with open(cache_path, 'r', encoding='utf-8') as f:
+            return json.load(f)
+    except BaseException:
+        return None  # 缓存坏了就当没有, 重新抓
+
+
+def _get_anime_info(sn):
+    """动画疯官方的单集资讯: 标题, 集数表, 每集封面, 上架时间.
+
+    走服务端而不是浏览器, 是因为这个 api 不发 CORS 头, 而公用的 cors 代理
+    现在要 api key 了. 服务端本来就在跟巴哈说话, 顺手转发一下最省事, 还能
+    落盘缓存, 首页几十张卡片不会去捶人家的 api.
+    """
+    cache_path = _anime_info_cache_path(sn)
+    cached = _read_anime_info_cache(cache_path)
+    if cached is not None:
+        return cached
+
+    with _keyed_lock('info-' + str(sn)):
+        cached = _read_anime_info_cache(cache_path)
+        if cached is not None:
+            return cached
+        try:
+            resp = _bahamut_get(ANIME_INFO_API + str(sn), timeout=10)
+            data = (resp.json() or {}).get('data')
+        except BaseException:
+            err_print(sn, '取得動畫資訊失敗', traceback.format_exc(), status=1, display=False)
+            return None
+        if not data:
+            return None
+        try:
+            with open(cache_path, 'w', encoding='utf-8') as f:
+                json.dump(data, f, ensure_ascii=False)
+        except BaseException:
+            pass  # 缓存写不进去不影响这次返回
+        return data
+
+
+def _build_thumbnail(sn, cache_path, entry):
+    """官方封面优先, 抽帧兜底.
+
+    官方封面是那一集的宣传图, 比从片子里随便抓的一帧好看得多. 抽帧留着应付
+    官方没图、api 挂了、或者片子根本不是从动画疯下的情况.
+    """
+    # 本地导入的集数 sn 是 aniGamerPlus 自己编的, 拿去问巴哈只是白等一趟往返
+    if entry.get('source') == BAHAMUT_SOURCE:
+        cover_url = ((_get_anime_info(sn) or {}).get('video') or {}).get('cover') or ''
+        if cover_url.strip():
+            tmp_path = cache_path + '.tmp.jpg'
+            try:
+                resp = _bahamut_get(cover_url.strip(), timeout=15)
+                if resp.status_code == 200 and resp.content:
+                    with open(tmp_path, 'wb') as f:
+                        f.write(resp.content)
+                    os.replace(tmp_path, cache_path)
+                    return True
+            except BaseException:
+                err_print(sn, '下載封面失敗', traceback.format_exc(), status=1, display=False)
+            if os.path.exists(tmp_path):
+                os.remove(tmp_path)
+
+    video_path = entry.get('path')
+    if not video_path or not os.path.exists(video_path):
+        return False
+    return _make_thumbnail(video_path, cache_path)
+
+
+def _thumbnail_recently_failed(sn):
+    return time.time() - _thumbnail_failures.get(str(sn), 0) < THUMBNAIL_RETRY_INTERVAL
+
+
+def _thumbnail_unavailable():
+    resp = jsonify({"error": "thumbnail unavailable"})
+    # 让浏览器也记着这次没图, 否则首页每重绘一次就要再问服务端一遍
+    resp.headers['Cache-Control'] = 'private, max-age=%d' % THUMBNAIL_RETRY_INTERVAL
+    return resp, 404
 
 
 def _should_update_danmu(sn):
@@ -735,6 +940,32 @@ def favicon():
     return send_file(os.path.join(static_path, 'img', 'aniGamerPlus.ico'))
 
 
+# A service worker may only control the paths below its own URL, so both it and
+# the manifest are mirrored at the site root instead of living under /static.
+@app.route('/manifest.webmanifest')
+def webmanifest():
+    response = make_response(send_file(os.path.join(static_path, 'manifest.webmanifest')))
+    response.headers['Content-Type'] = 'application/manifest+json; charset=utf-8'
+    return response
+
+
+@app.route('/sw.js')
+def service_worker():
+    response = make_response(send_file(os.path.join(static_path, 'sw.js')))
+    response.headers['Content-Type'] = 'application/javascript; charset=utf-8'
+    response.headers['Service-Worker-Allowed'] = '/'
+    response.headers['Cache-Control'] = 'no-cache'
+    return response
+
+
+# iOS looks for these at the root when a page is added to the home screen from
+# a URL it has not parsed the <link> tags of (e.g. a shared link).
+@app.route('/apple-touch-icon.png')
+@app.route('/apple-touch-icon-precomposed.png')
+def apple_touch_icon():
+    return send_file(os.path.join(static_path, 'img', 'pwa', 'apple-touch-icon.png'))
+
+
 if settings["dashboard"]["online_watch"]:
     @app.route('/watch')
     def watch():
@@ -744,6 +975,72 @@ if settings["dashboard"]["online_watch"]:
             if not vaild_user:
                 return redirect("./login?error=2")
         return render_template('watch.html', watch_bootstrap=_build_watch_bootstrap(current_settings))
+
+
+    @app.route('/anime_info')
+    def get_anime_info():
+        # 动画疯官方的单集资讯, 服务端代抓 (那个 api 不发 CORS 头)
+        current_settings = _sync_plugin_manager()
+        if current_settings['dashboard']['online_watch_requires_login']:
+            vaild_user, user_role = verify_user(request.cookies)
+            if not vaild_user:
+                return jsonify({"error": "login required"}), 403
+
+        sn = request.args.get('id')
+        if not sn or not str(sn).isdigit():
+            return jsonify({"error": "invalid sn"}), 400
+        # 不在片库里的 sn 一律不转发, 免得这个路由变成打向巴哈的请求放大器
+        if _find_video_entry(sn) is None:
+            return jsonify({"error": "video not found"}), 404
+
+        info = _get_anime_info(sn)
+        if not info:
+            return jsonify({"error": "anime info unavailable"}), 404
+        resp = jsonify(info)
+        resp.headers['Cache-Control'] = 'private, max-age=3600'
+        return resp
+
+    @app.route('/thumbnail.jpg')
+    def get_thumbnail():
+        # 首页/播放页的封面: 官方封面抓不到才从影片里抽一帧, 抓过就落盘缓存
+        current_settings = _sync_plugin_manager()
+        if current_settings['dashboard']['online_watch_requires_login']:
+            vaild_user, user_role = verify_user(request.cookies)
+            if not vaild_user:
+                return jsonify({"error": "login required"}), 403
+
+        sn = request.args.get('id')
+        if not sn or not str(sn).isdigit():
+            return jsonify({"error": "invalid sn"}), 400
+
+        cache_path = _thumbnail_cache_path(sn)
+        if not os.path.exists(cache_path):
+            # 先确认 sn 真的在片库里再干活: 否则任何人都能拿这个路由去捶巴哈,
+            # 顺手把锁表和 anime_info/ 撑到没边
+            entry = _find_video_entry(sn)
+            if entry is None:
+                return jsonify({"error": "video not found"}), 404
+            if not _thumbnail_recently_failed(sn):
+                with _keyed_lock('thumb-' + str(sn)):
+                    # 排队的这段时间里, 前面那个请求可能刚好失败. 拿到锁必须再看一眼
+                    # 退避, 否则退避形同虚设, 一次失败会被并发放大成 N 次抓取
+                    if not os.path.exists(cache_path) and not _thumbnail_recently_failed(sn):
+                        if _build_thumbnail(sn, cache_path, entry):
+                            _thumbnail_failures.pop(str(sn), None)
+                        else:
+                            _thumbnail_failures[str(sn)] = time.time()
+            if not os.path.exists(cache_path):
+                return _thumbnail_unavailable()
+
+        etag, last_modified, file_size = get_file_headers(cache_path)
+        if request.headers.get('If-None-Match') == etag:
+            resp = Response(status=304)
+        else:
+            resp = send_file(cache_path, mimetype='image/jpeg')
+        resp.headers['ETag'] = etag
+        resp.headers['Last-Modified'] = last_modified
+        _apply_cache_headers(resp, current_settings, 86400)
+        return resp
 
 
     @app.route('/get_video.mp4')
@@ -783,7 +1080,7 @@ if settings["dashboard"]["online_watch"]:
             resp = Response(status=304)  # Not Modified
             resp.headers['ETag'] = etag
             resp.headers['Last-Modified'] = last_modified
-            resp.headers['Cache-Control'] = 'public, max-age=3600'
+            _apply_cache_headers(resp, current_settings, 3600)
             return resp
 
         # 檢查 Range header
@@ -792,7 +1089,7 @@ if settings["dashboard"]["online_watch"]:
         # --- Case 1: 沒有 Range → 直接回傳整份檔案 ---
         if not range_header:
             resp = send_file(path, mimetype='video/mp4', as_attachment=True, download_name=filename)
-            resp.headers['Cache-Control'] = 'public, max-age=3600'
+            _apply_cache_headers(resp, current_settings, 3600)
             resp.headers['ETag'] = etag
             resp.headers['Last-Modified'] = last_modified
             resp.headers['Accept-Ranges'] = 'bytes'
@@ -823,7 +1120,7 @@ if settings["dashboard"]["online_watch"]:
         resp.headers.add('Content-Range', f'bytes {byte1}-{byte1 + length - 1}/{file_size}')
         resp.headers.add('Accept-Ranges', 'bytes')
         resp.headers.add('Content-Length', str(length))
-        resp.headers['Cache-Control'] = 'public, max-age=3600'
+        _apply_cache_headers(resp, current_settings, 3600)
         resp.headers['ETag'] = etag
         resp.headers['Last-Modified'] = last_modified
         resp.headers['Content-Disposition'] = content_disposition
@@ -889,7 +1186,22 @@ if settings["dashboard"]["online_watch"]:
         if gettype == 'set':
             for user in userdata['users']:
                 if user['token'] == token:
-                    user['videotimes'][sn] = {"time": int(float(reqdata.get('time'))), "ended": ended, "timestamp": int(datetime.now().timestamp())}
+                    # 播放器偶尔会送回 Infinity 或空值 (直播源、moov 里没写时长),
+                    # 一个坏参数不该变成 500 把整笔进度一起丢掉
+                    try:
+                        entry = {"time": int(float(reqdata.get('time'))), "ended": ended, "timestamp": int(datetime.now().timestamp())}
+                    except (TypeError, ValueError, OverflowError):
+                        return '{"status":"400", "msg":"Invalid time"}', 400
+                    # The player reports the media duration alongside the
+                    # position so the library can draw a real progress bar
+                    # instead of guessing against a nominal episode length.
+                    try:
+                        duration = int(float(reqdata.get('duration')))
+                        if duration > 0:
+                            entry['duration'] = duration
+                    except (TypeError, ValueError, OverflowError):
+                        pass
+                    user['videotimes'][sn] = entry
                     save_user_data(userdata)
                     return '{"status":"200"}'
         elif gettype == 'get':

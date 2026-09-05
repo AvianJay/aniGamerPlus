@@ -127,6 +127,9 @@ temp/
 cookie2.txt
 */*.iml
 video_list.json
+thumbnails/
+anime_info/
+tests/_shots/
 Dashboard/sslkey/server.crt
 Dashboard/sslkey/server.key
 cookies.pkl
