@@ -1269,6 +1269,14 @@ def test_a_streaming_episode_still_lists_the_whole_series(page, server, download
     expect(page.locator('#episodeGrid .watch-episode-btn.is-current')).to_have_text('1')
     # And the rest of the series is right there to carry on with.
     assert page.locator('#episodeGrid button[data-stream]').count() > 100
+
+    # Nothing on disk yet, so the library has no episode number to offer and the
+    # header read 「單集」 over a title with the episode bracketed into it. Both
+    # come off the official table instead.
+    bar = page.locator('#watchTitleBar')
+    expect(bar.locator('h1')).to_have_text(re.compile(r'^%s' % re.escape(HLS_ANIME)))
+    expect(bar).to_contain_text('第 1 集')
+    assert '單集' not in bar.inner_text()
     assert page.errors == []
 
 

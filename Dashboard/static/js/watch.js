@@ -217,6 +217,31 @@ async function fetchSeriesInfo(sn) {
 
 /* 官方的集數表攤成播放頁認得的形狀: sn / episode / resolution 跟 video_list.json
    那邊一樣, 集數列跟 watchUrl() 就不必分辨手上這筆是哪裡來的 */
+function officialEpisode(info, sn) {
+    /* 邊看邊下載進來的那一集, 片庫還沒有檔, video.episode 是空的 —— 集數
+       只有官方那張表知道 */
+    var groups = (info && info.groups) || [];
+    for (var g = 0; g < groups.length; g += 1) {
+        var episodes = groups[g].episodes || [];
+        for (var e = 0; e < episodes.length; e += 1) {
+            if (String(episodes[e].videoSn) === String(sn)) { return episodes[e]; }
+        }
+    }
+    return null;
+}
+
+
+function seriesName(info, video) {
+    return (info && info.title) || video.anime_name;
+}
+
+
+function hereLabel(info, video) {
+    var here = officialEpisode(info, video.sn);
+    return here ? episodeLabel({episode: here.episode}) : episodeLabel(video);
+}
+
+
 function officialGroups(info, video) {
     return (info && info.groups ? info.groups : []).map(function (group) {
         return {
@@ -1958,11 +1983,11 @@ function renderTitleBar(video, series, info) {
     var favourite = readStore(favKey, '0') === '1';
 
     host.innerHTML = '<div class="watch-titlebar-main">' +
-        '<h1>' + AGP.escapeHtml(video.anime_name) +
+        '<h1>' + AGP.escapeHtml(seriesName(info, video)) +
         (video.resolution ? '<span class="watch-rating">' + AGP.escapeHtml(video.resolution) + 'P</span>' : '') +
         '</h1>' +
         '<p class="watch-subtitle">' +
-        '<span>' + AGP.escapeHtml(episodeLabel(video)) + '</span>' +
+        '<span>' + AGP.escapeHtml(hereLabel(info, video)) + '</span>' +
         '<span>' + AGP.icon('list', 14) + '共 ' + total + ' 集</span>' +
         (video.timestamp ? '<span>' + AGP.icon('clock', 14) +
             AGP.dayLabel(video.timestamp).title + ' ' + AGP.clockOf(video.timestamp) + '</span>' : '') +
@@ -2100,7 +2125,7 @@ function renderInfoCard(video, series, info) {
         (info && info.publisher ? field('代理商', info.publisher) : '') +
         (info && info.score ? field('評分', info.score) : '') +
         (info && info.popular ? field('人氣', info.popular) : '') +
-        field('集數', total + ' 集，目前為 ' + episodeLabel(video)) +
+        field('集數', total + ' 集，目前為 ' + hereLabel(info, video)) +
         (video.resolution ? field('畫質', video.resolution + 'P') : '') +
         field('彈幕', video.danmu ? '支援' : '此集無彈幕檔') +
         (newest.timestamp ? field('最後更新', new Date(newest.timestamp * 1000).toLocaleString('zh-TW')) : '') +

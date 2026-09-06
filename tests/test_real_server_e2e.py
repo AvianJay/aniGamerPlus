@@ -266,6 +266,39 @@ def test_the_watch_page_shows_bahamut_own_description_and_cover(page, downloaded
     assert page.errors == []
 
 
+def test_series_json_answers_for_an_episode_that_is_not_downloaded_yet(page, downloaded_episode):
+    """Tapping a chip that is not on disk queues the download and goes straight
+    to ``/watch?id=SN&streaming=1``. At that instant the sn is in neither the
+    library nor ``tasks_progress_rate`` -- the downloader thread has not
+    registered it -- so this route used to 404, the page fell back to the
+    library, and the library held exactly the one file being fetched. 選集 then
+    said 共 1 集 with a single 「單集」 chip."""
+    info = series_info(page)
+    remote = [episode for group in info['groups'] for episode in group['episodes']
+              if not episode['local']]
+    if not remote:
+        pytest.skip('the whole series is downloaded; no pending episode to ask about')
+
+    for episode in remote[:3]:
+        answer = series_info(page, episode['videoSn'])
+        assert answer['title'] == info['title']
+        total = sum(len(group['episodes']) for group in answer['groups'])
+        assert total == sum(len(group['episodes']) for group in info['groups'])
+        # And it knows which episode of the series that sn is, which is the only
+        # place the header can get an episode number before the file exists.
+        listed = [e for g in answer['groups'] for e in g['episodes']
+                  if e['videoSn'] == episode['videoSn']]
+        assert listed and listed[0]['episode'] == episode['episode']
+
+
+def test_series_json_still_refuses_an_sn_from_nowhere(page, downloaded_episode):
+    """Widening the door for a pending episode must not open it to any sn at
+    all -- this route fetches from 巴哈 on the caller's behalf, and an
+    unrestricted one is a request amplifier pointed at them."""
+    response = page.request.get('%s/watch/series.json?id=1' % BASE_URL)
+    assert response.status == 404, response.status
+
+
 def test_the_episode_list_is_the_whole_series_not_the_library(page, downloaded_episode):
     """One episode downloaded out of fifteen, and 選集 said 共 1 集."""
     open_player(page)

@@ -576,6 +576,40 @@ def _get_anime_info(sn):
         return data
 
 
+# videoSn -> 哪一份 anime_info 快取裡列著這一集. 邊看邊下載按下去的那一瞬間,
+# 那一集既不在片庫也還沒進 tasks_progress_rate, 這張表是當下唯一認得它的東西
+_EPISODE_OWNERS = {'stamp': None, 'map': {}}
+
+
+def _episode_owners():
+    """把快取過的集數表反過來排: 一集的 videoSn 查得到它屬於哪一部作品.
+
+    指紋要戴上 mtime: 新一集上架時 anime_info 是原檔覆寫, 檔名不變, 只比
+    檔名的話那一集就永遠進不了這張表。
+    """
+    cache_dir = os.path.join(Config.get_working_dir(), 'anime_info')
+    try:
+        names = sorted(name for name in os.listdir(cache_dir) if name.endswith('.json'))
+        stamp = tuple((name, os.path.getmtime(os.path.join(cache_dir, name)))
+                      for name in names)
+    except OSError:
+        return {}
+    if _EPISODE_OWNERS['stamp'] == stamp:
+        return _EPISODE_OWNERS['map']
+
+    owners = {}
+    for name in names:
+        info = _read_anime_info_cache(os.path.join(cache_dir, name))
+        for episodes in (((info or {}).get('anime') or {}).get('episodes') or {}).values():
+            for episode in episodes or []:
+                video_sn = str(episode.get('videoSn') or '')
+                if video_sn:
+                    owners.setdefault(video_sn, name[:-len('.json')])
+    _EPISODE_OWNERS['stamp'] = stamp
+    _EPISODE_OWNERS['map'] = owners
+    return owners
+
+
 def _catalog_cache_path(name):
     cache_dir = os.path.join(Config.get_working_dir(), 'catalog')
     if not os.path.exists(cache_dir):
@@ -1591,12 +1625,16 @@ if settings["dashboard"]["online_watch"]:
         if not sn or not str(sn).isdigit():
             return jsonify({"error": "invalid sn"}), 400
         # 跟 /anime_info、/thumbnail.jpg 同一道門: 片庫裡有, 或者正在下載, 才代抓
-        if _find_video_entry(sn) is None and _hls_task(sn) is None:
-            return jsonify({"error": "video not found"}), 404
-
-        info = _get_anime_info(sn)
+        if _find_video_entry(sn) is not None or _hls_task(sn) is not None:
+            info = _get_anime_info(sn)
+        else:
+            # 剛按下邊看邊下載的那一集: 下載執行緒還沒登記它, 片庫也還沒有檔,
+            # 但它就列在剛剛那一部作品的集數表上。認那張表, 不另外去問巴哈 ——
+            # 這條路由依舊不會變成任人指定 sn 就替他打巴哈的請求放大器
+            owner = _episode_owners().get(str(sn))
+            info = _get_anime_info(owner) if owner else None
         if not info:
-            return jsonify({"error": "anime info unavailable"}), 404
+            return jsonify({"error": "video not found"}), 404
 
         anime = info.get('anime') or {}
         video = info.get('video') or {}
