@@ -71,8 +71,7 @@ class _UserManagePageState extends State<UserManagePage> {
       if (!mounted) return;
       setState(() {
         _loading = false;
-        // 舊版伺服器的 /usermanage 只吐 HTML, 沒有 format=json
-        _error = '拿不到用戶清單。這台伺服器可能還沒更新到支援 JSON 的版本。';
+        _error = '拿不到用戶清單，伺服器回的東西看不懂。';
       });
     }
   }

@@ -48,6 +48,10 @@ const int kSkipSeconds = 10;
 const double kGestureSeekSpan = 120;
 const double kMinBrightness = 0.2;
 
+/// 非全螢幕時, 播放器最多吃掉這麼多高度. 剩下的留給作品資訊跟選集 ——
+/// 手機直著拿本來就吃不到這個上限, 只有平板跟橫著拿的時候會生效.
+const double kPlayerMaxHeightRatio = 0.55;
+
 /// 手指按不出 mousemove, 所以控制列留得比桌面久
 const Duration kControlsIdle = Duration(milliseconds: 8000);
 const int kNextEpisodeCountdown = 8;
@@ -414,6 +418,10 @@ class _WatchPageState extends State<WatchPage>
     if ((text == null || text.isEmpty) && !state.offline) {
       try {
         text = await client.danmakuAss(_sn);
+        // 這一集有下載但還沒存到彈幕的話, 順手補一份給離線用
+        if (text.trim().isNotEmpty) {
+          unawaited(store.cacheDanmaku(_sn, text));
+        }
       } catch (_) {
         text = null;
       }
@@ -1102,12 +1110,40 @@ class _WatchPageState extends State<WatchPage>
             ? _playerSurface()
             : SafeArea(
                 bottom: false,
-                child: Column(
-                  children: [
-                    _titleBar(),
-                    AspectRatio(aspectRatio: 16 / 9, child: _playerSurface()),
-                    Expanded(child: _pageBody()),
-                  ],
+                child: LayoutBuilder(
+                  builder: (context, constraints) {
+                    // 平板橫著拿的時候, 整片 16:9 會把螢幕吃光, 底下的作品資訊
+                    // 跟選集一格都露不出來. 播放器最多只能佔這麼高, 超過就
+                    // 連寬度一起縮, 維持 16:9 置中, 兩側留黑.
+                    final height = math.min(
+                      constraints.maxWidth * 9 / 16,
+                      constraints.maxHeight * kPlayerMaxHeightRatio,
+                    );
+                    final width = math.min(
+                      constraints.maxWidth,
+                      height * 16 / 9,
+                    );
+                    return Column(
+                      children: [
+                        _titleBar(),
+                        SizedBox(
+                          height: height,
+                          width: constraints.maxWidth,
+                          child: ColoredBox(
+                            color: Colors.black,
+                            child: Center(
+                              child: SizedBox(
+                                width: width,
+                                height: height,
+                                child: _playerSurface(),
+                              ),
+                            ),
+                          ),
+                        ),
+                        Expanded(child: _pageBody()),
+                      ],
+                    );
+                  },
                 ),
               ),
       ),

@@ -280,21 +280,11 @@ class _AllTabState extends State<AllTab> {
   }) {
     return LayoutBuilder(
       builder: (context, constraints) {
-        const columns = 3;
-        const spacing = 10.0;
-        final itemWidth =
-            (constraints.maxWidth - 32 - spacing * (columns - 1)) / columns;
         return GridView.builder(
-          padding: const EdgeInsets.symmetric(horizontal: 16),
+          padding: const EdgeInsets.symmetric(horizontal: kPosterGridPadding),
           shrinkWrap: true,
           physics: const NeverScrollableScrollPhysics(),
-          gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(
-            crossAxisCount: columns,
-            crossAxisSpacing: spacing,
-            mainAxisSpacing: 16,
-            // 圖是 3:4, 底下留兩行字的位置 —— 用比例算會在窄螢幕上溢出
-            mainAxisExtent: itemWidth * 4 / 3 + 52,
-          ),
+          gridDelegate: posterGridDelegate(constraints.maxWidth),
           itemCount: count,
           itemBuilder: builder,
         );

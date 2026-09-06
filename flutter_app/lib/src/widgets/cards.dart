@@ -1,6 +1,8 @@
 /// 片庫 / 片單的卡片.
 library;
 
+import 'dart:math' as math;
+
 import 'package:flutter/material.dart';
 
 import '../api/models.dart';
@@ -9,6 +11,31 @@ import '../state/downloads.dart';
 import '../theme.dart';
 import '../util/format.dart';
 import 'common.dart';
+
+/// 一格海報大概長這麼寬. 欄數是除出來的, 不是寫死的 —— 寫死 3 欄的話
+/// 平板上一張封面會撐到 200 多寬, 像被放大鏡照過.
+const double kPosterTargetWidth = 128;
+const double kPosterGridSpacing = 10;
+const double kPosterGridPadding = 16;
+
+/// 封面底下留給標題跟集數那兩行字的高度
+const double kPosterCaptionHeight = 52;
+
+/// 片庫、收藏共用的海報格線. 手機還是 3 欄 (寬度除下來剛好), 平板會自己
+/// 長成 5 欄以上, 每一格的寬度維持差不多.
+SliverGridDelegate posterGridDelegate(double width) {
+  final usable = width - kPosterGridPadding * 2;
+  final columns = math.max(3, (usable / kPosterTargetWidth).round());
+  final itemWidth =
+      math.max(1.0, (usable - kPosterGridSpacing * (columns - 1)) / columns);
+  return SliverGridDelegateWithFixedCrossAxisCount(
+    crossAxisCount: columns,
+    crossAxisSpacing: kPosterGridSpacing,
+    mainAxisSpacing: 16,
+    // 圖是 3:4, 底下留兩行字的位置 —— 用比例算會在窄螢幕上溢出
+    mainAxisExtent: itemWidth * 4 / 3 + kPosterCaptionHeight,
+  );
+}
 
 /// 直式海報 (片單用, 3:4)
 class PosterCard extends StatelessWidget {

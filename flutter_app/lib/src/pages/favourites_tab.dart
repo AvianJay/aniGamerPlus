@@ -30,18 +30,10 @@ class FavouritesTab extends StatelessWidget {
 
     return LayoutBuilder(
       builder: (context, constraints) {
-        const columns = 3;
-        const spacing = 10.0;
-        final itemWidth =
-            (constraints.maxWidth - 32 - spacing * (columns - 1)) / columns;
         return GridView.builder(
-          padding: const EdgeInsets.fromLTRB(16, 16, 16, 28),
-          gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(
-            crossAxisCount: columns,
-            crossAxisSpacing: spacing,
-            mainAxisSpacing: 16,
-            mainAxisExtent: itemWidth * 4 / 3 + 52,
-          ),
+          padding: const EdgeInsets.fromLTRB(
+              kPosterGridPadding, 16, kPosterGridPadding, 28),
+          gridDelegate: posterGridDelegate(constraints.maxWidth),
           itemCount: list.length,
           itemBuilder: (context, index) {
             final item = list[index];

@@ -18,6 +18,16 @@ import '../api/models.dart';
 
 enum DownloadStatus { queued, running, paused, done, failed }
 
+/// 下載完之後隔多久回頭問一次彈幕. 伺服器是收到請求才開始生 .ass, 生完
+/// 之前一律 404, 所以第一次一定撲空 —— 加起來大概等半分鐘.
+const List<Duration> kDanmakuRetryWaits = [
+  Duration.zero,
+  Duration(seconds: 3),
+  Duration(seconds: 6),
+  Duration(seconds: 10),
+  Duration(seconds: 15),
+];
+
 class DownloadEntry {
   final String sn;
   String animeName;
@@ -29,6 +39,11 @@ class DownloadEntry {
   DownloadStatus status;
   String error;
   int addedAt;
+
+  /// 使用者想不想要彈幕 (下載時的「一起抓彈幕」)
+  bool wantDanmaku;
+
+  /// 彈幕檔真的躺在硬碟上了
   bool hasDanmaku;
   bool hasThumb;
 
@@ -43,6 +58,7 @@ class DownloadEntry {
     this.status = DownloadStatus.queued,
     this.error = '',
     int? addedAt,
+    this.wantDanmaku = true,
     this.hasDanmaku = false,
     this.hasThumb = false,
   }) : addedAt = addedAt ?? DateTime.now().millisecondsSinceEpoch;
@@ -70,6 +86,7 @@ class DownloadEntry {
         'status': status.name,
         'error': error,
         'addedAt': addedAt,
+        'wantDanmaku': wantDanmaku,
         'hasDanmaku': hasDanmaku,
         'hasThumb': hasThumb,
       };
@@ -91,6 +108,8 @@ class DownloadEntry {
       ),
       error: (json['error'] ?? '').toString(),
       addedAt: int.tryParse('${json['addedAt']}') ?? 0,
+      // 舊紀錄沒這個欄位, 當成「要」—— 這是預設值
+      wantDanmaku: json['wantDanmaku'] != false,
       hasDanmaku: json['hasDanmaku'] == true,
       hasThumb: json['hasThumb'] == true,
     );
@@ -265,7 +284,11 @@ class DownloadStore extends ChangeNotifier {
     if (video.resolution > 0) entry.resolution = video.resolution;
     entry.status = DownloadStatus.queued;
     entry.error = '';
-    entry.hasDanmaku = entry.hasDanmaku || (withDanmaku && video.danmu);
+    // video.danmu 是「伺服器現在手上有沒有這一集的彈幕」, 拿它當條件的話,
+    // 伺服器還沒生檔的集數就永遠不會去抓. 想不想要是使用者決定的, 有沒有
+    // 抓到等 _fetchDanmaku 回報.
+    entry.wantDanmaku = withDanmaku;
+    entry.hasDanmaku = entry.hasDanmaku && danmakuFile(entry.sn).existsSync();
     _entries[entry.sn] = entry;
 
     await _save();
@@ -468,17 +491,7 @@ class DownloadStore extends ChangeNotifier {
     entry.error = '';
     notifyListeners();
 
-    // 彈幕跟封面是配菜, 抓不到不該讓整集算失敗
-    try {
-      final ass = await _client.danmakuAss(entry.sn);
-      if (ass.trim().isNotEmpty) {
-        await danmakuFile(entry.sn).writeAsString(ass);
-        entry.hasDanmaku = true;
-      }
-    } catch (_) {
-      entry.hasDanmaku = entry.hasDanmaku && danmakuFile(entry.sn).existsSync();
-    }
-
+    // 封面是配菜, 抓不到不該讓整集算失敗
     try {
       final response = await http.get(
         _client.thumbnailUrl(entry.sn),
@@ -492,6 +505,53 @@ class DownloadStore extends ChangeNotifier {
       entry.hasThumb = thumbFile(entry.sn).existsSync();
     }
 
+    await _save();
+    notifyListeners();
+
+    // 彈幕另外跑, 不佔佇列: 見 _fetchDanmaku, 最久要等半分鐘
+    if (entry.wantDanmaku) unawaited(_fetchDanmaku(entry));
+  }
+
+  /// 伺服器的 /get_danmu.ass 是被問到才去生檔的 —— 檔案還沒生出來之前它
+  /// 直接回 404, 同時在背景開一條 thread 去抓. 問一次就放棄的話, 剛下載完
+  /// 的那一集離線永遠沒有彈幕, 所以這裡多問幾輪等它生完.
+  Future<void> _fetchDanmaku(DownloadEntry entry) async {
+    for (final wait in kDanmakuRetryWaits) {
+      if (wait > Duration.zero) await Future<void>.delayed(wait);
+      // 等待途中被刪掉了就別再寫檔
+      if (!_entries.containsKey(entry.sn)) return;
+      try {
+        final ass = await _client.danmakuAss(entry.sn);
+        if (ass.trim().isNotEmpty) {
+          await danmakuFile(entry.sn).writeAsString(ass);
+          entry.hasDanmaku = true;
+          await _save();
+          notifyListeners();
+          return;
+        }
+      } catch (_) {
+        // 網路斷了就算了, 彈幕是配菜
+      }
+    }
+    if (entry.hasDanmaku && !danmakuFile(entry.sn).existsSync()) {
+      entry.hasDanmaku = false;
+      await _save();
+      notifyListeners();
+    }
+  }
+
+  /// 播放頁從網路抓到彈幕時順手存一份: 這一集已經下載好的話, 下次沒網路
+  /// 也有彈幕. 修好之前下載的那些集數靠的就是這裡.
+  Future<void> cacheDanmaku(String sn, String ass) async {
+    final entry = _entries[sn];
+    if (entry == null || !entry.playable || !entry.wantDanmaku) return;
+    if (ass.trim().isEmpty || entry.hasDanmaku) return;
+    try {
+      await danmakuFile(sn).writeAsString(ass);
+    } catch (_) {
+      return;
+    }
+    entry.hasDanmaku = true;
     await _save();
     notifyListeners();
   }

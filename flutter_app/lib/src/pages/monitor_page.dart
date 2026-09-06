@@ -92,7 +92,7 @@ class _MonitorPageState extends State<MonitorPage> {
     }
 
     try {
-      final channel = WebSocketChannel.connect(state.client.tasksProgressUrl());
+      final channel = state.client.connectTasksProgress();
       _channel = channel;
       _sub = channel.stream.listen(
         _onMessage,

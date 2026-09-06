@@ -9,6 +9,8 @@ import 'dart:async';
 import 'dart:convert';
 
 import 'package:http/http.dart' as http;
+import 'package:web_socket_channel/io.dart';
+import 'package:web_socket_channel/web_socket_channel.dart';
 
 import 'models.dart';
 
@@ -328,12 +330,63 @@ class AgpClient {
   // ---------------------------------------------------------------- 用戶管理
 
   Future<List<ManagedUser>> users() async {
-    final data = await _json('/usermanage', {'format': 'json'});
-    if (data is! Map) return [];
-    return ((data['users'] as List?) ?? [])
-        .whereType<Map>()
-        .map((e) => ManagedUser.fromJson(e.cast<String, dynamic>()))
-        .toList();
+    final response = await _get('/usermanage', {'format': 'json'});
+    if (response.statusCode >= 400) _fail(response);
+    final body = utf8.decode(response.bodyBytes, allowMalformed: true);
+
+    try {
+      final data = jsonDecode(body);
+      if (data is Map) {
+        return ((data['users'] as List?) ?? [])
+            .whereType<Map>()
+            .map((e) => ManagedUser.fromJson(e.cast<String, dynamic>()))
+            .toList();
+      }
+    } catch (_) {
+      // 不是 JSON, 那就是還沒更新的伺服器丟回來的整頁 HTML —— 往下撈
+    }
+    return _usersFromHtml(body);
+  }
+
+  /// format=json 是這份 repo 才有的, 伺服器沒跟著更新的話 /usermanage 回的
+  /// 還是整頁 usermanage.html. 那張表每一列長這樣:
+  ///
+  ///     <tr data-username="alice">
+  ///       <td class="font-weight-bold">alice</td>
+  ///       <td><select ...><option value="user" selected>user</option>
+  ///           <option value="admin" >admin</option></select></td>
+  ///       <td>12</td>
+  ///
+  /// 撈這三格畫面就夠用了. 帳號限英數字底線, 不會有跳脫字元要還原.
+  static final RegExp _userRow = RegExp(
+    r'<tr[^>]*\sdata-username="([^"]*)"[^>]*>(.*?)</tr>',
+    dotAll: true,
+    caseSensitive: false,
+  );
+
+  /// 沒選到的那個 option 是 `value="admin" >`, 中間不會有 selected
+  static final RegExp _adminSelected = RegExp(
+    r'<option[^>]*value="admin"[^>]*\bselected\b',
+    caseSensitive: false,
+  );
+
+  /// 只有觀看紀錄那格是沒有屬性的純數字 td
+  static final RegExp _plainNumberCell = RegExp(r'<td>\s*(\d+)\s*</td>');
+
+  static List<ManagedUser> _usersFromHtml(String html) {
+    final users = <ManagedUser>[];
+    for (final match in _userRow.allMatches(html)) {
+      final username = (match.group(1) ?? '').trim();
+      if (username.isEmpty) continue;
+      final row = match.group(2) ?? '';
+      users.add(ManagedUser(
+        username: username,
+        role: _adminSelected.hasMatch(row) ? 'admin' : 'user',
+        videoTimes:
+            int.tryParse(_plainNumberCell.firstMatch(row)?.group(1) ?? '') ?? 0,
+      ));
+    }
+    return users;
   }
 
   Future<String> manageUser(String action,
@@ -421,6 +474,17 @@ class AgpClient {
       path: '/data/tasks_progress',
     );
   }
+
+  /// 任務監控的 WebSocket.
+  ///
+  /// 一定要走 IO 版: 伺服器開了帳號系統的話, /data/tasks_progress 會去讀
+  /// cookie 裡的 token, 不是管理員就直接 close. 跨平台的
+  /// WebSocketChannel.connect 不收 headers, 帶不了 cookie, 連上就被踢掉,
+  /// 畫面永遠停在「連線中斷, 正在重連」。
+  WebSocketChannel connectTasksProgress() => IOWebSocketChannel.connect(
+        tasksProgressUrl(),
+        headers: authHeaders,
+      );
 
   void close() => _http.close();
 }
