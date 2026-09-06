@@ -270,6 +270,7 @@ function AgpPlayer(shell, options) {
     this.danmakuOpacity = Number(readStore('agp-danmaku-opacity', '100')) || 100;
     this.danmakuArea = readStore('agp-danmaku-area', '100');
     this.aspectMode = readStore('agp-aspect', 'contain');
+    this.pseudoFullscreen = false;
     this.autoNext = readStore('agp-auto-next', '1') === '1';
     /* Native reports what the screen is actually at, so the first drag starts
        from what the viewer is looking at rather than from a number the browser
@@ -1054,6 +1055,10 @@ AgpPlayer.prototype.applyAspect = function () {
 AgpPlayer.prototype.toggleFullscreen = function () {
     var self = this;
     var element = this.shell;
+    if (this.pseudoFullscreen) {
+        this.setPseudoFullscreen(false);
+        return;
+    }
     if (document.fullscreenElement || document.webkitFullscreenElement) {
         (document.exitFullscreen || document.webkitExitFullscreen).call(document);
         return;
@@ -1061,18 +1066,47 @@ AgpPlayer.prototype.toggleFullscreen = function () {
     var request = element.requestFullscreen || element.webkitRequestFullscreen;
     if (request) {
         var result = request.call(element);
-        if (result && result.catch) { result.catch(function () { self.flash('無法進入全螢幕'); }); }
-    } else if (this.video.webkitEnterFullscreen) {
-        /* iPhone Safari never gives an element fullscreen — only the video's
-           own native player. Handing it the video is the only path there. */
-        this.video.webkitEnterFullscreen();
-    } else {
-        this.flash('此裝置不支援全螢幕');
+        if (result && result.catch) {
+            /* Refused rather than unsupported — Safari does this inside an
+               iframe, and the stand-in below is still better than nothing. */
+            result.catch(function () { self.setPseudoFullscreen(true); });
+        }
+        return;
     }
+    /* iPhone Safari exposes no element fullscreen at all: the only thing it
+       offers is video.webkitEnterFullscreen(), which replaces this player with
+       Apple's own and throws away the danmaku layer, the episode picker, the
+       settings menu and every gesture with it. Filling the viewport ourselves
+       keeps all of them, and looks the same to the reader. */
+    this.setPseudoFullscreen(true);
+};
+
+/* The stand-in fullscreen: the shell pinned over the page rather than handed to
+   the platform. Everything downstream keys off .is-fullscreen, so that class
+   goes on too and the safe-area padding, the touch layout and the button icon
+   all behave exactly as they do in the real thing. */
+AgpPlayer.prototype.setPseudoFullscreen = function (on) {
+    this.pseudoFullscreen = !!on;
+    document.body.classList.toggle('player-pseudo-fullscreen', this.pseudoFullscreen);
+    this.shell.classList.toggle('is-pseudo-fullscreen', this.pseudoFullscreen);
+    /* A 16:9 episode belongs in landscape and asking costs nothing: iOS refuses
+       outright, and every refusal is one the reader can undo by rotating. */
+    try {
+        if (this.pseudoFullscreen) {
+            var lock = window.screen.orientation.lock('landscape');
+            if (lock && lock.catch) { lock.catch(function () {}); }
+        } else {
+            window.screen.orientation.unlock();
+        }
+    } catch (error) {
+        /* No Screen Orientation API here; rotating by hand still works. */
+    }
+    this.syncFullscreenButton();
 };
 
 AgpPlayer.prototype.syncFullscreenButton = function () {
-    var active = !!(document.fullscreenElement || document.webkitFullscreenElement);
+    var active = !!(document.fullscreenElement || document.webkitFullscreenElement ||
+        this.pseudoFullscreen);
     var button = this.shell.querySelector('#fullscreenToggle');
     button.innerHTML = AGP.icon(active ? 'compress' : 'expand', 23);
     button.setAttribute('aria-pressed', active ? 'true' : 'false');
@@ -1494,7 +1528,14 @@ AgpPlayer.prototype.handleKey = function (event) {
         case 'Home': video.currentTime = 0; break;
         case 'End': if (video.duration) { video.currentTime = video.duration; } break;
         case '?': this.openSettings('shortcuts'); break;
-        case 'Escape': this.closeMenus(); this.cancelNextEpisode(); handled = false; break;
+        case 'Escape':
+            this.closeMenus();
+            this.cancelNextEpisode();
+            /* Real fullscreen leaves on Escape by itself; the stand-in has to be
+               told, and Escape is the key people already reach for. */
+            if (this.pseudoFullscreen) { this.setPseudoFullscreen(false); }
+            handled = false;
+            break;
         default: handled = false;
     }
 

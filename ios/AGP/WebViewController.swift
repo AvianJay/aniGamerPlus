@@ -85,13 +85,23 @@ final class WebViewController: UIViewController {
     }
 
     /// `Element.requestFullscreen` is off by default in `WKWebView`. Without it
-    /// the player falls back to the video element's own fullscreen, which drops
-    /// the danmaku layer drawn over it. The setter is not API on every SDK this
-    /// builds against, so it is asked for rather than assumed.
+    /// the player falls back to filling the viewport itself, which keeps the
+    /// custom controls but never covers the status bar.
+    ///
+    /// The public switch arrived in iOS 15.4; older WebKits answer only to the
+    /// underscored SPI. Neither is API on every SDK this builds against, so
+    /// both are asked for rather than assumed — and KVC finds `_set…:` under
+    /// the same key, which is why the keys drop the leading underscore.
     private func enableElementFullscreen(on preferences: WKPreferences) {
-        let selector = NSSelectorFromString("setFullScreenEnabled:")
-        guard preferences.responds(to: selector) else { return }
-        preferences.setValue(true, forKey: "fullScreenEnabled")
+        let candidates = [
+            ("setElementFullscreenEnabled:", "elementFullscreenEnabled"),
+            ("_setFullScreenEnabled:", "fullScreenEnabled"),
+        ]
+        for (selector, key) in candidates
+        where preferences.responds(to: NSSelectorFromString(selector)) {
+            preferences.setValue(true, forKey: key)
+            return
+        }
     }
 
     private static func loadBridgeSource() -> String {

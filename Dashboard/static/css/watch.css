@@ -62,6 +62,17 @@
   width: 100%;
 }
 
+/* The stand-in for platforms with no element fullscreen. inset rather than a
+   width/height pair, so it takes whatever the visual viewport currently is —
+   iOS shrinks that as the address bar comes back. */
+.player-shell.is-pseudo-fullscreen {
+  inset: 0;
+  position: fixed;
+  z-index: 70;
+}
+
+body.player-pseudo-fullscreen { overflow: hidden; }
+
 .desktop-player-surface {
   background: transparent;
   border: 0;

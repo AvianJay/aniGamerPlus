@@ -524,6 +524,61 @@ def test_watch_position_is_reported_with_duration(page, server):
     assert stored['duration'] > 0
 
 
+def test_fullscreen_prefers_the_real_thing(page, server):
+    goto_watch(page, server)
+
+    page.click('#fullscreenToggle')
+    assert page.evaluate("() => !!document.fullscreenElement") is True
+    expect(page.locator('#playerShell')).to_have_class(re.compile(r'(^| )is-fullscreen( |$)'))
+    # The real API is in charge here; the stand-in must stay out of the way.
+    assert page.evaluate(
+        "() => document.body.classList.contains('player-pseudo-fullscreen')") is False
+
+    page.click('#fullscreenToggle')
+    assert page.evaluate("() => !!document.fullscreenElement") is False
+    assert page.errors == []
+
+
+def test_fullscreen_falls_back_without_handing_over_the_player(phone, server):
+    """iPhone Safari has no element fullscreen, only ``webkitEnterFullscreen``
+    on the video -- which swaps this player for Apple's own and takes the
+    danmaku layer, the episode picker and every gesture with it. The fallback
+    has to fill the viewport itself instead."""
+    phone.add_init_script("""
+        Object.defineProperty(Element.prototype, 'requestFullscreen', {value: undefined});
+        Object.defineProperty(Element.prototype, 'webkitRequestFullscreen', {value: undefined});
+        window.__nativeFullscreenAsked = false;
+        Object.defineProperty(HTMLVideoElement.prototype, 'webkitEnterFullscreen', {
+            configurable: true,
+            value: function () { window.__nativeFullscreenAsked = true; },
+        });
+    """)
+    goto_watch(phone, server)
+
+    phone.click('#fullscreenToggle')
+    shell = phone.locator('#playerShell')
+    expect(shell).to_have_class(re.compile(r'(^| )is-pseudo-fullscreen( |$)'))
+    # .is-fullscreen rides along, so the safe-area padding and the button icon
+    # behave exactly as they do in the real thing.
+    expect(shell).to_have_class(re.compile(r'(^| )is-fullscreen( |$)'))
+    expect(phone.locator('#fullscreenToggle')).to_have_attribute('aria-pressed', 'true')
+
+    assert phone.evaluate("() => window.__nativeFullscreenAsked") is False
+    # The custom chrome is still on screen, which is the whole point.
+    expect(phone.locator('#playerShell .desktop-player-controls')).to_be_attached()
+
+    box = shell.bounding_box()
+    assert box['x'] == 0 and box['y'] == 0
+    assert box['width'] == IPHONE_VIEWPORT['width']
+    assert box['height'] == IPHONE_VIEWPORT['height']
+    assert phone.evaluate("() => getComputedStyle(document.body).overflow") == 'hidden'
+
+    phone.click('#fullscreenToggle')
+    expect(shell).not_to_have_class(re.compile(r'(^| )is-pseudo-fullscreen( |$)'))
+    assert phone.evaluate("() => getComputedStyle(document.body).overflow") != 'hidden'
+    assert phone.errors == []
+
+
 # ------------------------------------------------------------------- gestures
 
 def drag(page, x_from, y_from, x_to, y_to, steps=12):
