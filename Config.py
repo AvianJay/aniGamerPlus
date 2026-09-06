@@ -14,6 +14,32 @@ from curl_cffi import requests as curl_requests
 from urllib.parse import quote
 from urllib.parse import urlencode
 
+
+def _make_console_utf8():
+    """讓 print 不會因為編碼而弄死整支程式.
+
+    Windows 的 console 預設吃系統代碼頁 (繁中是 cp950), 而訊息裡混著 cp950 編不
+    出來的字 —— 簡體字, 全形引號, 通知用的 emoji, 還有 '啓' 這種 Big5 沒收的異
+    體字. 只要其中一句被印出來, 整支程式就以 UnicodeEncodeError 結束.
+
+    先把 console 切成 UTF-8, 再把兩條輸出流換成 utf-8, 並且把編不出來的字換成
+    '?' 而不是拋例外: 訊息掉幾個字, 總比下載中途被一行 log 打死好.
+    """
+    if sys.platform == 'win32':
+        try:
+            import ctypes
+            ctypes.windll.kernel32.SetConsoleOutputCP(65001)
+        except BaseException:
+            pass  # 沒有 console (被包成 GUI / 服務), 那就沒什麼好設的
+    for stream in (sys.stdout, sys.stderr):
+        try:
+            stream.reconfigure(encoding='utf-8', errors='replace')
+        except BaseException:
+            pass  # 被重導向到不是 TextIOWrapper 的東西, 沒有 reconfigure 可用
+
+
+_make_console_utf8()
+
 # 你猜猜看我是 .exe 或是 .py 檔案
 if getattr(sys, 'frozen', False):
     working_dir = os.path.dirname(sys.executable)

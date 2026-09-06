@@ -636,10 +636,10 @@ def __download_only(sn, dl_resolution='', dl_save_dir='', realtime_show_file_siz
                 del Config.tasks_progress_rate[int(sn)]
             return
         else:
-            err_print(sn, '任務失敗', 'title=' + anime.get_title() + ' 10s后自動重啓,最多重試三次', status=1)
+            err_print(sn, '任務失敗', 'title=' + anime.get_title() + ' 10s后自動重啟,最多重試三次', status=1)
             err_counter = err_counter + 1
             if int(sn) in Config.tasks_progress_rate.keys():
-                Config.tasks_progress_rate[int(sn)]['status'] = '失敗! 重啓中'
+                Config.tasks_progress_rate[int(sn)]['status'] = '失敗! 重啟中'
             time.sleep(10)
             anime.renew()
 
@@ -1095,7 +1095,7 @@ def export_my_anime():
 def run_dashboard():
     # 检测端口是否占用
     if not port_is_available(settings['dashboard']['port']):
-        err_print(0, 'Web控制面板啓動失敗', 'Port已被占用! 請到配置文件更換', status=1, no_sn=True)
+        err_print(0, 'Web控制面板啟動失敗', 'Port已被占用! 請到配置文件更換', status=1, no_sn=True)
         return
 
     from Dashboard import Server
@@ -1116,7 +1116,7 @@ def run_dashboard():
         dashboard_address = '訪問地址: ' + dashboard_address
 
     dashboard_address = dashboard_address + host + ':' + str(settings['dashboard']['port'])
-    err_print(0, 'Web控制面板已啓動', dashboard_address, no_sn=True, status=2)
+    err_print(0, 'Web控制面板已啟動', dashboard_address, no_sn=True, status=2)
 
 
 def updatelist():
@@ -1427,7 +1427,7 @@ if __name__ == '__main__':
         __cui(arg.sn, resolution, download_mode, thread_limit, download_episodes, save_dir, classify,
               get_info=arg.information_only, user_cmd=user_command, cui_danmu=danmu)
 
-    err_print(0, '自動模式啓動aniGamerPlus' + version_msg, no_sn=True, display=False)
+    err_print(0, '自動模式啟動aniGamerPlus' + version_msg, no_sn=True, display=False)
     err_print(0, '工作目錄: ' + working_dir, no_sn=True, display=False)
 
     if settings['use_proxy']:

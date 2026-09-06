@@ -139,7 +139,9 @@ def _apply_cache_headers(resp, current_settings, max_age):
     return resp
 
 
-checknow = lambda e: None
+# aniGamerPlus 啟動時會用真正的 checknow 蓋掉這個佔位, 單獨跑 Server.py 時它就
+# 什麼都不做. 兩邊的簽名必須一致, 否則 /checknow 只會拋 TypeError.
+checknow = lambda: None
 command_handler = None
 userdata_lock = threading.Lock()
 userdata_path = os.path.join(Config.get_working_dir(), 'Dashboard', 'userdata.json')
@@ -1103,7 +1105,7 @@ def set_sn_list():
 @admin_api_required
 def checknowctrl():
     err_print(0, 'Dashboard', '通過 Web 控制臺發出了立即更新的請求', no_sn=True, status=2)
-    checknow(True)
+    checknow()
     return '{"status":"200"}'
 
 
@@ -1481,8 +1483,10 @@ if settings["dashboard"]["online_watch"]:
             vaild_user, user_role = verify_user(request.cookies)
             if not vaild_user:
                 return jsonify({"error": "login required"}), 403
-        video_json = json.load(open(os.path.join(Config.get_working_dir(), 'video_list.json'), 'r'))
-        return jsonify(video_json)
+        # 走 _read_video_list_file(): 它會指定 encoding='utf-8', 檔案還沒生成時
+        # 也不會 500. 直接 open() 會拿系統預設編碼去讀 (繁中 Windows 是 cp950),
+        # 片名一律變成亂碼.
+        return jsonify(_read_video_list_file())
 
 
     @app.route('/watch/time', methods=['GET', 'POST'])
@@ -1707,7 +1711,7 @@ if settings['dashboard']['user_control']['enabled']:
             user.pop('password', None)
             user['token'] = _generate_token()
             save_user_data(userdata)
-            return jsonify({"status": "200", "message": "靽格??!", "logout": True})
+            return jsonify({"status": "200", "message": "密碼修改成功!", "logout": True})
 
         return jsonify({'status': '400', 'message': 'Invalid action'}), 400
 

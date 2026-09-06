@@ -28,7 +28,6 @@ import time
 import pytest
 
 playwright_api = pytest.importorskip('playwright.sync_api')
-sync_playwright = playwright_api.sync_playwright
 expect = playwright_api.expect
 
 BASE_URL = os.environ.get('AGP_SERVER', 'http://127.0.0.1:5000')
@@ -49,31 +48,13 @@ IOS_UA = ('Mozilla/5.0 (iPhone; CPU iPhone OS 17_5 like Mac OS X) '
 
 # --------------------------------------------------------------------- setup
 
-def launch_chromium(playwright, **kwargs):
-    """Launch a browser that can actually decode the library.
-
-    Playwright's bundled Chromium ships without the proprietary codecs, so a
-    real 1080p H.264/AAC episode never fires ``loadedmetadata`` in it -- the
-    picture stays black and ``duration`` reads 0. Installed Chrome and Edge do
-    carry them, so prefer those and fall back to the bundle (fine for the
-    WebM fixtures, useless for the real files).
-    """
-    for channel in ('chrome', 'msedge'):
-        try:
-            return playwright.chromium.launch(channel=channel, **kwargs)
-        except Exception:
-            continue
-    return playwright.chromium.launch(**kwargs)
-
-
 @pytest.fixture(scope='session')
-def browser():
+def browser(chromium_launcher):
     headless = os.environ.get('AGP_HEADLESS') == '1'
     slow_mo = int(os.environ.get('AGP_SLOWMO') or (0 if headless else 120))
-    with sync_playwright() as p:
-        instance = launch_chromium(p, headless=headless, slow_mo=slow_mo)
-        yield instance
-        instance.close()
+    instance = chromium_launcher(headless=headless, slow_mo=slow_mo)
+    yield instance
+    instance.close()
 
 
 @pytest.fixture(scope='session')

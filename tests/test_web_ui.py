@@ -29,7 +29,6 @@ from ui_harness import (  # noqa: E402
 )
 
 playwright_api = pytest.importorskip('playwright.sync_api')
-sync_playwright = playwright_api.sync_playwright
 expect = playwright_api.expect
 
 FIRST_SN = VIDEO_LIST['videos'][0]['sn']
@@ -52,33 +51,15 @@ def server_without_catalog():
         yield running
 
 
-def launch_chromium(playwright, **kwargs):
-    """Launch a browser that can actually decode the library.
-
-    Playwright's bundled Chromium ships without the proprietary codecs, so a
-    real 1080p H.264/AAC episode never fires ``loadedmetadata`` in it -- the
-    picture stays black and ``duration`` reads 0. Installed Chrome and Edge do
-    carry them, so prefer those and fall back to the bundle (fine for the
-    WebM fixtures, useless for the real files).
-    """
-    for channel in ('chrome', 'msedge'):
-        try:
-            return playwright.chromium.launch(channel=channel, **kwargs)
-        except Exception:
-            continue
-    return playwright.chromium.launch(**kwargs)
-
-
 @pytest.fixture(scope='session')
-def browser():
+def browser(chromium_launcher):
     """Headless by default; set ``AGP_HEADED=1`` to watch the run in a real
     window (``AGP_SLOWMO`` milliseconds between actions makes it followable)."""
     headed = os.environ.get('AGP_HEADED') == '1'
     slow_mo = int(os.environ.get('AGP_SLOWMO') or (250 if headed else 0))
-    with sync_playwright() as p:
-        instance = launch_chromium(p, headless=not headed, slow_mo=slow_mo)
-        yield instance
-        instance.close()
+    instance = chromium_launcher(headless=not headed, slow_mo=slow_mo)
+    yield instance
+    instance.close()
 
 
 @pytest.fixture
