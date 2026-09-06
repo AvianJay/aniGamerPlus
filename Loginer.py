@@ -19,6 +19,11 @@ import re
 import Config
 
 
+# 網站端認的是 BAHARUNE, App 端認的是 MB_BAHARUNE。少了前者, ani.gamer.com.tw 會把
+# 你當訪客 —— 照樣給你影片, 只是先排 25 秒廣告, 然後最高 360P
+_WEB_LOGIN_COOKIE = 'BAHARUNE'
+
+
 FINGERPRINT_CHECK_URL = 'https://ja3.zone/check'
 _FINGERPRINT_FIELD_XPATH = (
     "//div[normalize-space()='{label}']"
@@ -59,10 +64,18 @@ def login(driver, username, password, save_cookie=False):
             driver.add_cookie(cookie)
     driver.get("https://user.gamer.com.tw/login.php")
     time.sleep(1)
-    # todo: 偵測效果不好，之後換方法
     if driver.current_url != 'https://user.gamer.com.tw/login.php':
-        # already logined
-        return True
+        # 沒被留在登入頁, 不代表登進去了: 過期的 cookies.pkl 一樣會被放行, 只是身上
+        # 少了網站端的憑證。真的問一句有沒有, 沒有就當作沒登入, 老實輸入帳密
+        if driver.get_cookie(_WEB_LOGIN_COOKIE):
+            return True
+        __color_print(0, "登入狀態", detail='現有cookie已失效，重新登入', no_sn=True, status=1)
+        driver.delete_all_cookies()
+        if os.path.exists('cookies.pkl'):
+            # 留著只會下次再騙自己一遍
+            os.remove('cookies.pkl')
+        driver.get("https://user.gamer.com.tw/login.php")
+        time.sleep(1)
     user_input = driver.find_element(By.XPATH, '//*[@id="form-login"]/input[1]')
     pass_input = driver.find_element(By.XPATH, '//*[@id="form-login"]/div[1]/input')
     login_button = driver.find_element(By.XPATH, '//*[@id="btn-login"]')
@@ -86,6 +99,11 @@ def login(driver, username, password, save_cookie=False):
             __color_print(0, "登入狀態", detail='登入時可能發生驗證問題', no_sn=True, status=1)
             # todo: 處理2fa
             return False
+    if not driver.get_cookie(_WEB_LOGIN_COOKIE):
+        # 表單過了、頁面也跳走了, 但憑證沒發下來。這時候回報成功, 換來的是一份看起來
+        # 很像登入的訪客 cookie, 之後每一集都默默掉到 360P
+        __color_print(0, "登入狀態", detail='登入後仍未取得網站憑證', no_sn=True, status=1)
+        return False
     __color_print(0, "登入狀態", detail='登入成功', no_sn=True, status=2)
     if save_cookie:
         __color_print(0, "登入狀態", detail='正在儲存cookie', no_sn=True)

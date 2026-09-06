@@ -9,8 +9,11 @@
 import os, json, re, sys, requests, time, random, codecs, chardet
 import sqlite3
 import socket
+import warnings
 import Loginer
+import curl_cffi
 from curl_cffi import requests as curl_requests
+from curl_cffi.requests import utils as curl_impersonate
 from urllib.parse import quote
 from urllib.parse import urlencode
 
@@ -636,6 +639,58 @@ def del_bom(path, display=True):
                 break
 
 
+# read_settings() 每一次請求都會被呼叫, 而這件事的答案不會變: 記住算過的, 免得同
+# 一行「移除擴充」洗滿整個 log
+_sanitized_ja3 = {}
+
+
+def sanitize_ja3(ja3):
+    """把這一版 curl-cffi 模擬不出來的 TLS 擴充從指紋裡拿掉。
+
+    自動登入是去 ja3.zone 抄真瀏覽器送出的握手, 而真瀏覽器送的東西 curl-cffi 不見
+    得實作得完; 碰到一個沒實作的就整包 NotImplementedError, 從此每一次抓取都失敗,
+    看起來卻像是巴哈擋人。與其自己維護一張寫死的黑名單（原本寫死 -17613、-41,
+    Chrome 換一個擴充就又中招）, 不如把 curl-cffi 自己當裁判: 它嫌哪一個就拿掉哪
+    一個再試一次, 哪天它支援了, 這裡自然就不再動它。
+
+    真的擺不平就整條指紋不要了 —— 用 curl-cffi 內建的瀏覽器設定檔至少下載得動,
+    帶著一條會炸的指紋則是一集都下不了。
+    """
+    if ja3 in _sanitized_ja3:
+        return _sanitized_ja3[ja3]
+    fields = ja3.split(',')
+    if len(fields) != 5:
+        return ja3
+    extensions = fields[2].split('-')
+    # 上限就是擴充的個數: 每一輪至少拿掉一個, 拿不掉就直接放棄, 不會空轉
+    for _ in range(len(extensions)):
+        candidate = ','.join(fields[:2] + ['-'.join(extensions)] + fields[3:])
+        curl = curl_cffi.Curl()
+        try:
+            with warnings.catch_warnings():
+                warnings.simplefilter('ignore')
+                curl_impersonate.set_ja3_options(curl, candidate)
+        except NotImplementedError as e:
+            rejected = re.search(r'\((\d+)\)', str(e))
+            if not rejected or rejected.group(1) not in extensions:
+                _sanitized_ja3[ja3] = None
+                return None
+            extensions.remove(rejected.group(1))
+            __color_print(0, '瀏覽器指紋', '移除 curl-cffi 不支援的 TLS 擴充 '
+                          + rejected.group(1), no_sn=True, display=False)
+        except BaseException:
+            # 密碼套件不認得、TLS 版本不對之類的, 不是這裡管得動的事
+            _sanitized_ja3[ja3] = ja3
+            return ja3
+        else:
+            _sanitized_ja3[ja3] = candidate
+            return candidate
+        finally:
+            curl.close()
+    _sanitized_ja3[ja3] = None
+    return None
+
+
 def read_settings(config='') -> dict:
     if config == '':
         if not os.path.exists(config_path):
@@ -735,8 +790,8 @@ def read_settings(config='') -> dict:
 
     if settings.get('browser_fingerprint', {}).get('ja3'):
         # https://github.com/lexiforest/curl_cffi/issues/549
-        # 移除 curl-cffi 不支持的指纹参数
-        settings['browser_fingerprint']['ja3'] = settings.get('browser_fingerprint', {}).get('ja3').replace('-17613', '').replace('-41', '')
+        settings['browser_fingerprint']['ja3'] = sanitize_ja3(
+            settings['browser_fingerprint']['ja3'])
 
     # v25.0 强制冷却时间3s以上
     settings['parse_sn_cd'] = max(settings['parse_sn_cd'], 3)
@@ -909,7 +964,44 @@ def get_cookie_time():
     return time_stamp_to_time(cookie_time)
 
 
+# 同一個帳號, 巴哈會發兩套名字: 網站版 BAHAID/BAHARUNE, App 版 MB_BAHAID/
+# MB_BAHARUNE。瀏覽器自動登入拿回來的是後者, 手貼的 cookie 多半是前者 —— 只認一
+# 套的話, 另一套就會被當成訪客
+_LOGIN_COOKIE_KEYS = ('BAHARUNE', 'BAHAID', 'MB_BAHARUNE', 'MB_BAHAID')
+
+
+def is_logged_in_cookie(cookies):
+    """有沒有登入, 看的是有沒有帳號那幾個 key, 不是檔案有沒有東西。"""
+    if not cookies:
+        return False
+    keys = cookies.keys()
+    if 'nologinuser' in keys:
+        return False
+    for key in _LOGIN_COOKIE_KEYS:
+        if key in keys:
+            return True
+    return False
+
+
+def login_token(cookies):
+    """登入憑證本身。cookie 有沒有換新, 比的是這個, 不是整份 cookie。"""
+    if not cookies:
+        return None
+    for key in ('BAHARUNE', 'MB_BAHARUNE'):
+        if key in cookies:
+            return cookies[key]
+    return None
+
+
 def renew_cookies(new_cookie, log=True):
+    if not is_logged_in_cookie(new_cookie) and is_logged_in_cookie(read_cookie()):
+        # 巴哈偶爾會回一份訪客 cookie（連線被判定成沒登入、set-cookie 撞在一起等等）。
+        # 照單全收的話, 硬碟上那份登入就這樣沒了, 而且沒有人會發現 —— 下一集開始
+        # 默默排 25 秒廣告、默默掉到 360P, 看起來只像「巴哈最近怪怪的」。
+        # 寧可留著舊的讓這次下載失敗, 也不要把登入洗掉。
+        __color_print(0, 'cookie狀態', '收到訪客 cookie, 保留原本的登入狀態', no_sn=True,
+                      status=1, display=False)
+        return
     global cookie
     cookie = None  # 重置cookie
     new_cookie_str = ''

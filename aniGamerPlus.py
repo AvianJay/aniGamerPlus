@@ -1213,7 +1213,7 @@ def auto_update_loop():
         err_print(0, '開始更新', no_sn=True)
         Config.test_cookie()  # 测试cookie
         cookies = Config.read_cookie(force_reload=True)
-        if not cookies or 'nologinuser' in cookies.keys():
+        if not Config.is_logged_in_cookie(cookies):
             err_print(0, 'cookie狀態', '偵測到已登出', no_sn=True, display=False)
             if settings["auto_login"]["enabled"]:
                 err_print(0, 'cookie狀態', '已開啟自動登入，嘗試透過瀏覽器登入...', no_sn=True, display=True)

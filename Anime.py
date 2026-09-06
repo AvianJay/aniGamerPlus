@@ -316,7 +316,7 @@ class Anime:
         if not self._cookies:
             # 当实例中尚无 cookie, 则读取
             self._cookies = self._session.cookies
-        elif 'nologinuser' not in self._cookies.keys() and 'BAHAID' not in self._cookies.keys():
+        elif 'nologinuser' not in self._cookies.keys() and not Config.is_logged_in_cookie(self._cookies):
             # 处理游客cookie
             if 'nologinuser' in self._session.cookies.keys():
                 # self._cookies['nologinuser'] = self._session.cookies['nologinuser']
@@ -338,12 +338,12 @@ class Anime:
                         try_counter = 0
                         succeed_flag = False
                         while try_counter < 3:  # 尝试读三次, 不行就算了
-                            old_BAHARUNE = self._cookies['BAHARUNE']
+                            old_BAHARUNE = Config.login_token(self._cookies)
                             self._cookies = Config.read_cookie()
                             err_print(self._sn, '讀取cookie',
                                       'cookie.txt最後修改時間: ' + Config.get_cookie_time() + ' 第' + str(try_counter) + '次嘗試',
                                       display=False)
-                            if old_BAHARUNE != self._cookies['BAHARUNE']:
+                            if old_BAHARUNE != Config.login_token(self._cookies):
                                 # 新cookie读取成功 (因为有可能其他线程接到了新cookie)
                                 succeed_flag = True
                                 err_print(self._sn, '讀取cookie', '新cookie讀取成功', display=False)
