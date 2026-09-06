@@ -84,7 +84,130 @@ WATCH_TIMES = {
 }
 
 
-def create_app(logged_in=True):
+# --- 動畫瘋 catalogue -------------------------------------------------------
+#
+# Mirrors ``Catalog.parse_index`` and the ``/catalog/*`` routes in
+# ``Dashboard/Server.py``. Covers point at /thumbnail.jpg so the fixture image
+# stands in for p2.bahamut.com.tw and the suite never touches the network.
+
+CATALOG_PAGE_SIZE = 28
+CATALOG_COVER = '/thumbnail.jpg?id=%s' % FIRST_SN
+WEEKDAYS = ['週一', '週二', '週三', '週四', '週五', '週六', '週日']
+
+
+def catalog_card(index, title):
+    return {
+        'animeSn': str(200000 + index),
+        'acgSn': str(9000 + index),
+        'videoSn': str(300000 + index),
+        'title': title,
+        'cover': CATALOG_COVER,
+        'info': '2026 年 07 月',
+        'volume': '第 %d 集' % (index % 12 + 1),
+        'popular': '%d.%d萬' % (index % 40 + 1, index % 10),
+    }
+
+
+CATALOG_SEASON = [catalog_card(i, '本季新番 %02d' % i) for i in range(1, 7)]
+CATALOG_HOT = [catalog_card(50 + i, '近期熱播 %02d' % i) for i in range(1, 6)]
+CATALOG_NEW_ADDED = [catalog_card(70 + i, '最新上架 %02d' % i) for i in range(1, 5)]
+# 70 titles is three pages at the real server's page size, which is what makes
+# 上一頁/下一頁 and the "第 N / M 頁" readout worth asserting on.
+CATALOG_ALL = [catalog_card(100 + i, '所有動畫 %02d' % i) for i in range(1, 71)]
+
+
+def build_catalog_schedule():
+    """Weekday rows, including the two shapes the page has to tell apart."""
+    days = []
+    for index, label in enumerate(WEEKDAYS, start=1):
+        rows = []
+        # 週日 stays empty so the "no broadcast today" copy is covered.
+        if index < 7:
+            for slot, card in enumerate(CATALOG_SEASON[:index]):
+                rows.append({
+                    'videoSn': card['videoSn'],
+                    # The first row of 週一 is a title 本季新番 does not list, so
+                    # it has no animeSn and must render as text, not a link.
+                    'animeSn': '' if (index == 1 and slot == 0) else card['animeSn'],
+                    'cover': '' if (index == 1 and slot == 0) else card['cover'],
+                    'title': card['title'],
+                    'time': '%02d:00' % (18 + slot % 6),
+                    'volume': card['volume'],
+                })
+        days.append({'weekday': index, 'label': label, 'episodes': rows})
+    return days
+
+
+CATALOG_SCHEDULE = build_catalog_schedule()
+
+CATALOG_INDEX = {
+    'season': CATALOG_SEASON,
+    'schedule': CATALOG_SCHEDULE,
+    'hot': CATALOG_HOT,
+    'newAdded': CATALOG_NEW_ADDED,
+}
+
+# The one title with an episode already on disk, so the sheet's 立即觀看 button
+# and the local-episode marker have something to render against.
+CATALOG_LOCAL_SN = CATALOG_ALL[0]['animeSn']
+
+
+def catalog_detail(anime_sn):
+    card = None
+    for item in CATALOG_SEASON + CATALOG_HOT + CATALOG_NEW_ADDED + CATALOG_ALL:
+        if item['animeSn'] == anime_sn:
+            card = item
+            break
+    if card is None:
+        return None
+    local = anime_sn == CATALOG_LOCAL_SN
+    episodes = []
+    for number in range(1, 131):
+        episodes.append({
+            'videoSn': str(int(card['videoSn']) + number),
+            'episode': str(number),
+            'cover': CATALOG_COVER,
+            'local': local and number == 2,
+            'resolution': 1080 if local and number == 2 else 0,
+        })
+    if local:
+        # Point the one downloaded episode at a real fixture, so following the
+        # sheet's play link lands on a watch page that can actually play.
+        episodes[1]['videoSn'] = FIRST_SN
+    dubbed = [{
+        'videoSn': str(int(card['videoSn']) + 500 + number),
+        'episode': str(number),
+        'cover': CATALOG_COVER,
+        'local': False,
+        'resolution': 0,
+    } for number in range(1, 4)]
+    return {
+        'animeSn': anime_sn,
+        'videoSn': card['videoSn'],
+        'title': card['title'],
+        'cover': CATALOG_COVER,
+        # Long enough to trip the sheet's synopsis clamp.
+        'content': '測試用的作品介紹。' * 40,
+        'tags': ['奇幻', '冒險'],
+        'director': '測試導演',
+        'publisher': '測試代理商',
+        'score': '4.8',
+        'seasonStart': '2026/07/03',
+        'popular': '12.4萬',
+        'totalEpisode': '130',
+        'groups': [
+            {'name': '本篇', 'episodes': episodes},
+            {'name': '中文配音', 'episodes': dubbed},
+        ],
+    }
+
+
+# Every task the page queues is kept so a test can assert on the payload rather
+# than on a toast that only says something happened.
+MANUAL_TASKS = []
+
+
+def create_app(logged_in=True, catalog=True):
     app = Flask(__name__, template_folder=TEMPLATE_PATH, static_folder=STATIC_PATH)
     app.config['TESTING'] = True
 
@@ -149,6 +272,48 @@ def create_app(logged_in=True):
     @app.route('/video_list.json')
     def video_list():
         return jsonify(VIDEO_LIST)
+
+    # The real routes live behind ``if settings['dashboard']['online_watch']``
+    # and simply do not exist when it is off; catalog=False reproduces that, so
+    # the page's degrade-to-片庫-only path stays covered.
+    if catalog:
+        @app.route('/catalog/index.json')
+        def catalog_index():
+            return jsonify(CATALOG_INDEX)
+
+        @app.route('/catalog/all.json')
+        def catalog_all():
+            query = (request.args.get('q') or '').strip().lower()
+            items = [item for item in CATALOG_ALL if query in item['title'].lower()]
+            try:
+                page = max(1, int(request.args.get('page') or 1))
+            except ValueError:
+                page = 1
+            pages = max(1, -(-len(items) // CATALOG_PAGE_SIZE))
+            page = min(page, pages)
+            start = (page - 1) * CATALOG_PAGE_SIZE
+            return jsonify({
+                'items': items[start:start + CATALOG_PAGE_SIZE],
+                'page': page,
+                'pages': pages,
+                'total': len(items),
+            })
+
+        @app.route('/catalog/anime.json')
+        def catalog_anime():
+            detail = catalog_detail(str(request.args.get('sn') or ''))
+            if detail is None:
+                return jsonify({'error': 'unknown'}), 404
+            return jsonify(detail)
+
+    @app.route('/manualTask', methods=['POST'])
+    def manual_task():
+        MANUAL_TASKS.append(request.get_json(force=True, silent=True) or {})
+        return '{"status":"200"}'
+
+    @app.route('/manualTask/_seen')
+    def manual_tasks_seen():
+        return jsonify(MANUAL_TASKS)
 
     @app.route('/get_server_info')
     def server_info():
@@ -242,8 +407,9 @@ class QuietHandler(WSGIRequestHandler):
 class HarnessServer(object):
     """Runs the harness on a background thread and exposes its base URL."""
 
-    def __init__(self, logged_in=True):
-        self.httpd = make_server('127.0.0.1', 0, create_app(logged_in), handler_class=QuietHandler)
+    def __init__(self, logged_in=True, catalog=True):
+        self.httpd = make_server('127.0.0.1', 0, create_app(logged_in, catalog),
+                                 handler_class=QuietHandler)
         self.port = self.httpd.server_address[1]
         self.thread = threading.Thread(target=self.httpd.serve_forever, daemon=True)
 

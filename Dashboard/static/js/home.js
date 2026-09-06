@@ -8,6 +8,9 @@
 
     var AGP = global.AGP;
     var dashboardApi = global.dashboardApi || {};
+    /* Shared with catalog.js -- see AGP.sectionHtml in agp-shell.js. */
+    var sectionHtml = AGP.sectionHtml;
+    var railHtml = AGP.railHtml;
 
     var TIMETABLE_DAYS = 7;
 
@@ -142,24 +145,6 @@
             '</span></span></a>';
     }
 
-    function railHtml(cardsHtml, railId) {
-        return '<div class="agp-rail-wrap">' +
-            '<button class="agp-rail-nav" data-dir="prev" type="button" aria-label="上一頁">' +
-            AGP.icon('chevronLeft', 18) + '</button>' +
-            '<div class="agp-rail" id="' + railId + '">' + cardsHtml + '</div>' +
-            '<button class="agp-rail-nav" data-dir="next" type="button" aria-label="下一頁">' +
-            AGP.icon('chevronRight', 18) + '</button>' +
-            '</div>';
-    }
-
-    function sectionHtml(id, title, bodyHtml, moreHref, moreLabel) {
-        return '<section class="agp-section" id="' + id + '">' +
-            '<div class="agp-section-head"><h2>' + AGP.escapeHtml(title) + '</h2>' +
-            (moreHref ? '<a class="agp-section-more" href="' + AGP.escapeHtml(moreHref) + '">' +
-                AGP.escapeHtml(moreLabel || '看更多') + ' ' + AGP.icon('chevronRight', 13) + '</a>' : '') +
-            '</div>' + bodyHtml + '</section>';
-    }
-
     /* --- sections ---------------------------------------------------------- */
 
     function renderBanner() {
@@ -262,7 +247,7 @@
                 '</div>';
         }).join('');
 
-        host.innerHTML = sectionHtml('weekly', '本季新番｜更新時間表',
+        host.innerHTML = sectionHtml('library-updates', '片庫更新',
             body || '<p class="agp-empty">片庫還沒有任何影片，先到主控台加入追番清單吧。</p>',
             './control', '前往主控台');
         host.querySelectorAll('.agp-rail-wrap').forEach(AGP.wireRail);
@@ -279,7 +264,7 @@
                 return posterCard(anime, i + 1);
             }).join('') + '</div>'
             : '<p class="agp-empty">尚無資料。</p>';
-        host.innerHTML = sectionHtml('hot', '近期熱播', body);
+        host.innerHTML = sectionHtml('library-hot', '片庫熱門', body);
     }
 
     function renderLibrary() {
@@ -303,7 +288,7 @@
                 return posterCard(anime, 0);
             }).join('') + '</div>'
             : empty;
-        host.innerHTML = sectionHtml('all', query ? '搜尋結果' : '所有動畫', body);
+        host.innerHTML = sectionHtml('library', query ? '片庫搜尋結果' : '片庫', body);
     }
 
     /* #homeNotice is a fixed banner with its own markup; everything else is a
@@ -337,6 +322,7 @@
         renderSection('homeTimetable', renderTimetable);
         renderSection('homeHot', renderHot);
         renderSection('homeLibrary', renderLibrary);
+        AGP.syncTabs();
     }
 
     /* An anonymous visitor gets a 403 from /video_list.json whenever
@@ -353,12 +339,12 @@
         var library = document.getElementById('homeLibrary');
         if (!library) { return; }
         library.innerHTML = needsLogin
-            ? sectionHtml('all', '需要登入',
+            ? sectionHtml('library', '需要登入',
                 '<p class="agp-empty">這個站台限定登入後瀏覽片庫。<br>' +
                 (hasLoginPage()
                     ? '<a class="agp-btn" href="./login" style="margin-top:14px">前往登入</a>'
                     : '請聯絡站台管理員開通帳號。') + '</p>')
-            : sectionHtml('all', '所有動畫',
+            : sectionHtml('library', '片庫',
                 '<p class="agp-empty">片庫讀取失敗（' +
                 AGP.escapeHtml(status ? 'HTTP ' + status : '連線中斷') + '）。<br>' +
                 '<button class="agp-btn" id="homeRetry" type="button" style="margin-top:14px">重新載入</button></p>');
@@ -368,11 +354,7 @@
             retry.addEventListener('click', function () { global.location.reload(); });
         }
 
-        /* Sections that were never written leave their tabs pointing at nothing,
-           and a tab that scrolls nowhere reads as a broken page. */
-        document.querySelectorAll('.agp-tab[href^="#"]').forEach(function (tab) {
-            tab.hidden = !document.getElementById(tab.getAttribute('href').slice(1));
-        });
+        AGP.syncTabs();
     }
 
     /* --- data -------------------------------------------------------------- */
@@ -476,7 +458,7 @@
        page at most once per search, and only when the results are not already
        up -- 160px of the section has to be showing to count as visible. */
     function revealResults() {
-        var target = document.getElementById('homeLibrary');
+        var target = document.getElementById('homeCatalog') || document.getElementById('homeLibrary');
         if (!state.query.trim()) {
             revealedResults = false;
             return;

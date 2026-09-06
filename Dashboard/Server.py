@@ -7,7 +7,7 @@
 
 # 非阻塞
 from gevent import monkey; monkey.patch_all()
-from gevent import spawn, get_hub
+from gevent import spawn, get_hub, sleep as gevent_sleep
 
 import json, sys, os, re, time
 import threading, traceback
@@ -20,6 +20,7 @@ from flask import Flask, request, jsonify, Response, redirect, make_response, g
 from flask import render_template, send_file, stream_with_context
 from aniGamerPlus import __cui as cui
 from aniGamerPlus import __get_danmu_only
+import Catalog
 import logging, termcolor
 from ColorPrint import err_print
 from logging.handlers import TimedRotatingFileHandler
@@ -422,6 +423,16 @@ ANIME_INFO_API = 'https://api.gamer.com.tw/anime/v1/video.php?videoSn='
 BAHAMUT_SOURCE = '巴哈姆特動畫瘋'
 # 抓不到就先记着, 否则首页每重绘一次 (搜索框每敲一个字) 就重来一轮上游请求
 THUMBNAIL_RETRY_INTERVAL = 10 * 60
+# 片单缓存: 首页那几个分区每天都在动, 全站列表一天爬一次就够
+CATALOG_INDEX_TTL = 60 * 60
+CATALOG_ALL_TTL = 24 * 60 * 60
+# animeSn -> videoSn 中间隔一个 301, 一部作品的第一集不会变, 存久一点
+CATALOG_REF_TTL = 30 * 24 * 60 * 60
+# 一页一页翻, 中间歇一下. 并发翻页会被巴哈用 429 挡回来
+CATALOG_CRAWL_DELAY = 0.25
+# 爬缺了几页的片单只留一会儿, 好过顶着一天的有效期发一份不全的出去
+CATALOG_PARTIAL_TTL = 10 * 60
+CATALOG_PAGE_SIZE = 28
 
 
 def _keyed_lock(name):
@@ -444,7 +455,7 @@ def _curl_perform(session_kwargs, url, request_kwargs):
     return session.request('get', url, **request_kwargs)
 
 
-def _bahamut_get(url, timeout=10):
+def _bahamut_get(url, timeout=10, allow_redirects=True):
     """跟 Config.bahamut_request 用同一套指纹, 但配置在 greenlet 上读完再下线程池.
 
     read_settings() 顺手会删过期日志、必要时重写配置文件, 这些副作用一直只在
@@ -459,6 +470,8 @@ def _bahamut_get(url, timeout=10):
         'akamai': fingerprint.get('akamai') or None,
     }
     request_kwargs = {'headers': {'User-Agent': settings['ua']}, 'timeout': timeout}
+    if not allow_redirects:
+        request_kwargs['allow_redirects'] = False
     if settings.get('use_proxy') and settings.get('proxy'):
         request_kwargs['proxies'] = {'https': settings['proxy'], 'http': settings['proxy']}
     return _offload(_curl_perform, session_kwargs, url, request_kwargs)
@@ -559,6 +572,229 @@ def _get_anime_info(sn):
         except BaseException:
             pass  # 缓存写不进去不影响这次返回
         return data
+
+
+def _catalog_cache_path(name):
+    cache_dir = os.path.join(Config.get_working_dir(), 'catalog')
+    if not os.path.exists(cache_dir):
+        os.makedirs(cache_dir, exist_ok=True)
+    return os.path.join(cache_dir, re.sub(r'[^0-9a-z_]', '', str(name)) + '.json')
+
+
+def _read_catalog_cache(name, ttl):
+    # ttl 传 0 就是不看新旧: 上游抓挂了的时候, 端一份过期的出去也比开天窗强
+    path = _catalog_cache_path(name)
+    if not os.path.exists(path):
+        return None
+    if ttl and time.time() - os.path.getmtime(path) >= ttl:
+        return None
+    try:
+        with open(path, 'r', encoding='utf-8') as f:
+            return json.load(f)
+    except BaseException:
+        return None
+
+
+def _write_catalog_cache(name, payload):
+    try:
+        with open(_catalog_cache_path(name), 'w', encoding='utf-8') as f:
+            json.dump(payload, f, ensure_ascii=False)
+    except BaseException:
+        pass  # 写不进去不影响这次返回, 下次再抓一遍就是
+
+
+def _get_catalog_index():
+    """首页那几个分区: 本季新番 / 更新時間表 / 近期熱播 / 最新上架."""
+    cached = _read_catalog_cache('index', CATALOG_INDEX_TTL)
+    if cached is not None:
+        return cached
+    with _keyed_lock('catalog-index'):
+        cached = _read_catalog_cache('index', CATALOG_INDEX_TTL)
+        if cached is not None:
+            return cached
+        try:
+            payload = Catalog.parse_index(_bahamut_get(Catalog.INDEX_API, timeout=15).json())
+        except BaseException:
+            err_print(0, '取得動畫瘋片單失敗', traceback.format_exc(),
+                      status=1, no_sn=True, display=False)
+            return _read_catalog_cache('index', 0)
+        _write_catalog_cache('index', payload)
+        return payload
+
+
+def _fetch_list_html(page):
+    """animeList.php 的一页. 吃到 429 就退一步再来."""
+    status = 0
+    delay = 1.0
+    for attempt in range(3):
+        resp = _bahamut_get(Catalog.list_page_url(page), timeout=15)
+        status = resp.status_code
+        if status == 200:
+            return resp.text
+        if status != 429:
+            break
+        gevent_sleep(delay)
+        delay *= 2
+    raise IOError('animeList.php page %d: HTTP %s' % (page, status))
+
+
+def _crawl_catalog_all():
+    """全站片单, 一页 28 部, 六十几页.
+
+    顺着一页页爬而不是并发抓: 并发翻页会被巴哈整片 429 挡掉, 而被挡掉的页
+    如果当空页收下, 存进缓存的就是一份缺了几百部的片单 —— 还顶着一天的有效
+    期, 比慢一点难受得多. 所以缺页要记下来, 交给上面决定这份能不能久留.
+    """
+    html = _fetch_list_html(1)
+    items = Catalog.parse_list_page(html)
+    total = Catalog.total_pages(html)
+    missing = []
+    for page in range(2, total + 1):
+        gevent_sleep(CATALOG_CRAWL_DELAY)
+        try:
+            items.extend(Catalog.parse_list_page(_fetch_list_html(page)))
+        except BaseException:
+            missing.append(page)
+
+    seen = set()
+    unique = []
+    for item in items:
+        if item['animeSn'] and item['animeSn'] not in seen:
+            seen.add(item['animeSn'])
+            unique.append(item)
+    if missing:
+        err_print(0, '片單有幾頁沒抓到', '第 ' + ', '.join(map(str, missing)) + ' 頁',
+                  status=1, no_sn=True, display=False)
+    return {'items': unique, 'complete': not missing, 'totalPages': total}
+
+
+def _catalog_all_is_fresh(payload):
+    # 缺页的那份只当短期货, 到点就再爬一次
+    if not payload:
+        return False
+    age = time.time() - os.path.getmtime(_catalog_cache_path('all'))
+    return age < (CATALOG_ALL_TTL if payload.get('complete') else CATALOG_PARTIAL_TTL)
+
+
+def _refresh_catalog_all():
+    with _keyed_lock('catalog-all'):
+        cached = _read_catalog_cache('all', 0)
+        if _catalog_all_is_fresh(cached):
+            return cached
+        try:
+            payload = _crawl_catalog_all()
+        except BaseException:
+            err_print(0, '取得動畫瘋全站片單失敗', traceback.format_exc(),
+                      status=1, no_sn=True, display=False)
+            return cached
+        if not payload['items']:
+            return cached
+        _write_catalog_cache('all', payload)
+        return payload
+
+
+def _get_catalog_all():
+    """全站片单. 第一次要爬满六十几页, 之后都是拿缓存.
+
+    过期了先把旧的端出去, 更新丢到后台: 这个列表一天才动一次, 没必要让谁
+    等上二十几秒只为了看到几乎一样的东西.
+    """
+    cached = _read_catalog_cache('all', 0)
+    if _catalog_all_is_fresh(cached):
+        return cached.get('items') or []
+    if cached and cached.get('items'):
+        spawn(_refresh_catalog_all)
+        return cached.get('items') or []
+    return (_refresh_catalog_all() or {}).get('items') or []
+
+
+def _resolve_video_sn(anime_sn):
+    """animeSn 认的是作品, videoSn 才是能播能下的那一集, 中间隔一个 301."""
+    anime_sn = str(anime_sn)
+    cached = (_read_catalog_cache('ref', CATALOG_REF_TTL) or {}).get(anime_sn)
+    if cached:
+        return cached
+    with _keyed_lock('catalog-ref-' + anime_sn):
+        cached = (_read_catalog_cache('ref', CATALOG_REF_TTL) or {}).get(anime_sn)
+        if cached:
+            return cached
+        try:
+            resp = _bahamut_get(Catalog.REF_URL + anime_sn, timeout=10, allow_redirects=False)
+            video_sn = Catalog.parse_video_sn(resp.headers.get('Location') or '')
+        except BaseException:
+            err_print(anime_sn, '解析作品編號失敗', traceback.format_exc(),
+                      status=1, display=False)
+            return ''
+        if video_sn:
+            # 整份表是一个文件, 读改写要单独串起来, 否则两部作品同时解析会丢掉一条
+            with _keyed_lock('catalog-ref-write'):
+                refs = _read_catalog_cache('ref', CATALOG_REF_TTL) or {}
+                refs[anime_sn] = video_sn
+                _write_catalog_cache('ref', refs)
+        return video_sn
+
+
+def _catalog_knows(anime_sn):
+    """只认片单里出现过的作品.
+
+    这个路由会替浏览器去抓巴哈, 不限住就成了打向人家 api 的请求放大器 ——
+    跟 /anime_info、/thumbnail.jpg 里那两道 "不在片库就不转发" 是同一个道理,
+    只是这里的边界从本地片库换成了片单本身.
+    """
+    target = str(anime_sn)
+    for item in _get_catalog_all() or []:
+        if item.get('animeSn') == target:
+            return True
+    index = _get_catalog_index() or {}
+    for name in ('season', 'hot', 'newAdded'):
+        for item in index.get(name) or []:
+            if item.get('animeSn') == target:
+                return True
+    return False
+
+
+def _local_episode_map():
+    # 详情页要标出哪几集已经在本地了, 键跟 _find_video_entry 一样用字符串 sn
+    entries = {}
+    for video in (_read_video_list_file().get('videos') or []):
+        entries[str(video.get('sn'))] = video
+    return entries
+
+
+def _catalog_episodes(info):
+    """把官方那份按类型分组的集数表摊平, 顺手标上本地有没有."""
+    local = _local_episode_map()
+    anime = (info or {}).get('anime') or {}
+    groups = []
+    raw_groups = anime.get('episodes') or {}
+    for name in sorted(raw_groups.keys()):
+        episodes = []
+        for episode in raw_groups.get(name) or []:
+            video_sn = str(episode.get('videoSn') or '')
+            entry = local.get(video_sn)
+            episodes.append({
+                'videoSn': video_sn,
+                'episode': episode.get('episode') or '',
+                'cover': episode.get('cover') or '',
+                'local': entry is not None,
+                'resolution': (entry or {}).get('resolution') or 0,
+            })
+        if episodes:
+            groups.append({
+                'name': Catalog.EPISODE_TYPES.get(str(name), str(name)),
+                'episodes': episodes,
+            })
+    return groups
+
+
+def _catalog_login_error(current_settings):
+    # 片单跟片库同一道门: 设了要登入才能看, 片单也不该是敞开的
+    if current_settings['dashboard']['online_watch_requires_login']:
+        vaild_user, user_role = verify_user(request.cookies)
+        if not vaild_user:
+            return jsonify({"error": "login required"}), 403
+    return None
+
 
 
 def _build_thumbnail(sn, cache_path, entry):
@@ -999,6 +1235,83 @@ if settings["dashboard"]["online_watch"]:
         resp = jsonify(info)
         resp.headers['Cache-Control'] = 'private, max-age=3600'
         return resp
+
+    @app.route('/catalog/index.json')
+    def catalog_index():
+        # 动画疯首页的几个分区. 片库里只有下过的那几部, 这里是站上全部
+        current_settings = _get_current_settings()
+        denied = _catalog_login_error(current_settings)
+        if denied is not None:
+            return denied
+        payload = _get_catalog_index()
+        if payload is None:
+            return jsonify({"error": "catalog unavailable"}), 503
+        return _apply_cache_headers(jsonify(payload), current_settings, 600)
+
+    @app.route('/catalog/all.json')
+    def catalog_all():
+        current_settings = _get_current_settings()
+        denied = _catalog_login_error(current_settings)
+        if denied is not None:
+            return denied
+
+        items = _get_catalog_all()
+        keyword = (request.args.get('q') or '').strip()
+        if keyword:
+            # 全站一千八百多部都已经在本地了, 搜个片名没必要再去问巴哈
+            keyword = keyword.lower()
+            items = [item for item in items if keyword in item['title'].lower()]
+        try:
+            page = max(1, int(request.args.get('page') or 1))
+        except BaseException:
+            page = 1
+        start = (page - 1) * CATALOG_PAGE_SIZE
+        resp = jsonify({
+            'items': items[start:start + CATALOG_PAGE_SIZE],
+            'page': page,
+            'pages': max(1, (len(items) + CATALOG_PAGE_SIZE - 1) // CATALOG_PAGE_SIZE),
+            'total': len(items),
+        })
+        return _apply_cache_headers(resp, current_settings, 600)
+
+    @app.route('/catalog/anime.json')
+    def catalog_anime():
+        # 详情页: 简介、集数表, 以及每一集在本地有没有
+        current_settings = _get_current_settings()
+        denied = _catalog_login_error(current_settings)
+        if denied is not None:
+            return denied
+
+        anime_sn = request.args.get('sn')
+        if not anime_sn or not str(anime_sn).isdigit():
+            return jsonify({"error": "invalid sn"}), 400
+        if not _catalog_knows(anime_sn):
+            return jsonify({"error": "anime not found"}), 404
+
+        video_sn = _resolve_video_sn(anime_sn)
+        if not video_sn:
+            return jsonify({"error": "anime unavailable"}), 404
+        info = _get_anime_info(video_sn)
+        if not info:
+            return jsonify({"error": "anime info unavailable"}), 404
+
+        anime = info.get('anime') or {}
+        resp = jsonify({
+            'animeSn': str(anime_sn),
+            'videoSn': video_sn,
+            'title': Catalog.series_title(anime.get('title')),
+            'cover': anime.get('cover') or '',
+            'content': Catalog.plain_text(anime.get('contentHtml') or anime.get('content')),
+            'tags': anime.get('tags') or [],
+            'director': anime.get('director') or '',
+            'publisher': anime.get('publisher') or '',
+            'score': anime.get('score') or 0,
+            'seasonStart': anime.get('seasonStart') or '',
+            'popular': Catalog.views(anime.get('popular')),
+            'totalEpisode': anime.get('totalEpisode') or '',
+            'groups': _catalog_episodes(info),
+        })
+        return _apply_cache_headers(resp, current_settings, 600)
 
     @app.route('/thumbnail.jpg')
     def get_thumbnail():

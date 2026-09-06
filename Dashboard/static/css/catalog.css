@@ -1,0 +1,454 @@
+/* ---------------------------------------------------------------------------
+   aniGamerPlus+ — 動畫瘋片單
+   The furniture the catalogue needs and the home page never did: a weekday
+   timetable, a pager, and the detail sheet that opens over everything. Cards,
+   rails and posters all come from agp.css unchanged.
+   --------------------------------------------------------------------------- */
+
+/* --- 更新時間表 ---------------------------------------------------------- */
+
+.agp-daytabs {
+  display: flex;
+  gap: 7px;
+  margin-bottom: 14px;
+  overflow-x: auto;
+  padding-bottom: 4px;
+  scrollbar-width: none;
+}
+
+.agp-daytabs::-webkit-scrollbar { display: none; }
+
+.agp-daytab {
+  align-items: center;
+  background: var(--agp-bg-card);
+  border: 1px solid var(--agp-line);
+  border-radius: 999px;
+  color: var(--agp-fg-dim);
+  cursor: pointer;
+  display: inline-flex;
+  flex: 0 0 auto;
+  font-size: 13px;
+  font-weight: 700;
+  gap: 6px;
+  min-height: 34px;
+  padding: 0 13px;
+}
+
+.agp-daytab em {
+  color: var(--agp-fg-faint);
+  font-size: 11px;
+  font-style: normal;
+  font-weight: 600;
+}
+
+.agp-daytab.is-on {
+  background: var(--agp-accent);
+  border-color: transparent;
+  color: #fff;
+}
+
+.agp-daytab.is-on em { color: rgb(255 255 255 / 72%); }
+
+/* One row per broadcast, ordered by time. A grid rather than a card grid: the
+   question this section answers is "what is on today", and a list answers it
+   in one glance where a wall of covers does not. */
+.agp-slots {
+  display: grid;
+  gap: 8px;
+}
+
+.agp-slot {
+  align-items: center;
+  background: var(--agp-bg-card);
+  border: 1px solid var(--agp-line);
+  border-radius: var(--agp-radius-sm);
+  color: inherit;
+  display: grid;
+  gap: 12px;
+  grid-template-columns: 54px 74px 1fr;
+  padding: 8px 12px 8px 8px;
+  text-decoration: none;
+}
+
+a.agp-slot:hover { background: var(--agp-bg-card-hover); }
+
+.agp-slot-time {
+  color: var(--agp-accent);
+  font-size: 14px;
+  font-variant-numeric: tabular-nums;
+  font-weight: 800;
+  text-align: center;
+}
+
+.agp-slot-art {
+  aspect-ratio: 16 / 9;
+  border-radius: 6px;
+  container-type: inline-size;
+  display: block;
+  overflow: hidden;
+  position: relative;
+}
+
+.agp-slot-body { min-width: 0; }
+
+.agp-slot-body strong {
+  display: block;
+  font-size: 14px;
+  font-weight: 600;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.agp-slot-body small {
+  color: var(--agp-fg-faint);
+  font-size: 12px;
+}
+
+/* --- 所有動畫 ------------------------------------------------------------ */
+
+.agp-count {
+  color: var(--agp-fg-faint);
+  font-size: 12px;
+  margin: -6px 0 12px;
+}
+
+.agp-poster-skeleton { aspect-ratio: 3 / 4; }
+
+.agp-pager {
+  align-items: center;
+  display: flex;
+  gap: 12px;
+  justify-content: center;
+  margin-top: 20px;
+}
+
+.agp-pager span {
+  color: var(--agp-fg-dim);
+  font-size: 13px;
+  font-variant-numeric: tabular-nums;
+}
+
+.agp-pager .agp-btn[disabled] {
+  cursor: default;
+  opacity: .38;
+}
+
+/* --- detail sheet --------------------------------------------------------- */
+
+/* The sheet is the only thing on screen once it opens, so the page behind it
+   stops scrolling — otherwise a flick meant for the episode list drags the
+   catalogue away underneath. */
+body.agp-sheet-open { overflow: hidden; }
+
+.agp-sheet {
+  inset: 0;
+  position: fixed;
+  z-index: 60;
+}
+
+.agp-sheet-backdrop {
+  backdrop-filter: blur(3px);
+  background: rgb(0 0 0 / 62%);
+  inset: 0;
+  position: absolute;
+}
+
+.agp-sheet-panel {
+  background: var(--agp-bg-elev);
+  border: 1px solid var(--agp-line);
+  border-radius: var(--agp-radius);
+  box-shadow: 0 32px 80px rgb(0 0 0 / 62%);
+  display: flex;
+  flex-direction: column;
+  left: 50%;
+  max-height: min(86vh, 900px);
+  max-width: 860px;
+  position: absolute;
+  top: 50%;
+  transform: translate(-50%, -50%);
+  width: min(94vw, 860px);
+}
+
+.agp-sheet-x {
+  align-items: center;
+  background: rgb(0 0 0 / 42%);
+  border: 0;
+  border-radius: 999px;
+  color: var(--agp-fg);
+  cursor: pointer;
+  display: flex;
+  height: 34px;
+  justify-content: center;
+  position: absolute;
+  right: 10px;
+  top: 10px;
+  width: 34px;
+  z-index: 1;
+}
+
+.agp-sheet-body {
+  overflow-y: auto;
+  padding: 20px;
+  -webkit-overflow-scrolling: touch;
+}
+
+.agp-sheet-loading {
+  align-items: center;
+  color: var(--agp-fg-dim);
+  display: flex;
+  gap: 10px;
+  justify-content: center;
+  padding: 60px 0;
+}
+
+.agp-sheet-hero {
+  display: grid;
+  gap: 18px;
+  grid-template-columns: 168px 1fr;
+  margin-bottom: 18px;
+}
+
+.agp-sheet-cover {
+  aspect-ratio: 3 / 4;
+  border: 1px solid var(--agp-line);
+  border-radius: var(--agp-radius-sm);
+  container-type: inline-size;
+  display: block;
+  overflow: hidden;
+  position: relative;
+}
+
+.agp-sheet-head { min-width: 0; }
+
+.agp-sheet-head h3 {
+  font-size: 21px;
+  font-weight: 800;
+  line-height: 1.3;
+  margin: 0 40px 10px 0;
+}
+
+.agp-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-bottom: 10px;
+}
+
+.agp-chip {
+  align-items: center;
+  background: var(--agp-bg-card);
+  border: 1px solid var(--agp-line);
+  border-radius: 999px;
+  color: var(--agp-fg-dim);
+  display: inline-flex;
+  font-size: 12px;
+  gap: 5px;
+  padding: 4px 10px;
+}
+
+.agp-chips--tag .agp-chip {
+  background: transparent;
+  border-color: var(--agp-line-strong);
+  color: var(--agp-fg-faint);
+}
+
+.agp-sheet-actions {
+  align-items: center;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 14px;
+}
+
+.agp-select {
+  background: var(--agp-bg-card);
+  border: 1px solid var(--agp-line-strong);
+  border-radius: 999px;
+  color: var(--agp-fg);
+  font-size: 13px;
+  font-weight: 600;
+  min-height: 38px;
+  padding: 0 12px;
+}
+
+.agp-sheet-hint {
+  color: var(--agp-fg-faint);
+  font-size: 12px;
+  line-height: 1.6;
+  margin: 10px 0 0;
+}
+
+.agp-sheet-text {
+  color: var(--agp-fg-dim);
+  font-size: 14px;
+  line-height: 1.75;
+  margin: 0 0 20px;
+  white-space: pre-line;
+}
+
+/* A synopsis often carries the whole production credits after it. Clamped, it
+   is a paragraph; unclamped on a phone it is three screens between the cover
+   and the episode the reader came for. */
+.agp-synopsis {
+  margin-bottom: 20px;
+  position: relative;
+}
+
+.agp-synopsis .agp-sheet-text { margin-bottom: 0; }
+
+.agp-sheet-text.is-clamped {
+  -webkit-box-orient: vertical;
+  display: -webkit-box;
+  -webkit-line-clamp: 4;
+  overflow: hidden;
+}
+
+.agp-synopsis-more {
+  align-items: center;
+  background: none;
+  border: 0;
+  color: var(--agp-accent);
+  cursor: pointer;
+  display: inline-flex;
+  font-size: 13px;
+  font-weight: 700;
+  gap: 4px;
+  margin-top: 6px;
+  padding: 0;
+}
+
+/* --- episode lists -------------------------------------------------------- */
+
+.agp-epgroup + .agp-epgroup { margin-top: 20px; }
+
+.agp-epgroup h4 {
+  align-items: center;
+  border-bottom: 1px solid var(--agp-line);
+  display: flex;
+  font-size: 14px;
+  font-weight: 700;
+  gap: 9px;
+  margin: 0 0 12px;
+  padding-bottom: 7px;
+}
+
+.agp-epgroup h4 em {
+  color: var(--agp-fg-faint);
+  font-size: 12px;
+  font-style: normal;
+  font-weight: 500;
+}
+
+/* Fixed columns rather than auto-fill: episode labels are one to four
+   characters, and a grid that sizes to its content turns ragged the moment a
+   series mixes 「1」 with 「特別篇」. */
+.agp-eps {
+  display: grid;
+  gap: 6px;
+  grid-template-columns: repeat(auto-fill, minmax(62px, 1fr));
+}
+
+.agp-ep {
+  align-items: center;
+  background: var(--agp-bg-card);
+  border: 1px solid var(--agp-line);
+  border-radius: 6px;
+  color: var(--agp-fg-dim);
+  cursor: pointer;
+  display: flex;
+  font-size: 13px;
+  gap: 4px;
+  justify-content: center;
+  min-height: 36px;
+  overflow: hidden;
+  padding: 0 6px;
+  text-decoration: none;
+  white-space: nowrap;
+}
+
+.agp-ep:hover {
+  background: var(--agp-bg-card-hover);
+  color: var(--agp-fg);
+}
+
+/* Already on disk: this one plays, the rest queue. Worth telling apart at a
+   glance, because it is the whole difference between the two taps. */
+.agp-ep.is-local {
+  background: var(--agp-accent-soft);
+  border-color: rgb(255 0 51 / 34%);
+  color: var(--agp-fg);
+  font-weight: 700;
+}
+
+.agp-ep.is-queued {
+  color: var(--agp-fg-faint);
+  cursor: default;
+}
+
+.agp-epmore { margin-top: 10px; }
+
+/* --- toast ---------------------------------------------------------------- */
+
+.agp-toast {
+  background: var(--agp-bg-card);
+  border: 1px solid var(--agp-line-strong);
+  border-radius: 999px;
+  bottom: calc(20px + var(--agp-safe-b));
+  box-shadow: 0 16px 40px rgb(0 0 0 / 55%);
+  color: var(--agp-fg);
+  font-size: 13px;
+  font-weight: 600;
+  left: 50%;
+  opacity: 0;
+  padding: 11px 20px;
+  pointer-events: none;
+  position: fixed;
+  transform: translate(-50%, 12px);
+  transition: opacity .18s, transform .18s;
+  z-index: 80;
+}
+
+.agp-toast.is-on {
+  opacity: 1;
+  transform: translate(-50%, 0);
+}
+
+/* --- narrow --------------------------------------------------------------- */
+
+@media (max-width: 680px) {
+  .agp-slot {
+    gap: 10px;
+    grid-template-columns: 46px 64px 1fr;
+  }
+
+  /* Full-height sheet on a phone: a centred box with a strip of catalogue
+     visible above and below reads as a misplaced dialog rather than as the
+     page you just opened. */
+  .agp-sheet-panel {
+    border-radius: var(--agp-radius) var(--agp-radius) 0 0;
+    border-width: 1px 0 0;
+    bottom: 0;
+    left: 0;
+    max-height: 92vh;
+    max-width: none;
+    top: auto;
+    transform: none;
+    width: 100%;
+  }
+
+  .agp-sheet-body { padding: 18px 14px calc(18px + var(--agp-safe-b)); }
+
+  .agp-sheet-hero {
+    gap: 14px;
+    grid-template-columns: 108px 1fr;
+  }
+
+  .agp-sheet-head h3 { font-size: 18px; }
+
+  .agp-eps { grid-template-columns: repeat(auto-fill, minmax(54px, 1fr)); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .agp-toast { transition: none; }
+}

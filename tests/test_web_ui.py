@@ -22,6 +22,9 @@ from ui_harness import (  # noqa: E402
     ROOT,
     STATIC_PATH,
     VIDEO_LIST,
+    CATALOG_ALL,
+    CATALOG_LOCAL_SN,
+    MANUAL_TASKS,
     HarnessServer,
 )
 
@@ -39,6 +42,13 @@ IPHONE_VIEWPORT = {'width': 390, 'height': 844}
 @pytest.fixture(scope='session')
 def server():
     with HarnessServer() as running:
+        yield running
+
+
+@pytest.fixture(scope='session')
+def server_without_catalog():
+    """A dashboard with ``online_watch`` off, where /catalog/* does not exist."""
+    with HarnessServer(catalog=False) as running:
         yield running
 
 
@@ -164,6 +174,228 @@ def test_home_search_filters_the_library(page, server):
 
     page.fill('#homeSearch', 'zzzz-no-such-anime')
     expect(page.locator('#homeLibrary .agp-empty')).to_contain_text('找不到')
+
+
+# ------------------------------------------------------------------- 片單
+
+def open_home(page, server, path='/'):
+    page.goto(server.url + path)
+    page.wait_for_selector('#homeCatalog .agp-poster')
+    return page
+
+
+def open_sheet(page, server, anime_sn):
+    open_home(page, server, '/#anime-%s' % anime_sn)
+    page.wait_for_selector('#catalogSheet .agp-epgroup')
+    return page.locator('#catalogSheet')
+
+
+def test_catalog_draws_the_bahamut_front_page(page, server):
+    open_home(page, server)
+
+    # 本季新番 keeps the wide episode banner 動畫瘋 ships it as; the catalogue
+    # grids below it are the 3:4 cover, and one shape would letterbox the other.
+    card = page.locator('#homeSeason .agp-card').first
+    ratio = card.locator('.agp-card-art').evaluate(
+        '(el) => { const r = el.getBoundingClientRect(); return r.width / r.height; }')
+    assert 1.7 < ratio < 1.83
+    assert page.locator('#homeSeason .agp-card').count() == 6
+
+    expect(page.locator('#homeSchedule .agp-daytab')).to_have_count(7)
+    expect(page.locator('#homeCatalogHot .agp-poster-rank').first).to_have_text('1')
+    assert page.locator('#homeCatalogNew .agp-poster').count() == 4
+
+    expect(page.locator('#homeCatalog .agp-count')).to_have_text(
+        '共 %d 部作品' % len(CATALOG_ALL))
+    expect(page.locator('#homeCatalog .agp-pager span')).to_have_text('第 1 / 3 頁')
+    assert page.locator('#homeCatalog .agp-poster').count() == 28
+
+    # 片庫 is still there, and still counts only what is actually on disk.
+    expect(page.locator('#homeLibrary .agp-section-head h2')).to_have_text('片庫')
+    assert page.locator('#homeLibrary .agp-poster').count() == len(
+        set(video['anime_name'] for video in VIDEO_LIST['videos']))
+    assert page.errors == []
+
+
+def test_catalog_timetable_switches_weekday(page, server):
+    open_home(page, server)
+    tabs = page.locator('#homeSchedule .agp-daytab')
+
+    tabs.nth(1).click()
+    expect(page.locator('#homeSchedule .agp-slot')).to_have_count(2)
+    expect(tabs.nth(1)).to_have_class(re.compile(r'(^| )is-on( |$)'))
+
+    # 週日 has nothing scheduled, which is a thing to say rather than a blank.
+    tabs.nth(6).click()
+    expect(page.locator('#homeSchedule .agp-empty')).to_contain_text('沒有排定更新')
+
+    # A row 本季新番 does not also list carries no animeSn, so there is no sheet
+    # to open and it must not pretend to be a link.
+    tabs.nth(0).click()
+    expect(page.locator('#homeSchedule .agp-slot')).to_have_count(1)
+    assert page.locator('#homeSchedule a.agp-slot').count() == 0
+    assert page.errors == []
+
+
+def test_catalog_pager_walks_the_whole_list(page, server):
+    open_home(page, server)
+    expect(page.locator('#homeCatalog .agp-pager button[data-page="0"]')).to_be_disabled()
+
+    page.locator('#homeCatalog .agp-pager button[data-page="2"]').click()
+    expect(page.locator('#homeCatalog .agp-pager span')).to_have_text('第 2 / 3 頁')
+
+    page.locator('#homeCatalog .agp-pager button[data-page="3"]').click()
+    expect(page.locator('#homeCatalog .agp-pager span')).to_have_text('第 3 / 3 頁')
+    # 70 titles at 28 a page leaves 14 on the last one, and no way forward.
+    expect(page.locator('#homeCatalog .agp-poster')).to_have_count(14)
+    expect(page.locator('#homeCatalog .agp-pager button[data-page="4"]')).to_be_disabled()
+    assert page.errors == []
+
+
+def test_catalog_search_reaches_past_the_library(page, server):
+    open_home(page, server)
+
+    page.fill('#homeSearch', '所有動畫 1')
+    expect(page.locator('#homeCatalog .agp-section-head h2')).to_have_text('搜尋結果')
+    # 10 through 19: ten titles, none of them downloaded, which is exactly the
+    # reach the 片庫-only search never had.
+    expect(page.locator('#homeCatalog .agp-count')).to_have_text('找到 10 部作品')
+    expect(page.locator('#homeLibrary .agp-empty')).to_contain_text('找不到')
+
+    page.fill('#homeSearch', 'zzzz-no-such-anime')
+    expect(page.locator('#homeCatalog .agp-empty')).to_contain_text('找不到符合')
+    assert page.errors == []
+
+
+def test_catalog_sheet_opens_closes_and_survives_a_shared_link(page, server):
+    open_home(page, server)
+    page.locator('#homeCatalog .agp-poster').first.click()
+    page.wait_for_selector('#catalogSheet .agp-epgroup')
+
+    sheet = page.locator('#catalogSheet')
+    expect(sheet.locator('h3')).to_have_text(CATALOG_ALL[0]['title'])
+    expect(sheet.locator('.agp-chip').first).to_contain_text('4.8')
+    expect(sheet.locator('.agp-epgroup h4').first).to_contain_text('本篇')
+    # Opening a title is a place, not a mode: the hash is what makes Back, the
+    # iOS swipe-back gesture and a pasted link all land on the same sheet.
+    assert page.evaluate('() => location.hash') == '#anime-%s' % CATALOG_LOCAL_SN
+
+    page.keyboard.press('Escape')
+    page.wait_for_selector('#catalogSheet', state='hidden')
+    assert page.evaluate('() => location.hash') == ''
+
+    # And the same sheet reached cold, from the link rather than from a card.
+    sheet = open_sheet(page, server, CATALOG_ALL[3]['animeSn'])
+    expect(sheet.locator('h3')).to_have_text(CATALOG_ALL[3]['title'])
+    assert page.errors == []
+
+
+def test_catalog_sheet_clamps_a_long_synopsis(page, server):
+    sheet = open_sheet(page, server, CATALOG_ALL[3]['animeSn'])
+
+    clamped = sheet.locator('.agp-sheet-text.is-clamped')
+    expect(clamped).to_be_visible()
+    shut = clamped.evaluate('(el) => el.getBoundingClientRect().height')
+
+    sheet.locator('.agp-synopsis-more').click()
+    expect(sheet.locator('.agp-sheet-text.is-clamped')).to_have_count(0)
+    assert sheet.locator('.agp-sheet-text').evaluate(
+        '(el) => el.getBoundingClientRect().height') > shut
+    assert page.errors == []
+
+
+def test_catalog_sheet_plays_what_is_local_and_queues_what_is_not(page, server):
+    sheet = open_sheet(page, server, CATALOG_LOCAL_SN)
+
+    # One episode is on disk, so this title plays right now -- and the episode
+    # grid says which one without making anybody hunt for it.
+    expect(sheet.locator('.agp-sheet-actions a[href*="watch?id="]')).to_contain_text('立即觀看')
+    expect(sheet.locator('.agp-ep.is-local')).to_have_count(1)
+    expect(sheet.locator('.agp-ep.is-local')).to_have_text(re.compile(r'\b2\b'))
+    assert sheet.locator('.agp-sheet-hint').count() == 0
+
+    # Everything else is a download, and until streaming is wired up the only
+    # honest place to watch it in the meantime is 動畫瘋 itself.
+    remote = open_sheet(page, server, CATALOG_ALL[3]['animeSn'])
+    expect(remote.locator('.agp-sheet-hint')).to_contain_text('還沒有下載到片庫')
+    expect(remote.locator('a[href^="https://ani.gamer.com.tw/animeVideo.php"]')).to_be_visible()
+    assert remote.locator('.agp-ep.is-local').count() == 0
+    assert page.errors == []
+
+
+def test_catalog_sheet_shows_the_rest_of_a_long_series_on_request(page, server):
+    sheet = open_sheet(page, server, CATALOG_ALL[3]['animeSn'])
+    group = sheet.locator('.agp-epgroup').first
+
+    # 130 episodes are not painted up front; 名偵探柯南 ships 986 of them.
+    expect(group.locator('.agp-ep')).to_have_count(120)
+    expect(group.locator('.agp-epmore')).to_contain_text('顯示其餘 10 集')
+
+    group.locator('.agp-epmore').click()
+    expect(sheet.locator('.agp-epgroup').first.locator('.agp-ep')).to_have_count(130)
+    assert page.errors == []
+
+
+def test_catalog_queues_a_download_with_everything_the_server_needs(page, server):
+    del MANUAL_TASKS[:]
+    sheet = open_sheet(page, server, CATALOG_ALL[3]['animeSn'])
+
+    sheet.locator('.agp-select').select_option('720')
+    sheet.locator('button[data-download]').click()
+    expect(page.locator('#catalogToast.is-on')).to_contain_text('已加入下載佇列')
+
+    # /manualTask reads all six keys straight out of the body and KeyErrors on
+    # any one that is missing, so the payload shape is the contract.
+    assert len(MANUAL_TASKS) == 1
+    whole = MANUAL_TASKS[0]
+    assert sorted(whole) == ['classify', 'danmu', 'mode', 'resolution', 'sn', 'thread']
+    assert whole['sn'] == CATALOG_ALL[3]['videoSn']
+    assert whole['resolution'] == '720'
+    assert whole['mode'] == 'all'
+
+    # Tapping one episode queues that episode alone, and it stops being tappable.
+    sheet.locator('.agp-ep').first.click()
+    expect(sheet.locator('.agp-ep.is-queued').first).to_be_disabled()
+    assert len(MANUAL_TASKS) == 2
+    assert MANUAL_TASKS[1]['mode'] == 'single'
+    assert MANUAL_TASKS[1]['sn'] != whole['sn']
+    assert page.errors == []
+
+
+def test_catalog_sheet_is_a_bottom_sheet_on_a_phone(phone, server):
+    sheet = open_sheet(phone, server, CATALOG_LOCAL_SN)
+
+    box = sheet.locator('.agp-sheet-panel').bounding_box()
+    assert box['x'] == 0
+    assert box['width'] == IPHONE_VIEWPORT['width']
+    # Pinned to the bottom edge rather than floating in the middle: a centred
+    # box with catalogue showing above and below reads as a stray dialog.
+    assert abs(box['y'] + box['height'] - IPHONE_VIEWPORT['height']) < 2
+
+    # And the catalogue behind it must not drag away under the reader's thumb.
+    assert phone.evaluate("() => getComputedStyle(document.body).overflow") == 'hidden'
+    assert phone.errors == []
+
+
+def test_home_falls_back_to_the_library_without_the_catalogue(page, server_without_catalog):
+    """``online_watch`` off means the /catalog/* routes do not exist at all, and
+    the page has to go back to being the 片庫 view it was rather than to a wall
+    of empty sections."""
+    page.goto(server_without_catalog.url)
+    page.wait_for_selector('#homeLibrary .agp-poster')
+    # A tab that scrolls nowhere reads as a broken page, so it retires itself --
+    # and waiting on that is waiting on the failed fetch having been handled.
+    page.wait_for_selector('.agp-tab[href="#all"]', state='hidden')
+
+    for host in ['homeSeason', 'homeSchedule', 'homeCatalogHot', 'homeCatalogNew',
+                 'homeCatalog']:
+        assert page.locator('#%s .agp-section' % host).count() == 0
+
+    visible = [tab.inner_text() for tab in page.locator('.agp-tab').all() if tab.is_visible()]
+    assert '本季新番' not in visible
+    assert '更新時間表' not in visible
+    assert '片庫' in visible
+    assert page.errors == []
 
 
 # -------------------------------------------------------------------- player

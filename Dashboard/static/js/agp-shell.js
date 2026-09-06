@@ -230,6 +230,39 @@
         });
     }
 
+    /* --- section chrome ---------------------------------------------------- */
+
+    /* The home page and the catalog draw the same furniture around different
+       data, and two copies of it drift apart the first time one grows a class. */
+    function railHtml(cardsHtml, railId) {
+        return '<div class="agp-rail-wrap">' +
+            '<button class="agp-rail-nav" data-dir="prev" type="button" aria-label="上一頁">' +
+            icon('chevronLeft', 18) + '</button>' +
+            '<div class="agp-rail" id="' + railId + '">' + cardsHtml + '</div>' +
+            '<button class="agp-rail-nav" data-dir="next" type="button" aria-label="下一頁">' +
+            icon('chevronRight', 18) + '</button>' +
+            '</div>';
+    }
+
+    function sectionHtml(id, title, bodyHtml, moreHref, moreLabel) {
+        return '<section class="agp-section" id="' + id + '">' +
+            '<div class="agp-section-head"><h2>' + escapeHtml(title) + '</h2>' +
+            (moreHref ? '<a class="agp-section-more" href="' + escapeHtml(moreHref) + '">' +
+                escapeHtml(moreLabel || '看更多') + ' ' + icon('chevronRight', 13) + '</a>' : '') +
+            '</div>' + bodyHtml + '</section>';
+    }
+
+    /* A tab whose section never rendered scrolls nowhere, which reads as a
+       broken page rather than as a section this site simply does not have.
+       Both the local sections and the catalog sections can be absent, so
+       whichever script finishes writing last calls this. */
+    function syncTabs() {
+        document.querySelectorAll('.agp-tab[href^="#"]').forEach(function (tab) {
+            var id = tab.getAttribute('href').slice(1);
+            tab.hidden = !!id && !document.getElementById(id);
+        });
+    }
+
     global.AGP = {
         icon: icon,
         icons: ICONS,
@@ -246,7 +279,10 @@
         isStandalone: isStandalone,
         isIos: isIos,
         initPwa: initPwa,
-        wireRail: wireRail
+        wireRail: wireRail,
+        railHtml: railHtml,
+        sectionHtml: sectionHtml,
+        syncTabs: syncTabs
     };
 
     initPwa();

@@ -6,7 +6,7 @@
    --------------------------------------------------------------------------- */
 'use strict';
 
-var CACHE = 'agp-shell-v5';
+var CACHE = 'agp-shell-v6';
 
 /* Bare paths on purpose: the ?v= tokens in the templates move whenever an asset
    changes, and a list that pinned them would drift out of step unnoticed. These
@@ -15,9 +15,11 @@ var SHELL = [
     './',
     './static/css/agp.css',
     './static/css/home.css',
+    './static/css/catalog.css',
     './static/css/watch.css',
     './static/js/agp-shell.js',
     './static/js/home.js',
+    './static/js/catalog.js',
     './static/js/userapi.js',
     './static/img/aniGamerPlus.ico',
     './static/img/pwa/icon-192.png',
@@ -63,6 +65,7 @@ var BYPASS = [
     '/user',
     '/config',
     '/sn_list',
+    '/catalog',
     '/msg'
 ];
 
