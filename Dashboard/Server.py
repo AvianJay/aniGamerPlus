@@ -1572,6 +1572,52 @@ if settings["dashboard"]["online_watch"]:
         resp.headers['Cache-Control'] = 'private, max-age=3600'
         return resp
 
+    @app.route('/watch/series.json')
+    def watch_series():
+        """播放頁要的作品資料: 官方封面、官方簡介, 跟整部作品的集數表.
+
+        跟 /catalog/anime.json 端的是同一份東西, 差別只在入口: 那邊給的是作品編號,
+        播放頁手上只有正在播的那一集. 沒有這條路由, 資訊卡就只能拿片庫裡那幾集
+        自己編一段介紹, 集數列也只擺得出下載過的集數 —— 邊看邊下載進來的人於是
+        看到「共 1 集」.
+        """
+        current_settings = _sync_plugin_manager()
+        if current_settings['dashboard']['online_watch_requires_login']:
+            vaild_user, user_role = verify_user(request.cookies)
+            if not vaild_user:
+                return jsonify({"error": "login required"}), 403
+
+        sn = request.args.get('id')
+        if not sn or not str(sn).isdigit():
+            return jsonify({"error": "invalid sn"}), 400
+        # 跟 /anime_info、/thumbnail.jpg 同一道門: 片庫裡有, 或者正在下載, 才代抓
+        if _find_video_entry(sn) is None and _hls_task(sn) is None:
+            return jsonify({"error": "video not found"}), 404
+
+        info = _get_anime_info(sn)
+        if not info:
+            return jsonify({"error": "anime info unavailable"}), 404
+
+        anime = info.get('anime') or {}
+        video = info.get('video') or {}
+        resp = jsonify({
+            'animeSn': str(anime.get('animeSn') or ''),
+            'videoSn': str(sn),
+            'title': Catalog.series_title(anime.get('title')),
+            # 作品封面是 3:4 的直式圖, 跟單集那張橫的截圖不是同一種東西
+            'cover': anime.get('cover') or video.get('cover') or '',
+            'content': Catalog.plain_text(anime.get('contentHtml') or anime.get('content')),
+            'tags': anime.get('tags') or [],
+            'director': anime.get('director') or '',
+            'publisher': anime.get('publisher') or '',
+            'score': anime.get('score') or 0,
+            'seasonStart': anime.get('seasonStart') or '',
+            'popular': Catalog.views(anime.get('popular')),
+            'totalEpisode': anime.get('totalEpisode') or '',
+            'groups': _catalog_episodes(info),
+        })
+        return _apply_cache_headers(resp, current_settings, 3600)
+
     @app.route('/catalog/index.json')
     def catalog_index():
         # 动画疯首页的几个分区. 片库里只有下过的那几部, 这里是站上全部

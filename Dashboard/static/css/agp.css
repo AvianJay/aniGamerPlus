@@ -194,6 +194,87 @@ body.agp-body img { max-width: 100%; }
   width: 32px;
 }
 
+/* 帳號選單: 列上只留一顆按鈕, 主控台/用戶管理/帳號資訊/登出都收在裡面 */
+.agp-usernav .agp-navmenu { position: relative; }
+
+.agp-usernav .agp-navmenu-toggle {
+  align-items: center;
+  cursor: pointer;
+  display: flex;
+  gap: 7px;
+  list-style: none;
+  padding: 4px 8px 4px 4px;
+}
+
+.agp-usernav .agp-navmenu-toggle::-webkit-details-marker { display: none; }
+
+.agp-navmenu[open] .agp-navmenu-toggle {
+  background: var(--agp-bg-card);
+  color: var(--agp-fg);
+}
+
+.agp-navmenu-avatar {
+  align-items: center;
+  background: var(--agp-accent);
+  border-radius: 50%;
+  color: #fff;
+  display: flex;
+  flex: none;
+  font-size: 12px;
+  font-weight: 800;
+  height: 24px;
+  justify-content: center;
+  width: 24px;
+}
+
+.agp-navmenu-name {
+  max-width: 9em;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.agp-navmenu-panel {
+  background: var(--agp-bg-elev);
+  border: 1px solid var(--agp-line);
+  border-radius: var(--agp-radius-sm);
+  box-shadow: 0 14px 34px rgb(0 0 0 / 45%);
+  display: flex;
+  flex-direction: column;
+  min-width: 150px;
+  padding: 5px;
+  position: absolute;
+  right: 0;
+  top: calc(100% + 7px);
+  z-index: 50;
+}
+
+/* --- Toast ---------------------------------------------------------------- */
+/* 片單跟播放頁都用它回報「已加入下載佇列」, 所以住在共用的樣式表裡 */
+.agp-toast {
+  background: var(--agp-bg-card);
+  border: 1px solid var(--agp-line-strong);
+  border-radius: 999px;
+  bottom: calc(20px + var(--agp-safe-b));
+  box-shadow: 0 16px 40px rgb(0 0 0 / 55%);
+  color: var(--agp-fg);
+  font-size: 13px;
+  font-weight: 600;
+  left: 50%;
+  opacity: 0;
+  padding: 11px 20px;
+  pointer-events: none;
+  position: fixed;
+  transform: translate(-50%, 12px);
+  transition: opacity .18s, transform .18s;
+  z-index: 80;
+}
+
+.agp-toast.is-on {
+  opacity: 1;
+  transform: translate(-50%, 0);
+}
+
 /* --- Tab row ------------------------------------------------------------- */
 .agp-tabs {
   background: var(--agp-bg);
@@ -714,6 +795,8 @@ body.agp-body img { max-width: 100%; }
      the links overflow, so a long account name still scrolls from its first link. */
   .agp-usernav { margin-left: auto; }
   .agp-usernav .nav-link { font-size: 12px; padding: 6px 7px; }
+  /* 窄到這裡, 頭像本身就夠認人了 */
+  .agp-navmenu-name { display: none; }
   .agp-banner-body { padding: 22px 16px; }
   .agp-rail { gap: 10px; grid-auto-columns: minmax(150px, 190px); }
   .agp-poster-grid { gap: 10px; grid-template-columns: repeat(auto-fill, minmax(116px, 1fr)); }

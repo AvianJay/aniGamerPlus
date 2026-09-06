@@ -110,6 +110,60 @@ function appendNavLink(navbar, href, text) {
 }
 
 
+/* 帳號那幾條連結攤平擺在標題列上就是五顆按鈕, iPad 寬度一來還會擠成第二排.
+   收進一個選單, 列上只剩線上看跟自己的名字. 只有新外殼 (.agp-usernav) 這樣收 ——
+   控制臺跟用戶管理那兩頁是 bootstrap 的 navbar, 沒有這裡的樣式可以用 */
+function appendNavMenu(navbar, username, links) {
+    var item = document.createElement('li');
+    item.className = 'nav-item my-navbar agp-navmenu-item';
+
+    var details = document.createElement('details');
+    details.className = 'agp-navmenu';
+
+    var summary = document.createElement('summary');
+    summary.className = 'nav-link agp-navmenu-toggle';
+
+    var avatar = document.createElement('span');
+    avatar.className = 'agp-navmenu-avatar';
+    avatar.textContent = String(username || '?').trim().charAt(0).toUpperCase();
+    summary.appendChild(avatar);
+
+    var name = document.createElement('span');
+    name.className = 'agp-navmenu-name';
+    name.textContent = username || '帳號';
+    summary.appendChild(name);
+    details.appendChild(summary);
+
+    var panel = document.createElement('div');
+    panel.className = 'agp-navmenu-panel';
+    links.forEach(function (link) {
+        var anchor = document.createElement('a');
+        anchor.className = 'nav-link';
+        anchor.href = link[0];
+        anchor.textContent = link[1];
+        panel.appendChild(anchor);
+    });
+    details.appendChild(panel);
+
+    item.appendChild(details);
+    navbar.appendChild(item);
+
+    /* details 自己不會關. 開著離開它就一直蓋在頁面上 */
+    document.addEventListener('click', function (event) {
+        if (!details.contains(event.target)) {
+            details.removeAttribute('open');
+        }
+    });
+}
+
+
+/* 播放頁的頁籤列自己就有一顆「線上看」而且是選中的那顆, 右上角再放一條
+   只是同一個地方寫兩遍 */
+function isOnlineWatchPage() {
+    return /\/watch\/?$/.test(window.location.pathname);
+}
+
+
 function markLoggedInCookie(value) {
     document.cookie = 'logined=' + value + '; expires=Fri, 31 Dec 9999 23:59:59 GMT; path=/';
 }
@@ -153,9 +207,11 @@ async function userMain() {
 
     navbar.innerHTML = '';
 
+    var folded = navbar.classList.contains('agp-usernav');
+
     try {
         var info = await getServerInfo();
-        if (info.online_watch) {
+        if (info.online_watch && !(folded && isOnlineWatchPage())) {
             appendNavLink(navbar, './watch', '線上看');
         }
 
@@ -167,12 +223,19 @@ async function userMain() {
         var currentUser = await fetchCurrentUser();
         if (currentUser) {
             markLoggedInCookie('true');
+            var links = [];
             if (currentUser.role == 'admin') {
-                appendNavLink(navbar, './control', '主控台');
-                appendNavLink(navbar, './usermanage', '用戶管理');
+                links.push(['./control', '主控台']);
+                links.push(['./usermanage', '用戶管理']);
             }
-            appendNavLink(navbar, './userinfo', currentUser.username || '帳號');
-            appendNavLink(navbar, './logout', '登出');
+            /* 收起來的時候名字已經印在按鈕上了, 裡面再寫一次很怪 */
+            links.push(['./userinfo', folded ? '帳號資訊' : (currentUser.username || '帳號')]);
+            links.push(['./logout', '登出']);
+            if (folded) {
+                appendNavMenu(navbar, currentUser.username, links);
+            } else {
+                links.forEach(function (link) { appendNavLink(navbar, link[0], link[1]); });
+            }
             return;
         }
 

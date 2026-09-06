@@ -860,6 +860,15 @@ body.player-pseudo-fullscreen { overflow: hidden; }
   grid-template-columns: repeat(auto-fill, minmax(52px, 1fr));
 }
 
+.watch-episodes-group {
+  color: var(--agp-fg-faint);
+  font-size: 12px;
+  font-weight: 700;
+  margin: 15px 0 8px;
+}
+
+.watch-episodes-group + .watch-episode-grid { margin-bottom: 2px; }
+
 .watch-episode-btn {
   align-items: center;
   background: var(--agp-bg-card);
@@ -870,6 +879,7 @@ body.player-pseudo-fullscreen { overflow: hidden; }
   font-size: 13px;
   font-weight: 700;
   justify-content: center;
+  font-family: inherit;
   min-height: 38px;
   overflow: hidden;
   padding: 0 4px;
@@ -901,6 +911,22 @@ body.player-pseudo-fullscreen { overflow: hidden; }
 }
 
 .watch-episode-btn.is-current.is-watched::after { background: #fff; }
+
+/* 還沒下載的集數: 看得出來手上沒有, 但點得下去 —— 點了就是邊看邊下載 */
+.watch-episode-btn.is-remote {
+  background: transparent;
+  border-style: dashed;
+  color: var(--agp-fg-faint);
+  cursor: pointer;
+}
+
+.watch-episode-btn.is-remote:hover {
+  background: var(--agp-bg-card);
+  border-style: solid;
+  color: var(--agp-fg);
+}
+
+.watch-episode-btn.is-remote:disabled { opacity: .5; }
 
 /* --- Info card ------------------------------------------------------------ */
 .watch-info {
@@ -953,6 +979,24 @@ body.player-pseudo-fullscreen { overflow: hidden; }
   line-height: 1.7;
   margin: 0;
 }
+/* 巴哈的作品介紹後面接著整份工作人員名單, 全鐵出來就是十幾行 */
+.watch-info-desc.is-clamped {
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 6;
+  display: -webkit-box;
+  overflow: hidden;
+}
+.watch-info-more {
+  background: none;
+  border: 0;
+  color: var(--agp-accent);
+  cursor: pointer;
+  font-family: inherit;
+  font-size: 13px;
+  margin-top: 6px;
+  padding: 2px 0;
+}
+.watch-info-more:hover { text-decoration: underline; }
 
 @media (max-width: 620px) {
   .watch-info { grid-template-columns: 100px minmax(0, 1fr); padding: 14px; }

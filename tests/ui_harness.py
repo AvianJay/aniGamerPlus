@@ -383,6 +383,96 @@ def _hls_registered():
     return HLS_STATE['bootstrap'] and HLS_STATE['mode'] != 'pending'
 
 
+# --- 作品資料 --------------------------------------------------------------
+#
+# What /watch/series.json returns: the official cover, the official synopsis and
+# the whole episode table, keyed on any one episode's videoSn. Mirrors the
+# ``watch_series`` route in ``Dashboard/Server.py``.
+
+# How many episodes 動畫瘋 lists beyond what the library has. Any number > 0
+# reproduces the bug this route exists to fix, where 選集 showed 共 1 集.
+WATCH_SERIES_EXTRA = 3
+# Deliberately unlike anything the page could synthesise from video_list.json,
+# so "showed the real 作品介紹" is assertable rather than merely plausible.
+# Long on purpose: 巴哈's own 作品介紹 runs to a few hundred characters
+# because the staff credits are tacked onto the end of it, and the page folds
+# that away. A synopsis short enough to fit takes a different branch.
+WATCH_SYNOPSIS = '這是動畫瘋寫的作品介紹，講的是這部作品在演什麼。' * 30
+# The last title has no official data at all -- a file that came from somewhere
+# other than 動畫瘋, which the library is free to hold.
+NO_SERIES_INFO_ANIME = ANIMES[-1][0]
+
+
+def build_watch_series():
+    series = {}
+    remote_sn = 900000
+    for index, (anime, count) in enumerate(ANIMES):
+        if anime == NO_SERIES_INFO_ANIME:
+            continue
+        local = [v for v in VIDEO_LIST['videos'] if v['anime_name'] == anime]
+        episodes = [{
+            'videoSn': video['sn'],
+            'episode': video['episode'],
+            'cover': CATALOG_COVER,
+            'local': True,
+            'resolution': video['resolution'],
+        } for video in local]
+        for extra in range(1, WATCH_SERIES_EXTRA + 1):
+            remote_sn += 1
+            episodes.append({
+                'videoSn': str(remote_sn),
+                'episode': str(count + extra),
+                'cover': CATALOG_COVER,
+                'local': False,
+                'resolution': 0,
+            })
+        groups = [{'name': '本篇', 'episodes': episodes}]
+        if index == 0:
+            # 動畫瘋 files dubs under their own tab, so the page has to label
+            # groups rather than run them together into one numbered strip.
+            dubbed = []
+            for number in range(1, 3):
+                remote_sn += 1
+                dubbed.append({
+                    'videoSn': str(remote_sn),
+                    'episode': str(number),
+                    'cover': CATALOG_COVER,
+                    'local': False,
+                    'resolution': 0,
+                })
+            groups.append({'name': '中文配音', 'episodes': dubbed})
+        detail = {
+            'animeSn': str(400000 + index),
+            'videoSn': local[0]['sn'],
+            'title': anime,
+            # A different path from ./thumbnail.jpg on purpose: the cover the
+            # page ends up with says which of the two it chose.
+            'cover': '/cover.jpg?anime=%d' % index,
+            'content': WATCH_SYNOPSIS,
+            'tags': ['奇幻', '冒險'],
+            'director': '測試導演',
+            'publisher': '測試代理商',
+            'score': '4.7',
+            'seasonStart': '2026/07/03',
+            'popular': '12.4萬',
+            'totalEpisode': str(count + WATCH_SERIES_EXTRA),
+            'groups': groups,
+        }
+        for group in groups:
+            for episode in group['episodes']:
+                series[episode['videoSn']] = detail
+    return series
+
+
+WATCH_SERIES = build_watch_series()
+# The episode that is still downloading belongs to a catalogue title, and the
+# real server answers for it out of the same cached 作品資料 -- that is the case
+# the user hit: 邊看邊下載 and then 共 1 集.
+WATCH_SERIES_STREAMING = catalog_detail(CATALOG_SEASON[0]['animeSn'])
+WATCH_SERIES_LOCAL_SN = VIDEO_LIST['videos'][0]['sn']
+WATCH_SERIES_TOTAL = sum(len(g['episodes']) for g in WATCH_SERIES[WATCH_SERIES_LOCAL_SN]['groups'])
+
+
 # Every task the page queues is kept so a test can assert on the payload rather
 # than on a toast that only says something happened.
 MANUAL_TASKS = []
@@ -461,6 +551,22 @@ def create_app(logged_in=True, catalog=True, hls=True):
     @app.route('/video_list.json')
     def video_list():
         return jsonify(VIDEO_LIST)
+
+    @app.route('/watch/series.json')
+    def watch_series():
+        sn = str(request.args.get('id') or '')
+        detail = WATCH_SERIES.get(sn)
+        if detail is None and hls and sn == HLS_SN:
+            detail = WATCH_SERIES_STREAMING
+        if detail is None:
+            # 404 is what the real route says for anything it cannot look up,
+            # and the page has to keep working on it.
+            return jsonify({'error': 'video not found'}), 404
+        return jsonify(detail)
+
+    @app.route('/cover.jpg')
+    def cover():
+        return send_file(os.path.join(FIXTURES, 'sample-thumb.jpg'), mimetype='image/jpeg')
 
     # The real routes live behind ``if settings['dashboard']['online_watch']``
     # and simply do not exist when it is off; catalog=False reproduces that, so

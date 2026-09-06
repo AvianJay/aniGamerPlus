@@ -33,6 +33,10 @@ from ui_harness import (  # noqa: E402
     HLS_STATE,
     HLS_STATE_DEFAULT,
     MANUAL_TASKS,
+    NO_SERIES_INFO_ANIME,
+    WATCH_SERIES_STREAMING,
+    WATCH_SERIES_TOTAL,
+    WATCH_SYNOPSIS,
     HarnessServer,
 )
 
@@ -280,36 +284,92 @@ def test_catalog_search_reaches_past_the_library(page, server):
 
 
 def test_searching_does_not_walk_the_page_up_and_down(page, server):
+    """An iPad screenshot: one character typed, and 片庫熱門 had jumped to the top
+    of the screen. The page used to scroll the results into view -- on a tablet
+    that happens as the keyboard shrinks the viewport and the list re-flows with
+    every character, so "scroll the results up" landed nowhere anyone asked for.
+
+    Nothing moves the page now. The sections that are not results fold away and
+    the grid surfaces where the reader already is, under the box being typed in.
+    """
     open_home(page, server)
+    page.locator('#homeSearch').click()
+    assert page.evaluate('() => window.scrollY') == 0
 
-    # The first keystroke may scroll the results into view; that is the point of
-    # it. Every keystroke after that measured the page again -- and since the
-    # result list changes length with each character, the answer changed too,
-    # which is what sent the page up and down under the typist.
-    page.fill('#homeSearch', '所')
-    page.wait_for_timeout(1200)
-    page.evaluate('() => window.scrollTo(0, 300)')
-    page.wait_for_timeout(200)
-    assert page.evaluate('() => window.scrollY') > 0, 'page is too short to test with'
-
-    # Nothing may replace the grid with skeletons either: the height collapses
-    # and everything below jumps, which reads as the page bouncing.
+    # A scroll listener, not a before/after reading: the old code scrolled
+    # smoothly and could have come back to rest anywhere by the time we looked.
     page.evaluate("""() => {
+        window.__scrolls = 0;
         window.__skeletons = 0;
+        addEventListener('scroll', () => { window.__scrolls += 1; }, {passive: true});
+        // Nor may the grid flash skeletons: the height collapses, everything
+        // below jumps, and that reads as the page bouncing too.
         const host = document.getElementById('homeCatalog');
         new MutationObserver(() => {
             if (host.querySelector('.agp-poster-skeleton')) { window.__skeletons += 1; }
         }).observe(host, {childList: true, subtree: true});
     }""")
 
-    for text in ('所有', '所有動', '所有動畫', '所有動畫 1'):
+    for text in ('所', '所有', '所有動', '所有動畫', '所有動畫 1'):
         page.fill('#homeSearch', text)
         page.wait_for_timeout(400)
     page.wait_for_timeout(1200)
 
     expect(page.locator('#homeCatalog .agp-count')).to_have_text('找到 10 部作品')
-    assert page.evaluate('() => window.scrollY') == 300
+    assert page.evaluate('() => window.scrollY') == 0
+    assert page.evaluate('() => window.__scrolls') == 0
     assert page.evaluate('() => window.__skeletons') == 0
+
+    # 本季新番 and the timetable are not answers to a search, so they get out of
+    # the way -- and their tabs go with them, since a tab that scrolls to
+    # something invisible reads as a broken page.
+    expect(page.locator('#homeSeason')).to_be_hidden()
+    expect(page.locator('#homeCatalog')).to_be_visible()
+    assert '本季新番' not in [tab.inner_text() for tab in page.locator('.agp-tab').all()
+                              if tab.is_visible()]
+    top = page.evaluate(
+        "() => document.getElementById('homeCatalog').getBoundingClientRect().top")
+    assert 0 < top < page.viewport_size['height'], top
+
+    # And clearing the box puts the page back the way it was.
+    page.fill('#homeSearch', '')
+    page.wait_for_timeout(400)
+    expect(page.locator('#homeSeason')).to_be_visible()
+    assert page.errors == []
+
+
+def test_the_main_menu_is_five_tabs_and_one_account_button(page, server):
+    """主選單太花了 -- nine tab anchors and five top-right links, with 線上看
+    written into both rows."""
+    open_home(page, server)
+
+    tabs = [tab.inner_text() for tab in page.locator('.agp-tabs .agp-tab').all()
+            if tab.is_visible()]
+    assert tabs == ['首頁', '本季新番', '更新時間表', '片庫', '所有動畫']
+
+    # 主控台 / 用戶管理 / 帳號資訊 / 登出 are account plumbing nobody opens twice a
+    # day; on the bar they were four buttons that wrapped to a second row.
+    nav = page.locator('.agp-usernav')
+    expect(nav.locator('> li')).to_have_count(2)
+    expect(nav.locator('.agp-navmenu-name')).to_have_text('tester')
+    expect(nav.locator('.agp-navmenu-panel')).to_be_hidden()
+
+    nav.locator('.agp-navmenu-toggle').click()
+    expect(nav.locator('.agp-navmenu-panel')).to_be_visible()
+    assert nav.locator('.agp-navmenu-panel a').all_inner_texts() == [
+        '主控台', '用戶管理', '帳號資訊', '登出']
+
+    # Clicking away closes it. A popover that stays open sits on top of the page
+    # and there is nothing on screen that says how to get rid of it.
+    page.locator('#homeSearch').click()
+    expect(nav.locator('.agp-navmenu-panel')).to_be_hidden()
+
+    # The watch page's own tab row already carries 線上看, and it is the selected
+    # one; a second copy in the corner is the same link written twice.
+    page.goto('%s/watch' % server.url)
+    page.wait_for_selector('.agp-usernav .agp-navmenu')
+    assert '線上看' not in page.locator('.agp-usernav').inner_text()
+    expect(page.locator('.agp-tabs .agp-tab.is-active')).to_have_text('線上看')
     assert page.errors == []
 
 
@@ -550,13 +610,131 @@ def test_settings_menu_nests_and_applies(page, server):
     expect(menu.locator('header strong')).to_have_text('設定')
 
 
+def test_the_episode_list_is_the_whole_series_not_the_downloads(page, server):
+    """選集 said 共 1 集 for an episode opened with 邊看邊下載: the library was the
+    only thing it knew about, and the library held exactly that one episode.
+
+    The series is what 動畫瘋 says it is. What is on disk only decides what a
+    chip does when it is tapped."""
+    goto_watch(page, server)
+
+    expect(page.locator('#episodeGrid .watch-episodes-head span')).to_have_text(
+        '共 %d 集' % WATCH_SERIES_TOTAL)
+    expect(page.locator('#episodeGrid .watch-episode-btn')).to_have_count(WATCH_SERIES_TOTAL)
+    expect(page.locator('#watchTitleBar')).to_contain_text('共 %d 集' % WATCH_SERIES_TOTAL)
+
+    # 動畫瘋 files dubs under their own tab. Run the groups together and the
+    # numbering restarts halfway down the strip with nothing to explain it.
+    expect(page.locator('#episodeGrid .watch-episodes-group')).to_have_text(['本篇', '中文配音'])
+
+    local = [v for v in VIDEO_LIST['videos'] if v['anime_name'] == FIRST_ANIME]
+    # On disk: a link. Not on disk: a button, because tapping it has to queue the
+    # download first -- there is nothing at that address to play yet.
+    expect(page.locator('#episodeGrid a.watch-episode-btn')).to_have_count(len(local))
+    expect(page.locator('#episodeGrid button.watch-episode-btn')).to_have_count(
+        WATCH_SERIES_TOTAL - len(local))
+    assert page.errors == []
+
+
+def test_tapping_an_episode_that_is_not_on_disk_starts_it_downloading(page, server):
+    del MANUAL_TASKS[:]
+    goto_watch(page, server)
+
+    chip = page.locator('#episodeGrid button[data-stream]').first
+    wanted = chip.get_attribute('data-stream')
+    chip.click()
+
+    # /watch?id=X&streaming=1 queues nothing -- it means "I just pressed
+    # download, wait for the task to register". Navigating without the POST is
+    # how you get a player that waits forever for a task nobody created.
+    page.wait_for_url(re.compile(r'/watch\?id=%s&streaming=1' % wanted))
+    assert len(MANUAL_TASKS) == 1
+    task = MANUAL_TASKS[0]
+    # /manualTask reads all six keys out of the body and KeyErrors on any that
+    # is missing, so the payload shape is the contract.
+    assert sorted(task) == ['classify', 'danmu', 'mode', 'resolution', 'sn', 'thread']
+    assert task['sn'] == wanted
+    assert task['mode'] == 'single'
+
+
+def test_the_info_card_shows_the_real_synopsis_and_cover(page, server):
+    """作品資訊 wrote its own blurb, and what it wrote was about this website --
+    「由 aniGamerPlus+ 直接從本機片庫串流播放」 -- rather than about the anime."""
+    goto_watch(page, server)
+
+    desc = page.locator('#animeInfo .watch-info-desc')
+    expect(desc).to_contain_text(WATCH_SYNOPSIS[:20])
+    assert 'aniGamerPlus+' not in desc.inner_text()
+
+    # The cover is the series' own portrait art. /thumbnail.jpg is a frame
+    # ffmpeg pulled out of the episode, and it looks like exactly that: a
+    # screenshot of whatever was on screen a few seconds in.
+    expect(page.locator('#animeInfo .watch-info-cover img')).to_have_attribute(
+        'src', re.compile(r'^/cover\.jpg'))
+    assert page.locator('#animeInfo .watch-info-cover img[src*="thumbnail.jpg"]').count() == 0
+
+    expect(page.locator('#animeInfo .watch-tag').first).to_have_text('奇幻')
+    expect(page.locator('#animeInfo .watch-info-meta')).to_contain_text('測試導演')
+    assert page.errors == []
+
+
+def test_a_long_synopsis_is_folded_away_behind_one_line(page, server):
+    """巴哈 tacks the whole staff credit list onto the end of 作品介紹 --
+    原作/導演/角色設計/音響監督/OP主題曲, dozens of names. Printed whole it
+    buries the library rail below the fold of a tablet screen."""
+    goto_watch(page, server)
+
+    desc = page.locator('#animeInfo .watch-info-desc')
+    more = page.locator('#animeInfo .watch-info-more')
+    expect(more).to_be_visible()
+    expect(more).to_have_text('展開')
+    folded = desc.bounding_box()['height']
+    assert desc.evaluate('el => el.scrollHeight') > folded + 2, 'nothing was folded away'
+
+    more.click()
+    expect(more).to_have_text('收合')
+    opened = desc.bounding_box()['height']
+    assert opened > folded, (opened, folded)
+    # Everything is there once it is open -- folding hides text, it must not
+    # truncate it, or the last line reads as a sentence that stops mid-word.
+    assert desc.evaluate('el => el.scrollHeight') <= opened + 2
+
+    more.click()
+    expect(more).to_have_text('展開')
+    assert abs(desc.bounding_box()['height'] - folded) < 2
+    assert page.errors == []
+
+
+def test_a_short_synopsis_gets_no_toggle(page, server):
+    """A title 巴哈 has nothing on falls back to a two-sentence blurb. Hanging a
+    展開 under it that opens onto nothing is worse than no toggle."""
+    goto_watch(page, server, VIDEO_LIST['videos'][-1]['sn'])
+
+    expect(page.locator('#animeInfo .watch-info-desc')).to_be_visible()
+    expect(page.locator('#animeInfo .watch-info-more')).to_be_hidden()
+    assert page.locator('#animeInfo .watch-info-desc.is-clamped').count() == 0
+    assert page.errors == []
+
+
+def test_a_title_bahamut_never_heard_of_still_renders(page, server):
+    """The library is allowed to hold files that did not come from 動畫瘋.
+    /watch/series.json 404s for those, and the page falls back to the library."""
+    goto_watch(page, server, VIDEO_LIST['videos'][-1]['sn'])
+
+    expect(page.locator('#animeInfo h2')).to_have_text(NO_SERIES_INFO_ANIME)
+    local = [v for v in VIDEO_LIST['videos'] if v['anime_name'] == NO_SERIES_INFO_ANIME]
+    expect(page.locator('#episodeGrid .watch-episodes-head span')).to_have_text(
+        '共 %d 集' % len(local))
+    # Nothing to offer a download of: everything this page knows about is here.
+    assert page.locator('#episodeGrid button[data-stream]').count() == 0
+    assert page.errors == []
+
+
 def test_episode_grid_and_menu_navigate(page, server):
     goto_watch(page, server)
 
-    grid = page.locator('#episodeGrid .watch-episode-grid')
+    grid = page.locator('#episodeGrid .watch-episode-grid').first
     expect(grid).to_be_visible()
-    buttons = grid.locator('.watch-episode-btn')
-    assert buttons.count() == 4  # 葬送的芙莉蓮 has four fixture episodes
     expect(grid.locator('.watch-episode-btn.is-current')).to_have_text('1')
 
     page.locator('#episodeChip').click()
@@ -1075,6 +1253,22 @@ def test_a_link_opened_mid_download_finds_its_own_way_in(page, server, downloadi
     page.wait_for_url(lambda url: 'streaming=1' in url, timeout=15000)
     page.wait_for_selector('#playerShell.is-custom-player')
     expect(page.locator('#episodeChipLabel')).to_contain_text(HLS_ANIME)
+    assert page.errors == []
+
+
+@needs_stream
+def test_a_streaming_episode_still_lists_the_whole_series(page, server, downloading):
+    """The screenshot that started this: 邊看邊下載 was running and 選集 said
+    共 1 集, because the episode being downloaded was the only one in the
+    library. It is episode 1 of a 130-episode series."""
+    goto_stream(page, server)
+
+    total = sum(len(group['episodes']) for group in WATCH_SERIES_STREAMING['groups'])
+    expect(page.locator('#episodeGrid .watch-episodes-head span')).to_have_text(
+        '共 %d 集' % total)
+    expect(page.locator('#episodeGrid .watch-episode-btn.is-current')).to_have_text('1')
+    # And the rest of the series is right there to carry on with.
+    assert page.locator('#episodeGrid button[data-stream]').count() > 100
     assert page.errors == []
 
 

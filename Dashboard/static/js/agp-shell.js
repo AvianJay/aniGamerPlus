@@ -259,7 +259,10 @@
     function syncTabs() {
         document.querySelectorAll('.agp-tab[href^="#"]').forEach(function (tab) {
             var id = tab.getAttribute('href').slice(1);
-            tab.hidden = !!id && !document.getElementById(id);
+            var target = id ? document.getElementById(id) : null;
+            /* 搜尋模式收起來的區塊還在 DOM 裡, 只是看不見. 頁籤跟著收,
+               否則按下去只會捲到一塊不存在的東西上面 */
+            tab.hidden = !!id && (!target || !!target.closest('[hidden]'));
         });
     }
 

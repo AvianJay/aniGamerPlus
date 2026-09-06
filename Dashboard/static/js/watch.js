@@ -198,6 +198,49 @@ async function getVideoSeries(video) {
 }
 
 
+/* 官方那份作品資料: 封面、簡介, 以及整部作品的集數表.
+
+   片庫只知道下載過的那幾集. 靠它撐起來的資訊卡只能自己編一段介紹, 集數列也只有
+   手上那幾集 —— 邊看邊下載進來的人看到的就是「共 1 集」. 查不到就回 null, 本機
+   片庫本來就收得下不是動畫瘋來的東西 */
+async function fetchSeriesInfo(sn) {
+    try {
+        var response = await fetch('./watch/series.json?id=' + encodeURIComponent(sn));
+        if (!response.ok) { return null; }
+        var data = await response.json();
+        return data && data.groups && data.groups.length ? data : null;
+    } catch (error) {
+        return null;
+    }
+}
+
+
+/* 官方的集數表攤成播放頁認得的形狀: sn / episode / resolution 跟 video_list.json
+   那邊一樣, 集數列跟 watchUrl() 就不必分辨手上這筆是哪裡來的 */
+function officialGroups(info, video) {
+    return (info && info.groups ? info.groups : []).map(function (group) {
+        return {
+            name: group.name || '',
+            episodes: (group.episodes || []).map(function (episode) {
+                return {
+                    sn: String(episode.videoSn),
+                    episode: episode.episode,
+                    resolution: episode.resolution || 0,
+                    local: !!episode.local,
+                    anime_name: (info && info.title) || video.anime_name,
+                    title: (info && info.title) || video.anime_name
+                };
+            })
+        };
+    }).filter(function (group) { return group.episodes.length; });
+}
+
+
+function countEpisodes(groups) {
+    return groups.reduce(function (sum, group) { return sum + group.episodes.length; }, 0);
+}
+
+
 /* 剛按下下載的集數還沒有進度紀錄, 伺服器產 bootstrap 的時候認不出來. 問一下串流
    狀態, 真的在下載就帶著 streaming=1 重整一次 —— 片名跟集數只有伺服器那邊查得到
    (走的是官方資訊的落盤快取), 在前端捏一個「下載中」的假標題比較難看 */
@@ -1884,13 +1927,33 @@ var page = {
     player: null,
     videoData: null,
     series: [],
+    info: null,
     danmaku: [],
     times: {}
 };
 
-function renderTitleBar(video, series) {
+var toastTimer = 0;
+
+function toast(message) {
+    var host = document.getElementById('watchToast');
+    if (!host) {
+        host = document.createElement('div');
+        host.id = 'watchToast';
+        host.className = 'agp-toast';
+        host.setAttribute('role', 'status');
+        document.body.appendChild(host);
+    }
+    host.textContent = message;
+    host.classList.add('is-on');
+    clearTimeout(toastTimer);
+    toastTimer = setTimeout(function () { host.classList.remove('is-on'); }, 2400);
+}
+
+function renderTitleBar(video, series, info) {
     var host = document.getElementById('watchTitleBar');
     if (!host) { return; }
+    var groups = officialGroups(info, video);
+    var total = groups.length ? countEpisodes(groups) : series.length;
     var favKey = 'agp-fav-' + AGP.hashString(video.anime_name);
     var favourite = readStore(favKey, '0') === '1';
 
@@ -1900,7 +1963,7 @@ function renderTitleBar(video, series) {
         '</h1>' +
         '<p class="watch-subtitle">' +
         '<span>' + AGP.escapeHtml(episodeLabel(video)) + '</span>' +
-        '<span>' + AGP.icon('list', 14) + '共 ' + series.length + ' 集</span>' +
+        '<span>' + AGP.icon('list', 14) + '共 ' + total + ' 集</span>' +
         (video.timestamp ? '<span>' + AGP.icon('clock', 14) +
             AGP.dayLabel(video.timestamp).title + ' ' + AGP.clockOf(video.timestamp) + '</span>' : '') +
         (video.danmu ? '<span>' + AGP.icon('danmaku', 14) + '有彈幕</span>' : '') +
@@ -1916,61 +1979,168 @@ function renderTitleBar(video, series) {
     });
 }
 
-function renderEpisodeGrid(video, series, times) {
-    var host = document.getElementById('episodeGrid');
-    if (!host) { return; }
-    var sorted = series.slice().sort(function (a, b) { return episodeNumber(a) - episodeNumber(b); });
+function episodeChipHtml(item, video, times) {
+    var entry = times[String(item.sn)];
+    var current = String(item.sn) === String(video.sn);
+    var classes = ['watch-episode-btn'];
+    if (current) { classes.push('is-current'); }
+    if (entry && (entry.ended || Number(entry.time) > 0)) { classes.push('is-watched'); }
+    var label = String(item.episode === undefined || item.episode === null ? '' : item.episode).trim() || '單集';
 
-    host.innerHTML = '<div class="watch-episodes-head"><h2>選集</h2>' +
-        '<span>共 ' + sorted.length + ' 集</span></div>' +
-        '<div class="watch-episode-grid">' + sorted.map(function (item) {
-            var entry = times[String(item.sn)];
-            var classes = ['watch-episode-btn'];
-            if (String(item.sn) === String(video.sn)) { classes.push('is-current'); }
-            if (entry && (entry.ended || Number(entry.time) > 0)) { classes.push('is-watched'); }
-            var label = String(item.episode === undefined || item.episode === null ? '' : item.episode).trim() || '單集';
-            return '<a class="' + classes.join(' ') + '" href="' + AGP.escapeHtml(watchUrl(item)) +
-                '" title="' + AGP.escapeHtml(item.title || item.anime_name) + '">' +
-                AGP.escapeHtml(label) + '</a>';
-        }).join('') + '</div>';
+    if (item.local === false && !current) {
+        /* 還沒下載的集數照樣擺出來 —— 點下去排一個單集任務然後邊看邊下載,
+           跟片單那張詳情卡上的那顆按鈕是同一件事 */
+        classes.push('is-remote');
+        return '<button class="' + classes.join(' ') + '" type="button" data-stream="' +
+            AGP.escapeHtml(item.sn) + '" title="尚未下載，點一下邊看邊下載">' +
+            AGP.escapeHtml(label) + '</button>';
+    }
+    return '<a class="' + classes.join(' ') + '" href="' + AGP.escapeHtml(watchUrl(item)) +
+        '" title="' + AGP.escapeHtml(item.title || item.anime_name) + '">' +
+        AGP.escapeHtml(label) + '</a>';
 }
 
-function renderInfoCard(video, series) {
+function renderEpisodeGrid(video, series, times, info) {
+    var host = document.getElementById('episodeGrid');
+    if (!host) { return; }
+    var groups = officialGroups(info, video);
+    if (!groups.length) {
+        // 官方資料查不到的時候, 手上有幾集就擺幾集
+        groups = [{ name: '', episodes: series.slice().sort(function (a, b) {
+            return episodeNumber(a) - episodeNumber(b);
+        }) }];
+    }
+    var multi = groups.length > 1;
+
+    host.innerHTML = '<div class="watch-episodes-head"><h2>選集</h2>' +
+        '<span>共 ' + countEpisodes(groups) + ' 集</span></div>' +
+        groups.map(function (group) {
+            return (multi && group.name
+                ? '<h3 class="watch-episodes-group">' + AGP.escapeHtml(group.name) + '</h3>' : '') +
+                '<div class="watch-episode-grid">' + group.episodes.map(function (item) {
+                    return episodeChipHtml(item, video, times);
+                }).join('') + '</div>';
+        }).join('');
+}
+
+
+/* 排一個單集任務, 然後帶著 streaming=1 過去. 排不進去就別跳 —— 跳過去只會讓人
+   對著一個永遠不會開始的播放器等 */
+async function streamEpisode(videoSn, resolution) {
+    try {
+        var response = await fetch('./manualTask', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json;charset=utf-8' },
+            body: JSON.stringify({
+                sn: videoSn,
+                resolution: String(resolution || 1080),
+                mode: 'single',
+                thread: 1,
+                classify: true,
+                danmu: true
+            })
+        });
+        if (!response.ok) { throw response.status; }
+    } catch (status) {
+        toast(status === 401 || status === 403 ? '需要管理員權限才能下載。' : '加入下載失敗。');
+        return;
+    }
+    window.location.href = './watch?id=' + encodeURIComponent(videoSn) + '&streaming=1';
+}
+
+
+function wireEpisodeGrid() {
+    var host = document.getElementById('episodeGrid');
+    if (!host) { return; }
+    /* 掛在容器上, 重畫集數列不必重掛 */
+    host.addEventListener('click', function (event) {
+        var button = event.target.closest('[data-stream]');
+        if (!button) { return; }
+        event.preventDefault();
+        button.disabled = true;
+        streamEpisode(button.getAttribute('data-stream'),
+            page.videoData && page.videoData.resolution);
+    });
+}
+
+function renderInfoCard(video, series, info) {
     var host = document.getElementById('animeInfo');
     if (!host) { return; }
     var newest = series.reduce(function (best, item) {
         return (item.timestamp || 0) > (best.timestamp || 0) ? item : best;
     }, series[0] || video);
     var fileName = String(video.path || '').split(/[\\/]/).pop();
+    var title = (info && info.title) || video.anime_name;
+    var groups = officialGroups(info, video);
+    var total = groups.length ? countEpisodes(groups) : series.length;
+    var tags = (info && info.tags && info.tags.length) ? info.tags : [];
 
     function field(term, value) {
         return '<div><dt>' + AGP.escapeHtml(term) + '</dt><dd>' + AGP.escapeHtml(value) + '</dd></div>';
     }
 
+    function tag(text) {
+        return '<span class="watch-tag">' + AGP.escapeHtml(text) + '</span>';
+    }
+
     host.innerHTML =
-        '<div class="watch-info-cover" style="background:' + AGP.artFor(video.anime_name) + '">' +
-        '<span class="agp-card-art-glyph">' + AGP.escapeHtml(AGP.initials(video.anime_name)) + '</span>' +
-        thumbImg(video) + '</div>' +
+        '<div class="watch-info-cover" style="background:' + AGP.artFor(title) + '">' +
+        '<span class="agp-card-art-glyph">' + AGP.escapeHtml(AGP.initials(title)) + '</span>' +
+        /* 官方封面是整部作品那張直式的圖. 沒有才退回單集的截圖 —— 隨便一格畫面
+           當封面, 看起來就像截圖截歪了 */
+        (info && info.cover
+            ? '<img class="agp-art-img" alt="" loading="lazy" src="' + AGP.escapeHtml(info.cover) + '">'
+            : thumbImg(video)) +
+        '</div>' +
         '<div class="watch-info-body">' +
-        '<h2>' + AGP.escapeHtml(video.anime_name) + '</h2>' +
+        '<h2>' + AGP.escapeHtml(title) + '</h2>' +
         '<dl class="watch-info-meta">' +
-        (newest.timestamp ? field('最後更新', new Date(newest.timestamp * 1000).toLocaleString('zh-TW')) : '') +
-        field('來源', video.source || '本機片庫') +
-        field('集數', series.length + ' 集，目前為 ' + episodeLabel(video)) +
+        (info && info.seasonStart ? field('首播', info.seasonStart) : '') +
+        (info && info.director ? field('導演', info.director) : '') +
+        (info && info.publisher ? field('代理商', info.publisher) : '') +
+        (info && info.score ? field('評分', info.score) : '') +
+        (info && info.popular ? field('人氣', info.popular) : '') +
+        field('集數', total + ' 集，目前為 ' + episodeLabel(video)) +
         (video.resolution ? field('畫質', video.resolution + 'P') : '') +
         field('彈幕', video.danmu ? '支援' : '此集無彈幕檔') +
+        (newest.timestamp ? field('最後更新', new Date(newest.timestamp * 1000).toLocaleString('zh-TW')) : '') +
+        field('來源', video.source || '本機片庫') +
         (fileName ? field('檔案', fileName) : '') +
         '</dl>' +
         '<div class="watch-tags">' +
-        '<span class="watch-tag">' + AGP.escapeHtml(video.source || '本機片庫') + '</span>' +
-        (video.resolution ? '<span class="watch-tag">' + AGP.escapeHtml(video.resolution) + 'P</span>' : '') +
-        (video.danmu ? '<span class="watch-tag">彈幕</span>' : '') +
-        '<span class="watch-tag">' + series.length + ' 集</span>' +
+        (tags.length ? tags.map(tag).join('') : tag(video.source || '本機片庫')) +
+        (video.resolution ? tag(video.resolution + 'P') : '') +
+        (video.danmu ? tag('彈幕') : '') +
+        tag(total + ' 集') +
         '</div>' +
-        '<p class="watch-info-desc">《' + AGP.escapeHtml(video.anime_name) + '》目前收錄 ' + series.length +
-        ' 集，由 aniGamerPlus+ 直接從本機片庫串流播放，無須再次下載。' +
-        (video.danmu ? '本集附有彈幕軌，可在播放器右下角的設定中調整透明度與顯示區域。' : '') +
-        '</p></div>';
+        /* 動畫瘋自己的作品介紹. 以前這裡是一段自己編的話, 講的還是這個網站怎麼
+           播影片, 而不是這部作品在演什麼 */
+        '<p class="watch-info-desc is-clamped">' + (info && info.content
+            ? AGP.escapeHtml(info.content)
+            : '《' + AGP.escapeHtml(video.anime_name) + '》目前收錄 ' + series.length +
+              ' 集，由 aniGamerPlus+ 直接從本機片庫串流播放，無須再次下載。' +
+              (video.danmu ? '本集附有彈幕軌，可在播放器右下角的設定中調整透明度與顯示區域。' : '')) +
+        '</p>' +
+        '<button class="watch-info-more" type="button" hidden>展開</button>' +
+        '</div>';
+    clampInfoDesc(host);
+}
+
+
+function clampInfoDesc(host) {
+    /* 很短的介紹不該挂一顆「展開」在下面, 所以按鈕要等量完才決定露不露 */
+    var desc = host.querySelector('.watch-info-desc');
+    var more = host.querySelector('.watch-info-more');
+    if (!desc || !more) { return; }
+    if (desc.scrollHeight <= desc.clientHeight + 2) {
+        desc.classList.remove('is-clamped');
+        return;
+    }
+    more.hidden = false;
+    more.addEventListener('click', function () {
+        var folded = desc.classList.toggle('is-clamped');
+        more.textContent = folded ? '展開' : '收合';
+    });
 }
 
 function renderDanmakuList(rows) {
@@ -2306,12 +2476,24 @@ async function main() {
     page.videoData = video;
     page.series = series;
 
+    /* 不 await: 官方資料是拿來把畫面補好的, 不該擋著播放器開場 */
+    var seriesInfo = fetchSeriesInfo(sn);
+
     document.title = video.anime_name + ' ' + episodeLabel(video) + ' - aniGamerPlus+';
 
-    renderTitleBar(video, series);
-    renderEpisodeGrid(video, series, times);
-    renderInfoCard(video, series);
+    renderTitleBar(video, series, null);
+    renderEpisodeGrid(video, series, times, null);
+    renderInfoCard(video, series, null);
+    wireEpisodeGrid();
     renderLibrary(videos, times, sn);
+
+    seriesInfo.then(function (info) {
+        if (!info) { return; }
+        page.info = info;
+        renderTitleBar(video, page.series, info);
+        renderEpisodeGrid(video, page.series, page.times, info);
+        renderInfoCard(video, page.series, info);
+    });
 
     var shell = document.getElementById('playerShell');
     page.player = new AgpPlayer(shell, {

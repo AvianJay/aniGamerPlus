@@ -227,6 +227,65 @@ def test_player_plays_the_real_1080p_file(page, downloaded_episode):
     assert page.errors == []
 
 
+def series_info(page, sn=TARGET_SN):
+    response = page.request.get('%s/watch/series.json?id=%s' % (BASE_URL, sn))
+    assert response.ok, 'series.json says %d for sn=%s' % (response.status, sn)
+    return response.json()
+
+
+def test_the_watch_page_shows_bahamut_own_description_and_cover(page, downloaded_episode):
+    """作品資訊 used to write its own blurb over a frame ffmpeg pulled out of the
+    episode. The blurb was about this website rather than about the anime, and
+    the frame was whatever happened to be on screen a few seconds in."""
+    open_player(page)
+    info = series_info(page)
+    assert len(info['content']) > 80, info['content']
+
+    desc = page.locator('#animeInfo .watch-info-desc').inner_text()
+    assert desc.startswith(info['content'][:40]), desc[:80]
+    assert 'aniGamerPlus+' not in desc
+
+    # 巴哈's 作品介紹 carries the staff credits, so the real one is always long
+    # enough to fold. Six lines of synopsis, the credits behind 展開.
+    body = page.locator('#animeInfo .watch-info-desc')
+    folded = body.bounding_box()['height']
+    assert body.evaluate('el => el.scrollHeight') > folded + 2, 'nothing was folded away'
+    page.locator('#animeInfo .watch-info-more').click()
+    expect(page.locator('#animeInfo .watch-info-more')).to_have_text('收合')
+    assert body.bounding_box()['height'] > folded
+
+    cover = page.locator('#animeInfo .watch-info-cover img')
+    expect(cover).to_have_attribute('src', info['cover'])
+    # And it is a URL a browser can really fetch -- a 403 from p2.bahamut.com.tw
+    # would leave the gradient plate showing and look exactly like no fix at all.
+    page.wait_for_function(
+        """() => {
+            const img = document.querySelector('#animeInfo .watch-info-cover img');
+            return img && img.complete && img.naturalWidth > 0;
+        }""", timeout=30000)
+    assert page.errors == []
+
+
+def test_the_episode_list_is_the_whole_series_not_the_library(page, downloaded_episode):
+    """One episode downloaded out of fifteen, and 選集 said 共 1 集."""
+    open_player(page)
+    info = series_info(page)
+    episodes = [episode for group in info['groups'] for episode in group['episodes']]
+    on_disk = [episode for episode in episodes if episode['local']]
+    if len(episodes) <= len(on_disk):
+        pytest.skip('the whole series is already downloaded; nothing to tell apart')
+
+    expect(page.locator('#episodeGrid .watch-episodes-head span')).to_have_text(
+        '共 %d 集' % len(episodes))
+    expect(page.locator('#episodeGrid .watch-episode-btn')).to_have_count(len(episodes))
+    # What is not on disk is still listed -- as a button, because tapping it has
+    # to queue the download before there is anything at that address to play.
+    expect(page.locator('#episodeGrid button[data-stream]')).to_have_count(
+        len(episodes) - len(on_disk))
+    expect(page.locator('#episodeGrid .watch-episode-btn.is-current')).to_have_count(1)
+    assert page.errors == []
+
+
 def test_real_danmaku_loads_and_seeks(page, downloaded_episode):
     open_player(page)
     page.wait_for_selector('#danmakuList .danmaku-row', timeout=60000)
@@ -458,6 +517,23 @@ def test_the_real_temp_directory_serves_a_playlist_a_browser_accepts(page, strea
     if hls_status(page)['mode'] == 'streaming':
         # Still downloading: hls.js has to keep coming back for more.
         assert '#EXT-X-ENDLIST' not in lines
+
+
+@needs_stream_target
+def test_the_real_stream_still_lists_the_whole_series(page, streaming_episode):
+    """The screenshot that started this: 邊看邊下載 running, 選集 showing 共 1 集.
+
+    Mid-download the library holds exactly one episode of the series -- the one
+    being fetched -- so the library was never the right thing to ask."""
+    open_stream(page)
+    info = series_info(page, STREAM_SN)
+    total = sum(len(group['episodes']) for group in info['groups'])
+    assert total > 1, 'a one-episode series cannot show this'
+
+    expect(page.locator('#episodeGrid .watch-episodes-head span')).to_have_text(
+        '共 %d 集' % total)
+    expect(page.locator('#episodeGrid .watch-episode-btn.is-current')).to_have_count(1)
+    assert page.errors == []
 
 
 @needs_stream_target

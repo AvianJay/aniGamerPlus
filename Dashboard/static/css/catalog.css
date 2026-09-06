@@ -394,30 +394,6 @@ body.agp-sheet-open { overflow: hidden; }
 
 /* --- toast ---------------------------------------------------------------- */
 
-.agp-toast {
-  background: var(--agp-bg-card);
-  border: 1px solid var(--agp-line-strong);
-  border-radius: 999px;
-  bottom: calc(20px + var(--agp-safe-b));
-  box-shadow: 0 16px 40px rgb(0 0 0 / 55%);
-  color: var(--agp-fg);
-  font-size: 13px;
-  font-weight: 600;
-  left: 50%;
-  opacity: 0;
-  padding: 11px 20px;
-  pointer-events: none;
-  position: fixed;
-  transform: translate(-50%, 12px);
-  transition: opacity .18s, transform .18s;
-  z-index: 80;
-}
-
-.agp-toast.is-on {
-  opacity: 1;
-  transform: translate(-50%, 0);
-}
-
 /* --- narrow --------------------------------------------------------------- */
 
 @media (max-width: 680px) {

@@ -423,9 +423,9 @@
             return;
         }
         renderAll();
-        /* Arriving with ?q= from the watch page: the results grid is the last
-           section, so land on it instead of on the banner. */
-        revealResults();
+        /* Arriving with ?q= from the watch page: the sections that are not
+           results fold away, so the grid is already the first thing showing. */
+        applySearchMode();
     }
 
     /* The watch page's search box is a plain GET form pointed at this page, so
@@ -452,27 +452,22 @@
         }
     }
 
-    var revealedResults = false;
+    /* 搜尋的時候這幾塊跟結果沒關係, 收起來它們就不占位置.
+       #homeLibrary 跟 #homeCatalog 不在裡面 —— 那兩塊就是結果 */
+    var SEARCH_HIDDEN = ['homeBanner', 'homeContinue', 'homeSeason', 'homeSchedule',
+        'homeCatalogHot', 'homeCatalogNew', 'homeTimetable', 'homeHot'];
 
-    /* This runs on every keystroke. Scrolling each time fights the user while
-       they are still typing and can shove the search box off screen, so move the
-       page at most once per search, and only when the results are not already
-       up -- 160px of the section has to be showing to count as visible. */
-    function revealResults() {
-        var target = document.getElementById('homeCatalog') || document.getElementById('homeLibrary');
-        if (!state.query.trim()) {
-            revealedResults = false;
-            return;
-        }
-        if (revealedResults || !target) { return; }
-        /* 上鎖要在量之前, 不是量完才鎖. 之前結果已經看得見就直接 return, 鎖沒下去,
-           所以下一個字又量一次 —— 而清單長度每打一個字就變, 量出來的答案跟著變,
-           頁面就這樣被捲上捲下. 一次搜尋只准捲一次, 捲不捲得成都算數 */
-        revealedResults = true;
-        var box = target.getBoundingClientRect();
-        var viewport = global.innerHeight || document.documentElement.clientHeight || 0;
-        if (box.top >= 0 && box.top <= viewport - 160) { return; }
-        target.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    /* 每敲一個字都會跑到這裡. 以前是把結果捲進畫面 —— iPad 上鍵盤一升起來
+       視窗就矮一截, 清單又每打一個字重排一次, 捲完停在哪裡沒人說得準, 畫面就
+       自己往下跑. 改成把不是結果的區塊收起來: 結果自己浮上來, 頁面不必動 */
+    function applySearchMode() {
+        var searching = !!state.query.trim();
+        document.body.classList.toggle('is-searching', searching);
+        SEARCH_HIDDEN.forEach(function (id) {
+            var host = document.getElementById(id);
+            if (host) { host.hidden = searching; }
+        });
+        AGP.syncTabs();
     }
 
     function wireSearch() {
@@ -491,7 +486,7 @@
             state.query = input.value;
             renderLibrary();
             pushQueryToUrl();
-            revealResults();
+            applySearchMode();
         });
     }
 
