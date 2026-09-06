@@ -1,7 +1,7 @@
 /// 任務監控 —— 對應 templates/monitor.html + static/js/monitor.js.
 ///
 /// 伺服器把整份佇列 (不是差分) 從 WebSocket /data/tasks_progress 推過來:
-///   { "<sn>": { "filename": ..., "status": ..., "rate": 0~100 }, ... }
+///   `{ "<sn>": { "filename": ..., "status": ..., "rate": 0~100 }, ... }`
 /// 網頁版斷線後 1500 毫秒重連, 這裡照抄, 只是多了退避上限跟畫面上的連線狀態,
 /// 手機常常在切網路, 一直閃「連線中」比較難看。
 library;

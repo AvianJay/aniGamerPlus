@@ -23,8 +23,7 @@ class _AgpAppState extends State<AgpApp> {
       if (widget.state.hasServer) {
         widget.state.refreshAll();
       } else {
-        widget.state.booting = false;
-        widget.state.notifyListeners();
+        widget.state.finishBoot();
       }
     });
   }

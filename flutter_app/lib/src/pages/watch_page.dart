@@ -815,7 +815,9 @@ class _WatchPageState extends State<WatchPage>
   void _onHorizontalUpdate(DragUpdateDetails details, Size size) {
     if (size.width <= 0) return;
     _dragAccum += details.delta.dx / size.width * kGestureSeekSpan;
-    final target = (_dragFrom + _dragAccum).clamp(0.0, math.max(0.0, _playableDuration));
+    final target = (_dragFrom + _dragAccum)
+        .clamp(0.0, math.max(0.0, _playableDuration))
+        .toDouble();
     _scrubbing = true;
     _clock.value = target;
     final delta = target - _dragFrom;
@@ -1255,7 +1257,7 @@ class _WatchPageState extends State<WatchPage>
           child: Stack(
             fit: StackFit.expand,
             children: [
-              if (ready) _fitted(controller!) else _poster(),
+              if (ready) _fitted(controller) else _poster(),
               if (_danmakuOn && _danmaku.isNotEmpty)
                 Positioned.fill(
                   child: IgnorePointer(
@@ -1320,8 +1322,8 @@ class _WatchPageState extends State<WatchPage>
 
   Widget _fitted(VideoPlayerController controller) {
     final size = controller.value.size;
-    final width = size.width > 0 ? size.width : 16;
-    final height = size.height > 0 ? size.height : 9;
+    final width = size.width > 0 ? size.width : 16.0;
+    final height = size.height > 0 ? size.height : 9.0;
     final fit = switch (_aspect) {
       'cover' => BoxFit.cover,
       'fill' => BoxFit.fill,

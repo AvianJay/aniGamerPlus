@@ -115,6 +115,12 @@ class AppState extends ChangeNotifier {
     notifyListeners();
   }
 
+  /// 還沒設定伺服器位址時走這條 —— 沒有東西可以抓, 直接把開機畫面收掉.
+  void finishBoot() {
+    booting = false;
+    notifyListeners();
+  }
+
   Future<void> _loadSession() async {
     if (!hasServer) {
       offline = true;

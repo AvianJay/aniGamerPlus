@@ -436,7 +436,7 @@ class DownloadStore extends ChangeNotifier {
 
       final written = await part.length();
       if (entry.total > 0 && written < entry.total) {
-        throw HttpException('傳輸中斷 (${written}/${entry.total})');
+        throw HttpException('傳輸中斷 ($written/${entry.total})');
       }
       if (await target.exists()) await target.delete();
       await part.rename(target.path);
