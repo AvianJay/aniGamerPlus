@@ -381,14 +381,26 @@ def streaming_episode(signed_in_context):
         page.goto(BASE_URL + '/')
         page.wait_for_selector('#homeSearch')
         page.fill('#homeSearch', STREAM_KEYWORD)
-        page.wait_for_selector('#homeCatalog .agp-poster', timeout=60000)
-        page.locator('#homeCatalog .agp-poster').first.click()
+        # #homeCatalog is already full of 所有動畫 before anybody types, so waiting
+        # for "a poster" is waiting for something that is already there -- the
+        # click then lands on whatever was on screen, not on what was searched
+        # for. The heading is what actually changes when results arrive.
+        page.wait_for_selector('#homeCatalog .agp-section-head:has-text("搜尋結果")',
+                               timeout=60000)
+        poster = page.locator('#homeCatalog .agp-poster', has_text=STREAM_KEYWORD).first
+        poster.wait_for(timeout=60000)
+        poster.click()
         page.wait_for_selector('#catalogSheet .agp-epgroup', timeout=60000)
 
         stream = page.locator('#catalogSheet button[data-stream]')
         if not stream.count():
             pytest.skip('the sheet for 「%s」 offers no stream; it is already downloaded'
                         % STREAM_KEYWORD)
+        # A keyword that opened the wrong title would stream one episode and then
+        # poll another forever, which reads as "the feature is broken".
+        assert stream.get_attribute('data-stream') == STREAM_SN, (
+            'AGP_STREAM_KEYWORD opened sn=%s, not the requested sn=%s'
+            % (stream.get_attribute('data-stream'), STREAM_SN))
         stream.click()
         page.wait_for_url(lambda url: 'streaming=1' in url, timeout=30000)
 
@@ -430,7 +442,14 @@ def test_the_real_temp_directory_serves_a_playlist_a_browser_accepts(page, strea
     assert '#EXT-X-MEDIA-SEQUENCE:0' in lines
     key = [line for line in lines if line.startswith('#EXT-X-KEY')]
     assert key, lines
-    assert 'METHOD=AES-128' in key[0] and 'IV=' not in key[0], key[0]
+    assert 'METHOD=AES-128' in key[0], key[0]
+    # The key comes off this server, not off 動畫瘋 -- a player pointed at the
+    # original URI would open a second connection to the account.
+    assert 'key.bin?id=%s' % STREAM_SN in key[0], key[0]
+    if 'IV=' not in key[0]:
+        # No explicit IV means the segment index IS the IV, so the numbering may
+        # never be shifted. 動畫瘋 usually sends one; the fixture does not.
+        assert '#EXT-X-MEDIA-SEQUENCE:0' in lines, lines[:8]
 
     segments = [line for line in lines if line.startswith('segment.ts?')]
     assert segments, body
@@ -491,9 +510,24 @@ def test_the_real_server_refuses_a_chunk_it_has_not_published(page, streaming_ep
     assert ahead.status == 404, ahead.status
     landed = page.request.get('%s/hls/segment.ts?id=%s&n=0' % (BASE_URL, STREAM_SN))
     assert landed.ok and landed.body(), landed.status
-    # 188 is the transport-stream packet size; a chunk that is not a multiple of
-    # it is a partial write that should never have been published.
-    assert len(landed.body()) % 188 == 0, len(landed.body())
+    # Chunks go out encrypted, so the raw length is a multiple of the AES block.
+    assert len(landed.body()) % 16 == 0, len(landed.body())
+
+    # Decrypt it the way hls.js will: 188 is the transport-stream packet size and
+    # 0x47 its sync byte, so a chunk that fails this was published half-written
+    # and would have played as a stall or a burst of macroblocks.
+    from Crypto.Cipher import AES
+    key_bytes = page.request.get('%s/hls/key.bin?id=%s' % (BASE_URL, STREAM_SN)).body()
+    playlist = page.request.get('%s/hls/playlist.m3u8?id=%s' % (BASE_URL, STREAM_SN)).text()
+    key_line = [line for line in playlist.splitlines() if line.startswith('#EXT-X-KEY')][0]
+    if 'IV=' in key_line:
+        iv = bytes(bytearray.fromhex(key_line.split('IV=0x', 1)[1].split(',')[0].strip()))
+    else:
+        iv = b'\x00' * 16
+    plain = AES.new(key_bytes, AES.MODE_CBC, iv).decrypt(landed.body())
+    plain = plain[:-plain[-1]] if 0 < plain[-1] <= 16 else plain
+    assert plain[:1] == b'\x47', plain[:8]
+    assert len(plain) % 188 == 0, len(plain)
 
 
 @needs_stream_target

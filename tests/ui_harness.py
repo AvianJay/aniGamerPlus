@@ -152,6 +152,10 @@ CATALOG_INDEX = {
 # The one title with an episode already on disk, so the sheet's 立即觀看 button
 # and the local-episode marker have something to render against.
 CATALOG_LOCAL_SN = CATALOG_ALL[0]['animeSn']
+# A second title whose downloaded episode is the one the sheet lands on. That is
+# the only shape where 邊看邊下載 belongs hidden -- one local episode elsewhere in
+# the series says nothing about the episode the button would stream.
+CATALOG_LANDING_LOCAL_SN = CATALOG_ALL[1]['animeSn']
 
 
 def catalog_detail(anime_sn):
@@ -163,19 +167,27 @@ def catalog_detail(anime_sn):
     if card is None:
         return None
     local = anime_sn == CATALOG_LOCAL_SN
+    landing_local = anime_sn == CATALOG_LANDING_LOCAL_SN
     episodes = []
     for number in range(1, 131):
+        on_disk = (local and number == 2) or (landing_local and number == 1)
         episodes.append({
-            'videoSn': str(int(card['videoSn']) + number),
+            # 動畫瘋 gives the anime page and its first episode the same sn:
+            # open 番組頁 and you are already standing on episode 1. Numbering
+            # from card['videoSn'] + 1 made the sn the sheet lands on one that
+            # appears in no episode list, which no real title does.
+            'videoSn': str(int(card['videoSn']) + number - 1),
             'episode': str(number),
             'cover': CATALOG_COVER,
-            'local': local and number == 2,
-            'resolution': 1080 if local and number == 2 else 0,
+            'local': on_disk,
+            'resolution': 1080 if on_disk else 0,
         })
     if local:
         # Point the one downloaded episode at a real fixture, so following the
         # sheet's play link lands on a watch page that can actually play.
         episodes[1]['videoSn'] = FIRST_SN
+    if landing_local:
+        episodes[0]['videoSn'] = FIRST_SN
     dubbed = [{
         'videoSn': str(int(card['videoSn']) + 500 + number),
         'episode': str(number),
@@ -185,7 +197,8 @@ def catalog_detail(anime_sn):
     } for number in range(1, 4)]
     return {
         'animeSn': anime_sn,
-        'videoSn': card['videoSn'],
+        # Follows the first episode, exactly as it does upstream.
+        'videoSn': episodes[0]['videoSn'],
         'title': card['title'],
         'cover': CATALOG_COVER,
         # Long enough to trip the sheet's synopsis clamp.

@@ -465,12 +465,13 @@
             return;
         }
         if (revealedResults || !target) { return; }
+        /* 上鎖要在量之前, 不是量完才鎖. 之前結果已經看得見就直接 return, 鎖沒下去,
+           所以下一個字又量一次 —— 而清單長度每打一個字就變, 量出來的答案跟著變,
+           頁面就這樣被捲上捲下. 一次搜尋只准捲一次, 捲不捲得成都算數 */
+        revealedResults = true;
         var box = target.getBoundingClientRect();
         var viewport = global.innerHeight || document.documentElement.clientHeight || 0;
-        /* Spending the latch on a scroll that never happened would strand the
-           results below the fold for the rest of the search. */
         if (box.top >= 0 && box.top <= viewport - 160) { return; }
-        revealedResults = true;
         target.scrollIntoView({ behavior: 'smooth', block: 'start' });
     }
 

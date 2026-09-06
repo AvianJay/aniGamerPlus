@@ -23,6 +23,7 @@ from ui_harness import (  # noqa: E402
     STATIC_PATH,
     VIDEO_LIST,
     CATALOG_ALL,
+    CATALOG_LANDING_LOCAL_SN,
     CATALOG_LOCAL_SN,
     CATALOG_SEASON,
     HLS_ANIME,
@@ -278,6 +279,40 @@ def test_catalog_search_reaches_past_the_library(page, server):
     assert page.errors == []
 
 
+def test_searching_does_not_walk_the_page_up_and_down(page, server):
+    open_home(page, server)
+
+    # The first keystroke may scroll the results into view; that is the point of
+    # it. Every keystroke after that measured the page again -- and since the
+    # result list changes length with each character, the answer changed too,
+    # which is what sent the page up and down under the typist.
+    page.fill('#homeSearch', '所')
+    page.wait_for_timeout(1200)
+    page.evaluate('() => window.scrollTo(0, 300)')
+    page.wait_for_timeout(200)
+    assert page.evaluate('() => window.scrollY') > 0, 'page is too short to test with'
+
+    # Nothing may replace the grid with skeletons either: the height collapses
+    # and everything below jumps, which reads as the page bouncing.
+    page.evaluate("""() => {
+        window.__skeletons = 0;
+        const host = document.getElementById('homeCatalog');
+        new MutationObserver(() => {
+            if (host.querySelector('.agp-poster-skeleton')) { window.__skeletons += 1; }
+        }).observe(host, {childList: true, subtree: true});
+    }""")
+
+    for text in ('所有', '所有動', '所有動畫', '所有動畫 1'):
+        page.fill('#homeSearch', text)
+        page.wait_for_timeout(400)
+    page.wait_for_timeout(1200)
+
+    expect(page.locator('#homeCatalog .agp-count')).to_have_text('找到 10 部作品')
+    assert page.evaluate('() => window.scrollY') == 300
+    assert page.evaluate('() => window.__skeletons') == 0
+    assert page.errors == []
+
+
 def test_catalog_sheet_opens_closes_and_survives_a_shared_link(page, server):
     open_home(page, server)
     page.locator('#homeCatalog .agp-poster').first.click()
@@ -324,8 +359,16 @@ def test_catalog_sheet_plays_what_is_local_and_queues_what_is_not(page, server):
     expect(sheet.locator('.agp-ep.is-local')).to_have_count(1)
     expect(sheet.locator('.agp-ep.is-local')).to_have_text(re.compile(r'\b2\b'))
     assert sheet.locator('.agp-sheet-hint').count() == 0
-    # Offering to stream it too would only mean downloading a second copy.
-    assert sheet.locator('button[data-stream]').count() == 0
+    # Episode 2 being on disk says nothing about episode 1, which is what the
+    # sheet landed on and what the button would stream -- so it stays offered.
+    expect(sheet.locator('button[data-stream]')).to_have_attribute(
+        'data-stream', CATALOG_ALL[0]['videoSn'])
+
+    # When the landing episode itself is the downloaded one, streaming it would
+    # only mean fetching a second copy of a file that is already here.
+    on_disk = open_sheet(page, server, CATALOG_LANDING_LOCAL_SN)
+    expect(on_disk.locator('.agp-ep.is-local')).to_have_text(re.compile(r'\b1\b'))
+    assert on_disk.locator('button[data-stream]').count() == 0
 
     # Nothing on disk is no longer a dead end: the download can be watched
     # while it runs, and 動畫瘋 itself stays as the way out.
@@ -369,12 +412,19 @@ def test_catalog_queues_a_download_with_everything_the_server_needs(page, server
 
     # Tapping one episode queues that episode alone -- and then becomes the way
     # in to watch it, because the moment it is queued there is something to play.
-    sheet.locator('.agp-ep').first.click()
-    expect(sheet.locator('.agp-ep.is-queued').first).to_have_attribute(
+    # Episode 1 carries the series' own sn, so the 整部下載 above already turned
+    # it into a link; the first episode still rendered as a button is the one
+    # nobody has queued yet.
+    episode = sheet.locator('.agp-ep[data-episode]').first
+    tapped = episode.get_attribute('data-episode')
+    episode.click()
+    expect(sheet.locator('.agp-ep.is-queued[href*="id=%s"]' % tapped)).to_have_attribute(
         'href', re.compile(r'watch\?id=\d+&streaming=1'))
     assert len(MANUAL_TASKS) == 2
     assert MANUAL_TASKS[1]['mode'] == 'single'
-    assert MANUAL_TASKS[1]['sn'] != whole['sn']
+    # The episode that was tapped, not merely "some episode": queueing the wrong
+    # one still leaves a task in the list and still lights up a chip.
+    assert MANUAL_TASKS[1]['sn'] == tapped
     assert page.errors == []
 
 
@@ -415,6 +465,35 @@ def test_home_falls_back_to_the_library_without_the_catalogue(page, server_witho
 
 
 # -------------------------------------------------------------------- player
+
+def test_online_watch_without_an_episode_lists_the_library(page, server):
+    # 線上看 used to redirect straight into whatever finished downloading last.
+    # A guess, and a bad one: get it wrong and the whole tab is one sentence
+    # saying the episode cannot be found.
+    page.goto(server.url + '/watch')
+    page.wait_for_selector('#watchLibrary .watch-index-grid')
+
+    assert page.url.rstrip('/').endswith('/watch'), page.url
+    assert 'is-index' in page.locator('.watch-page').get_attribute('class').split()
+    # Nothing was asked for, so the player, the episode list and the danmaku
+    # column have nothing to show.
+    expect(page.locator('.watch-grid')).to_be_hidden()
+
+    # One card per title, not per episode: a library of five shows would
+    # otherwise be fourteen cards of the same four covers.
+    titles = set(video['anime_name'] for video in VIDEO_LIST['videos'])
+    cards = page.locator('#watchLibrary .watch-index-grid > .agp-card')
+    expect(cards).to_have_count(len(titles))
+    expect(page.locator('#watchLibrary .watch-index-count')).to_have_text(
+        '共 %d 部作品' % len(titles))
+    assert set(cards.locator('.agp-card-title').all_inner_texts()) == titles
+
+    # And it is an index, so a card is the way in.
+    cards.first.click()
+    page.wait_for_selector('#playerShell video')
+    assert 'id=' in page.url
+    assert page.errors == []
+
 
 def test_player_chrome_matches_reference_layout(page, server):
     goto_watch(page, server)

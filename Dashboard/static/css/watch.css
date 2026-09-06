@@ -1131,6 +1131,22 @@ body.player-pseudo-fullscreen { overflow: hidden; }
 /* --- Library below the fold ---------------------------------------------- */
 .watch-library { margin-top: 34px; }
 
+/* 線上看的入口模式: 沒有指定集數, 播放器、選集、彈幕欄通通沒有東西可放 */
+.watch-page.is-index .watch-grid { display: none; }
+.watch-page.is-index .watch-library { margin-top: 0; }
+
+.watch-index-grid {
+  display: grid;
+  gap: 16px;
+  grid-template-columns: repeat(auto-fill, minmax(196px, 1fr));
+}
+
+.watch-index-count { color: var(--agp-fg-dim); font-size: 13px; }
+
+@media (max-width: 640px) {
+  .watch-index-grid { gap: 10px; grid-template-columns: repeat(auto-fill, minmax(140px, 1fr)); }
+}
+
 @media (prefers-reduced-motion: reduce) {
   .desktop-player-controls,
   .desktop-player-caption,

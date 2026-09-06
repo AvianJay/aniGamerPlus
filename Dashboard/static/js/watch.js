@@ -2199,6 +2199,77 @@ function renderLibrary(videos, times, currentSn) {
     host.querySelectorAll('.agp-rail-wrap').forEach(AGP.wireRail);
 }
 
+/* 線上看沒帶集數時的入口. 以前這裡直接把人丟進最後下載的那一集 -- 那是猜的,
+   而且猜錯的時候整頁就只剩一句「找不到這一集影片」. 攤開片庫讓人自己挑, 才是
+   一個「線上看」分頁該有的樣子 */
+function renderWatchIndex(videos, times) {
+    document.title = '線上看 - aniGamerPlus+';
+    var main = document.querySelector('.watch-page');
+    if (main) { main.classList.add('is-index'); }
+
+    var host = document.getElementById('watchLibrary');
+    if (!host) { return; }
+
+    if (!videos.length) {
+        host.innerHTML = '<div class="agp-section-head"><h2>線上看</h2></div>' +
+            '<p class="agp-empty">片庫是空的，請先到主控台加入追番清單。</p>';
+        return;
+    }
+
+    /* 一部一張卡, 而不是一集一張: 片庫裡一部動畫十幾集, 攤平的話整頁都是同一個
+       封面, 找東西反而更難 */
+    var groups = {};
+    var order = [];
+    videos.forEach(function (video) {
+        var key = video.anime_name || String(video.sn);
+        if (!groups[key]) {
+            groups[key] = [];
+            order.push(key);
+        }
+        groups[key].push(video);
+    });
+
+    function newest(list) {
+        return list.slice().sort(function (a, b) {
+            var gap = (b.timestamp || 0) - (a.timestamp || 0);
+            return gap || episodeNumber(b) - episodeNumber(a);
+        })[0];
+    }
+
+    order.sort(function (a, b) {
+        return (newest(groups[b]).timestamp || 0) - (newest(groups[a]).timestamp || 0);
+    });
+
+    var cards = order.map(function (key) {
+        var episodes = groups[key];
+        var target = newest(episodes);
+        var entry = times[String(target.sn)];
+        var ratio = 0;
+        if (entry && !entry.ended && Number(entry.time) > 0) {
+            var total = Number(entry.duration) || 24 * 60;
+            ratio = Math.min(0.98, Number(entry.time) / total);
+        }
+        return '<a class="agp-card" href="' + AGP.escapeHtml(watchUrl(target)) + '">' +
+            '<span class="agp-card-art" style="background:' + AGP.artFor(key) + '">' +
+            '<span class="agp-card-art-glyph">' + AGP.escapeHtml(AGP.initials(key)) + '</span>' +
+            thumbImg(target) +
+            '<span class="agp-card-ep">' + AGP.escapeHtml(episodeLabel(target)) + '</span>' +
+            '<span class="agp-card-badge">共 ' + episodes.length + ' 集</span>' +
+            (ratio ? '<span class="agp-card-progress"><i style="width:' + (ratio * 100).toFixed(1) +
+                '%"></i></span>' : '') +
+            '</span>' +
+            '<span class="agp-card-title">' + AGP.escapeHtml(key) + '</span>' +
+            '<span class="agp-card-meta"><span>' +
+            (target.timestamp ? AGP.escapeHtml(AGP.clockOf(target.timestamp)) : '本機片庫') +
+            '</span></span>' +
+            '</a>';
+    }).join('');
+
+    host.innerHTML = '<div class="agp-section-head"><h2>線上看</h2>' +
+        '<span class="watch-index-count">共 ' + order.length + ' 部作品</span></div>' +
+        '<div class="watch-index-grid">' + cards + '</div>';
+}
+
 function showFatal(message) {
     var shell = document.getElementById('playerShell');
     if (shell) {
@@ -2219,17 +2290,7 @@ async function main() {
     page.times = times;
 
     if (!sn) {
-        /* No episode asked for: land on the newest thing in the library rather
-           than an empty player. */
-        var newest = videos.slice().sort(function (a, b) {
-            return (b.timestamp || 0) - (a.timestamp || 0);
-        })[0];
-        if (newest) {
-            window.location.replace(watchUrl(newest));
-            return;
-        }
-        showFatal('片庫是空的，請先到主控台加入追番清單。');
-        renderLibrary(videos, times, null);
+        renderWatchIndex(videos, times);
         return;
     }
 

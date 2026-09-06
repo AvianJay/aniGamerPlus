@@ -115,6 +115,9 @@ a.agp-slot:hover { background: var(--agp-bg-card-hover); }
 
 .agp-poster-skeleton { aspect-ratio: 227 / 320; }
 
+/* 換頁跟搜尋的等待狀態. 舊結果留在原地淡一點, 高度不變, 底下的東西就不會跳 */
+#homeCatalog.is-loading .agp-poster-grid { opacity: 0.5; }
+
 .agp-pager {
   align-items: center;
   display: flex;

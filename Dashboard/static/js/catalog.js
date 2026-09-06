@@ -195,6 +195,12 @@
         var body;
 
         if (!payload) {
+            /* 每敲一個字就把整片格子換成骨架, 頁面高度跟著一縮一放, 底下的東西
+               就在腳下彈上彈下. 畫面上已經有東西的話, 讓它留著等新的接手 */
+            if (host.dataset.filled === '1') {
+                host.classList.add('is-loading');
+                return;
+            }
             body = '<div class="agp-poster-grid">' +
                 new Array(15).join('<div class="agp-skeleton agp-poster-skeleton"></div>') + '</div>';
         } else if (!payload.items.length) {
@@ -206,7 +212,9 @@
                 posterGrid(payload.items, false) + pagerHtml();
         }
 
+        host.classList.remove('is-loading');
         host.innerHTML = AGP.sectionHtml('all', query ? '搜尋結果' : '所有動畫', body);
+        if (payload) { host.dataset.filled = '1'; }
     }
 
     /* --- catalogue data ---------------------------------------------------- */
@@ -270,6 +278,17 @@
         return null;
     }
 
+    function episodeBySn(detail, videoSn) {
+        var groups = detail.groups || [];
+        for (var g = 0; g < groups.length; g++) {
+            var episodes = groups[g].episodes;
+            for (var e = 0; e < episodes.length; e++) {
+                if (String(episodes[e].videoSn) === String(videoSn)) { return episodes[e]; }
+            }
+        }
+        return null;
+    }
+
     function episodeHtml(episode) {
         var label = episode.episode || '?';
         if (episode.local) {
@@ -304,6 +323,10 @@
 
     function actionsHtml(detail) {
         var local = firstLocalEpisode(detail);
+        /* 「這一集下載過了嗎」跟「這部下載過了嗎」是兩件事. 按下去播的是
+           detail.videoSn 那一集, 所以要問的也是那一集 -- 不然看完第 41 集,
+           第 42 集的邊看邊下載就跟著消失了 */
+        var current = episodeBySn(detail, detail.videoSn);
         var buttons = [];
 
         if (local) {
@@ -314,7 +337,7 @@
         if (canDownload()) {
             /* 邊看邊下載: 下載一開始, temp 裡就是一份 HLS 串流, 播放器直接吃那個.
                對動畫瘋來說跟單純按下載完全一樣, 不會多開一條連線去搶頻寬 */
-            if (!local) {
+            if (!(current && current.local)) {
                 buttons.push('<button class="agp-btn" type="button" data-stream="' +
                     AGP.escapeHtml(detail.videoSn) + '">' +
                     AGP.icon('play', 16) + ' 邊看邊下載</button>');
