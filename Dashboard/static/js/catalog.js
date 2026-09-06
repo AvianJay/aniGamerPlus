@@ -240,7 +240,6 @@
         state.pages = payload.pages || 1;
         state.total = payload.total || 0;
         renderCatalog(payload);
-        AGP.syncTabs();
     }
 
     /* --- detail sheet ------------------------------------------------------ */
@@ -483,24 +482,7 @@
 
     /* --- downloads --------------------------------------------------------- */
 
-    var toastTimer = 0;
-
-    function toast(message) {
-        var host = el('catalogToast');
-        if (!host) {
-            host = document.createElement('div');
-            host.id = 'catalogToast';
-            host.className = 'agp-toast';
-            host.setAttribute('role', 'status');
-            document.body.appendChild(host);
-        }
-        host.textContent = message;
-        host.classList.add('is-on');
-        global.clearTimeout(toastTimer);
-        toastTimer = global.setTimeout(function () {
-            host.classList.remove('is-on');
-        }, 3200);
-    }
+    var toast = AGP.toast;
 
     async function queueDownload(videoSn, mode) {
         var picker = el('catalogResolution');
@@ -624,14 +606,16 @@
 
     /* Nothing here can run without the routes, which exist only when
        dashboard.online_watch is on. Leaving the hosts empty rather than filling
-       them with apologies is what lets AGP.syncTabs() retire their tabs. */
+       them with apologies is what keeps the page from looking half-loaded. */
     function hideCatalog() {
         ['homeSeason', 'homeSchedule', 'homeCatalogHot', 'homeCatalogNew', 'homeCatalog']
             .forEach(function (id) {
                 var host = el(id);
                 if (host) { host.innerHTML = ''; }
             });
-        AGP.syncTabs();
+        /* 「這台沒有片單」是整頁的狀態, 不是某一塊的狀態 —— 首頁那一半是空的,
+           「所有動畫」那一頁就只剩片庫 */
+        document.body.classList.add('agp-no-catalog');
     }
 
     async function boot() {

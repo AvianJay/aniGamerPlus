@@ -2068,6 +2068,16 @@ if settings["dashboard"]["online_watch"]:
                     user['videotimes'][sn] = entry
                     save_user_data(userdata)
                     return '{"status":"200"}'
+        elif gettype == 'del':
+            # 觀看紀錄那一頁的刪除鈕. 沒有這筆就當作已經刪掉了 —— 連按兩下不該
+            # 是一次 200 一次 404
+            for user in userdata['users']:
+                if user['token'] == token:
+                    if not sn:
+                        return '{"status":"400", "msg":"Missing sn"}', 400
+                    if user['videotimes'].pop(sn, None) is not None:
+                        save_user_data(userdata)
+                    return '{"status":"200"}'
         elif gettype == 'get':
             for user in userdata['users']:
                 if user['token'] == token:

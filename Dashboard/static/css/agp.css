@@ -309,6 +309,51 @@ body.agp-body img { max-width: 100%; }
   color: var(--agp-fg);
 }
 
+/* --- 分頁與底部頁籤列 ------------------------------------------------------ */
+/* 動畫瘋自己的 App 就是這樣分的: 首頁 / 所有動畫 / 收藏 / 紀錄 / 我的.
+   一頁捲到底的時候, 想看紀錄得先捲過整份片單 */
+.agp-pane[hidden] { display: none; }
+
+.agp-tabbar {
+  backdrop-filter: blur(16px);
+  background: rgb(11 12 14 / 92%);
+  border-top: 1px solid var(--agp-line);
+  bottom: 0;
+  display: flex;
+  left: 0;
+  padding-bottom: var(--agp-safe-b);
+  padding-left: var(--agp-safe-l);
+  padding-right: var(--agp-safe-r);
+  position: fixed;
+  right: 0;
+  z-index: 60;
+}
+
+.agp-tabbar-btn {
+  align-items: center;
+  color: var(--agp-fg-faint);
+  display: flex;
+  flex: 1 1 0;
+  flex-direction: column;
+  font-size: 11px;
+  font-weight: 600;
+  gap: 3px;
+  min-width: 0;
+  padding: 7px 2px 6px;
+  transition: color .15s ease;
+}
+
+.agp-tabbar-btn span { white-space: nowrap; }
+.agp-tabbar-btn:hover { color: var(--agp-fg); }
+.agp-tabbar-btn.is-on,
+.agp-tabbar-btn.is-on:hover { color: var(--agp-accent); }
+
+/* 固定在畫面下緣的那條會蓋住頁尾, 版面自己要讓出那個高度 */
+.agp-body.has-tabbar { padding-bottom: calc(60px + var(--agp-safe-b)); }
+
+/* toast 原本就貼在畫面下緣, 現在那裡站著一整排頁籤 */
+.agp-body.has-tabbar .agp-toast { bottom: calc(78px + var(--agp-safe-b)); }
+
 /* --- Notice strip -------------------------------------------------------- */
 .agp-notice {
   align-items: center;
@@ -797,6 +842,10 @@ body.agp-body img { max-width: 100%; }
   .agp-usernav .nav-link { font-size: 12px; padding: 6px 7px; }
   /* 窄到這裡, 頭像本身就夠認人了 */
   .agp-navmenu-name { display: none; }
+  /* 帳號那一排已經整個搬進「我的」分頁, 標題列就不必再擠出第二排來放它 */
+  .agp-body.has-tabbar { --agp-topbar-h: 56px; }
+  .agp-body.has-tabbar .agp-topbar-actions { display: none; }
+  .agp-body.has-tabbar .agp-topbar-inner { flex-wrap: nowrap; }
   .agp-banner-body { padding: 22px 16px; }
   .agp-rail { gap: 10px; grid-auto-columns: minmax(150px, 190px); }
   .agp-poster-grid { gap: 10px; grid-template-columns: repeat(auto-fill, minmax(116px, 1fr)); }

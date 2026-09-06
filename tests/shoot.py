@@ -81,7 +81,7 @@ def main():
             sign_in(page)
 
             page.goto(BASE_URL + '/')
-            page.wait_for_selector('#homeLibrary .agp-poster', timeout=30000)
+            page.wait_for_selector('#homeTimetable .agp-day', timeout=30000)
             # The cards only look finished once their thumbnails have arrived.
             page.wait_for_function(
                 """() => {
@@ -90,6 +90,11 @@ def main():
                 }""", timeout=30000)
             shoot(page, 'home-' + label)
             shoot(page, 'home-' + label + '-full', full_page=True)
+
+            # 片庫搬到「所有動畫」那一頁了, 它自己也值得一張
+            page.locator('.agp-tabbar-btn[data-pane="all"]').click()
+            page.wait_for_selector('#homeLibrary .agp-poster', timeout=30000)
+            shoot(page, 'all-' + label)
 
             page.goto('%s/watch?id=%s' % (BASE_URL, SN))
             page.wait_for_selector('#playerShell.is-custom-player', timeout=30000)

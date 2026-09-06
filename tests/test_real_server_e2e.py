@@ -185,14 +185,28 @@ def test_manual_download_produces_a_real_episode(downloaded_episode):
 
 # ----------------------------------------------------- the redesigned pages
 
+def open_tab(page, name):
+    """Switch the home page to one of the five bottom tabs.
+
+    片庫 lives on the 所有動畫 pane now, and a pane that is not open is
+    ``hidden`` -- so anything looking at it has to say so first.
+    """
+    page.wait_for_selector('.agp-tabbar-btn[data-pane="%s"]' % name)
+    page.locator('.agp-tabbar-btn[data-pane="%s"]' % name).click()
+    page.wait_for_selector('.agp-pane[data-pane="%s"]:not([hidden])' % name)
+    return page
+
+
 def test_home_page_lists_the_downloaded_anime(page, downloaded_episode):
     page.goto(BASE_URL + '/')
+    open_tab(page, 'all')
     page.wait_for_selector('#homeLibrary .agp-poster')
 
     expect(page.locator('.agp-topbar .agp-brand')).to_be_visible()
     expect(page.locator('#homeLibrary')).to_contain_text(TARGET_NAME)
 
     # The timetable groups the real download by its real air date.
+    open_tab(page, 'home')
     expect(page.locator('#homeTimetable .agp-card').first).to_be_visible()
     expect(page.locator('#homeTimetable')).to_contain_text(TARGET_NAME)
     assert page.errors == []

@@ -35,6 +35,10 @@
         x: '<path d="M18 6 6 18M6 6l12 12"/>',
         list: '<path d="M8 6h13M8 12h13M8 18h13M3 6h.01M3 12h.01M3 18h.01"/>',
         star: '<polygon points="12 2 15.1 8.6 22 9.6 17 14.5 18.2 21.5 12 18.2 5.8 21.5 7 14.5 2 9.6 8.9 8.6 12 2"/>',
+        home: '<path d="m3 10.5 9-7.5 9 7.5"/><path d="M5.5 9.2V21h13V9.2"/>',
+        grid: '<rect x="3" y="3" width="7.5" height="7.5" rx="1.6"/><rect x="13.5" y="3" width="7.5" height="7.5" rx="1.6"/><rect x="3" y="13.5" width="7.5" height="7.5" rx="1.6"/><rect x="13.5" y="13.5" width="7.5" height="7.5" rx="1.6"/>',
+        history: '<path d="M3.5 12a8.5 8.5 0 1 0 2.5-6L3 8.5"/><path d="M3 3.5V9h5.5"/><path d="M12 7.5V12l3.2 1.9"/>',
+        user: '<circle cx="12" cy="8" r="4"/><path d="M4.5 20.5c0-3.6 3.4-5.5 7.5-5.5s7.5 1.9 7.5 5.5"/>',
         keyboard: '<rect x="2" y="6" width="20" height="12" rx="2.5"/><path d="M6 10h.01M10 10h.01M14 10h.01M18 10h.01M8 14h8"/>'
     };
 
@@ -252,18 +256,172 @@
             '</div>' + bodyHtml + '</section>';
     }
 
-    /* A tab whose section never rendered scrolls nowhere, which reads as a
-       broken page rather than as a section this site simply does not have.
-       Both the local sections and the catalog sections can be absent, so
-       whichever script finishes writing last calls this. */
-    function syncTabs() {
-        document.querySelectorAll('.agp-tab[href^="#"]').forEach(function (tab) {
-            var id = tab.getAttribute('href').slice(1);
-            var target = id ? document.getElementById(id) : null;
-            /* 搜尋模式收起來的區塊還在 DOM 裡, 只是看不見. 頁籤跟著收,
-               否則按下去只會捲到一塊不存在的東西上面 */
-            tab.hidden = !!id && (!target || !!target.closest('[hidden]'));
+    /* --- 收藏 -------------------------------------------------------------- */
+
+    /* 以前一部作品收藏與否是一個 'agp-fav-<雜湊>' 的布林值. 要列出收藏清單的
+       時候就卡住了: 雜湊回不去片名, 除非把認識的片名全部算一遍去猜。改成一份
+       清單, 順便把封面跟入口那一集記著 —— 收藏的作品不一定在片庫裡, 邊看邊
+       下載按下收藏的那一刻硬碟上還沒有檔案 */
+    var FAV_KEY = 'agp-favs';
+
+    function readStore(key, fallback) {
+        try {
+            var value = global.localStorage.getItem(key);
+            return value === null ? fallback : value;
+        } catch (error) {
+            return fallback;
+        }
+    }
+
+    function writeStore(key, value) {
+        try {
+            global.localStorage.setItem(key, String(value));
+        } catch (error) { /* 無痕模式寫不進去, 收藏丟了也不該弄壞整頁 */ }
+    }
+
+    function favList() {
+        var list;
+        try {
+            list = JSON.parse(readStore(FAV_KEY, '[]'));
+        } catch (error) {
+            return [];
+        }
+        return Array.isArray(list) ? list.filter(function (item) {
+            return item && item.name;
+        }) : [];
+    }
+
+    function favSave(list) {
+        writeStore(FAV_KEY, JSON.stringify(list));
+    }
+
+    /* 播放頁看到的片名是官方的作品名, 片庫看到的是資料夾名, 兩邊未必一樣.
+       兩個都比對過才不會同一部作品收藏兩次 */
+    function favSame(item, name) {
+        return item.name === name || (!!item.alias && item.alias === name);
+    }
+
+    function favHas(name) {
+        return favList().some(function (item) { return favSame(item, name); });
+    }
+
+    function favRemove(name) {
+        favSave(favList().filter(function (item) { return !favSame(item, name); }));
+    }
+
+    function favAdd(entry) {
+        if (!entry || !entry.name) { return; }
+        var list = favList().filter(function (item) { return !favSame(item, entry.name); });
+        list.unshift({
+            name: entry.name,
+            alias: entry.alias && entry.alias !== entry.name ? entry.alias : '',
+            sn: entry.sn ? String(entry.sn) : '',
+            res: entry.res ? String(entry.res) : '',
+            cover: entry.cover || '',
+            added: entry.added || Math.floor(new Date().getTime() / 1000)
         });
+        favSave(list);
+    }
+
+    /* 舊的那些 key 還躺在瀏覽器裡. 拿現在認得的片名回頭比對一次就搬得回來 ——
+       猜不到名字的就留在原地, 反正也沒有人再讀它 */
+    function favAdopt(entries) {
+        (entries || []).forEach(function (entry) {
+            if (!entry || !entry.name) { return; }
+            var key = 'agp-fav-' + hashString(entry.name);
+            if (readStore(key, '0') !== '1') { return; }
+            writeStore(key, '0');
+            if (!favHas(entry.name)) { favAdd(entry); }
+        });
+    }
+
+    /* --- 底部頁籤 ---------------------------------------------------------- */
+
+    var TABBAR = [
+        ['home', '首頁', 'home'],
+        ['all', '所有動畫', 'grid'],
+        ['fav', '收藏', 'heart'],
+        ['history', '紀錄', 'history'],
+        ['mine', '我的', 'user']
+    ];
+
+    var paneListeners = [];
+    var openPane = '';
+
+    function paneNodes() {
+        return Array.prototype.slice.call(document.querySelectorAll('.agp-pane'));
+    }
+
+    /* 切分頁只有這一條路. 打字要跳到「所有動畫」, 點下面那排也是, 兩邊各寫一次
+       遲早會有一邊忘了把頁籤點亮 */
+    function showPane(name, options) {
+        var opts = options || {};
+        var nodes = paneNodes();
+        var wanted = nodes.filter(function (node) { return node.dataset.pane === name; })[0];
+        if (!wanted) { return; }
+        var changed = openPane !== name;
+        openPane = name;
+        nodes.forEach(function (node) { node.hidden = node !== wanted; });
+        document.querySelectorAll('.agp-tabbar-btn').forEach(function (button) {
+            var on = button.dataset.pane === name;
+            button.classList.toggle('is-on', on);
+            /* aria-current 而不是 aria-selected: 這排是導覽連結, 不是 tablist */
+            if (on) { button.setAttribute('aria-current', 'page'); }
+            else { button.removeAttribute('aria-current'); }
+        });
+        /* 捲回頂端只在「人自己按了下面那一排」的時候做. 打字時跟著捲, 就又變回
+           畫面在指頭底下自己跑的那個毛病 */
+        if (opts.top) { global.scrollTo(0, 0); }
+        paneListeners.forEach(function (listener) { listener(name, changed, opts); });
+    }
+
+    function currentPane() {
+        return openPane;
+    }
+
+    function onPane(listener) {
+        paneListeners.push(listener);
+    }
+
+    function mountTabbar() {
+        var bar = document.querySelector('.agp-tabbar');
+        if (!bar) { return; }
+        bar.innerHTML = TABBAR.map(function (tab) {
+            return '<a class="agp-tabbar-btn" href="./?tab=' + tab[0] + '" data-pane="' + tab[0] + '">' +
+                icon(tab[2], 21) + '<span>' + escapeHtml(tab[1]) + '</span></a>';
+        }).join('');
+        bar.addEventListener('click', function (event) {
+            var button = event.target.closest('.agp-tabbar-btn');
+            if (!button) { return; }
+            event.preventDefault();
+            showPane(button.dataset.pane, { top: true, tap: true });
+        });
+        if (!openPane) { showPane('home'); }
+    }
+
+    document.addEventListener('DOMContentLoaded', mountTabbar);
+
+    /* --- toast ------------------------------------------------------------- */
+
+    /* 排下載這件事沒有畫面可以看: 按下去之後不是跳走就是什麼都沒發生, 而「什麼
+       都沒發生」正是失敗的樣子. 片單跟首頁都需要一句話, 所以放在這裡 */
+    var toastTimer = 0;
+
+    function toast(message, ms) {
+        var host = document.getElementById('agpToast');
+        if (!host) {
+            host = document.createElement('div');
+            host.id = 'agpToast';
+            host.className = 'agp-toast';
+            host.setAttribute('role', 'status');
+            document.body.appendChild(host);
+        }
+        host.textContent = message;
+        host.classList.add('is-on');
+        global.clearTimeout(toastTimer);
+        toastTimer = global.setTimeout(function () {
+            host.classList.remove('is-on');
+        }, ms || 3200);
     }
 
     global.AGP = {
@@ -285,7 +443,19 @@
         wireRail: wireRail,
         railHtml: railHtml,
         sectionHtml: sectionHtml,
-        syncTabs: syncTabs
+        readStore: readStore,
+        writeStore: writeStore,
+        favourites: {
+            list: favList,
+            has: favHas,
+            add: favAdd,
+            remove: favRemove,
+            adopt: favAdopt
+        },
+        showPane: showPane,
+        currentPane: currentPane,
+        onPane: onPane,
+        toast: toast
     };
 
     initPwa();

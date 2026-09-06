@@ -39,8 +39,195 @@
   color: #ff5c7a;
 }
 
+/* --- 收藏 ---------------------------------------------------------------- */
+.agp-fav-item { position: relative; }
+
+/* 取消收藏的那顆 x 疊在封面右上角, 跟動畫瘋 App 一樣 —— 進到收藏頁就是為了
+   整理它, 每張卡都要先點進去再退出來太慢 */
+.agp-fav-drop {
+  align-items: center;
+  background: rgb(0 0 0 / 62%);
+  border: 0;
+  border-radius: 999px;
+  color: #fff;
+  cursor: pointer;
+  display: flex;
+  height: 26px;
+  justify-content: center;
+  opacity: 0;
+  position: absolute;
+  right: 7px;
+  top: 7px;
+  transition: opacity .15s ease;
+  width: 26px;
+}
+
+.agp-fav-item:hover .agp-fav-drop,
+.agp-fav-drop:focus-visible { opacity: 1; }
+
+/* 觸控裝置沒有 hover, 藏起來就等於沒有 */
+@media (hover: none) {
+  .agp-fav-drop { opacity: 1; }
+}
+
+/* --- 紀錄 ---------------------------------------------------------------- */
+.agp-history-month {
+  color: var(--agp-fg-faint);
+  font-size: 13px;
+  font-weight: 700;
+  margin: 18px 0 8px;
+}
+
+.agp-history-month:first-child { margin-top: 0; }
+
+.agp-history-row {
+  align-items: center;
+  border-bottom: 1px solid var(--agp-line);
+  display: flex;
+  gap: 12px;
+  padding: 10px 0;
+}
+
+.agp-history-art {
+  border-radius: var(--agp-radius-sm);
+  flex: none;
+  overflow: hidden;
+  position: relative;
+  width: 132px;
+}
+
+.agp-history-art::before { content: ''; display: block; padding-top: 56.25%; }
+
+.agp-history-art .agp-card-art-fill,
+.agp-history-art .agp-card-art-glyph,
+.agp-history-art .agp-art-img {
+  height: 100%;
+  left: 0;
+  position: absolute;
+  top: 0;
+  width: 100%;
+}
+
+.agp-history-art .agp-card-art-glyph {
+  align-items: center;
+  display: flex;
+  justify-content: center;
+}
+
+.agp-history-art .agp-art-img { object-fit: cover; }
+
+.agp-history-body { flex: 1; min-width: 0; }
+
+.agp-history-body strong {
+  display: block;
+  font-size: 14px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.agp-history-body small {
+  color: var(--agp-fg-dim);
+  display: block;
+  font-size: 12px;
+  margin-top: 4px;
+}
+
+.agp-history-bar {
+  background: rgb(255 255 255 / 12%);
+  border-radius: 999px;
+  display: block;
+  height: 3px;
+  margin-top: 8px;
+  max-width: 260px;
+  overflow: hidden;
+}
+
+.agp-history-bar i {
+  background: var(--agp-accent);
+  display: block;
+  height: 100%;
+}
+
+.agp-history-acts {
+  align-items: center;
+  display: flex;
+  flex: none;
+  gap: 4px;
+}
+
+.agp-history-acts a,
+.agp-history-acts button {
+  align-items: center;
+  background: none;
+  border: 0;
+  border-radius: 999px;
+  color: var(--agp-fg-faint);
+  cursor: pointer;
+  display: flex;
+  height: 34px;
+  justify-content: center;
+  padding: 0;
+  width: 34px;
+}
+
+.agp-history-acts a:hover { background: var(--agp-accent-soft); color: var(--agp-accent); }
+.agp-history-acts button:hover { background: rgb(255 255 255 / 10%); color: var(--agp-fg); }
+
+/* --- 我的 ---------------------------------------------------------------- */
+.agp-account-card {
+  align-items: center;
+  background: var(--agp-bg-elev);
+  border: 1px solid var(--agp-line);
+  border-radius: var(--agp-radius);
+  display: flex;
+  gap: 14px;
+  padding: 18px 16px;
+}
+
+.agp-account-avatar {
+  align-items: center;
+  background: var(--agp-accent-soft);
+  border-radius: 999px;
+  color: var(--agp-accent);
+  display: flex;
+  flex: none;
+  font-size: 22px;
+  font-weight: 700;
+  height: 54px;
+  justify-content: center;
+  width: 54px;
+}
+
+.agp-account-card strong { display: block; font-size: 17px; }
+.agp-account-card small { color: var(--agp-fg-dim); display: block; font-size: 12px; margin-top: 3px; }
+
+.agp-account-list {
+  background: var(--agp-bg-elev);
+  border: 1px solid var(--agp-line);
+  border-radius: var(--agp-radius);
+  margin-top: 12px;
+  overflow: hidden;
+}
+
+.agp-account-row {
+  align-items: center;
+  border-top: 1px solid var(--agp-line);
+  color: var(--agp-fg);
+  display: flex;
+  font-size: 14px;
+  gap: 12px;
+  padding: 13px 15px;
+}
+
+.agp-account-row:first-child { border-top: 0; }
+.agp-account-row:hover { background: var(--agp-bg-card-hover); }
+.agp-account-row span { flex: 1; }
+.agp-account-row svg:last-child { color: var(--agp-fg-faint); }
+
 .agp-day .agp-rail { grid-auto-columns: minmax(190px, 232px); }
 
 @media (max-width: 720px) {
   .agp-day .agp-rail { grid-auto-columns: minmax(150px, 190px); }
+  .agp-history-art { width: 104px; }
 }

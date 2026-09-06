@@ -1957,30 +1957,23 @@ var page = {
     times: {}
 };
 
-var toastTimer = 0;
-
-function toast(message) {
-    var host = document.getElementById('watchToast');
-    if (!host) {
-        host = document.createElement('div');
-        host.id = 'watchToast';
-        host.className = 'agp-toast';
-        host.setAttribute('role', 'status');
-        document.body.appendChild(host);
-    }
-    host.textContent = message;
-    host.classList.add('is-on');
-    clearTimeout(toastTimer);
-    toastTimer = setTimeout(function () { host.classList.remove('is-on'); }, 2400);
-}
+var toast = AGP.toast;
 
 function renderTitleBar(video, series, info) {
     var host = document.getElementById('watchTitleBar');
     if (!host) { return; }
     var groups = officialGroups(info, video);
     var total = groups.length ? countEpisodes(groups) : series.length;
-    var favKey = 'agp-fav-' + AGP.hashString(video.anime_name);
-    var favourite = readStore(favKey, '0') === '1';
+    /* 這裡的片名是官方的作品名, 片庫用的是資料夾名, 兩個都記下來收藏頁才對得上.
+       封面也一起存 —— 收藏的作品硬碟上不一定有檔, 沒有封面就只剩一塊底色 */
+    var favEntry = {
+        name: seriesName(info, video),
+        alias: video.anime_name,
+        sn: video.sn,
+        res: video.resolution,
+        cover: (info && info.cover) || ''
+    };
+    var favourite = AGP.favourites.has(favEntry.name);
 
     host.innerHTML = '<div class="watch-titlebar-main">' +
         '<h1>' + AGP.escapeHtml(seriesName(info, video)) +
@@ -1998,7 +1991,8 @@ function renderTitleBar(video, series, info) {
 
     document.getElementById('favButton').addEventListener('click', function () {
         favourite = !favourite;
-        writeStore(favKey, favourite ? '1' : '0');
+        if (favourite) { AGP.favourites.add(favEntry); }
+        else { AGP.favourites.remove(favEntry.name); }
         this.classList.toggle('is-on', favourite);
         this.querySelector('span').textContent = favourite ? '已收藏' : '收藏';
     });

@@ -670,6 +670,9 @@ def create_app(logged_in=True, catalog=True, hls=True):
                 pass
             WATCH_TIMES[sn] = entry
             return '{"status":"200"}'
+        if kind == 'del':
+            WATCH_TIMES.pop(sn, None)
+            return '{"status":"200"}'
         if kind == 'get':
             if not sn:
                 return jsonify(WATCH_TIMES)

@@ -34,6 +34,7 @@ from ui_harness import (  # noqa: E402
     HLS_STATE_DEFAULT,
     MANUAL_TASKS,
     NO_SERIES_INFO_ANIME,
+    WATCH_TIMES,
     WATCH_SERIES_STREAMING,
     WATCH_SERIES_TOTAL,
     WATCH_SYNOPSIS,
@@ -103,6 +104,24 @@ def phone(browser):
     context.close()
 
 
+def open_tab(page, name):
+    """Switch the home page to one of the five bottom tabs.
+
+    片庫 and 所有動畫 live on the 所有動畫 pane, and a pane that is not open is
+    ``hidden`` -- so anything looking at them has to say so first.
+    """
+    page.wait_for_selector('.agp-tabbar-btn[data-pane="%s"]' % name)
+    if page.locator('#catalogSheet').is_visible():
+        # 片單詳情是全螢幕的 sheet, 它的 backdrop 蓋著整排頁籤. 從網址冷開
+        # sheet 的測試按不到那顆鈕, 但底下那一頁還是要切 —— 那就照 shell 自己
+        # 的路走. 頁籤按起來會怎樣有它自己的測試.
+        page.evaluate('(name) => window.AGP.showPane(name)', name)
+    else:
+        page.locator('.agp-tabbar-btn[data-pane="%s"]' % name).click()
+    page.wait_for_selector('.agp-pane[data-pane="%s"]:not([hidden])' % name)
+    return page
+
+
 def goto_watch(page, server, sn=FIRST_SN):
     page.goto('%s/watch?id=%s' % (server.url, sn))
     page.wait_for_selector('#playerShell.is-custom-player')
@@ -118,7 +137,7 @@ def test_home_renders_bahamut_style_sections(page, server):
 
     expect(page.locator('.agp-topbar .agp-brand')).to_be_visible()
     expect(page.locator('#homeSearch')).to_be_visible()
-    expect(page.locator('.agp-tabs .agp-tab.is-active')).to_have_text('首頁')
+    expect(page.locator('.agp-tabbar-btn[aria-current="page"]')).to_have_text('首頁')
     expect(page.locator('#homeBanner .agp-banner')).to_be_visible()
 
     # 本季新番 is grouped by day, exactly like the timetable it is modelled on.
@@ -134,6 +153,7 @@ def test_home_renders_bahamut_style_sections(page, server):
     assert 1.7 < ratio < 1.83
 
     expect(page.locator('#homeHot .agp-poster-grid .agp-poster').first).to_be_visible()
+    open_tab(page, 'all')
     expect(page.locator('#homeLibrary .agp-poster').first).to_be_visible()
     assert page.errors == []
 
@@ -156,6 +176,7 @@ def test_home_continue_watching_shows_real_progress(page, server):
 
 def test_home_search_filters_the_library(page, server):
     page.goto(server.url)
+    open_tab(page, 'all')
     page.wait_for_selector('#homeLibrary .agp-poster')
 
     total = page.locator('#homeLibrary .agp-poster').count()
@@ -173,6 +194,8 @@ def test_home_search_filters_the_library(page, server):
 
 def open_home(page, server, path='/'):
     page.goto(server.url + path)
+    # 片庫比對的結果跟動畫瘋的整份片單同在「所有動畫」那一頁, 首頁看不到它們
+    open_tab(page, 'all')
     page.wait_for_selector('#homeCatalog .agp-poster')
     return page
 
@@ -188,6 +211,7 @@ def test_catalog_draws_the_bahamut_front_page(page, server):
 
     # 本季新番 keeps the wide episode banner 動畫瘋 ships it as; the catalogue
     # grids below it are the 3:4 cover, and one shape would letterbox the other.
+    open_tab(page, 'home')
     card = page.locator('#homeSeason .agp-card').first
     ratio = card.locator('.agp-card-art').evaluate(
         '(el) => { const r = el.getBoundingClientRect(); return r.width / r.height; }')
@@ -198,6 +222,7 @@ def test_catalog_draws_the_bahamut_front_page(page, server):
     expect(page.locator('#homeCatalogHot .agp-poster-rank').first).to_have_text('1')
     assert page.locator('#homeCatalogNew .agp-poster').count() == 4
 
+    open_tab(page, 'all')
     expect(page.locator('#homeCatalog .agp-count')).to_have_text(
         '共 %d 部作品' % len(CATALOG_ALL))
     expect(page.locator('#homeCatalog .agp-pager span')).to_have_text('第 1 / 3 頁')
@@ -214,6 +239,7 @@ def test_catalog_poster_leaves_the_whole_cover_visible(page, server):
     """The title used to ride on the artwork as a gradient overlay, which took
     the bottom quarter of every cover with it."""
     open_home(page, server)
+    open_tab(page, 'home')
     poster = page.locator('#homeCatalogHot .agp-poster').first
     art = poster.locator('.agp-poster-art').bounding_box()
     foot = poster.locator('.agp-poster-foot').bounding_box()
@@ -235,6 +261,7 @@ def test_catalog_poster_leaves_the_whole_cover_visible(page, server):
 
 def test_catalog_timetable_switches_weekday(page, server):
     open_home(page, server)
+    open_tab(page, 'home')
     tabs = page.locator('#homeSchedule .agp-daytab')
 
     tabs.nth(1).click()
@@ -289,10 +316,12 @@ def test_searching_does_not_walk_the_page_up_and_down(page, server):
     that happens as the keyboard shrinks the viewport and the list re-flows with
     every character, so "scroll the results up" landed nowhere anyone asked for.
 
-    Nothing moves the page now. The sections that are not results fold away and
-    the grid surfaces where the reader already is, under the box being typed in.
+    Nothing moves the page now. Typing switches to 所有動畫 -- where the answer
+    was always going to be -- and a pane switch replaces what is on screen
+    without touching the scroll position.
     """
-    open_home(page, server)
+    page.goto(server.url)
+    page.wait_for_selector('#homeTimetable .agp-day')
     page.locator('#homeSearch').click()
     assert page.evaluate('() => window.scrollY') == 0
 
@@ -320,32 +349,38 @@ def test_searching_does_not_walk_the_page_up_and_down(page, server):
     assert page.evaluate('() => window.__scrolls') == 0
     assert page.evaluate('() => window.__skeletons') == 0
 
-    # 本季新番 and the timetable are not answers to a search, so they get out of
-    # the way -- and their tabs go with them, since a tab that scrolls to
-    # something invisible reads as a broken page.
+    # 本季新番 and the timetable are not answers to a search, so the whole 首頁
+    # pane steps aside and the bottom bar says where the reader ended up.
     expect(page.locator('#homeSeason')).to_be_hidden()
     expect(page.locator('#homeCatalog')).to_be_visible()
-    assert '本季新番' not in [tab.inner_text() for tab in page.locator('.agp-tab').all()
-                              if tab.is_visible()]
+    expect(page.locator('.agp-tabbar-btn[aria-current="page"]')).to_have_text('所有動畫')
     top = page.evaluate(
         "() => document.getElementById('homeCatalog').getBoundingClientRect().top")
     assert 0 < top < page.viewport_size['height'], top
 
-    # And clearing the box puts the page back the way it was.
+    # And clearing the box puts the reader back on the tab they were on.
     page.fill('#homeSearch', '')
     page.wait_for_timeout(400)
     expect(page.locator('#homeSeason')).to_be_visible()
+    expect(page.locator('.agp-tabbar-btn[aria-current="page"]')).to_have_text('首頁')
     assert page.errors == []
 
 
 def test_the_main_menu_is_five_tabs_and_one_account_button(page, server):
-    """主選單太花了 -- nine tab anchors and five top-right links, with 線上看
-    written into both rows."""
+    """主選單太花了 -- nine anchors scrolling around one endless page, plus five
+    top-right links with 線上看 written into both rows. 動畫瘋's own app splits
+    the same material into five bottom tabs, and that is what this is."""
     open_home(page, server)
 
-    tabs = [tab.inner_text() for tab in page.locator('.agp-tabs .agp-tab').all()
-            if tab.is_visible()]
-    assert tabs == ['首頁', '本季新番', '更新時間表', '片庫', '所有動畫']
+    tabs = [tab.inner_text() for tab in page.locator('.agp-tabbar-btn').all()]
+    assert tabs == ['首頁', '所有動畫', '收藏', '紀錄', '我的']
+
+    # One pane at a time: the point of the split is that 紀錄 is not at the far
+    # end of the片單 anymore.
+    open_tab(page, 'history')
+    open_panes = [pane.get_attribute('data-pane')
+                  for pane in page.locator('.agp-pane').all() if pane.is_visible()]
+    assert open_panes == ['history']
 
     # 主控台 / 用戶管理 / 帳號資訊 / 登出 are account plumbing nobody opens twice a
     # day; on the bar they were four buttons that wrapped to a second row.
@@ -459,7 +494,7 @@ def test_catalog_queues_a_download_with_everything_the_server_needs(page, server
 
     sheet.locator('.agp-select').select_option('720')
     sheet.locator('button[data-download]').click()
-    expect(page.locator('#catalogToast.is-on')).to_contain_text('已加入下載佇列')
+    expect(page.locator('#agpToast.is-on')).to_contain_text('已加入下載佇列')
 
     # /manualTask reads all six keys straight out of the body and KeyErrors on
     # any one that is missing, so the payload shape is the contract.
@@ -508,19 +543,97 @@ def test_home_falls_back_to_the_library_without_the_catalogue(page, server_witho
     the page has to go back to being the 片庫 view it was rather than to a wall
     of empty sections."""
     page.goto(server_without_catalog.url)
+    # The body class is the page saying it handled the failed fetch; asserting
+    # on empty hosts alone would pass before the request had even gone out.
+    page.wait_for_selector('body.agp-no-catalog')
+    open_tab(page, 'all')
     page.wait_for_selector('#homeLibrary .agp-poster')
-    # A tab that scrolls nowhere reads as a broken page, so it retires itself --
-    # and waiting on that is waiting on the failed fetch having been handled.
-    page.wait_for_selector('.agp-tab[href="#all"]', state='hidden')
 
     for host in ['homeSeason', 'homeSchedule', 'homeCatalogHot', 'homeCatalogNew',
                  'homeCatalog']:
         assert page.locator('#%s .agp-section' % host).count() == 0
 
-    visible = [tab.inner_text() for tab in page.locator('.agp-tab').all() if tab.is_visible()]
-    assert '本季新番' not in visible
-    assert '更新時間表' not in visible
-    assert '片庫' in visible
+    # 所有動畫 is still a place worth going: without the catalogue it is the 片庫
+    # on its own rather than an empty page.
+    expect(page.locator('#homeLibrary .agp-section-head h2')).to_have_text('片庫')
+    assert [tab.inner_text() for tab in page.locator('.agp-tabbar-btn').all()] == [
+        '首頁', '所有動畫', '收藏', '紀錄', '我的']
+    assert page.errors == []
+
+
+# ------------------------------------------------------------ 收藏 / 紀錄 / 我的
+
+def test_favourites_tab_lists_what_the_watch_page_starred(page, server):
+    """收藏 used to be a per-anime boolean under a hashed key: the button lit up
+    and nothing anywhere could list what had been starred, because a hash does
+    not turn back into a title."""
+    page.goto(server.url)
+    open_tab(page, 'fav')
+    expect(page.locator('#homeFavourites .agp-empty')).to_contain_text('還沒有收藏')
+
+    goto_watch(page, server)
+    name = page.locator('#watchTitleBar h1').inner_text().split('\n')[0]
+    page.locator('#favButton').click()
+    expect(page.locator('#favButton')).to_contain_text('已收藏')
+
+    page.goto(server.url)
+    open_tab(page, 'fav')
+    poster = page.locator('#homeFavourites .agp-poster').first
+    expect(poster.locator('.agp-poster-foot strong')).to_have_text(name)
+    expect(page.locator('#homeFavourites .agp-count')).to_have_text('共 1 部作品')
+
+    # And the X on the cover is the whole point of having a list: taking a
+    # title back off it without opening it first.
+    page.locator('#homeFavourites [data-unfav]').first.click()
+    expect(page.locator('#homeFavourites .agp-empty')).to_contain_text('還沒有收藏')
+    assert page.errors == []
+
+
+def test_history_tab_lists_watch_positions_newest_first(page, server):
+    page.goto(server.url)
+    open_tab(page, 'history')
+    rows = page.locator('.agp-history-row')
+    expect(rows).to_have_count(len(WATCH_TIMES))
+
+    # The month header is what makes a long list readable, and 動畫瘋 writes the
+    # day and the episode on the row itself.
+    expect(page.locator('.agp-history-month').first).to_contain_text('年')
+    expect(rows.first.locator('.agp-history-body small')).to_contain_text('觀看至 第')
+    # Newest first: WATCH_TIMES' first entry is 10 minutes old, the second over
+    # an hour.
+    newest = VIDEO_LIST['videos'][1]
+    expect(rows.first.locator('.agp-history-body strong')).to_have_text(newest['anime_name'])
+
+    bar = rows.first.locator('.agp-history-bar i')
+    assert 25 < float(bar.evaluate('(el) => el.style.width').rstrip('%')) < 34
+    assert page.errors == []
+
+
+def test_history_row_deletes_itself_on_the_server(page, server):
+    page.goto(server.url)
+    open_tab(page, 'history')
+    before = page.locator('.agp-history-row').count()
+
+    page.locator('.agp-history-row [data-drop]').first.click()
+    expect(page.locator('.agp-history-row')).to_have_count(before - 1)
+
+    # A row that comes back on reload was only ever hidden.
+    page.reload()
+    open_tab(page, 'history')
+    expect(page.locator('.agp-history-row')).to_have_count(before - 1)
+    assert page.errors == []
+
+
+def test_mine_tab_carries_the_account_links(page, server):
+    """The account menu is a hover-and-click popover in the top corner; on a
+    phone the whole top bar is gone and those links have to live somewhere."""
+    page.goto(server.url)
+    open_tab(page, 'mine')
+
+    expect(page.locator('.agp-account-card strong')).to_have_text('tester')
+    expect(page.locator('.agp-account-card small')).to_contain_text('片庫')
+    assert [row.inner_text() for row in page.locator('.agp-account-row').all()] == [
+        '線上看', '主控台', '用戶管理', '帳號資訊', '登出']
     assert page.errors == []
 
 

@@ -16,19 +16,19 @@
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
   <meta name="apple-mobile-web-app-title" content="aniGamerPlus+">
 
-  <link rel="stylesheet" href="./static/css/agp.css?v=4">
-  <link rel="stylesheet" href="./static/css/home.css?v=2">
+  <link rel="stylesheet" href="./static/css/agp.css?v=6">
+  <link rel="stylesheet" href="./static/css/home.css?v=3">
   <link rel="stylesheet" href="./static/css/catalog.css?v=5">
 
   <script id="agp-dashboard-bootstrap" type="application/json">{{ dashboard_bootstrap|tojson }}</script>
   <script src="./static/js/jquery-3.4.0.min.js"></script>
   <script src="./static/js/userapi.js?v=4"></script>
-  <script src="./static/js/agp-shell.js?v=4"></script>
-  <script src="./static/js/home.js?v=6"></script>
-  <script src="./static/js/catalog.js?v=5"></script>
+  <script src="./static/js/agp-shell.js?v=7"></script>
+  <script src="./static/js/home.js?v=9"></script>
+  <script src="./static/js/catalog.js?v=9"></script>
 </head>
 
-<body class="agp-body is-loading">
+<body class="agp-body is-loading has-tabbar">
   <header class="agp-topbar">
     <div class="agp-shell agp-topbar-inner">
       <a class="agp-brand" href="./" aria-label="aniGamerPlus+ 首頁">
@@ -55,40 +55,50 @@
     </div>
   </header>
 
-  <nav class="agp-tabs" aria-label="頁面區塊">
-    <div class="agp-shell agp-tabs-inner">
-      <a class="agp-tab is-active" href="#top">首頁</a>
-      <a class="agp-tab" href="#season">本季新番</a>
-      <a class="agp-tab" href="#weekly">更新時間表</a>
-      <a class="agp-tab" href="#library">片庫</a>
-      <a class="agp-tab" href="#all">所有動畫</a>
-    </div>
-  </nav>
-
   <main class="agp-shell" id="top">
-    <div class="agp-notice" id="homeNotice">
-      <b>片庫</b>
-      <span>正在載入片庫…</span>
-    </div>
+    <section class="agp-pane" id="paneHome" data-pane="home">
+      <div class="agp-notice" id="homeNotice">
+        <b>片庫</b>
+        <span>正在載入片庫…</span>
+      </div>
 
-    <div id="homeBanner">
-      <div class="agp-banner agp-skeleton" aria-hidden="true" style="min-height:190px"></div>
-    </div>
+      <div id="homeBanner">
+        <div class="agp-banner agp-skeleton" aria-hidden="true" style="min-height:190px"></div>
+      </div>
 
-    <div id="homeContinue"></div>
-    <div id="homeSeason"></div>
-    <div id="homeSchedule"></div>
-    <div id="homeCatalogHot"></div>
-    <div id="homeCatalogNew"></div>
-    <div id="homeTimetable"></div>
-    <div id="homeHot"></div>
-    <div id="homeLibrary"></div>
-    <div id="homeCatalog"></div>
+      <div id="homeContinue"></div>
+      <div id="homeSeason"></div>
+      <div id="homeSchedule"></div>
+      <div id="homeCatalogHot"></div>
+      <div id="homeCatalogNew"></div>
+      <div id="homeTimetable"></div>
+      <div id="homeHot"></div>
+    </section>
+
+    <!-- 搜尋的答案全在這一頁: 上面是片庫比對的結果, 下面是動畫瘋的整份片單 -->
+    <section class="agp-pane" id="paneAll" data-pane="all" hidden>
+      <div id="homeLibrary"></div>
+      <div id="homeCatalog"></div>
+    </section>
+
+    <section class="agp-pane" id="paneFav" data-pane="fav" hidden>
+      <div id="homeFavourites"></div>
+    </section>
+
+    <section class="agp-pane" id="paneHistory" data-pane="history" hidden>
+      <div id="homeHistory"></div>
+    </section>
+
+    <section class="agp-pane" id="paneMine" data-pane="mine" hidden>
+      <div id="homeAccount"></div>
+    </section>
 
     <footer class="agp-footer">
       aniGamerPlus+ · 本機片庫 · <a href="./control">主控台</a>
     </footer>
   </main>
+
+  <nav class="agp-tabbar" id="homeTabbar" aria-label="主要導覽"></nav>
 </body>
 
 </html>
