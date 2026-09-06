@@ -140,9 +140,10 @@
             '<span class="agp-card-art-glyph">' + AGP.escapeHtml(AGP.initials(anime.name)) + '</span>' +
             thumbImg(latest) +
             (rank ? '<span class="agp-poster-rank">' + rank + '</span>' : '') +
+            '</span>' +
             '<span class="agp-poster-foot"><strong>' + AGP.escapeHtml(anime.name) + '</strong>' +
             '<small>共 ' + anime.videos.length + ' 集 · 更新至 ' + AGP.escapeHtml(episodeLabel(latest)) + '</small>' +
-            '</span></span></a>';
+            '</span></a>';
     }
 
     /* --- sections ---------------------------------------------------------- */

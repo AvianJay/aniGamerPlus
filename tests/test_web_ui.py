@@ -217,6 +217,29 @@ def test_catalog_draws_the_bahamut_front_page(page, server):
     assert page.errors == []
 
 
+def test_catalog_poster_leaves_the_whole_cover_visible(page, server):
+    """The title used to ride on the artwork as a gradient overlay, which took
+    the bottom quarter of every cover with it."""
+    open_home(page, server)
+    poster = page.locator('#homeCatalogHot .agp-poster').first
+    art = poster.locator('.agp-poster-art').bounding_box()
+    foot = poster.locator('.agp-poster-foot').bounding_box()
+
+    # Nothing is painted over the cover: the caption starts where the art ends.
+    assert foot['y'] >= art['y'] + art['height'] - 1
+
+    # And the tile is the shape 動畫瘋 draws its covers at, so the cover-fit has
+    # nothing left to crop off the top and bottom.
+    assert abs(art['width'] / art['height'] - 227 / 320) < 0.01
+
+    # The image itself still fills that tile edge to edge, give or take the
+    # tile's own 1px border.
+    image = poster.locator('.agp-art-img').bounding_box()
+    assert abs(image['width'] - art['width']) <= 2.5
+    assert abs(image['height'] - art['height']) <= 2.5
+    assert page.errors == []
+
+
 def test_catalog_timetable_switches_weekday(page, server):
     open_home(page, server)
     tabs = page.locator('#homeSchedule .agp-daytab')

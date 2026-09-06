@@ -113,7 +113,7 @@ a.agp-slot:hover { background: var(--agp-bg-card-hover); }
   margin: -6px 0 12px;
 }
 
-.agp-poster-skeleton { aspect-ratio: 3 / 4; }
+.agp-poster-skeleton { aspect-ratio: 227 / 320; }
 
 .agp-pager {
   align-items: center;

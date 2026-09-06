@@ -546,8 +546,11 @@ body.agp-body img { max-width: 100%; }
 
 .agp-poster { display: block; min-width: 0; }
 
+/* 動畫瘋 ships its ACG covers at 227x320, not a clean 3:4. Fitting them into a
+   3:4 tile shaved a slice off the top and bottom of every one; matching the
+   source shape means the whole cover is on screen and nothing is cropped. */
 .agp-poster-art {
-  aspect-ratio: 3 / 4;
+  aspect-ratio: 227 / 320;
   display: block;
   border: 1px solid var(--agp-line);
   border-radius: var(--agp-radius-sm);
@@ -573,13 +576,16 @@ body.agp-body img { max-width: 100%; }
   top: 6px;
 }
 
+/* Below the cover rather than over it: as an absolutely-positioned gradient
+   this sat on the bottom quarter of the artwork and cut characters in half. */
 .agp-poster-foot {
-  background: linear-gradient(0deg, rgb(6 6 8 / 96%) 0%, rgb(6 6 8 / 82%) 42%, rgb(6 6 8 / 0%) 100%);
-  bottom: 0;
-  left: 0;
-  padding: 34px 9px 9px;
-  position: absolute;
-  right: 0;
+  display: block;
+  /* Room for a two-line title whether or not the title needs it, so a short one
+     does not lift the whole row of covers below it out of line. Reserved on the
+     block rather than on the title, or the meta line floats away from a
+     one-line title instead of sitting under it. */
+  min-height: 64px;
+  padding: 8px 2px 0;
 }
 
 .agp-poster-foot strong {
@@ -596,6 +602,11 @@ body.agp-body img { max-width: 100%; }
   display: block;
   font-size: 11px;
   margin-top: 3px;
+  /* One line, clipped: letting 共 341 集 · 1811.5萬 wrap makes every caption a
+     different height and the covers below it go ragged. */
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 /* --- Weekly timeline ----------------------------------------------------- */

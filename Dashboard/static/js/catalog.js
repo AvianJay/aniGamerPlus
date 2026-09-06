@@ -94,10 +94,11 @@
         return '<a class="agp-poster"' + cardAttrs(item) + '>' +
             '<span class="agp-poster-art">' + coverArt(item) +
             (rank ? '<span class="agp-poster-rank">' + rank + '</span>' : '') +
+            '</span>' +
             '<span class="agp-poster-foot"><strong>' + AGP.escapeHtml(item.title) + '</strong>' +
             '<small>' + AGP.escapeHtml(item.info || item.volume || '') +
             (item.popular ? ' · ' + AGP.escapeHtml(item.popular) : '') + '</small>' +
-            '</span></span></a>';
+            '</span></a>';
     }
 
     function posterGrid(items, ranked) {
