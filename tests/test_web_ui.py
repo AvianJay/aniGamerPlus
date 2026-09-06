@@ -138,7 +138,6 @@ def test_home_renders_bahamut_style_sections(page, server):
     expect(page.locator('.agp-topbar .agp-brand')).to_be_visible()
     expect(page.locator('#homeSearch')).to_be_visible()
     expect(page.locator('.agp-tabbar-btn[aria-current="page"]')).to_have_text('首頁')
-    expect(page.locator('#homeBanner .agp-banner')).to_be_visible()
 
     # 本季新番 is grouped by day, exactly like the timetable it is modelled on.
     days = page.locator('#homeTimetable .agp-day')

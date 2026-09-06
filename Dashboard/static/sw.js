@@ -6,11 +6,16 @@
    --------------------------------------------------------------------------- */
 'use strict';
 
-var CACHE = 'agp-shell-v9';
+var CACHE = 'agp-shell-v10';
 
 /* Bare paths on purpose: the ?v= tokens in the templates move whenever an asset
    changes, and a list that pinned them would drift out of step unnoticed. These
-   copies are the offline fallback; the runtime cache holds the versioned ones. */
+   copies are the offline fallback; the runtime cache holds the versioned ones.
+
+   './' is the one entry no token can expire, because the HTML is what carries
+   the tokens. Bump CACHE above whenever the templates change shape -- otherwise
+   a returning visitor keeps the old markup and only its assets move on, which
+   looks like an element that renders as an empty box. */
 var SHELL = [
     './',
     './static/css/agp.css',

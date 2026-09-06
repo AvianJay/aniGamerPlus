@@ -384,52 +384,6 @@ body.agp-body img { max-width: 100%; }
   white-space: nowrap;
 }
 
-/* --- Hero banner --------------------------------------------------------- */
-.agp-banner {
-  border: 1px solid var(--agp-line);
-  border-radius: var(--agp-radius);
-  display: block;
-  margin-top: 16px;
-  min-height: 190px;
-  overflow: hidden;
-  position: relative;
-}
-
-.agp-banner-art { inset: 0; overflow: hidden; position: absolute; }
-.agp-banner-art::after {
-  background: linear-gradient(90deg, rgb(8 8 10 / 88%) 0%, rgb(8 8 10 / 55%) 46%, rgb(8 8 10 / 12%) 100%);
-  content: "";
-  inset: 0;
-  position: absolute;
-}
-
-.agp-banner-body {
-  max-width: 640px;
-  padding: 30px 24px;
-  position: relative;
-}
-
-.agp-banner-body .agp-eyebrow {
-  color: #ff5c7a;
-  font-size: 11px;
-  font-weight: 800;
-  letter-spacing: .14em;
-  margin: 0 0 8px;
-}
-
-.agp-banner-body h2 {
-  font-size: clamp(20px, 3.2vw, 32px);
-  font-weight: 800;
-  line-height: 1.25;
-  margin: 0 0 8px;
-}
-
-.agp-banner-body .agp-banner-sub {
-  color: var(--agp-fg-dim);
-  font-size: 14px;
-  margin: 0 0 16px;
-}
-
 /* --- Buttons ------------------------------------------------------------- */
 .agp-btn {
   align-items: center;
@@ -846,7 +800,6 @@ body.agp-body img { max-width: 100%; }
   .agp-body.has-tabbar { --agp-topbar-h: 56px; }
   .agp-body.has-tabbar .agp-topbar-actions { display: none; }
   .agp-body.has-tabbar .agp-topbar-inner { flex-wrap: nowrap; }
-  .agp-banner-body { padding: 22px 16px; }
   .agp-rail { gap: 10px; grid-auto-columns: minmax(150px, 190px); }
   .agp-poster-grid { gap: 10px; grid-template-columns: repeat(auto-fill, minmax(116px, 1fr)); }
 }

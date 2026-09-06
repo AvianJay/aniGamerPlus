@@ -8,8 +8,6 @@
    一定贏得了 display 的形式 —— 不然哪天哪塊被設了 display 就收不起來 */
 .agp-body.is-searching [hidden] { display: none !important; }
 
-#homeBanner .agp-skeleton { border-radius: var(--agp-radius); }
-
 /* "Continue watching" cards carry a next-episode shortcut under the art, so the
    card itself stays a single link to where the viewer left off. */
 .agp-continue-item {

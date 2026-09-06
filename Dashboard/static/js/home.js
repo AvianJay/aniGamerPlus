@@ -170,27 +170,6 @@
 
     /* --- sections ---------------------------------------------------------- */
 
-    function renderBanner() {
-        var host = document.getElementById('homeBanner');
-        if (!host) { return; }
-        var anime = state.animes[0];
-        if (!anime) {
-            host.innerHTML = '';
-            return;
-        }
-        host.innerHTML = '<a class="agp-banner" href="' + AGP.escapeHtml(watchUrl(anime.latest)) + '">' +
-            '<span class="agp-banner-art" style="' + artStyle(anime.name) + '">' +
-            thumbImg(anime.latest) + '</span>' +
-            '<span class="agp-banner-body">' +
-            '<span class="agp-eyebrow" style="display:block">最新更新</span>' +
-            '<h2>' + AGP.escapeHtml(anime.name) + '</h2>' +
-            '<span class="agp-banner-sub" style="display:block">更新至 ' +
-            AGP.escapeHtml(episodeLabel(anime.latest)) + ' · 共 ' + anime.videos.length + ' 集 · ' +
-            AGP.escapeHtml(anime.latest.source || '本機片庫') + '</span>' +
-            '<span class="agp-btn">' + AGP.icon('play', 16) + ' 立即觀看</span>' +
-            '</span></a>';
-    }
-
     function renderNotice() {
         var host = document.getElementById('homeNotice');
         if (!host) { return; }
@@ -627,7 +606,6 @@
 
     function renderAll() {
         renderSection('homeNotice', renderNotice);
-        renderSection('homeBanner', renderBanner);
         renderSection('homeContinue', renderContinue);
         renderSection('homeTimetable', renderTimetable);
         renderSection('homeHot', renderHot);
@@ -643,7 +621,7 @@
     function renderProblem(status) {
         var needsLogin = status === 401 || status === 403;
         noticeOrEmpty('homeNotice', needsLogin ? '登入後即可瀏覽片庫。' : '目前無法讀取片庫。');
-        ['homeBanner', 'homeContinue', 'homeTimetable', 'homeHot'].forEach(function (id) {
+        ['homeContinue', 'homeTimetable', 'homeHot'].forEach(function (id) {
             var host = document.getElementById(id);
             if (host) { host.innerHTML = ''; }
         });
