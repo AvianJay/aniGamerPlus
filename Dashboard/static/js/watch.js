@@ -189,9 +189,31 @@ async function getVideoSeries(video) {
     var bootstrapped = getBootstrappedSeries(video.sn);
     if (bootstrapped.length) { return bootstrapped; }
     var list = await getVideoList();
-    return (list.videos || []).filter(function (candidate) {
+    var series = (list.videos || []).filter(function (candidate) {
         return candidate.anime_name === video.anime_name;
     });
+    /* 還在下載的集數不在片庫裡, 同一部也可能一集都還沒下完. 至少要有自己, 否則
+       集數列跟資訊卡會擺出「共 0 集」 */
+    return series.length ? series : [video];
+}
+
+
+/* 剛按下下載的集數還沒有進度紀錄, 伺服器產 bootstrap 的時候認不出來. 問一下串流
+   狀態, 真的在下載就帶著 streaming=1 重整一次 —— 片名跟集數只有伺服器那邊查得到
+   (走的是官方資訊的落盤快取), 在前端捏一個「下載中」的假標題比較難看 */
+async function reloadIfStreaming(sn) {
+    var params = new URLSearchParams(window.location.search);
+    if (params.get('streaming')) { return false; }  /* 試過了, 別無限重整 */
+    try {
+        var response = await fetch('./hls/status.json?id=' + encodeURIComponent(sn));
+        var data = await response.json();
+        if (!data || data.mode === 'none' || data.mode === 'file') { return false; }
+    } catch (error) {
+        return false;
+    }
+    params.set('streaming', '1');
+    window.location.replace('./watch?' + params.toString());
+    return true;
 }
 
 function episodeNumber(video) {
@@ -312,6 +334,7 @@ AgpPlayer.prototype.build = function () {
         '<button type="button" data-action="forward" aria-label="快進 10 秒">' + AGP.icon('rotateCw', 26) + '<b>10</b></button>' +
         '</div>' +
         '<div class="player-next" id="playerNext" hidden></div>' +
+        '<div class="player-downloading" id="playerDownloading" hidden></div>' +
         '<div class="desktop-player-menu settings-menu" id="settingsMenu" hidden></div>' +
         '<div class="desktop-player-menu chapter-menu" id="episodeMenu" hidden></div>' +
         '<div class="desktop-player-controls" id="playerControls">' +
@@ -367,11 +390,23 @@ AgpPlayer.prototype.build = function () {
     this.nextBox = shell.querySelector('#playerNext');
     this.dim = shell.querySelector('#playerDim');
     this.episodeChipLabel = shell.querySelector('#episodeChipLabel');
+    this.downloadBadge = shell.querySelector('#playerDownloading');
+
+    /* 邊看邊下載: 這一集還在下載, 要走 HLS 而不是完成檔. 串流讀的全是本機磁碟上
+       已經下好的分片, 不會為了播放再跟動畫瘋多要一份影片 */
+    this.streaming = !!this.videoData.streaming;
+    this.streamMode = this.videoData.pending ? 'pending' : '';
+    this.streamAttached = false;
+    this.streamTotalDuration = 0;
+    this.streamReadyDuration = 0;
+    this.streamTargetDuration = 10;
+    this.streamPlaylistId = null;
+    this.streamRetries = 0;
 
     /* Something to look at while the first bytes arrive, instead of a black box. */
     this.video.poster = './thumbnail.jpg?id=' + encodeURIComponent(this.videoData.sn);
-    this.video.src = './get_video.mp4?id=' + encodeURIComponent(this.videoData.sn) +
-        (this.videoData.resolution ? '&res=' + encodeURIComponent(this.videoData.resolution) : '');
+    /* 串流要等第一次狀態回來才知道下到哪一片, 這裡先不接來源 */
+    if (!this.streaming) { this.attachSource(); }
     this.video.playbackRate = this.rate;
     this.video.volume = Math.min(1, Math.max(0, Number(readStore('agp-volume', '1'))));
     this.volume.value = String(Math.round(this.video.volume * 100));
@@ -387,13 +422,274 @@ AgpPlayer.prototype.build = function () {
     this.showControls();
     this.loadDanmaku();
 
-    if (!this.isTouch) {
-        /* Desktop autoplays muted-free because the file is same-origin and the
-           navigation was user-initiated; a rejected promise just leaves the
-           poster frame up, which is the right fallback. */
-        var attempt = this.video.play();
-        if (attempt && attempt.catch) { attempt.catch(function () { self.updatePlayButtons(); }); }
+    /* Desktop autoplays muted-free because the file is same-origin and the
+       navigation was user-initiated; a rejected promise just leaves the poster
+       frame up, which is the right fallback. */
+    this.wantsAutoplay = !this.isTouch;
+    if (this.streaming) {
+        /* 串流的起播由 maybeAutoplay() 等到緩衝夠了才放行 */
+        this.showDownloading(this.videoData.pending ? '正在準備下載…' : '正在解析…');
+        this.startStreamStatus();
+    } else {
+        this.maybeAutoplay();
     }
+};
+
+/* 邊看邊下載: 播放追上下載之前, 先讓下載跑出這麼多秒的緩衝再自動起播. 太短的話
+   開場沒幾秒就會卡住, 太長則是白等 —— 一集 24 分鐘的番, 45 秒大約是 3% */
+var STREAM_HEAD_START = 45;
+var STREAM_POLL_INTERVAL = 5000;
+/* 從按下下載到任務建立進度紀錄, 願意等多久. 排隊中的任務可能卡在上一集
+   後面, 所以這個寬限要比一次解析長得多 */
+var STREAM_PENDING_GRACE = 120000;
+
+
+AgpPlayer.prototype.attachSource = function () {
+    /* 已經在片庫裡的走完成檔, 還在下載的走 HLS. 兩條路都只讀本機磁碟 */
+    if (this.streaming) { this.attachStream(); return; }
+    this.video.src = './get_video.mp4?id=' + encodeURIComponent(this.videoData.sn) +
+        (this.videoData.resolution ? '&res=' + encodeURIComponent(this.videoData.resolution) : '');
+};
+
+AgpPlayer.prototype.attachStream = function () {
+    var self = this;
+    var url = './hls/playlist.m3u8?id=' + encodeURIComponent(this.videoData.sn);
+    this.destroyStream();
+    this.streamAttached = true;
+
+    /* Safari 跟 iOS 走原生: iPhone 上根本沒有 MSE, hls.js 到那邊是接不上的. 原生
+       播放器自己會讀 #EXT-X-START, 所以起播點不必另外交代 */
+    if (typeof window.Hls !== 'function' || !window.Hls.isSupported()) {
+        if (this.video.canPlayType('application/vnd.apple.mpegurl')) {
+            this.video.src = url;
+        } else {
+            this.streamAttached = false;
+            this.flash('這個瀏覽器不支援邊看邊下載');
+        }
+        return;
+    }
+
+    var hls = new window.Hls({
+        /* 清單沒有 #EXT-X-ENDLIST 之前 hls.js 一律當直播處理, 預設起播點會落在尾端,
+           也就是把已經下載好的部分整個跳過. 0 才是從頭放 */
+        startPosition: 0,
+        /* 分片就躺在本機磁碟上, 這些逾時是留給「還在寫入」的那一片, 不是留給網路的 */
+        manifestLoadingTimeOut: 20000,
+        fragLoadingTimeOut: 20000,
+        lowLatencyMode: false
+    });
+    hls.on(window.Hls.Events.ERROR, function (event, data) { self.onStreamError(hls, data); });
+    hls.on(window.Hls.Events.MANIFEST_PARSED, function () { self.streamRetries = 0; });
+    hls.loadSource(url);
+    hls.attachMedia(this.video);
+    this.hls = hls;
+};
+
+AgpPlayer.prototype.onStreamError = function (hls, data) {
+    var self = this;
+    var Hls = window.Hls;
+    if (!data || !data.fatal) { return; }
+
+    if (data.type === Hls.ErrorTypes.NETWORK_ERROR) {
+        /* 播放追過下載的時候清單會回 404. 那不是壞掉, 是還沒下到 —— 退避重試就好,
+           把播放器拆掉才是真的看不成 */
+        this.streamRetries = (this.streamRetries || 0) + 1;
+        if (this.streamRetries > 24) {
+            this.flash('串流中斷，請稍後再試');
+            this.destroyStream();
+            return;
+        }
+        clearTimeout(this.streamRetryTimer);
+        this.streamRetryTimer = setTimeout(function () {
+            try { hls.startLoad(); } catch (error) { /* 期間被 destroy 掉了 */ }
+        }, Math.min(8000, 400 * this.streamRetries));
+        return;
+    }
+    if (data.type === Hls.ErrorTypes.MEDIA_ERROR) {
+        try { hls.recoverMediaError(); } catch (error) { this.destroyStream(); }
+        return;
+    }
+    this.flash('串流播放失敗');
+    this.destroyStream();
+};
+
+AgpPlayer.prototype.destroyStream = function () {
+    clearTimeout(this.streamRetryTimer);
+    this.streamAttached = false;
+    if (this.hls) {
+        try { this.hls.destroy(); } catch (error) { /* 已經拆過了 */ }
+        this.hls = null;
+    }
+};
+
+AgpPlayer.prototype.rebuildStream = function () {
+    /* 重試任務可能改抓了別的清晰度, 分片名字整組換掉. hls.js 接不回去, 只能重建;
+       位置留著, 落地之後再跳回去 */
+    var at = this.video.currentTime || 0;
+    this.destroyStream();
+    this.attachStream();
+    this.resumeOnMetadata(at, !this.video.paused);
+};
+
+/* 整集多長從第一秒就知道了 —— m3u8 是下載任何一片之前就整份寫下來的. video.duration
+   在串流時只到已經下載的地方, 每幾秒往右跳一次, 拿它當總長度的話進度條的右端會
+   一路漂移, 時間顯示也會一直變 */
+AgpPlayer.prototype.playableDuration = function () {
+    if (this.streaming && this.streamTotalDuration > 0) { return this.streamTotalDuration; }
+    return this.video.duration || 0;
+};
+
+/* 能跳到哪裡是另一回事: 只有已經落地的分片播得動 */
+AgpPlayer.prototype.seekableDuration = function () {
+    if (this.streaming && this.streamReadyDuration > 0) { return this.streamReadyDuration; }
+    return this.video.duration || 0;
+};
+
+AgpPlayer.prototype.clampSeek = function (seconds) {
+    var limit = this.seekableDuration();
+    if (!limit) { return 0; }
+    if (seconds <= limit) { return Math.max(0, seconds); }
+    this.flash('還沒下載到這裡');
+    /* 停在最後一片的前面一點, 免得剛好落在正在寫入的邊界上 */
+    return Math.max(0, limit - 1);
+};
+
+AgpPlayer.prototype.maybeAutoplay = function () {
+    var self = this;
+    if (!this.wantsAutoplay) { return; }
+    if (this.streaming) {
+        if (!this.streamAttached) { return; }
+        /* 先讓下載跑出一段緩衝再開始. 直接播的話, 兩條下載執行緒的速度只要跟不上
+           影片的位元率, 開場沒多久就會卡住, 然後每幾秒卡一次 */
+        if (this.streamReadyDuration < STREAM_HEAD_START && this.streamMode !== 'finalising') {
+            return;
+        }
+    }
+    this.wantsAutoplay = false;
+    var attempt = this.video.play();
+    if (attempt && attempt.catch) { attempt.catch(function () { self.updatePlayButtons(); }); }
+};
+
+AgpPlayer.prototype.resumeOnMetadata = function (seconds, play) {
+    var self = this;
+    this.video.addEventListener('loadedmetadata', function handoff() {
+        self.video.removeEventListener('loadedmetadata', handoff);
+        if (seconds > 0) { self.video.currentTime = self.clampSeek(seconds); }
+        if (play) {
+            var attempt = self.video.play();
+            if (attempt && attempt.catch) { attempt.catch(function () { self.updatePlayButtons(); }); }
+        }
+    });
+};
+
+AgpPlayer.prototype.showDownloading = function (text) {
+    if (!this.downloadBadge) { return; }
+    if (!text) { this.downloadBadge.hidden = true; return; }
+    this.downloadBadge.hidden = false;
+    this.downloadBadge.textContent = text;
+};
+
+AgpPlayer.prototype.downloadingLabel = function (data) {
+    if (data.mode === 'finalising') { return '下載完成，正在合併…'; }
+    if (data.mode === 'parsing') { return this.streamMode === 'pending' ? '正在準備下載…' : '正在解析…'; }
+    var rate = Math.round(Number(data.rate) || 0);
+    var suffix = data.resolution ? ' · ' + data.resolution + 'P' : '';
+    return '邊看邊下載 ' + rate + '%' + suffix;
+};
+
+AgpPlayer.prototype.startStreamStatus = function () {
+    var self = this;
+    if (!this.streaming || this.streamTimer) { return; }
+    this.pollStreamStatus();
+    this.streamTimer = setInterval(function () { self.pollStreamStatus(); }, STREAM_POLL_INTERVAL);
+};
+
+AgpPlayer.prototype.stopStreamStatus = function () {
+    clearInterval(this.streamTimer);
+    this.streamTimer = null;
+};
+
+AgpPlayer.prototype.pollStreamStatus = async function () {
+    if (!this.streaming) { return; }
+    var data;
+    try {
+        var response = await fetch('./hls/status.json?id=' + encodeURIComponent(this.videoData.sn));
+        data = await response.json();
+    } catch (error) {
+        return;  /* 一次沒問到不算事, 五秒後再問 */
+    }
+    if (!this.streaming || !data) { return; }
+
+    if (data.mode === 'none' && this.streamMode === 'pending') {
+        /* 剛按下下載的那幾秒, 進度紀錄還沒建立, 伺服器只能說「沒這回事」.
+           那是預期中的空窗, 不是失敗 —— 但也不能無限等下去, 任務真的沒起來
+           的話得講出來, 否則畫面會卡在「正在準備下載」一輩子 */
+        this.streamPendingPolls = (this.streamPendingPolls || 0) + 1;
+        if (this.streamPendingPolls * STREAM_POLL_INTERVAL < STREAM_PENDING_GRACE) {
+            this.showDownloading('正在準備下載…');
+            return;
+        }
+    }
+
+    this.streamMode = data.mode;
+    this.streamTotalDuration = Number(data.totalDuration) || 0;
+    this.streamReadyDuration = Number(data.readyDuration) || 0;
+    this.streamTargetDuration = Number(data.targetDuration) || 10;
+
+    if (data.mode === 'file') { this.finishStream(data); return; }
+    if (data.mode === 'none') {
+        /* 任務被取消, 或者下載失敗了. 已經在播的就讓它把緩衝放完, 別把畫面收掉 */
+        this.stopStreamStatus();
+        this.showDownloading('下載已停止');
+        return;
+    }
+
+    if (data.playlistId) {
+        if (this.streamPlaylistId && data.playlistId !== this.streamPlaylistId) {
+            this.streamPlaylistId = data.playlistId;
+            this.rebuildStream();
+        } else {
+            this.streamPlaylistId = data.playlistId;
+        }
+    }
+
+    this.showDownloading(this.downloadingLabel(data));
+    if (!this.streamAttached && data.ready > 0) { this.attachStream(); }
+    this.maybeAutoplay();
+    this.updateProgress();
+};
+
+AgpPlayer.prototype.noteStreamStall = function () {
+    /* 播放追上下載了. 這不是 bug, 是算術 —— 兩條下載執行緒得跟得上影片的位元率.
+       講實話比默默轉圈好; 想根治只有調高 multi_downloading_segment, 而那正是這個
+       功能刻意不去碰的併發數 */
+    if (this.streamReadyDuration - this.video.currentTime > this.streamTargetDuration) { return; }
+    var now = Date.now();
+    if (now - (this.streamStallAt || 0) < 20000) { return; }
+    this.streamStallAt = now;
+    this.flash('下載速度跟不上播放，正在等待');
+};
+
+AgpPlayer.prototype.finishStream = function (data) {
+    /* 合併完成而且進片庫了. 位置留著, 換成完成檔之後跳回同一秒 —— 觀眾不該察覺
+       中間換過來源 */
+    var resumeAt = this.video.currentTime || 0;
+    var wasPlaying = !this.video.paused;
+    this.stopStreamStatus();
+    this.destroyStream();
+    this.streaming = false;
+    this.streamMode = 'file';
+    this.videoData.streaming = false;
+    this.videoData.pending = false;
+    if (data.resolution) { this.videoData.resolution = data.resolution; }
+    this.videoData.danmu = !!data.danmu;
+    this.showDownloading(null);
+
+    this.attachSource();
+    this.resumeOnMetadata(resumeAt, wasPlaying);
+    /* 彈幕的 .ass 要等合併完才生得出來, 開頁時給的是 false, 現在才讀得到 */
+    this.loadDanmaku();
+    this.flash('下載完成，已切換到完整影片');
 };
 
 AgpPlayer.prototype.wire = function () {
@@ -437,14 +733,14 @@ AgpPlayer.prototype.wire = function () {
     }
 
     video.addEventListener('loadedmetadata', function () {
-        self.timeTotal.textContent = AGP.formatClock(video.duration);
+        self.timeTotal.textContent = AGP.formatClock(self.playableDuration());
         self.updateProgress();
     });
     video.addEventListener('timeupdate', function () {
         self.updateProgress();
-        self.onTimeUpdate(video.currentTime, video.duration);
+        self.onTimeUpdate(video.currentTime, self.playableDuration());
         if (!video.paused) {
-            setTime(self.videoData.sn, video.currentTime, false, video.duration, false);
+            setTime(self.videoData.sn, video.currentTime, false, self.playableDuration(), false);
         }
     });
     video.addEventListener('progress', function () { self.updateProgress(); });
@@ -458,9 +754,12 @@ AgpPlayer.prototype.wire = function () {
     video.addEventListener('pause', function () {
         self.updatePlayButtons();
         self.showControls();
-        setTime(self.videoData.sn, video.currentTime, false, video.duration, true);
+        setTime(self.videoData.sn, video.currentTime, false, self.playableDuration(), true);
     });
-    video.addEventListener('waiting', function () { self.loader.hidden = false; });
+    video.addEventListener('waiting', function () {
+        self.loader.hidden = false;
+        if (self.streaming) { self.noteStreamStall(); }
+    });
     video.addEventListener('playing', function () { self.loader.hidden = true; });
     video.addEventListener('canplay', function () { self.loader.hidden = true; });
     video.addEventListener('volumechange', function () {
@@ -470,18 +769,21 @@ AgpPlayer.prototype.wire = function () {
     });
     video.addEventListener('ratechange', function () { self.rate = video.playbackRate; });
     video.addEventListener('ended', function () {
-        setTime(self.videoData.sn, 0, true, video.duration, true);
+        setTime(self.videoData.sn, 0, true, self.playableDuration(), true);
         self.showControls();
         self.offerNextEpisode();
     });
     video.addEventListener('error', function () {
+        /* 串流時錯誤歸 hls.js 管, 它自己在退避重試. 在這裡再喊一次只會蓋掉正在跑的
+           復原, 還讓人以為壞了 */
+        if (self.streaming) { return; }
         self.loader.hidden = true;
         self.flash('影片載入失敗');
     });
 
     this.seek.addEventListener('input', function () {
         self.scrubbing = true;
-        var target = (Number(self.seek.value) / 1000) * (video.duration || 0);
+        var target = (Number(self.seek.value) / 1000) * self.playableDuration();
         self.timeCurrent.textContent = AGP.formatClock(target);
         self.seek.setAttribute('aria-valuetext', AGP.formatClock(target));
         self.paintSeek();
@@ -492,8 +794,9 @@ AgpPlayer.prototype.wire = function () {
     });
     this.seek.addEventListener('change', function () {
         self.scrubbing = false;
-        if (video.duration) {
-            video.currentTime = (Number(self.seek.value) / 1000) * video.duration;
+        var total = self.playableDuration();
+        if (total) {
+            video.currentTime = self.clampSeek((Number(self.seek.value) / 1000) * total);
         }
         self.seekTip.hidden = true;
     });
@@ -566,8 +869,7 @@ AgpPlayer.prototype.toggle = function () {
 
 AgpPlayer.prototype.nudge = function (delta) {
     if (!this.video.duration) { return; }
-    this.video.currentTime = Math.min(this.video.duration,
-        Math.max(0, this.video.currentTime + delta));
+    this.video.currentTime = this.clampSeek(this.video.currentTime + delta);
     this.flash((delta > 0 ? '快進 ' : '倒退 ') + Math.abs(delta) + ' 秒');
     this.showControls();
 };
@@ -600,28 +902,36 @@ AgpPlayer.prototype.updatePlayButtons = function () {
 
 AgpPlayer.prototype.paintSeek = function () {
     var video = this.video;
-    var played = video.duration ? (video.currentTime / video.duration) * 100 : 0;
+    var total = this.playableDuration();
+    var played = total ? (video.currentTime / total) * 100 : 0;
     if (this.scrubbing) { played = Number(this.seek.value) / 10; }
     var buffered = 0;
-    if (video.buffered && video.buffered.length && video.duration) {
-        buffered = (video.buffered.end(video.buffered.length - 1) / video.duration) * 100;
+    if (video.buffered && video.buffered.length && total) {
+        buffered = (video.buffered.end(video.buffered.length - 1) / total) * 100;
     }
     buffered = Math.max(buffered, played);
+    /* 邊看邊下載時多一段: 已經落地但還沒解碼進緩衝的部分. 沒有它的話進度條看起來
+       就像整集只有緩衝那一截存在, 觀眾不知道自己其實可以往前拖到哪 */
+    var downloaded = this.streaming && total
+        ? Math.max(buffered, (this.streamReadyDuration / total) * 100)
+        : 100;
     this.seek.style.background =
         'linear-gradient(to right, #ff0033 0%, #ff0033 ' + played + '%, ' +
         'rgb(255 255 255 / 72%) ' + played + '%, rgb(255 255 255 / 72%) ' + buffered + '%, ' +
-        'rgb(255 255 255 / 32%) ' + buffered + '%, rgb(255 255 255 / 32%) 100%)';
+        'rgb(255 255 255 / 32%) ' + buffered + '%, rgb(255 255 255 / 32%) ' + downloaded + '%, ' +
+        'rgb(255 255 255 / 14%) ' + downloaded + '%, rgb(255 255 255 / 14%) 100%)';
 };
 
 AgpPlayer.prototype.updateProgress = function () {
     var video = this.video;
+    var total = this.playableDuration();
     if (!this.scrubbing) {
-        this.seek.value = String(video.duration ? Math.round((video.currentTime / video.duration) * 1000) : 0);
+        this.seek.value = String(total ? Math.round((video.currentTime / total) * 1000) : 0);
         this.timeCurrent.textContent = AGP.formatClock(video.currentTime);
         this.seek.setAttribute('aria-valuetext', AGP.formatClock(video.currentTime) +
-            (video.duration ? ' / ' + AGP.formatClock(video.duration) : ''));
+            (total ? ' / ' + AGP.formatClock(total) : ''));
     }
-    if (video.duration) { this.timeTotal.textContent = AGP.formatClock(video.duration); }
+    if (total) { this.timeTotal.textContent = AGP.formatClock(total); }
     this.paintSeek();
 };
 
@@ -855,13 +1165,14 @@ AgpPlayer.prototype.attachGestures = function () {
 
         if (gesture.axis === 'seek') {
             if (!self.video.duration) { return; }
+            var span = self.playableDuration();
             var delta = (dx / gesture.rect.width) * GESTURE_SEEK_SPAN;
-            var target = Math.min(self.video.duration, Math.max(0, gesture.startTime + delta));
+            var target = Math.min(span, Math.max(0, gesture.startTime + delta));
             gesture.seekTarget = target;
             self.flashBar('rotateCw',
-                AGP.formatClock(target) + ' / ' + AGP.formatClock(self.video.duration) +
+                AGP.formatClock(target) + ' / ' + AGP.formatClock(span) +
                 ' (' + (delta >= 0 ? '+' : '-') + Math.round(Math.abs(delta)) + 's)',
-                target / self.video.duration, true);
+                target / span, true);
             return;
         }
 
@@ -1526,7 +1837,7 @@ AgpPlayer.prototype.handleKey = function (event) {
         case '<': case ',': this.stepRate(-1); break;
         case '>': case '.': this.stepRate(1); break;
         case 'Home': video.currentTime = 0; break;
-        case 'End': if (video.duration) { video.currentTime = video.duration; } break;
+        case 'End': if (video.duration) { video.currentTime = this.clampSeek(this.playableDuration()); } break;
         case '?': this.openSettings('shortcuts'); break;
         case 'Escape':
             this.closeMenus();
@@ -1923,6 +2234,7 @@ async function main() {
     }
 
     var video = await fetchVideoData(sn);
+    if (!video && await reloadIfStreaming(sn)) { return; }
     if (!video) {
         showFatal('找不到這一集影片，它可能已從片庫移除。');
         renderLibrary(videos, times, sn);

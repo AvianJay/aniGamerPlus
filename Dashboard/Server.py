@@ -906,6 +906,334 @@ def _build_dashboard_bootstrap(extra=None, current_settings=None):
     return bootstrap
 
 
+# ----------------------------------------------------------------- 邊看邊下載
+# Anime.py 的 __segment_download_mode() 會把每一片 .ts 丟進 temp 下的一個目錄, 最後
+# 才用 ffmpeg 合成 mp4. 也就是說, 下載到一半的集數在磁碟上本來就是一份 HLS 串流,
+# 只要把已經落地的前綴當成 playlist 發出去, 就能邊下載邊看 —— 而且完全不必再跟
+# 動畫瘋多要一份影片, 併發數跟帳號風險都跟原本的下載一模一樣.
+HLS_TEMP_SUFFIX = '-downloading-by-aniGamerPlusPlus'
+# key.m3u8key 是 Anime.py 自己取的檔名, 出現在 m3u8 裡就表示這份已經被改寫成
+# 給 ffmpeg 吃的本機路徑版, 不能再發給瀏覽器
+HLS_LOCALISED_MARKER = 'key.m3u8key'
+HLS_SETTINGS_TTL = 5.0
+HLS_MIME = 'application/vnd.apple.mpegurl'
+
+_hls_settings_cache = {'at': 0.0, 'settings': None}
+_hls_playlist_cache = {}  # sn(str) -> {'sig': (mtime, size), 'parsed': {...}}
+
+
+def _hls_settings():
+    # hls.js 每 5~10 秒重抓一次 playlist, 加上狀態輪詢跟 chunk, 一個觀眾一分鐘就有
+    # 十幾個請求. read_settings() 每次都重讀重驗 config.json, 還會順手掃 log 目錄、
+    # 有機會回寫檔案 —— 不快取的話光是放一集就會把它跑上千次.
+    now = time.monotonic()
+    if (_hls_settings_cache['settings'] is None
+            or now - _hls_settings_cache['at'] > HLS_SETTINGS_TTL):
+        # 不上鎖: greenlet 之間不會撕裂, 最壞只是兩個人同時去讀一次設定
+        _hls_settings_cache['settings'] = Config.read_settings()
+        _hls_settings_cache['at'] = now
+    return _hls_settings_cache['settings']
+
+
+def _hls_temp_dir(sn, current_settings):
+    # read_settings() 保證 temp_dir 一定是絕對路徑 (空值或指到不存在的地方時會退回
+    # <working_dir>/temp), 所以這裡不能自己寫死 'temp'
+    return os.path.join(current_settings['temp_dir'],
+                        re.sub(r'[^0-9]', '', str(sn)) + HLS_TEMP_SUFFIX)
+
+
+def _hls_task(sn):
+    # tasks_progress_rate 是下載器那幾條真執行緒在改的, 沒有鎖. 先整份 dict() 拷一份
+    # 再取, 不能寫成 if k in d: d[k] —— 兩行之間 Anime.py 可能剛好把 key 刪掉
+    try:
+        return dict(Config.tasks_progress_rate).get(int(sn))
+    except (TypeError, ValueError):
+        return None
+
+
+def _hls_parse_playlist(text):
+    """從 *遠端原始* m3u8 取出有序的 (時長, chunk 檔名).
+
+    __segment_download_mode() 在開始下載任何東西之前就先把這份寫下來了, 所以整集的
+    分片清單跟總長度從第一秒就是已知的. 等到每一片都落地, 它會用同一個路徑覆蓋成
+    給 ffmpeg 吃的版本 —— 絕對路徑、雙反斜線、key 指向 key.m3u8key. 那個型態絕對
+    不能發給瀏覽器, 所以這裡看到就直接回 None.
+    """
+    if HLS_LOCALISED_MARKER in text or '\\\\' in text:
+        return None
+
+    key_line = ''
+    target_duration = 10
+    segments = []
+    pending_extinf = None
+    pending_duration = 10.0
+
+    for raw_line in text.splitlines():
+        line = raw_line.strip()
+        if not line:
+            continue
+        if line.startswith('#EXT-X-KEY') and 'AES-128' in line:
+            key_line = line
+        elif line.startswith('#EXT-X-TARGETDURATION'):
+            try:
+                target_duration = int(float(line.split(':', 1)[1]))
+            except (IndexError, ValueError):
+                pass
+        elif line.startswith('#EXTINF'):
+            pending_extinf = line
+            try:
+                pending_duration = float(line.split(':', 1)[1].split(',')[0])
+            except (IndexError, ValueError):
+                pending_duration = float(target_duration)
+        elif not line.startswith('#') and re.match(r'media_b.+ts', line):
+            # 必須跟 Anime.py.download_chunk 用同一個表達式取檔名, 否則伺服器 stat
+            # 的名字會跟下載器寫下的名字對不起來
+            segments.append({
+                'name': re.findall(r'media_b.+ts', line)[0],
+                'extinf': pending_extinf or '#EXTINF:%.3f,' % pending_duration,
+                'duration': pending_duration,
+            })
+            pending_extinf = None
+            pending_duration = float(target_duration)
+
+    if not key_line or not segments:
+        return None
+
+    return {
+        'key_line': key_line,
+        'target_duration': max(1, target_duration),
+        'segments': segments,
+        'total_duration': sum(s['duration'] for s in segments),
+        # 重試任務可能改抓別的清晰度, chunk 名字裡的位元率就變了. 前端記住這個值,
+        # 一旦變了就整個重建播放器, 而不是讓 hls.js 接到另一條串流上去
+        'playlist_id': hashlib.md5(
+            '|'.join(s['name'] for s in segments).encode('utf-8')).hexdigest()[:12],
+    }
+
+
+def _hls_forget_playlist(sn):
+    _hls_playlist_cache.pop(str(sn), None)
+
+
+def _hls_playlist(sn, temp_dir):
+    """解析後的 playlist, 並且撐過 m3u8 被改寫成本機路徑版的那一刻.
+
+    任務跑著的時候分片清單不會變, 會變的只有哪幾片已經在磁碟上, 那個由 scandir 決定.
+    把解析結果留著, 是為了讓看到一半的觀眾不要在最後一片剛落地、
+    __segment_download_mode() 覆寫 m3u8 的瞬間被切掉 —— 慢一點的磁碟合併要跑好幾十秒,
+    而那段時間整集其實都還躺在 temp 裡, 完全可以繼續播.
+    """
+    sn_key = str(sn)
+    m3u8_path = os.path.join(temp_dir, str(sn) + '.m3u8')
+    cached = _hls_playlist_cache.get(sn_key)
+
+    try:
+        stat = os.stat(m3u8_path)
+        signature = (stat.st_mtime, stat.st_size)
+    except OSError:
+        # 合併完成把整個目錄搬走了; 手上還有解析結果就先頂著, 由磁碟掃描去決定狀態
+        return cached['parsed'] if cached else None
+
+    if cached and cached['sig'] == signature:
+        return cached['parsed']
+
+    with _keyed_lock('hls-' + sn_key):
+        # 排隊的這段時間裡前面那個請求可能已經解析好了, 拿到鎖要再看一眼
+        cached = _hls_playlist_cache.get(sn_key)
+        if cached and cached['sig'] == signature:
+            return cached['parsed']
+        try:
+            with open(m3u8_path, 'r', encoding='utf-8') as f:
+                parsed = _hls_parse_playlist(f.read())
+        except OSError:
+            return cached['parsed'] if cached else None
+
+        if parsed is None:
+            # 已經被本機化了 (或根本不是我們認得的格式), 留著舊的解析結果繼續服務
+            return cached['parsed'] if cached else None
+
+        if len(_hls_playlist_cache) > 32:
+            live = set(str(key) for key in dict(Config.tasks_progress_rate).keys())
+            for stale in [key for key in list(_hls_playlist_cache) if key not in live]:
+                _hls_playlist_cache.pop(stale, None)
+
+        _hls_playlist_cache[sn_key] = {'sig': signature, 'parsed': parsed}
+        return parsed
+
+
+def _hls_ready_count(temp_dir, segments):
+    """從頭算起有幾片是完整的.
+
+    download_chunk() 在 multi_downloading_segment 的號誌下跑, 完成順序是亂的, 所以
+    tasks_progress_rate 的 rate 只是「下完幾片」而不是連續進度 —— 40% 完全有可能第
+    一片還沒下來. 能播到哪裡只有目錄說了算. Anime.py 那邊改成先寫 .part 再 replace
+    之後, 「檔名出現而且不是 0 byte」就等於「這一片是完整的」.
+    """
+    try:
+        sizes = {}
+        # 用 scandir 而不是逐片 getsize: 一集有一百多片, 大小在列目錄時就一起拿到了
+        for entry in os.scandir(temp_dir):
+            if entry.is_file():
+                try:
+                    sizes[entry.name] = entry.stat().st_size
+                except OSError:
+                    pass
+    except OSError:
+        return 0  # 目錄被 rmtree 掉了, 交給狀態端點去講
+
+    count = 0
+    for segment in segments:
+        # 大小檢查留著當保險: 舊版本寫下的半截檔案沒有 .part 保護
+        if sizes.get(segment['name'], 0) <= 0:
+            break
+        count += 1
+    return count
+
+
+def _hls_render(sn, parsed, ready, complete):
+    lines = [
+        '#EXTM3U',
+        '#EXT-X-VERSION:3',
+        '#EXT-X-TARGETDURATION:%d' % parsed['target_duration'],
+        # 不重新編號: #EXT-X-KEY 沒帶 IV 的時候, IV 就是分片的序號. 前綴從 0 開始配上
+        # MEDIA-SEQUENCE:0, 序號才對得上解密用的 IV
+        '#EXT-X-MEDIA-SEQUENCE:0',
+        '#EXT-X-PLAYLIST-TYPE:EVENT',
+        # 沒有 ENDLIST 之前 hls.js 一律當直播看待, 預設會從尾端往回三個 targetduration
+        # 開始播 —— 也就是把已經下載好的部分整個跳過. 原生播放器也吃這一行
+        '#EXT-X-START:TIME-OFFSET=0,PRECISE=YES',
+        # 只換掉 URI, 不重建整行: 上游哪天帶了 IV= 也不會被我們弄丟
+        re.sub(r'URI="[^"]*"', 'URI="key.bin?id=%s"' % sn, parsed['key_line']),
+    ]
+    for index in range(ready):
+        lines.append(parsed['segments'][index]['extinf'])
+        # 相對路徑, 讓它跟著 /hls/ 走, 反向代理掛在哪個路徑底下都不會錯
+        lines.append('segment.ts?id=%s&n=%d' % (sn, index))
+    if complete:
+        lines.append('#EXT-X-ENDLIST')
+    return '\n'.join(lines) + '\n'
+
+
+def _hls_resolution_from_filename(filename):
+    # Anime.py 要等解析完才知道真正的清晰度, 在那之前 filename 是 '《標題》',
+    # 配不上就回 0 —— 那才是實話, 清晰度這時候真的還沒定下來
+    match = re.search(r'\[(\d+)P\]', str(filename or ''))
+    return int(match.group(1)) if match else 0
+
+
+def _hls_state(sn, current_settings):
+    """一個地方決定這個 sn 現在是什麼狀態, 四條路由都讀它."""
+    state = {
+        'mode': 'none', 'ready': 0, 'total': 0,
+        'readyDuration': 0.0, 'totalDuration': 0.0, 'targetDuration': 10,
+        'playlistId': None, 'rate': 0.0, 'status': '', 'resolution': 0,
+        'videoUrl': None, 'danmu': False, 'parsed': None, 'temp_dir': None,
+    }
+
+    entry = _find_video_entry(sn)
+    if entry is not None:
+        # 合併完成而且 video_list.json 也更新了, 該換去完成檔了
+        _hls_forget_playlist(sn)
+        state['mode'] = 'file'
+        state['rate'] = 100.0
+        state['resolution'] = int(entry.get('resolution') or 0)
+        state['danmu'] = bool(entry.get('danmu'))
+        state['videoUrl'] = './get_video.mp4?id=%s%s' % (
+            sn, '&res=%s' % state['resolution'] if state['resolution'] else '')
+        return state
+
+    task = _hls_task(sn)
+    if not current_settings.get('segment_download_mode') or task is None:
+        # segment_download_mode 關掉時走的是 ffmpeg 直錄, 根本沒有分片可以發; 而沒有
+        # 進度紀錄卻留著一個 temp 目錄, 那是失敗留下的殘骸, 不是還在跑的任務
+        _hls_forget_playlist(sn)
+        return state
+
+    state['rate'] = float(task.get('rate') or 0)
+    state['status'] = str(task.get('status') or '')
+    state['resolution'] = _hls_resolution_from_filename(task.get('filename'))
+
+    temp_dir = _hls_temp_dir(sn, current_settings)
+    state['temp_dir'] = temp_dir
+    parsed = _hls_playlist(sn, temp_dir)
+    if parsed is None:
+        state['mode'] = 'parsing'  # 還在跟巴哈要 m3u8, 或者這份我們讀不懂
+        return state
+
+    ready = _hls_ready_count(temp_dir, parsed['segments'])
+    total = len(parsed['segments'])
+    state.update({
+        'parsed': parsed,
+        'ready': ready,
+        'total': total,
+        'targetDuration': parsed['target_duration'],
+        'totalDuration': round(parsed['total_duration'], 3),
+        'readyDuration': round(sum(s['duration'] for s in parsed['segments'][:ready]), 3),
+        'playlistId': parsed['playlist_id'],
+    })
+
+    if ready >= total or state['status'] == '下載完成':
+        state['mode'] = 'finalising'  # ffmpeg 正在合併, temp 還在, 照樣能播
+    elif ready > 0:
+        state['mode'] = 'streaming'
+    else:
+        state['mode'] = 'parsing'  # 一片都還沒落地
+    return state
+
+
+def _hls_bootstrap_entry(sn, current_settings):
+    """給正在下載的集數捏一筆 video_list 形狀的資料.
+
+    /watch 之所以能擺出播放器而不是「找不到這一集影片」, 就是因為 watch.js 拿到的
+    東西跟真正的片庫條目長得一模一樣 —— renderTitleBar、資訊卡、集數列、setTime
+    通通不必知道有串流這回事. 多出來的那兩個 key 才是播放器要分支的地方.
+    """
+    if not current_settings.get('segment_download_mode'):
+        return None
+
+    task = _hls_task(sn)
+    pending = task is None
+    if pending and not request.args.get('streaming'):
+        # /manualTask 一送出就回, 真正建立進度紀錄是那條執行緒跑到 Anime.download()
+        # 之後的事. streaming=1 就是「我剛按下去」的憑據, 讓播放頁自己去等
+        return None
+
+    title = ''
+    if task:
+        title = str(task.get('filename') or '').strip().strip('《》')
+    anime_name = title
+    episode = ''
+    # 這裡是整個功能唯一一次呼叫 _get_anime_info: 它落盤快取 12 小時, 而且走的是
+    # 不帶 cookie 的 curl_cffi, 碰不到動畫瘋帳號. 首頁每張卡片本來就在叫它了,
+    # 一次開頁叫一次遠比現況省 —— 重點是別讓它進到五秒一次的狀態輪詢裡
+    info = _get_anime_info(sn) or {}
+    video_info = info.get('video') or {}
+    anime_info = info.get('anime') or {}
+    if anime_info.get('title'):
+        anime_name = anime_info['title']
+    if video_info.get('title') and not title:
+        title = video_info['title']
+    if video_info.get('episode'):
+        episode = video_info['episode']
+
+    return {
+        'sn': str(sn),
+        'title': title or anime_name or str(sn),
+        'anime_name': anime_name or title or str(sn),
+        'episode': episode,
+        'resolution': _hls_resolution_from_filename(task.get('filename')) if task else 0,
+        'path': '',  # 還沒有東西在磁碟上
+        'source': BAHAMUT_SOURCE,
+        'timestamp': int(time.time()),
+        'danmu_path': None,
+        # 彈幕的 .ass 要等合併完才生得出來. 先給 False, loadDanmaku() 就整個不會發請求;
+        # 交接到完成檔的時候播放器會把它翻回真正的值再讀一次
+        'danmu': False,
+        'streaming': True,
+        'pending': pending,
+    }
+
+
 def _build_watch_bootstrap(current_settings=None):
     current_settings = current_settings or _get_current_settings()
     requested_sn = str(request.args.get('id') or '').strip()
@@ -916,6 +1244,7 @@ def _build_watch_bootstrap(current_settings=None):
         'initialVideoData': None,
         'initialVideoSeries': [],
         'resumeTime': 0,
+        'streaming': False,
     }
 
     if not requested_sn:
@@ -929,12 +1258,17 @@ def _build_watch_bootstrap(current_settings=None):
             break
 
     if not initial_video:
-        return bootstrap
+        # 還在下載的集數當然不在 video_list.json 裡. 捏一筆同樣形狀的資料出去, 播放頁
+        # 就能擺出播放器邊下邊播, 而不是丟一句「找不到這一集影片」把人擋在門外
+        initial_video = _hls_bootstrap_entry(requested_sn, current_settings)
+        if initial_video is None:
+            return bootstrap
 
     if requested_resolution and requested_resolution.isdigit():
         initial_video['resolution'] = requested_resolution
 
     bootstrap['initialVideoData'] = initial_video
+    bootstrap['streaming'] = bool(initial_video.get('streaming'))
     bootstrap['initialVideoSeries'] = [video for video in video_list if video.get('anime_name') == initial_video.get('anime_name')]
 
     user = _get_request_user(current_settings)
@@ -1333,6 +1667,10 @@ if settings["dashboard"]["online_watch"]:
             # 先确认 sn 真的在片库里再干活: 否则任何人都能拿这个路由去捶巴哈,
             # 顺手把锁表和 anime_info/ 撑到没边
             entry = _find_video_entry(sn)
+            if entry is None and _hls_task(sn) is not None:
+                # 還在下載的集數: 影片檔還沒有, 但官方封面抓得到. 有進度紀錄跟有片庫
+                # 條目一樣, 都足以證明這個 sn 是自己人, 擋人的那道保險還在
+                entry = {'source': BAHAMUT_SOURCE, 'path': ''}
             if entry is None:
                 return jsonify({"error": "video not found"}), 404
             if not _thumbnail_recently_failed(sn):
@@ -1441,6 +1779,131 @@ if settings["dashboard"]["online_watch"]:
         resp.headers['Content-Disposition'] = content_disposition
 
         return resp
+
+
+    # ------------------------------------------------------------- 邊看邊下載
+    # 下載中的集數在 temp 裡本來就是一份 HLS 串流, 這四條路由只是把它照原樣端出去:
+    # playlist 只列已經連續落地的前綴, 分片直接讀檔, 金鑰原封不動交給瀏覽器解.
+    # 全部都是本機磁碟, 不會為了播放再跟動畫瘋要任何東西.
+
+    def _hls_request_state():
+        """四條路由共用的門口: 驗登入、驗 sn, 然後算出現在是什麼狀態."""
+        current_settings = _hls_settings()
+        denied = _catalog_login_error(current_settings)
+        if denied is not None:
+            return None, None, denied
+        sn = request.args.get('id')
+        if not sn or not str(sn).isdigit():
+            return None, None, (jsonify({"error": "invalid sn"}), 400)
+        return current_settings, _hls_state(sn, current_settings), None
+
+    @app.route('/hls/status.json')
+    def hls_status():
+        # 播放器每五秒問一次: 現在能不能播、下到幾 %、整集多長、下載完了沒.
+        # 只放會變的東西 —— 片名集數在開頁時就寫進 bootstrap 了, 不必每次重送,
+        # 更不該讓 _get_anime_info 進到這條輪詢裡
+        current_settings, state, denied = _hls_request_state()
+        if denied is not None:
+            return denied
+
+        payload = dict(state)
+        payload.pop('parsed', None)   # 內部用的解析結果, 不外流
+        payload.pop('temp_dir', None)  # 本機路徑不該出現在 API 回應裡
+        resp = jsonify(payload)
+        # 就算是 mode=none 也回 200: 前端要分得出「沒在下載」跟「伺服器壞了」
+        resp.headers['Cache-Control'] = 'no-store'
+        if current_settings['dashboard']['online_watch_requires_login']:
+            resp.headers['Vary'] = 'Cookie'
+        return resp
+
+    @app.route('/hls/playlist.m3u8')
+    def hls_playlist():
+        current_settings, state, denied = _hls_request_state()
+        if denied is not None:
+            return denied
+
+        if not current_settings.get('segment_download_mode'):
+            return jsonify({"error": "streaming unavailable"}), 404
+        if state['mode'] == 'file':
+            # 下載完了, 該去 /get_video.mp4, 不是繼續問這裡
+            return jsonify({"error": "download finished"}), 404
+        if state['mode'] == 'none':
+            return jsonify({"error": "not downloading"}), 404
+        if state['mode'] == 'parsing' or not state['parsed'] or state['ready'] <= 0:
+            # 寧可 404 也不要發一份零分片的 playlist: hls.js 會把空清單當
+            # LEVEL_EMPTY_ERROR 直接放棄, 而 404 是它願意重試的 LEVEL_LOAD_ERROR
+            return jsonify({"error": "not ready"}), 404
+
+        body = _hls_render(request.args.get('id'), state['parsed'],
+                           state['ready'], state['mode'] == 'finalising')
+        resp = Response(body, mimetype=HLS_MIME)
+        # 不能走 _apply_cache_headers: 它的 max-age 會把一份幾秒就變一次的 playlist
+        # 釘住, 而 get_file_headers 的 mtime+size ETag 對還在長大的東西是錯的
+        resp.headers['Cache-Control'] = 'no-store'
+        if current_settings['dashboard']['online_watch_requires_login']:
+            resp.headers['Vary'] = 'Cookie'
+        return resp
+
+    @app.route('/hls/key.bin')
+    def hls_key():
+        # AES-128 的金鑰原樣交給瀏覽器, 伺服器這邊不解密. 這不會多開一個曝險面:
+        # /get_video.mp4 早就用同一道門發完整的成品影片了, 金鑰能開的東西比那個少
+        current_settings, state, denied = _hls_request_state()
+        if denied is not None:
+            return denied
+        if state['mode'] not in ('parsing', 'streaming', 'finalising'):
+            return jsonify({"error": "not downloading"}), 404
+
+        try:
+            with open(os.path.join(state['temp_dir'], 'key.m3u8key'), 'rb') as f:
+                data = f.read()
+        except OSError:
+            return jsonify({"error": "key not ready"}), 404
+        if not data:
+            return jsonify({"error": "key not ready"}), 404
+
+        resp = Response(data, mimetype='application/octet-stream')
+        resp.headers['Cache-Control'] = 'no-store'
+        if current_settings['dashboard']['online_watch_requires_login']:
+            resp.headers['Vary'] = 'Cookie'
+        return resp
+
+    @app.route('/hls/segment.ts')
+    def hls_segment():
+        current_settings, state, denied = _hls_request_state()
+        if denied is not None:
+            return denied
+        if state['mode'] not in ('streaming', 'finalising') or not state['parsed']:
+            return jsonify({"error": "not downloading"}), 404
+
+        # 用序號定位而不是讓前端傳檔名: 這樣沒有任何一段客戶端字串會走到檔案系統,
+        # 目錄穿越不是被過濾掉, 是根本構造不出來
+        try:
+            index = int(request.args.get('n'))
+        except (TypeError, ValueError):
+            return jsonify({"error": "invalid segment"}), 400
+        if index < 0 or index >= len(state['parsed']['segments']):
+            return jsonify({"error": "invalid segment"}), 404
+        if index >= state['ready']:
+            # 要的比我們發出去的 playlist 還前面, 表示它拿的是舊清單
+            return jsonify({"error": "segment not ready"}), 404
+
+        path = os.path.join(state['temp_dir'], state['parsed']['segments'][index]['name'])
+        try:
+            # 整片讀進記憶體再回, 不用 send_file: 一片 1080p 大概 2~4 MB, 但檔案握把
+            # 只開幾微秒. 重試任務會把同一片重下一次, 而 Windows 上 os.replace 碰到
+            # 別人開著的目標檔會失敗 —— 握把開久一點, 觀眾就有機會弄垮下載.
+            # 順帶把「合併完成時 rmtree 把目錄抽走」這個競態也一起解決掉
+            with open(path, 'rb') as f:
+                data = f.read()
+        except OSError:
+            return jsonify({"error": "segment gone"}), 404
+        if not data:
+            return jsonify({"error": "segment gone"}), 404
+
+        resp = Response(data, mimetype='video/mp2t')
+        # 分片一旦寫下就不會再變, 往回拖時間軸可以直接吃瀏覽器快取, 不必重讀磁碟
+        return _apply_cache_headers(resp, current_settings, 3600)
 
 
     @app.route('/get_danmu.ass')

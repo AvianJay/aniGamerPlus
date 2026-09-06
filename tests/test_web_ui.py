@@ -24,6 +24,13 @@ from ui_harness import (  # noqa: E402
     VIDEO_LIST,
     CATALOG_ALL,
     CATALOG_LOCAL_SN,
+    CATALOG_SEASON,
+    HLS_ANIME,
+    HLS_DURATIONS,
+    HLS_SEGMENTS,
+    HLS_SN,
+    HLS_STATE,
+    HLS_STATE_DEFAULT,
     MANUAL_TASKS,
     HarnessServer,
 )
@@ -317,11 +324,14 @@ def test_catalog_sheet_plays_what_is_local_and_queues_what_is_not(page, server):
     expect(sheet.locator('.agp-ep.is-local')).to_have_count(1)
     expect(sheet.locator('.agp-ep.is-local')).to_have_text(re.compile(r'\b2\b'))
     assert sheet.locator('.agp-sheet-hint').count() == 0
+    # Offering to stream it too would only mean downloading a second copy.
+    assert sheet.locator('button[data-stream]').count() == 0
 
-    # Everything else is a download, and until streaming is wired up the only
-    # honest place to watch it in the meantime is 動畫瘋 itself.
+    # Nothing on disk is no longer a dead end: the download can be watched
+    # while it runs, and 動畫瘋 itself stays as the way out.
     remote = open_sheet(page, server, CATALOG_ALL[3]['animeSn'])
     expect(remote.locator('.agp-sheet-hint')).to_contain_text('還沒有下載到片庫')
+    expect(remote.locator('button[data-stream]')).to_contain_text('邊看邊下載')
     expect(remote.locator('a[href^="https://ani.gamer.com.tw/animeVideo.php"]')).to_be_visible()
     assert remote.locator('.agp-ep.is-local').count() == 0
     assert page.errors == []
@@ -357,9 +367,11 @@ def test_catalog_queues_a_download_with_everything_the_server_needs(page, server
     assert whole['resolution'] == '720'
     assert whole['mode'] == 'all'
 
-    # Tapping one episode queues that episode alone, and it stops being tappable.
+    # Tapping one episode queues that episode alone -- and then becomes the way
+    # in to watch it, because the moment it is queued there is something to play.
     sheet.locator('.agp-ep').first.click()
-    expect(sheet.locator('.agp-ep.is-queued').first).to_be_disabled()
+    expect(sheet.locator('.agp-ep.is-queued').first).to_have_attribute(
+        'href', re.compile(r'watch\?id=\d+&streaming=1'))
     assert len(MANUAL_TASKS) == 2
     assert MANUAL_TASKS[1]['mode'] == 'single'
     assert MANUAL_TASKS[1]['sn'] != whole['sn']
@@ -802,6 +814,209 @@ def test_danmaku_fades_back_while_the_chrome_is_up(page, server):
 
     assert full == pytest.approx(1.0, abs=0.01), full
     assert dimmed < 0.5, dimmed
+
+
+# ------------------------------------------------------------- 邊看邊下載
+
+# The fixture stream is built by ffmpeg on first run. Without it there is no
+# transport stream a browser would decode, and faking one proves nothing -- so
+# these skip rather than fail, exactly as a machine that cannot run the
+# downloader in the first place deserves.
+needs_stream = pytest.mark.skipif(
+    not HLS_DURATIONS,
+    reason='needs ffmpeg and pycryptodome to build the HLS fixture')
+
+
+@pytest.fixture
+def downloading():
+    """Two chunks landed out of six, and put back that way afterwards."""
+    HLS_STATE.update(HLS_STATE_DEFAULT)
+    yield HLS_STATE
+    HLS_STATE.update(HLS_STATE_DEFAULT)
+
+
+def goto_stream(page, server, query='&streaming=1'):
+    page.goto('%s/watch?id=%s%s' % (server.url, HLS_SN, query))
+    page.wait_for_selector('#playerShell.is-custom-player')
+    # readyState 2 means a frame has been decoded, which for this stream means
+    # the key was fetched, the segments were decrypted and hls.js transmuxed
+    # them. Nothing short of that proves the pipeline end to end.
+    page.wait_for_function(
+        "() => document.querySelector('#playerShell video')?.readyState >= 2",
+        timeout=30000)
+    return page
+
+
+def stream_video(page, expression):
+    return page.evaluate(
+        "() => { const v = document.querySelector('#playerShell video'); return %s; }"
+        % expression)
+
+
+@needs_stream
+def test_a_downloading_episode_gets_a_player_instead_of_an_error(page, server, downloading):
+    requested = []
+    page.on('request', lambda request: requested.append(request.url))
+    goto_stream(page, server)
+
+    # This sn is in no video_list.json anywhere; without the bootstrap entry the
+    # page would be a 「找不到這一集影片」 dead end.
+    expect(page.locator('#episodeChipLabel')).to_contain_text(HLS_ANIME)
+    expect(page.locator('#playerDownloading')).to_be_visible()
+    expect(page.locator('#playerDownloading')).to_contain_text('邊看邊下載')
+    expect(page.locator('#playerDownloading')).to_contain_text('1080P')
+
+    # Decryption is not optional on 動畫瘋, so a build of hls.js without AES-128
+    # would leave a black picture and no error worth reading.
+    assert any('/hls/key.bin' in url for url in requested)
+    assert any('/hls/segment.ts' in url for url in requested)
+    assert not any('/get_video.mp4' in url for url in requested)
+    assert page.errors == []
+
+
+@needs_stream
+def test_a_downloading_episode_really_decodes_and_plays(page, server, downloading):
+    goto_stream(page, server)
+
+    # Muted, because an unmuted autoplay is what a headless browser refuses --
+    # not anything the player did.
+    page.evaluate("""() => {
+        const v = document.querySelector('#playerShell video');
+        v.muted = true;
+        return v.play();
+    }""")
+    page.wait_for_function(
+        "() => document.querySelector('#playerShell video').currentTime > 0.6",
+        timeout=20000)
+
+    expect(page.locator('#timeCurrent')).not_to_have_text('0:00')
+    assert stream_video(page, 'v.videoWidth') == 320
+    assert page.errors == []
+
+
+@needs_stream
+def test_the_clock_reads_the_whole_episode_not_the_downloaded_part(page, server, downloading):
+    goto_stream(page, server)
+
+    # video.duration only reaches as far as the chunks that have landed and
+    # jumps right every few seconds. Reading the total off the playlist instead
+    # is what stops the progress bar's right-hand end from crawling.
+    expect(page.locator('#timeTotal')).to_have_text('0:12')
+    assert stream_video(page, 'v.duration') < 11
+    assert page.errors == []
+
+
+@needs_stream
+def test_seeking_stops_at_what_has_landed(page, server, downloading):
+    goto_stream(page, server)
+
+    page.locator('#playerSeek').evaluate(
+        "(el) => { el.value = el.max;"
+        " el.dispatchEvent(new Event('change', {bubbles: true})); }")
+    page.wait_for_timeout(400)
+
+    # Four of twelve seconds are on disk. Dragging to the end of a bar that
+    # spans the whole episode must not land somewhere unplayable.
+    assert stream_video(page, 'v.currentTime') <= 4.0
+    assert page.errors == []
+
+
+@needs_stream
+def test_the_stream_grows_as_more_chunks_land(page, server, downloading):
+    goto_stream(page, server)
+    expect(page.locator('#playerDownloading')).to_contain_text('33%')
+
+    downloading.update({'ready': HLS_SEGMENTS, 'mode': 'finalising'})
+
+    # ffmpeg is merging, the temp directory is still there, and the playlist now
+    # carries #EXT-X-ENDLIST -- so the player should reach the real end.
+    expect(page.locator('#playerDownloading')).to_contain_text('正在合併', timeout=20000)
+    page.wait_for_function(
+        "() => document.querySelector('#playerShell video').duration > 11",
+        timeout=20000)
+    assert page.errors == []
+
+
+@needs_stream
+def test_the_player_hands_over_to_the_finished_file(page, server, downloading):
+    goto_stream(page, server)
+    page.evaluate("""() => {
+        const v = document.querySelector('#playerShell video');
+        v.muted = true;
+        return v.play();
+    }""")
+    page.wait_for_function(
+        "() => document.querySelector('#playerShell video').currentTime > 0.6",
+        timeout=20000)
+
+    downloading.update({'ready': HLS_SEGMENTS, 'mode': 'file'})
+
+    # Merged and in the library: the episode is a file now, and the swap keeps
+    # the position so nobody notices the source changed underneath them.
+    page.wait_for_function(
+        "() => (document.querySelector('#playerShell video').currentSrc || '')"
+        ".includes('get_video.mp4')", timeout=20000)
+    expect(page.locator('#playerDownloading')).to_be_hidden()
+    assert page.errors == []
+
+
+@needs_stream
+def test_a_just_queued_episode_waits_for_the_task_to_register(page, server, downloading):
+    # /manualTask answers before the download thread has created its progress
+    # entry, so for a second or two the server has nothing to report but "no
+    # such download". streaming=1 is the note the catalog leaves behind saying
+    # "I just queued this", and the page has to sit through the gap rather than
+    # believe the first answer it gets.
+    downloading.update({'ready': 0, 'mode': 'pending'})
+    page.goto('%s/watch?id=%s&streaming=1' % (server.url, HLS_SN))
+    page.wait_for_selector('#playerShell.is-custom-player')
+    expect(page.locator('#playerDownloading')).to_contain_text('正在準備下載')
+
+    # Two polls later it is still waiting, not claiming the download stopped.
+    page.wait_for_timeout(6000)
+    expect(page.locator('#playerDownloading')).to_contain_text('正在準備下載')
+
+    downloading.update({'ready': 2, 'mode': 'streaming'})
+    page.wait_for_function(
+        "() => document.querySelector('#playerShell video')?.readyState >= 2",
+        timeout=30000)
+    expect(page.locator('#playerDownloading')).to_contain_text('邊看邊下載')
+    assert page.errors == []
+
+
+@needs_stream
+def test_a_link_opened_mid_download_finds_its_own_way_in(page, server, downloading):
+    # Opening /watch for an episode whose task registered a moment after the
+    # page was rendered: the bootstrap had nothing, but the stream is live. The
+    # page reloads itself with streaming=1 rather than showing a dead end --
+    # the title and episode number are only knowable server-side.
+    downloading.update({'ready': 2, 'mode': 'streaming', 'bootstrap': False})
+    page.goto('%s/watch?id=%s' % (server.url, HLS_SN))
+
+    page.wait_for_url(lambda url: 'streaming=1' in url, timeout=15000)
+    page.wait_for_selector('#playerShell.is-custom-player')
+    expect(page.locator('#episodeChipLabel')).to_contain_text(HLS_ANIME)
+    assert page.errors == []
+
+
+@needs_stream
+def test_the_catalog_starts_a_download_and_goes_straight_to_the_player(page, server, downloading):
+    del MANUAL_TASKS[:]
+    sheet = open_sheet(page, server, CATALOG_SEASON[0]['animeSn'])
+
+    expect(sheet.locator('button[data-stream]')).to_contain_text('邊看邊下載')
+    expect(sheet.locator('.agp-sheet-hint')).to_contain_text('在背景繼續下載')
+    sheet.locator('button[data-stream]').click()
+
+    page.wait_for_url(lambda url: 'streaming=1' in url, timeout=15000)
+    page.wait_for_selector('#playerShell.is-custom-player')
+
+    # One episode queued, not the whole series: nobody asked for 130 downloads
+    # by pressing play.
+    assert len(MANUAL_TASKS) == 1
+    assert MANUAL_TASKS[0]['sn'] == HLS_SN
+    assert MANUAL_TASKS[0]['mode'] == 'single'
+    assert page.errors == []
 
 
 # -------------------------------------------------------- add to home screen

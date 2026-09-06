@@ -6,7 +6,7 @@
    --------------------------------------------------------------------------- */
 'use strict';
 
-var CACHE = 'agp-shell-v8';
+var CACHE = 'agp-shell-v9';
 
 /* Bare paths on purpose: the ?v= tokens in the templates move whenever an asset
    changes, and a list that pinned them would drift out of step unnoticed. These
@@ -66,7 +66,10 @@ var BYPASS = [
     '/config',
     '/sn_list',
     '/catalog',
-    '/msg'
+    '/msg',
+    /* 邊看邊下載. hls.js 重抓 playlist 用的是普通 fetch, 沒有 range 標頭, 所以上面那道
+       range 檢查攔不到它 -- 一份被快取住的清單會讓播放器永遠停在當初那幾片. */
+    '/hls/'
 ];
 
 /* Only a versioned asset may be answered from CacheStorage: its ?v= token

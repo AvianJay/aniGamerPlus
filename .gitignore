@@ -130,6 +130,8 @@ video_list.json
 thumbnails/
 anime_info/
 tests/_shots/
+# 邊看邊下載的測試素材, 第一次跑測試時用 ffmpeg 現生
+tests/fixtures/hls/
 # 動畫瘋片單的磁碟快取, 内容由 Bahamut 生成, 重启即可重建
 catalog/
 # 本地临时脚本与调试产物

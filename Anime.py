@@ -709,19 +709,41 @@ class Anime:
         def download_chunk(uri):
             chunk_name = re.findall(r'media_b.+ts', uri)[0]  # chunk 文件名
             chunk_local_path = os.path.join(temp_dir, chunk_name)  # chunk 路径
+            # 邊看邊下載靠 "檔案在不在" 判斷這一片能不能播. 直接寫目標檔名的話,
+            # 寫到一半的檔案也是存在的, 播放器就會拿到一段截斷的 ts. 先寫暫存檔名
+            # 再 os.replace, 跟 Dashboard 產縮圖同一個寫法: 目標檔名一出現就是完整的.
+            chunk_temp_path = chunk_local_path + '.part'
             nonlocal failed_flag
 
+            def drop_temp():
+                try:
+                    os.remove(chunk_temp_path)
+                except OSError:
+                    pass  # 根本沒寫成, 或已經被 replace 掉了
+
             try:
-                with open(chunk_local_path, 'wb') as f:
+                with open(chunk_temp_path, 'wb') as f:
                     f.write(self.__request(uri, no_cookies=True,
                                            show_fail=False,
                                            max_retry=self._settings['segment_max_retry']).content)
+                for attempt in range(5):
+                    try:
+                        os.replace(chunk_temp_path, chunk_local_path)
+                        break
+                    except OSError:
+                        # Windows 上目標檔正被 /hls/segment.ts 讀著時 replace 會失敗.
+                        # 只有重試任務重下同一片才碰得到, 讓開一下就好.
+                        if attempt == 4:
+                            raise
+                        time.sleep(0.2)
             except TryTooManyTimeError:
+                drop_temp()
                 failed_flag = True
                 err_print(self._sn, '下載狀態', 'Bad segment=' + chunk_name, status=1)
                 limiter.release()
                 sys.exit(1)
             except BaseException as e:
+                drop_temp()
                 failed_flag = True
                 err_print(self._sn, '下載狀態', 'Bad segment=' + chunk_name + ' 發生未知錯誤: ' + str(e), status=1)
                 limiter.release()

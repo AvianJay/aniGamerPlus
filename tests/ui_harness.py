@@ -12,6 +12,8 @@ the ``/watch/time`` route in ``Dashboard/Server.py``).
 import json
 import os
 import re
+import shutil
+import subprocess
 import threading
 import time
 from datetime import datetime, timedelta
@@ -202,12 +204,178 @@ def catalog_detail(anime_sn):
     }
 
 
+# --------------------------------------------------------------- 邊看邊下載
+# The player side of watch-while-downloading is the one part of this feature a
+# unit test cannot reach: it lives in hls.js's transmuxer and in the browser's
+# media pipeline. So the harness ships a genuine encrypted HLS stream -- built
+# once with ffmpeg, encrypted here -- and serves it through the same four routes
+# Dashboard/Server.py exposes. What the tests then prove is that the protocol
+# those routes speak is one a real browser will actually play.
+
+HLS_DIR = os.path.join(FIXTURES, 'hls')
+# The videoSn of 本季新番 01, so the catalog sheet's 邊看邊下載 button lands on a
+# watch page that really streams rather than on a stub.
+HLS_SN = CATALOG_SEASON[0]['videoSn']
+HLS_ANIME = CATALOG_SEASON[0]['title']
+HLS_KEY = bytes(bytearray(range(16)))
+HLS_SEGMENT_SECONDS = 2
+HLS_SEGMENTS = 6
+HLS_TOTAL_SECONDS = HLS_SEGMENT_SECONDS * HLS_SEGMENTS
+# Chunk names have to match Anime.py's r'media_b.+ts', because that expression is
+# what the real server stats the temp directory with.
+HLS_SEGMENT_NAME = 'media_b1875000_%d.ts'
+
+# Mutated straight from the tests -- the harness runs on a thread in the same
+# process, so there is no need for a control endpoint to fake progress with.
+# 'pending' is not a wire value: it stands for the seconds between /manualTask
+# answering and the download thread creating its progress entry, which the real
+# server can only report as 'none'. 'bootstrap' False reproduces the same gap on
+# the page-render side, where _hls_bootstrap_entry refuses without streaming=1.
+HLS_STATE = {'ready': 2, 'mode': 'streaming', 'bootstrap': True}
+HLS_STATE_DEFAULT = dict(HLS_STATE)
+
+
+def _hls_encrypt(plain, index):
+    """AES-128-CBC with the segment index as the IV, PKCS#7 padded.
+
+    That is the HLS default when #EXT-X-KEY carries no IV= of its own, which is
+    exactly the shape 動畫瘋 sends -- and the reason the real renderer must never
+    renumber a segment.
+    """
+    from Crypto.Cipher import AES
+    pad = 16 - (len(plain) % 16)
+    cipher = AES.new(HLS_KEY, AES.MODE_CBC, index.to_bytes(16, 'big'))
+    return cipher.encrypt(plain + bytes(bytearray([pad]) * pad))
+
+
+def build_hls_fixture():
+    """Return the per-segment durations, or None when the stream cannot be built.
+
+    ffmpeg is what produces the H.264/AAC transport stream; there is no way to
+    hand-roll one a browser will decode. It is already a hard requirement of
+    aniGamerPlus itself, so needing it here costs nothing -- but the tests skip
+    rather than fail when it is missing, since a machine without it cannot run
+    the downloader either.
+    """
+    marker = os.path.join(HLS_DIR, 'ready.json')
+    if os.path.isfile(marker):
+        with open(marker, encoding='utf-8') as handle:
+            return json.load(handle)
+
+    ffmpeg = shutil.which('ffmpeg')
+    if not ffmpeg:
+        return None
+    try:
+        from Crypto.Cipher import AES  # noqa: F401
+    except ImportError:
+        return None
+
+    if os.path.isdir(HLS_DIR):
+        shutil.rmtree(HLS_DIR, ignore_errors=True)
+    os.makedirs(HLS_DIR)
+    # Plain segments first: ffmpeg's own -hls_key_info_file writes a single IV=
+    # into the playlist for every segment, which is not the shape being tested.
+    subprocess.check_call([
+        ffmpeg, '-v', 'error', '-y',
+        '-f', 'lavfi', '-i', 'testsrc=size=320x180:rate=15:duration=%d' % HLS_TOTAL_SECONDS,
+        '-f', 'lavfi', '-i', 'sine=frequency=440:duration=%d' % HLS_TOTAL_SECONDS,
+        '-c:v', 'libx264', '-preset', 'ultrafast', '-pix_fmt', 'yuv420p', '-g', '30',
+        '-c:a', 'aac', '-ar', '44100',
+        '-hls_time', str(HLS_SEGMENT_SECONDS), '-hls_list_size', '0',
+        '-hls_segment_filename', os.path.join(HLS_DIR, HLS_SEGMENT_NAME),
+        '-hls_playlist_type', 'vod', os.path.join(HLS_DIR, 'plain.m3u8'),
+    ])
+
+    durations = []
+    for index in range(HLS_SEGMENTS):
+        path = os.path.join(HLS_DIR, HLS_SEGMENT_NAME % index)
+        with open(path, 'rb') as handle:
+            plain = handle.read()
+        with open(path, 'wb') as handle:
+            handle.write(_hls_encrypt(plain, index))
+        durations.append(float(HLS_SEGMENT_SECONDS))
+
+    with open(os.path.join(HLS_DIR, 'key.bin'), 'wb') as handle:
+        handle.write(HLS_KEY)
+    with open(marker, 'w', encoding='utf-8') as handle:
+        json.dump(durations, handle)
+    return durations
+
+
+HLS_DURATIONS = build_hls_fixture()
+
+
+def hls_playlist_body():
+    """The same wire format Dashboard/Server.py's _hls_render emits."""
+    ready = min(int(HLS_STATE['ready']), HLS_SEGMENTS)
+    lines = [
+        '#EXTM3U',
+        '#EXT-X-VERSION:3',
+        '#EXT-X-TARGETDURATION:%d' % HLS_SEGMENT_SECONDS,
+        '#EXT-X-MEDIA-SEQUENCE:0',
+        '#EXT-X-PLAYLIST-TYPE:EVENT',
+        '#EXT-X-START:TIME-OFFSET=0,PRECISE=YES',
+        '#EXT-X-KEY:METHOD=AES-128,URI="key.bin?id=%s"' % HLS_SN,
+    ]
+    for index in range(ready):
+        lines.append('#EXTINF:%.3f,' % HLS_DURATIONS[index])
+        lines.append('segment.ts?id=%s&n=%d' % (HLS_SN, index))
+    if HLS_STATE['mode'] == 'finalising':
+        lines.append('#EXT-X-ENDLIST')
+    return '\n'.join(lines) + '\n'
+
+
+def hls_status_body():
+    ready = min(int(HLS_STATE['ready']), HLS_SEGMENTS)
+    mode = HLS_STATE['mode']
+    return {
+        'mode': 'none' if mode == 'pending' else mode,
+        'ready': ready,
+        'total': HLS_SEGMENTS,
+        'readyDuration': round(sum(HLS_DURATIONS[:ready]), 3),
+        'totalDuration': round(sum(HLS_DURATIONS), 3),
+        'targetDuration': HLS_SEGMENT_SECONDS,
+        'playlistId': 'harness-%d' % HLS_SEGMENTS,
+        'rate': round(100.0 * ready / HLS_SEGMENTS, 1),
+        'status': '下載完成' if mode == 'finalising' else '正在下載',
+        'resolution': 1080,
+        'danmu': mode == 'file',
+        'videoUrl': './get_video.mp4?id=%s' % HLS_SN if mode == 'file' else None,
+    }
+
+
+def hls_video_entry():
+    """A video_list-shaped entry for the episode that is still downloading.
+
+    _hls_bootstrap_entry builds the real one; the point of matching its shape is
+    that watch.js must not need to know which of the two it got.
+    """
+    return {
+        'sn': HLS_SN,
+        'title': '第 1 集',
+        'anime_name': HLS_ANIME,
+        'episode': '1',
+        'resolution': 1080,
+        'path': '',
+        'source': 'bahamut',
+        'timestamp': int(time.time()),
+        'danmu_path': None,
+        'danmu': False,
+        'streaming': True,
+        'pending': not _hls_registered(),
+    }
+
+
+def _hls_registered():
+    return HLS_STATE['bootstrap'] and HLS_STATE['mode'] != 'pending'
+
+
 # Every task the page queues is kept so a test can assert on the payload rather
 # than on a toast that only says something happened.
 MANUAL_TASKS = []
 
 
-def create_app(logged_in=True, catalog=True):
+def create_app(logged_in=True, catalog=True, hls=True):
     app = Flask(__name__, template_folder=TEMPLATE_PATH, static_folder=STATIC_PATH)
     app.config['TESTING'] = True
 
@@ -231,6 +399,7 @@ def create_app(logged_in=True, catalog=True):
             'initialVideoData': None,
             'initialVideoSeries': [],
             'resumeTime': 0,
+            'streaming': False,
         }
         if not requested_sn:
             return bootstrap
@@ -239,6 +408,13 @@ def create_app(logged_in=True, catalog=True):
             if str(video['sn']) == requested_sn:
                 initial = dict(video)
                 break
+        if not initial and hls and HLS_DURATIONS and requested_sn == HLS_SN:
+            # Downloading, so not in video_list.json -- but the page still gets
+            # something the right shape, exactly as the real bootstrap does.
+            if not _hls_registered() and not request.args.get('streaming'):
+                return bootstrap
+            initial = hls_video_entry()
+            bootstrap['streaming'] = True
         if not initial:
             return bootstrap
         if requested_resolution.isdigit():
@@ -305,6 +481,43 @@ def create_app(logged_in=True, catalog=True):
             if detail is None:
                 return jsonify({'error': 'unknown'}), 404
             return jsonify(detail)
+
+    # The real routes only exist while a download is running; HLS_STATE['mode']
+    # == 'none' is what stands in for "nothing is downloading" here.
+    if hls and HLS_DURATIONS:
+        @app.route('/hls/status.json')
+        def hls_status():
+            response = jsonify(hls_status_body())
+            response.headers['Cache-Control'] = 'no-store'
+            return response
+
+        @app.route('/hls/playlist.m3u8')
+        def hls_playlist():
+            if HLS_STATE['mode'] in ('none', 'file', 'parsing', 'pending'):
+                return jsonify({'error': 'not ready'}), 404
+            response = make_response(hls_playlist_body())
+            response.headers['Content-Type'] = 'application/vnd.apple.mpegurl'
+            response.headers['Cache-Control'] = 'no-store'
+            return response
+
+        @app.route('/hls/key.bin')
+        def hls_key():
+            return send_file(os.path.join(HLS_DIR, 'key.bin'),
+                             mimetype='application/octet-stream')
+
+        @app.route('/hls/segment.ts')
+        def hls_segment():
+            try:
+                index = int(request.args.get('n'))
+            except (TypeError, ValueError):
+                return jsonify({'error': 'invalid segment'}), 400
+            # Refusing anything past the published prefix is the server's real
+            # behaviour, and the only way a test can tell a player that respects
+            # the playlist from one that guesses ahead.
+            if index < 0 or index >= min(int(HLS_STATE['ready']), HLS_SEGMENTS):
+                return jsonify({'error': 'segment not ready'}), 404
+            return send_file(os.path.join(HLS_DIR, HLS_SEGMENT_NAME % index),
+                             mimetype='video/mp2t')
 
     @app.route('/manualTask', methods=['POST'])
     def manual_task():
@@ -407,8 +620,8 @@ class QuietHandler(WSGIRequestHandler):
 class HarnessServer(object):
     """Runs the harness on a background thread and exposes its base URL."""
 
-    def __init__(self, logged_in=True, catalog=True):
-        self.httpd = make_server('127.0.0.1', 0, create_app(logged_in, catalog),
+    def __init__(self, logged_in=True, catalog=True, hls=True):
+        self.httpd = make_server('127.0.0.1', 0, create_app(logged_in, catalog, hls),
                                  handler_class=QuietHandler)
         self.port = self.httpd.server_address[1]
         self.thread = threading.Thread(target=self.httpd.serve_forever, daemon=True)

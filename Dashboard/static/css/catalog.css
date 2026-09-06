@@ -381,9 +381,10 @@ body.agp-sheet-open { overflow: hidden; }
   font-weight: 700;
 }
 
+/* 排進佇列的集數還是按得下去 -- 按下去是去邊看邊下載, 不是再排一次 */
 .agp-ep.is-queued {
-  color: var(--agp-fg-faint);
-  cursor: default;
+  border-style: dashed;
+  color: var(--agp-fg-dim);
 }
 
 .agp-epmore { margin-top: 10px; }

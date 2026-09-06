@@ -584,6 +584,26 @@ body.player-pseudo-fullscreen { overflow: hidden; }
 .chapter-menu span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
 /* --- Next-episode countdown ---------------------------------------------- */
+/* 邊看邊下載的進度牌. 擺在左上角, 跟右下角的「下一集」錯開; 控制列出現時一起
+   往上讓, 免得壓在標題或手勢區上面 */
+.player-downloading {
+  background: rgb(8 8 10 / 82%);
+  border: 1px solid rgb(255 255 255 / 14%);
+  border-radius: 999px;
+  color: rgb(255 255 255 / 88%);
+  font-size: 12px;
+  font-weight: 650;
+  left: 16px;
+  letter-spacing: .02em;
+  padding: 6px 13px;
+  pointer-events: none;
+  position: absolute;
+  top: 16px;
+  z-index: 6;
+}
+
+.player-downloading[hidden] { display: none; }
+
 .player-next {
   background: rgb(8 8 10 / 88%);
   border: 1px solid rgb(255 255 255 / 14%);

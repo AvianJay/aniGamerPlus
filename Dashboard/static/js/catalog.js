@@ -278,9 +278,16 @@
                 AGP.icon('check', 12) + AGP.escapeHtml(label) + '</a>';
         }
         var queued = state.queued[episode.videoSn];
-        return '<button class="agp-ep' + (queued ? ' is-queued' : '') + '" type="button" data-episode="' +
-            AGP.escapeHtml(episode.videoSn) + '"' + (queued ? ' disabled' : '') + '>' +
-            (queued ? AGP.icon('check', 12) : '') + AGP.escapeHtml(label) + '</button>';
+        if (queued) {
+            /* 排進去的那一刻就能看了, 沒有理由讓它繼續是一個按不動的灰格子.
+               streaming=1 是給 /watch 的憑據 —— 任務剛送出去、進度紀錄還沒建立的
+               那幾秒, 有它播放頁才會擺出播放器等分片, 而不是回一句找不到 */
+            return '<a class="agp-ep is-queued" title="邊看邊下載" href="./watch?id=' +
+                AGP.escapeHtml(encodeURIComponent(episode.videoSn)) + '&streaming=1">' +
+                AGP.icon('play', 12) + AGP.escapeHtml(label) + '</a>';
+        }
+        return '<button class="agp-ep" type="button" data-episode="' +
+            AGP.escapeHtml(episode.videoSn) + '">' + AGP.escapeHtml(label) + '</button>';
     }
 
     function groupHtml(group, index) {
@@ -305,15 +312,20 @@
                 AGP.icon('play', 16) + ' 立即觀看</a>');
         }
         if (canDownload()) {
-            buttons.push('<button class="agp-btn' + (local ? ' agp-btn--ghost' : '') +
-                '" type="button" data-download="all">' + AGP.icon('plusSquare', 16) + ' 加入下載</button>');
+            /* 邊看邊下載: 下載一開始, temp 裡就是一份 HLS 串流, 播放器直接吃那個.
+               對動畫瘋來說跟單純按下載完全一樣, 不會多開一條連線去搶頻寬 */
+            if (!local) {
+                buttons.push('<button class="agp-btn" type="button" data-stream="' +
+                    AGP.escapeHtml(detail.videoSn) + '">' +
+                    AGP.icon('play', 16) + ' 邊看邊下載</button>');
+            }
+            buttons.push('<button class="agp-btn agp-btn--ghost" type="button" data-download="all">' +
+                AGP.icon('plusSquare', 16) + ' 加入下載</button>');
             buttons.push('<select class="agp-select" id="catalogResolution" aria-label="下載畫質">' +
                 RESOLUTIONS.map(function (value) {
                     return '<option value="' + value + '">' + value + 'P</option>';
                 }).join('') + '</select>');
         }
-        /* Streaming straight from 動畫瘋 is not wired up yet, so a title with
-           nothing on disk still needs somewhere to go. */
         buttons.push('<a class="agp-btn agp-btn--ghost" target="_blank" rel="noopener"' +
             ' href="https://ani.gamer.com.tw/animeVideo.php?sn=' +
             AGP.escapeHtml(encodeURIComponent(detail.videoSn)) + '">' +
@@ -321,7 +333,8 @@
 
         return '<div class="agp-sheet-actions">' + buttons.join('') + '</div>' +
             (local ? '' : '<p class="agp-sheet-hint">這部作品還沒有下載到片庫，' +
-                (canDownload() ? '加入下載後即可在片庫中觀看。' : '請聯絡站台管理員加入下載。') + '</p>');
+                (canDownload() ? '「邊看邊下載」會立刻開始播放，檔案在背景繼續下載。'
+                    : '請聯絡站台管理員加入下載。') + '</p>');
     }
 
     function renderSheet() {
@@ -485,11 +498,19 @@
             if (!response.ok) { throw response.status; }
         } catch (status) {
             toast(status === 401 || status === 403 ? '需要管理員權限才能下載。' : '加入下載失敗。');
-            return;
+            return false;
         }
         state.queued[videoSn] = true;
         toast(mode === 'all' ? '已加入下載佇列，整部作品開始排隊。' : '已加入下載佇列。');
         renderSheet();
+        return true;
+    }
+
+    /* 排下載, 然後就走. 失敗的話 queueDownload 已經吐過 toast 說明原因了, 這裡再
+       跳過去只會讓人對著一個永遠不會開始的播放器等 */
+    async function startStreaming(videoSn) {
+        if (!state.queued[videoSn] && !await queueDownload(videoSn, 'single')) { return; }
+        global.location.href = './watch?id=' + encodeURIComponent(videoSn) + '&streaming=1';
     }
 
     /* --- wiring ------------------------------------------------------------ */
@@ -543,6 +564,12 @@
         if (group) {
             state.expanded[group.dataset.group] = true;
             renderSheet();
+            return;
+        }
+
+        var stream = event.target.closest('[data-stream]');
+        if (stream) {
+            startStreaming(stream.dataset.stream);
             return;
         }
 

@@ -7,7 +7,7 @@ would: it logs into the dashboard in a browser, queues the download from the
 "手動添加任務" dialog, waits for the episode to actually land on disk, and then
 plays that file through the redesigned player.
 
-Prerequisites (see tests/README-real-e2e.md):
+Prerequisites:
 
 *   ``python aniGamerPlus.py`` running with ``dashboard.online_watch`` and
     ``dashboard.user_control.enabled`` turned on.
@@ -16,6 +16,16 @@ Prerequisites (see tests/README-real-e2e.md):
 Run with::
 
     python -m pytest tests/test_real_server_e2e.py -s
+
+The 邊看邊下載 tests at the bottom stay skipped until they are pointed at an
+episode by hand, because they queue a real download and there is no route that
+can call one back::
+
+    AGP_STREAM_KEYWORD=葬送的芙莉蓮 AGP_STREAM_SN=123456 python -m pytest         tests/test_real_server_e2e.py -s -k stream
+
+Pick an episode that is *not* in the library yet -- a finished one has a file to
+play and nothing to stream. ``segment_download_mode`` has to be on, since the
+chunks it writes are the stream.
 
 The browser is visible by default because this suite is meant to be watched;
 set ``AGP_HEADLESS=1`` for an unattended run.
@@ -327,3 +337,178 @@ def test_gestures_work_on_the_real_episode(phone, downloaded_episode):
     drag(phone, box['x'] + box['width'] * 0.25, y, box['x'] + box['width'] * 0.60, y)
     current = phone.evaluate("() => document.querySelector('#playerShell video').currentTime")
     assert current > 305, current
+
+
+# ------------------------------------------------------------- 邊看邊下載
+
+# No default sn here, unlike TARGET_SN above. This fixture starts a download
+# that nothing can call back -- there is no cancel route -- so it only runs
+# against an episode somebody deliberately named.
+STREAM_KEYWORD = os.environ.get('AGP_STREAM_KEYWORD', '')
+STREAM_SN = os.environ.get('AGP_STREAM_SN', '')
+STREAM_READY_TIMEOUT = int(os.environ.get('AGP_STREAM_TIMEOUT', '300'))
+
+needs_stream_target = pytest.mark.skipif(
+    not (STREAM_KEYWORD and STREAM_SN),
+    reason='set AGP_STREAM_KEYWORD and AGP_STREAM_SN to an episode that is not '
+           'downloaded yet; this starts a real download and cannot undo it')
+
+
+def hls_status(page, sn=None):
+    response = page.request.get('%s/hls/status.json?id=%s' % (BASE_URL, sn or STREAM_SN))
+    return response.json() if response.ok else {'mode': 'error'}
+
+
+@pytest.fixture(scope='session')
+def streaming_episode(signed_in_context):
+    """Queue the download the way the feature is meant to be reached.
+
+    Home page, search box, the sheet, 邊看邊下載 -- every step a person takes.
+    Returns once the server says there is something to play, which is the first
+    moment the rest of these tests have any subject.
+    """
+    page = signed_in_context.new_page()
+    try:
+        if downloaded_entry(page, STREAM_SN):
+            pytest.skip('sn=%s is already in the library, nothing to stream'
+                        % STREAM_SN)
+        config = page.request.get(BASE_URL + '/data/config.json')
+        if config.ok and not config.json().get('segment_download_mode'):
+            # Without it Anime.py writes one growing .mp4 and there are no
+            # chunks to publish. The feature is off, not broken.
+            pytest.skip('segment_download_mode is off on this server')
+
+        page.goto(BASE_URL + '/')
+        page.wait_for_selector('#homeSearch')
+        page.fill('#homeSearch', STREAM_KEYWORD)
+        page.wait_for_selector('#homeCatalog .agp-poster', timeout=60000)
+        page.locator('#homeCatalog .agp-poster').first.click()
+        page.wait_for_selector('#catalogSheet .agp-epgroup', timeout=60000)
+
+        stream = page.locator('#catalogSheet button[data-stream]')
+        if not stream.count():
+            pytest.skip('the sheet for 「%s」 offers no stream; it is already downloaded'
+                        % STREAM_KEYWORD)
+        stream.click()
+        page.wait_for_url(lambda url: 'streaming=1' in url, timeout=30000)
+
+        deadline = time.time() + STREAM_READY_TIMEOUT
+        status = {}
+        while time.time() < deadline:
+            status = hls_status(page)
+            if status.get('mode') in ('streaming', 'finalising') and status.get('ready'):
+                return status
+            if status.get('mode') == 'file':
+                pytest.skip('sn=%s finished downloading before the test could watch it'
+                            % STREAM_SN)
+            page.wait_for_timeout(3000)
+        pytest.fail('sn=%s never became playable within %ds (last status: %r)'
+                    % (STREAM_SN, STREAM_READY_TIMEOUT, status))
+    finally:
+        page.close()
+
+
+def open_stream(page):
+    page.goto('%s/watch?id=%s&streaming=1' % (BASE_URL, STREAM_SN))
+    page.wait_for_selector('#playerShell.is-custom-player')
+    # readyState 2 is a decoded frame, which for this stream means the key was
+    # fetched, the chunks were decrypted and hls.js transmuxed them.
+    page.wait_for_function(
+        "() => document.querySelector('#playerShell video')?.readyState >= 2",
+        timeout=90000)
+    return page
+
+
+@needs_stream_target
+def test_the_real_temp_directory_serves_a_playlist_a_browser_accepts(page, streaming_episode):
+    body = page.request.get('%s/hls/playlist.m3u8?id=%s' % (BASE_URL, STREAM_SN)).text()
+    lines = [line for line in body.splitlines() if line]
+
+    assert lines[0] == '#EXTM3U', lines[:3]
+    # Renumbering a segment would change its implicit IV and break decryption,
+    # so the sequence always starts at 0 no matter how much has landed.
+    assert '#EXT-X-MEDIA-SEQUENCE:0' in lines
+    key = [line for line in lines if line.startswith('#EXT-X-KEY')]
+    assert key, lines
+    assert 'METHOD=AES-128' in key[0] and 'IV=' not in key[0], key[0]
+
+    segments = [line for line in lines if line.startswith('segment.ts?')]
+    assert segments, body
+    assert len(segments) >= streaming_episode['ready'], (len(segments), streaming_episode)
+    assert [int(line.rsplit('n=', 1)[1]) for line in segments] == list(range(len(segments)))
+    if hls_status(page)['mode'] == 'streaming':
+        # Still downloading: hls.js has to keep coming back for more.
+        assert '#EXT-X-ENDLIST' not in lines
+
+
+@needs_stream_target
+def test_the_real_stream_never_asks_bahamut_for_anything(page, streaming_episode):
+    outbound = []
+    page.on('request', lambda request: outbound.append(request.url))
+    open_stream(page)
+
+    # The whole point of serving the temp directory instead of proxying: however
+    # many people watch, 動畫瘋 sees exactly the one download it was already
+    # sending. Nothing here opens a second connection to the account.
+    strays = [url for url in outbound if 'gamer.com.tw' in url or 'gamer2-cds' in url]
+    assert strays == [], strays
+    assert any('/hls/key.bin' in url for url in outbound)
+    assert any('/hls/segment.ts' in url for url in outbound)
+    assert page.errors == []
+
+
+@needs_stream_target
+def test_the_real_stream_decodes_and_plays_while_it_downloads(page, streaming_episode):
+    open_stream(page)
+
+    expect(page.locator('#playerDownloading')).to_be_visible()
+    expect(page.locator('#playerDownloading')).to_contain_text('邊看邊下載')
+    # The clock spans the episode, not the part that happens to be on disk --
+    # otherwise the right-hand end of the bar crawls while you watch.
+    expect(page.locator('#timeTotal')).not_to_have_text('0:00')
+
+    meta = page.evaluate("""() => {
+        const v = document.querySelector('#playerShell video');
+        v.muted = true;
+        v.play();
+        return {width: v.videoWidth, duration: v.duration};
+    }""")
+    assert meta['width'] >= 640, meta
+    assert meta['duration'] < streaming_episode['totalDuration'], (meta, streaming_episode)
+
+    page.wait_for_function(
+        "() => document.querySelector('#playerShell video').currentTime > 0.6",
+        timeout=60000)
+    assert page.errors == []
+
+
+@needs_stream_target
+def test_the_real_server_refuses_a_chunk_it_has_not_published(page, streaming_episode):
+    # A player working from a stale playlist, or one guessing ahead: either way
+    # the answer is 404, because the file on disk may be half-written.
+    ahead = page.request.get('%s/hls/segment.ts?id=%s&n=%d'
+                             % (BASE_URL, STREAM_SN, streaming_episode['total'] + 200))
+    assert ahead.status == 404, ahead.status
+    landed = page.request.get('%s/hls/segment.ts?id=%s&n=0' % (BASE_URL, STREAM_SN))
+    assert landed.ok and landed.body(), landed.status
+    # 188 is the transport-stream packet size; a chunk that is not a multiple of
+    # it is a partial write that should never have been published.
+    assert len(landed.body()) % 188 == 0, len(landed.body())
+
+
+@needs_stream_target
+def test_the_real_seek_bar_stops_at_what_has_landed(page, streaming_episode):
+    open_stream(page)
+
+    page.locator('#playerSeek').evaluate(
+        "(el) => { el.value = el.max;"
+        " el.dispatchEvent(new Event('change', {bubbles: true})); }")
+    page.wait_for_timeout(600)
+
+    current = page.evaluate(
+        "() => document.querySelector('#playerShell video').currentTime")
+    buffered = hls_status(page)['readyDuration']
+    # Dragging to the far end of a bar that spans the whole episode must land
+    # inside the downloaded part, not on a black frame that never resolves.
+    assert current <= buffered + 1.0, (current, buffered)
+    assert page.errors == []
