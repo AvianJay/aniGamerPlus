@@ -6,7 +6,7 @@
    --------------------------------------------------------------------------- */
 'use strict';
 
-var CACHE = 'agp-shell-v4';
+var CACHE = 'agp-shell-v5';
 
 /* Bare paths on purpose: the ?v= tokens in the templates move whenever an asset
    changes, and a list that pinned them would drift out of step unnoticed. These

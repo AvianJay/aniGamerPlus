@@ -133,7 +133,11 @@
     /* --- add to home screen ------------------------------------------------ */
 
     function isStandalone() {
-        return global.navigator.standalone === true ||
+        /* The native shell is neither: WKWebView reports display-mode browser
+           and has no navigator.standalone at all, so without the bridge check
+           the app would offer to install the app the viewer is already in. */
+        return !!global.AgpNative ||
+            global.navigator.standalone === true ||
             (global.matchMedia && global.matchMedia('(display-mode: standalone)').matches);
     }
 

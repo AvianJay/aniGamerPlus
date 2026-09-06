@@ -9,6 +9,13 @@
 var AGP = window.AGP;
 var dashboardApi = window.dashboardApi || {};
 
+/* The iOS shell injects this before any page script runs. Where it exists, the
+   two levels a browser refuses to hand over — the device's screen brightness
+   and the system output volume — are the system's own, so the player drives
+   them directly instead of dimming an overlay and apologising for the volume. */
+var NATIVE = (window.AgpNative && window.AgpNative.version >= 1) ? window.AgpNative : null;
+var BRIGHTNESS_LABEL = NATIVE ? '螢幕亮度' : '畫面亮度';
+
 var PLAYBACK_RATES = [0.5, 0.75, 1, 1.25, 1.5, 1.75, 2];
 var DANMAKU_OPACITIES = [100, 75, 50, 25];
 var BRIGHTNESS_LEVELS = [100, 80, 60, 40, 20];
@@ -264,7 +271,12 @@ function AgpPlayer(shell, options) {
     this.danmakuArea = readStore('agp-danmaku-area', '100');
     this.aspectMode = readStore('agp-aspect', 'contain');
     this.autoNext = readStore('agp-auto-next', '1') === '1';
-    this.brightness = Math.min(1, Math.max(MIN_BRIGHTNESS, Number(readStore('agp-brightness', '1')) || 1));
+    /* Native reports what the screen is actually at, so the first drag starts
+       from what the viewer is looking at rather than from a number the browser
+       build had to remember for itself. */
+    this.brightness = NATIVE
+        ? NATIVE.brightness
+        : Math.min(1, Math.max(MIN_BRIGHTNESS, Number(readStore('agp-brightness', '1')) || 1));
     this.rate = Number(readStore('agp-rate', '1')) || 1;
     this.isTouch = window.matchMedia(TOUCH_PLAYER_QUERY).matches;
 
@@ -490,8 +502,17 @@ AgpPlayer.prototype.wire = function () {
 
     this.volume.addEventListener('input', function () {
         video.muted = false;
-        video.volume = Number(self.volume.value) / 100;
+        self.setVolumeSafe(Number(self.volume.value) / 100);
     });
+
+    /* The hardware buttons, Control Centre and auto-brightness move the same
+       levels the player does; the app says so when they do. */
+    if (NATIVE) {
+        window.addEventListener('agpnativechange', function () {
+            self.brightness = NATIVE.brightness;
+            self.volume.value = String(Math.round(NATIVE.volume * 100));
+        });
+    }
 
     document.addEventListener('fullscreenchange', function () { self.syncFullscreenButton(); });
     document.addEventListener('webkitfullscreenchange', function () { self.syncFullscreenButton(); });
@@ -653,18 +674,27 @@ AgpPlayer.prototype.armIdleTimer = function () {
 
 /* --- brightness and volume ------------------------------------------------ */
 
-/* No browser exposes screen brightness to a page, so "brightness" here dims the
-   picture with an overlay. It is what every mobile web player does, and it is
-   labelled 畫面亮度 rather than 螢幕亮度 so nobody expects the system slider
-   to move. */
+/* No browser exposes screen brightness to a page, so in a browser "brightness"
+   dims the picture with an overlay — what every mobile web player does, and why
+   it is labelled 畫面亮度 rather than 螢幕亮度 there. In the iOS app the bridge
+   hands over the real thing, and the label changes to match. */
 AgpPlayer.prototype.applyBrightness = function () {
+    if (NATIVE) {
+        /* Dimming the picture too would apply the same drop twice. */
+        if (this.dim) { this.dim.style.opacity = '0'; }
+        NATIVE.setBrightness(this.brightness);
+        return;
+    }
     if (!this.dim) { return; }
     this.dim.style.opacity = String(1 - this.brightness);
     writeStore('agp-brightness', this.brightness);
 };
 
+/* The floor stops a web viewer blacking the picture out with no way back. iOS
+   never turns the backlight fully off, so the app has no such trap and gets the
+   whole range. */
 AgpPlayer.prototype.setBrightness = function (value) {
-    this.brightness = Math.min(1, Math.max(MIN_BRIGHTNESS, value));
+    this.brightness = Math.min(1, Math.max(NATIVE ? 0 : MIN_BRIGHTNESS, value));
     this.applyBrightness();
     return this.brightness;
 };
@@ -706,6 +736,7 @@ AgpPlayer.prototype.ensureGain = function () {
 };
 
 AgpPlayer.prototype.effectiveVolume = function () {
+    if (NATIVE) { return NATIVE.volume; }
     if (this.gain) { return this.gain.gain.value; }
     return this.video.muted ? 0 : this.video.volume;
 };
@@ -713,6 +744,14 @@ AgpPlayer.prototype.effectiveVolume = function () {
 /* Returns the level actually applied, or null when the platform refuses. */
 AgpPlayer.prototype.setVolumeSafe = function (value) {
     var level = Math.min(1, Math.max(0, value));
+    if (NATIVE) {
+        /* The system output level, not the element's: this is the same slider
+           the hardware buttons move, so nothing has to be routed off the
+           native audio path to make it work. */
+        NATIVE.setVolume(level);
+        this.volume.value = String(Math.round(level * 100));
+        return level;
+    }
     if (!this.volumeIsLocked()) {
         this.video.muted = false;
         this.video.volume = level;
@@ -839,8 +878,8 @@ AgpPlayer.prototype.attachGestures = function () {
                 '音量 ' + Math.round(applied * 100) + '%', applied, true);
         } else {
             var level = self.setBrightness(gesture.startBrightness + ratio);
-            self.flashBar('star', '畫面亮度 ' + Math.round(level * 100) + '%',
-                (level - MIN_BRIGHTNESS) / (1 - MIN_BRIGHTNESS), true);
+            self.flashBar('star', BRIGHTNESS_LABEL + ' ' + Math.round(level * 100) + '%',
+                NATIVE ? level : (level - MIN_BRIGHTNESS) / (1 - MIN_BRIGHTNESS), true);
         }
     });
 
@@ -1062,7 +1101,7 @@ AgpPlayer.prototype.togglePip = async function () {
 var MENU_TITLES = {
     main: '設定',
     speed: '播放速度',
-    brightness: '畫面亮度',
+    brightness: BRIGHTNESS_LABEL,
     danmaku: '彈幕',
     'danmaku-opacity': '彈幕透明度',
     'danmaku-area': '彈幕顯示區域',
@@ -1156,7 +1195,7 @@ AgpPlayer.prototype.renderMenu = function (view) {
         rows += row('畫面比例', (ASPECT_MODES.filter(function (mode) {
             return mode.key === self.aspectMode;
         })[0] || ASPECT_MODES[0]).label, 'data-view="aspect"');
-        rows += row('畫面亮度', Math.round(this.brightness * 100) + '%', 'data-view="brightness"');
+        rows += row(BRIGHTNESS_LABEL, Math.round(this.brightness * 100) + '%', 'data-view="brightness"');
         rows += row('鍵盤快速鍵', '', 'data-view="shortcuts"');
     } else if (view === 'speed') {
         rows = PLAYBACK_RATES.map(function (rate) {
@@ -1186,8 +1225,9 @@ AgpPlayer.prototype.renderMenu = function (view) {
             return choice(value + '%', Math.round(self.brightness * 100) === value,
                 'data-set="brightness" data-value="' + value + '"');
         }).join('');
-        rows += '<p class="desktop-player-menu-note">這會調暗播放畫面本身；' +
-            '瀏覽器無法變更裝置的螢幕亮度。</p>';
+        rows += '<p class="desktop-player-menu-note">' + (NATIVE
+            ? '這會直接調整裝置的螢幕亮度。'
+            : '這會調暗播放畫面本身；瀏覽器無法變更裝置的螢幕亮度。') + '</p>';
     } else if (view === 'aspect') {
         rows = ASPECT_MODES.map(function (mode) {
             return choice(mode.label, self.aspectMode === mode.key,

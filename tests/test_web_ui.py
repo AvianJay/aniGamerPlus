@@ -620,3 +620,145 @@ def test_no_stale_framework_assets_are_referenced():
             if not os.path.exists(os.path.join(ROOT, 'Dashboard', asset)):
                 missing.append('%s -> %s' % (name, asset))
     assert missing == [], missing
+
+
+# ------------------------------------------------------------- native (iOS) shell
+
+IOS_DIR = os.path.join(ROOT, 'ios')
+BRIDGE_JS = os.path.join(IOS_DIR, 'AGP', 'Resources', 'Bridge.js')
+
+# What the host does with a message, so the page can be exercised without a
+# device: WebViewController hands the value to SystemControls, which moves the
+# real level and reports the new one back through _update.
+FAKE_HOST = """
+window.__agpDevice = { brightness: 0.5, volume: 0.5, calls: [] };
+window.__AGP_NATIVE_SEED__ = { brightness: 0.5, volume: 0.5 };
+window.webkit = { messageHandlers: { agpNative: { postMessage: function (message) {
+    window.__agpDevice.calls.push(message);
+    if (message.name === 'brightness') { window.__agpDevice.brightness = message.value; }
+    if (message.name === 'volume') { window.__agpDevice.volume = message.value; }
+} } } };
+"""
+
+
+@pytest.fixture
+def native(browser):
+    """A phone running the real bridge the iOS app injects."""
+    with open(BRIDGE_JS, encoding='utf-8') as handle:
+        bridge = handle.read()
+    context = browser.new_context(
+        locale='zh-TW',
+        viewport=IPHONE_VIEWPORT,
+        device_scale_factor=3,
+        is_mobile=True,
+        has_touch=True,
+        user_agent=('Mozilla/5.0 (iPhone; CPU iPhone OS 17_5 like Mac OS X) '
+                    'AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.5 Mobile/15E148 Safari/604.1'),
+    )
+    # Same order and timing as WKUserScript at .atDocumentStart.
+    context.add_init_script(FAKE_HOST)
+    context.add_init_script(bridge)
+    page = context.new_page()
+    page.errors = []
+    page.on('pageerror', lambda error: page.errors.append(str(error)))
+    yield page
+    context.close()
+
+
+def test_bridge_hands_the_page_both_levels(native, server):
+    goto_watch(native, server)
+
+    state = native.evaluate("""() => ({
+        version: window.AgpNative.version,
+        platform: window.AgpNative.platform,
+        brightness: window.AgpNative.brightness,
+        volume: window.AgpNative.volume,
+    })""")
+    assert state == {'version': 1, 'platform': 'ios', 'brightness': 0.5, 'volume': 0.5}
+
+    # Setters clamp, report the level applied, and reach the host.
+    assert native.evaluate("() => window.AgpNative.setVolume(2)") == 1
+    assert native.evaluate("() => window.AgpNative.setBrightness(-1)") == 0
+    assert native.evaluate("() => window.__agpDevice.calls.slice(-2)") == [
+        {'name': 'volume', 'value': 1},
+        {'name': 'brightness', 'value': 0},
+    ]
+
+
+def test_native_volume_drag_moves_the_system_level(native, server):
+    goto_watch(native, server)
+    before = native.evaluate("() => document.querySelector('#playerShell video').volume")
+
+    box = surface_box(native)
+    x = box['x'] + box['width'] * 0.78
+    drag(native, x, box['y'] + box['height'] * 0.52, x, box['y'] + box['height'] * 0.06)
+
+    assert native.evaluate("() => window.__agpDevice.volume") > 0.85
+    # The element is left alone: iOS refuses writes to it, and routing round
+    # that through a gain node is exactly what the app makes unnecessary.
+    assert native.evaluate("() => document.querySelector('#playerShell video').volume") == before
+    expect(native.locator('#playerHud')).to_contain_text('音量')
+
+
+def test_native_brightness_drag_dims_the_screen_not_the_picture(native, server):
+    goto_watch(native, server)
+
+    box = surface_box(native)
+    x = box['x'] + box['width'] * 0.22
+    drag(native, x, box['y'] + box['height'] * 0.35, x, box['y'] + box['height'] * 0.60)
+
+    level = native.evaluate("() => window.__agpDevice.brightness")
+    # Below the overlay's floor, which is the point: that floor only exists so a
+    # web viewer cannot black out the picture with no way back.
+    assert 0 < level < 0.2, level
+    assert native.locator('#playerDim').evaluate('(el) => Number(el.style.opacity || 0)') == 0
+    expect(native.locator('#playerHud')).to_contain_text('螢幕亮度')
+
+
+def test_hardware_buttons_reach_the_player(native, server):
+    goto_watch(native, server)
+    native.evaluate("() => window.AgpNative._update({ volume: 0.28, brightness: 0.9 })")
+
+    expect(native.locator('#playerVolume')).to_have_value('28')
+    native.locator('#settingsToggle').click()
+    expect(native.locator('#settingsMenu [data-view="brightness"]')).to_contain_text('90%')
+
+
+def test_native_settings_menu_names_the_real_thing(native, server):
+    goto_watch(native, server)
+    native.locator('#settingsToggle').click()
+    menu = native.locator('#settingsMenu')
+    expect(menu).to_contain_text('螢幕亮度')
+    assert '畫面亮度' not in menu.inner_text()
+
+    menu.locator('[data-view="brightness"]').click()
+    expect(menu).to_contain_text('這會直接調整裝置的螢幕亮度')
+
+
+def test_the_app_is_not_offered_the_install_banner(native, server):
+    native.goto(server.url)
+    native.wait_for_selector('#homeTimetable .agp-day')
+    assert native.locator('#agpA2HS').count() == 0
+    assert native.errors == []
+
+
+def test_the_ios_shell_and_the_page_agree_on_the_contract():
+    """Nothing but these two files links the app to the player, so a rename on
+    one side has to fail here rather than on a device."""
+    with open(BRIDGE_JS, encoding='utf-8') as handle:
+        bridge = handle.read()
+    with open(os.path.join(IOS_DIR, 'AGP', 'WebViewController.swift'), encoding='utf-8') as handle:
+        host = handle.read()
+    with open(os.path.join(ROOT, 'Dashboard', 'static', 'js', 'watch.js'), encoding='utf-8') as handle:
+        player = handle.read()
+
+    for token in ['__AGP_NATIVE_SEED__', 'agpNative']:
+        assert token in bridge and token in host, token
+    for token in ['AgpNative', 'agpnativechange']:
+        assert token in bridge and token in player, token
+    # Bridge.js is read out of the bundle by name, and only lands there because
+    # its directory is declared as a resources build phase.
+    with open(os.path.join(IOS_DIR, 'project.yml'), encoding='utf-8') as handle:
+        spec = handle.read()
+    assert 'buildPhase: resources' in spec
+    assert 'forResource: "Bridge"' in host
