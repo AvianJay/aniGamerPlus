@@ -1,0 +1,28 @@
+# 根目錄的 .gitignore 是 Python 專案的樣板, 裡面的 `lib/` 指的是打包產物,
+# 剛好把這個 App 的原始碼整個吃掉. 這裡收回來 —— 收的是目錄本身,
+# git 對被排除的目錄不會往下走, 只 unignore 裡面的檔案沒有用.
+!/lib/
+
+# Flutter / Dart
+.dart_tool/
+.packages
+.flutter-plugins
+.flutter-plugins-dependencies
+build/
+pubspec.lock
+.pub-cache/
+.pub/
+
+# 平台外殼由 tool/prepare_platforms.sh 產生 (見 README)
+/android/
+/ios/
+/linux/
+/macos/
+/windows/
+/web/
+
+# IDE
+.idea/
+.vscode/
+*.iml
+*.log

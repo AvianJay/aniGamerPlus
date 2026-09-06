@@ -1,0 +1,197 @@
+# Builds the Flutter client in flutter_app/ for Android and iOS.
+#
+# The platform shells (android/, ios/) are not in the repository: they are
+# `flutter create` boilerplate that goes stale the moment Flutter moves on, so
+# tool/prepare_platforms.sh regenerates and patches them on every run.
+#
+# The IPA comes out unsigned, same as the WebView shell in iOS-build.yml: an
+# Apple Developer identity cannot live in a public repository, and every
+# sideloader re-signs with the installer's own identity anyway. The APK is
+# signed with Flutter's debug key, which is enough to install by hand but not
+# for the Play Store.
+
+name: aniGamerPlus Flutter App
+
+on:
+  push:
+    branches:
+      - master
+    paths:
+      - 'flutter_app/**'
+      - '.github/workflows/Flutter-build.yml'
+  pull_request:
+    paths:
+      - 'flutter_app/**'
+      - '.github/workflows/Flutter-build.yml'
+  # Not a tag push: a path filter and a tag filter together make tag runs
+  # unreliable, and by the time a release is published the release the build
+  # attaches to definitely exists.
+  release:
+    types: [published]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: flutter-${{ github.ref }}
+  cancel-in-progress: true
+
+defaults:
+  run:
+    working-directory: flutter_app
+
+jobs:
+  analyze:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          cache: true
+
+      - name: Show toolchain
+        run: flutter --version
+
+      - name: Resolve dependencies
+        run: flutter pub get
+
+      # No platform shell needed here: analysis only reads Dart.
+      - name: Analyze
+        run: flutter analyze --no-fatal-infos
+
+  android:
+    needs: analyze
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          cache: true
+
+      - name: Generate the platform shell
+        run: bash tool/prepare_platforms.sh
+
+      - name: Build the APK
+        run: flutter build apk --release --build-number "${GITHUB_RUN_NUMBER}"
+
+      - name: Build the app bundle
+        run: flutter build appbundle --release --build-number "${GITHUB_RUN_NUMBER}"
+
+      - name: Name the artifacts
+        run: |
+          set -euo pipefail
+          VERSION=$(grep -m1 '^version:' pubspec.yaml | sed 's/version: *//; s/+.*//')
+          APK="aniGamerPlus-${VERSION}-${GITHUB_RUN_NUMBER}.apk"
+          AAB="aniGamerPlus-${VERSION}-${GITHUB_RUN_NUMBER}.aab"
+          mv build/app/outputs/flutter-apk/app-release.apk "${APK}"
+          mv build/app/outputs/bundle/release/app-release.aab "${AAB}"
+          echo "APK_NAME=${APK}" >> "${GITHUB_ENV}"
+          echo "AAB_NAME=${AAB}" >> "${GITHUB_ENV}"
+          ls -lh "${APK}" "${AAB}"
+
+      - name: Upload the APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ env.APK_NAME }}
+          path: flutter_app/${{ env.APK_NAME }}
+          if-no-files-found: error
+          retention-days: 90
+
+      - name: Upload the app bundle
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ env.AAB_NAME }}
+          path: flutter_app/${{ env.AAB_NAME }}
+          if-no-files-found: error
+          retention-days: 90
+
+      - name: Attach the APK to the release
+        if: github.event_name == 'release'
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.event.release.tag_name }}
+          files: flutter_app/${{ env.APK_NAME }}
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  ios:
+    needs: analyze
+    runs-on: macos-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          cache: true
+
+      - name: Show toolchain
+        run: |
+          xcodebuild -version
+          flutter --version
+
+      - name: Generate the platform shell
+        run: bash tool/prepare_platforms.sh
+
+      - name: Build
+        run: |
+          flutter build ios --release --no-codesign \
+            --build-number "${GITHUB_RUN_NUMBER}"
+
+      - name: Check the bundle
+        run: |
+          set -euo pipefail
+          APP="build/ios/iphoneos/Runner.app"
+          test -d "${APP}" || { echo "no app bundle at ${APP}"; exit 1; }
+          lipo -info "${APP}/Runner"
+          # The ATS exception is what lets the app talk to a LAN http:// server.
+          # If the patch step silently stopped applying it, that would only show
+          # up on a device, halfway through someone's evening.
+          /usr/libexec/PlistBuddy -c 'Print :NSAppTransportSecurity:NSAllowsArbitraryLoads' "${APP}/Info.plist"
+          /usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "${APP}/Info.plist"
+          /usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "${APP}/Info.plist"
+
+      - name: Package the IPA
+        run: |
+          set -euo pipefail
+          APP="build/ios/iphoneos/Runner.app"
+          VERSION=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "${APP}/Info.plist")
+          IPA="aniGamerPlus-flutter-${VERSION}-${GITHUB_RUN_NUMBER}-unsigned.ipa"
+          rm -rf Payload
+          mkdir Payload
+          cp -R "${APP}" Payload/
+          # An IPA is a zip whose single top-level directory is Payload.
+          zip -qry "${IPA}" Payload
+          rm -rf Payload
+          echo "IPA_NAME=${IPA}" >> "${GITHUB_ENV}"
+          ls -lh "${IPA}"
+
+      - name: Upload the IPA
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ env.IPA_NAME }}
+          path: flutter_app/${{ env.IPA_NAME }}
+          if-no-files-found: error
+          retention-days: 90
+
+      - name: Attach the IPA to the release
+        if: github.event_name == 'release'
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.event.release.tag_name }}
+          files: flutter_app/${{ env.IPA_NAME }}
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

@@ -1,0 +1,38 @@
+name: agp_mobile
+description: "aniGamerPlus+ 行動版 — 動畫瘋片庫的 iOS / Android 原生客戶端"
+publish_to: "none"
+version: 1.0.0+1
+
+environment:
+  # PopScope.onPopInvokedWithResult 要 Flutter 3.24 (Dart 3.5),
+  # Color.withValues 要 Flutter 3.27 (Dart 3.6) —— 取後者
+  sdk: ">=3.6.0 <4.0.0"
+
+dependencies:
+  flutter:
+    sdk: flutter
+
+  # 網路: 純 Dart, 沒有原生程式碼
+  http: ">=1.2.0 <2.0.0"
+  web_socket_channel: ">=2.4.0 <4.0.0"
+
+  # 儲存: 設定 / 收藏 / 下載索引
+  shared_preferences: ">=2.2.0 <3.0.0"
+  path_provider: ">=2.1.0 <3.0.0"
+
+  # 播放器 (mp4 + HLS 邊看邊下載)
+  video_player: ">=2.8.0 <3.0.0"
+
+  # 播放中別讓螢幕睡著
+  wakelock_plus: ">=1.2.0 <2.0.0"
+
+  # 「在動畫瘋開啟」要把連結丟給瀏覽器
+  url_launcher: ">=6.2.0 <7.0.0"
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+  flutter_lints: ">=3.0.0 <7.0.0"
+
+flutter:
+  uses-material-design: true

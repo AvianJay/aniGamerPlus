@@ -2180,6 +2180,16 @@ if settings['dashboard']['user_control']['enabled']:
                 safe_user.pop('password_hash', None)
                 safe_user.pop('token', None)
                 users.append(safe_user)
+            # 手機 app 沒有辦法解析 usermanage.html, 拿同一份資料的 JSON 版
+            if request.args.get('format') == 'json':
+                return jsonify({'status': '200', 'users': [
+                    {
+                        'username': user.get('username', ''),
+                        'role': user.get('role', 'user'),
+                        'videotimes': len(user.get('videotimes') or {}),
+                    }
+                    for user in users
+                ]})
             return render_template('usermanage.html', users=users)
 
         reqdata = request.form.copy() if request.form else (request.get_json(silent=True) or {})
