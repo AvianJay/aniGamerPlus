@@ -9,12 +9,12 @@
 #     bash tool/prepare_platforms.sh
 #
 # 可用環境變數:
-#   ORG        套件名前綴, 預設 tw.com.anigamerplus (→ tw.com.anigamerplus.agp_mobile)
+#   ORG        套件名前綴, 預設 tw.avianjay (→ tw.avianjay.agpp)
 #   APP_LABEL  桌面上顯示的名字, 預設 aniGamerPlus
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-ORG="${ORG:-tw.com.anigamerplus}"
+ORG="${ORG:-tw.avianjay}"
 APP_LABEL="${APP_LABEL:-aniGamerPlus}"
 
 cd "$ROOT"
@@ -38,7 +38,7 @@ echo "==> 產生平台樣板 (org=$ORG)"
 flutter create \
   --platforms=android,ios \
   --org "$ORG" \
-  --project-name agp_mobile \
+  --project-name agpp \
   --overwrite \
   "$TMP/scaffold" >/dev/null
 
