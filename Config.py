@@ -192,9 +192,6 @@ def __init_settings():
                 'ads_time': 25,
                 'mobile_ads_time': 25,
                 'use_dashboard': True,
-                'command_console': {
-                    'enabled': False
-                },
                 'dashboard': {
                     'host': '127.0.0.1',
                     'port': 5000,
@@ -489,10 +486,14 @@ def __update_settings(old_settings):  # 升级配置文件
             'enabled': False,
             'use_wdm': True,
             'headless': False,
-            'save_browser_cookie': True,
+            'save_browser_cookie': False,
             'username': 'My_Bahamut_Username',
             'password': 'My_Bahamut_Password'
         }
+
+    if 'download_with_youtube' not in new_settings.keys():
+        # 從YouTube搜尋並下載以得到1080P畫質
+        new_settings['download_with_youtube'] = False
 
     if 'check_sn_ended' not in new_settings.keys():
         # 檢查動漫完結

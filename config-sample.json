@@ -2,9 +2,10 @@
     "bangumi_dir": "",
     "temp_dir": "",
     "classify_bangumi": true,
+    "classify_season": false,
     "check_frequency": 5,
     "download_cd": 60,
-    "parse_sn_cd": 3,
+    "parse_sn_cd": 5,
     "download_resolution": "1080",
     "lock_resolution": false,
     "only_use_vip": false,
@@ -24,7 +25,7 @@
     "zerofill": 1,
     "ua": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/138.0.0.0 Safari/537.36",
     "browser_fingerprint": {
-        "ja3": "771,4865-4866-4867-49195-49199-49196-49200-52393-52392-49171-49172-156-157-47-53,0-10-65281-17613-43-45-16-5-65037-13-35-27-18-23-11-51,4588-29-23-24,0",
+        "ja3": "771,4865-4866-4867-49195-49199-49196-49200-52393-52392-49171-49172-156-157-47-53,43-35-65281-16-23-27-65037-10-18-45-17613-51-11-0-5-13-41,4588-29-23-24,0",
         "akamai": "1:65536;2:0;4:6291456;6:262144|15663105|0|m,a,s,p"
     },
     "use_proxy": false,
@@ -54,31 +55,65 @@
             "http://127.0.0.1:5700/send_group_msg?access_token=abc&group_id=87654321"
         ]
     },
+    "telebot_notify": false,
+    "telebot_token": "",
+    "telebot_use_chat_id": false,
+    "telebot_chat_id": "",
+    "discord_notify": false,
+    "discord_token": "",
+    "plex_refresh": false,
+    "plex_url": "",
+    "plex_token": "",
+    "plex_section": "",
+    "plex_naming": false,
     "faststart_movflags": false,
     "audio_language": false,
     "use_mobile_api": false,
     "danmu": false,
+    "danmu_ban_words": [],
     "check_latest_version": true,
     "read_sn_list_when_checking_update": true,
     "read_config_when_checking_update": true,
     "ads_time": 25,
-	"mobile_ads_time": 25,
+    "mobile_ads_time": 25,
     "use_dashboard": true,
-    "command_console": {
-        "enabled": false
-    },
     "dashboard": {
         "host": "127.0.0.1",
         "port": 5000,
         "SSL": false,
         "BasicAuth": false,
         "username": "admin",
-        "password": "admin"
+        "password": "admin",
+        "online_watch": false,
+        "online_watch_requires_login": false,
+        "user_control": {
+            "enabled": false,
+            "allow_register": false,
+            "default_user": [
+                {
+                    "username": "admin",
+                    "password": "admin",
+                    "role": "admin"
+                }
+            ]
+        }
     },
     "save_logs": true,
     "quantity_of_logs": 7,
-    "config_version": 13.0,
+    "config_version": 18.3,
     "database_version": 2.0,
-    "m3u8": true,
-    "danmu_update": true
+    "m3u8": false,
+    "auto_update_danmu": false,
+    "danmu_download_cd": 5,
+    "download_with_youtube": false,
+    "auto_login": {
+        "enabled": false,
+        "use_wdm": true,
+        "headless": false,
+        "save_browser_cookie": false,
+        "username": "My_Bahamut_Username",
+        "password": "My_Bahamut_Password"
+    },
+    "check_sn_ended": false,
+    "command_console": false
 }

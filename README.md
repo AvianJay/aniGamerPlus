@@ -231,6 +231,7 @@ docker run -td --name anigamerplus \
     "check_latest_version": true,  // 是否檢查更新
     "read_sn_list_when_checking_update": true,  // 是否在檢查更新時讀取sn_list.txt, 開啓後對sn_list.txt的更改將會在下次檢查更新時生效而不用重啓程序
     "read_config_when_checking_update": true,  // 是否在檢查更新時讀取配置文件, 開啓後對配置文件的更改將會在下次檢查時更新生效而不用重啓程序
+    "check_sn_ended": false,  // 檢查更新時比對動畫瘋週期表, 不在表上且已下載完的動畫自動在 sn_list 中註釋為 "# Ended"
     "ads_time": 25,  // 非VIP廣告等待時間, 如果等待時間不足, 程式會自行追加時間 (最大20秒)
     "mobile_ads_time": 25  // 使用移動端API解析的廣告等待時間
     "use_dashboard": true  // Web 控制台開關
