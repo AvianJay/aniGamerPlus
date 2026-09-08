@@ -106,6 +106,52 @@ class DelayedPlayer extends VideoPlayerPlatform {
   Widget buildView(int id) => const ColoredBox(color: Color(0xFF384054));
 }
 
+/// 假的系統音量與螢幕亮度. 這兩個手勢的重點就是「有沒有真的打到系統那一層」,
+/// 所以直接攔在 method channel 上, 把送過去的值收下來驗.
+class DeviceLevels {
+  double volume = 1;
+  double brightness = 1;
+  bool reset = false;
+
+  static const _volumeChannel =
+      MethodChannel('com.kurenai7968.volume_controller.method');
+  static const _brightnessChannel =
+      MethodChannel('github.com/aaassseee/screen_brightness');
+
+  void install(WidgetTester tester) {
+    final messenger = tester.binding.defaultBinaryMessenger;
+    messenger.setMockMethodCallHandler(_volumeChannel, (call) async {
+      switch (call.method) {
+        case 'getVolume':
+          return volume;
+        case 'setVolume':
+          volume = (call.arguments as Map)['volume'] as double;
+          return null;
+      }
+      return null;
+    });
+    messenger.setMockMethodCallHandler(_brightnessChannel, (call) async {
+      switch (call.method) {
+        case 'getApplicationScreenBrightness':
+          return brightness;
+        case 'setApplicationScreenBrightness':
+          brightness = (call.arguments as Map)['brightness'] as double;
+          return null;
+        case 'resetApplicationScreenBrightness':
+          reset = true;
+          return null;
+      }
+      return null;
+    });
+  }
+
+  void remove(WidgetTester tester) {
+    final messenger = tester.binding.defaultBinaryMessenger;
+    messenger.setMockMethodCallHandler(_volumeChannel, null);
+    messenger.setMockMethodCallHandler(_brightnessChannel, null);
+  }
+}
+
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
   setUpAll(() async {
@@ -126,7 +172,9 @@ void main() {
   late Directory temp;
   late AppState state;
   late DelayedPlayer player;
+  late DeviceLevels levels;
   setUp(() async {
+    levels = DeviceLevels();
     temp = await Directory.systemTemp.createTemp('agp-player-test-');
     PathProviderPlatform.instance = Paths(temp.path);
     WakelockPlusPlatformInterface.instance = Wake();
@@ -145,6 +193,8 @@ void main() {
     await temp.delete(recursive: true);
   });
   Future<void> open(WidgetTester tester) async {
+    levels.install(tester);
+    addTearDown(() => levels.remove(tester));
     await tester.binding.setSurfaceSize(const Size(1000, 800));
     await tester.pumpWidget(RepaintBoundary(
         key: const ValueKey('capture'),
@@ -194,16 +244,19 @@ void main() {
         .where((e) => (e.widget as ColoredBox).color == const Color(0xFF384054))
         .first;
     final box = surface.renderObject! as RenderBox;
+    // 往下滑 = 調暗 / 調小, 而且要真的打到系統那一層去
     await tester.dragFrom(
         box.localToGlobal(Offset(box.size.width * .2, box.size.height * .4)),
         const Offset(0, 60));
     await tester.pump();
-    expect(state.prefs.brightness, lessThan(1));
+    expect(levels.brightness, lessThan(1));
     await tester.dragFrom(
         box.localToGlobal(Offset(box.size.width * .8, box.size.height * .4)),
         const Offset(0, 60));
     await tester.pump();
-    expect(player.volume, lessThan(1));
+    expect(levels.volume, lessThan(1));
+    // 播放器自己的音量一律開滿, 衰減交給系統, 免得兩層乘起來
+    expect(player.volume, 1);
     await tester.tap(find.text('1.0x'));
     await tester.pump(const Duration(milliseconds: 300));
     expect(find.text('0.25x'), findsOneWidget);
@@ -312,6 +365,17 @@ void main() {
     await open(tester);
     await tester.binding.setSurfaceSize(const Size(1280, 882));
     await tester.pump();
+    if (Platform.environment['AGP_PLAYER_CAPTURE'] == '1') {
+      final boundary = tester.renderObject<RenderRepaintBoundary>(
+          find.byKey(const ValueKey('capture')));
+      await tester.runAsync(() async {
+        final image = await boundary.toImage();
+        final bytes = await image.toByteData(format: ui.ImageByteFormat.png);
+        await File('../.agpwork/player-tablet.png')
+            .writeAsBytes(bytes!.buffer.asUint8List());
+        image.dispose();
+      });
+    }
     expect(find.byTooltip('畫面比例'), findsNothing);
     final settings = find.byTooltip('設定');
     expect(tester.getSize(settings).width, greaterThanOrEqualTo(48));

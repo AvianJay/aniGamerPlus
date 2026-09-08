@@ -22,8 +22,10 @@ import 'dart:math' as math;
 import 'package:flutter/material.dart';
 import 'package:flutter/scheduler.dart';
 import 'package:flutter/services.dart';
+import 'package:screen_brightness/screen_brightness.dart';
 import 'package:url_launcher/url_launcher.dart';
 import 'package:video_player/video_player.dart';
+import 'package:volume_controller/volume_controller.dart';
 import 'package:wakelock_plus/wakelock_plus.dart';
 
 import '../api/client.dart';
@@ -193,20 +195,54 @@ const List<List<String>> kGestureHelp = [
 /// 播放器上的轉圈. 用動畫瘋的青色 —— 預設是主題色 (紅), 在一片青色的
 /// 進度條、選集旁邊看起來像是出了什麼錯.
 class _PlayerSpinner extends StatelessWidget {
-  const _PlayerSpinner({required this.size});
+  const _PlayerSpinner({required this.size, this.speed});
 
   final double size;
 
+  /// 現在的下載速度 (bytes/秒). 量得到才顯示 —— 播離線檔時本來就沒有流量,
+  /// 掛一個 0 B/s 在那裡只會讓人以為卡住了.
+  final ValueNotifier<double>? speed;
+
   @override
-  Widget build(BuildContext context) => SizedBox(
-        width: size,
-        height: size,
-        child: const CircularProgressIndicator(
-          strokeWidth: 2.6,
-          color: AgpColors.bahamut,
-          backgroundColor: Color(0x33FFFFFF),
+  Widget build(BuildContext context) {
+    final meter = speed;
+    return Column(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        SizedBox(
+          width: size,
+          height: size,
+          child: const CircularProgressIndicator(
+            strokeWidth: 2.6,
+            color: AgpColors.bahamut,
+            backgroundColor: Color(0x33FFFFFF),
+          ),
         ),
-      );
+        if (meter != null)
+          ValueListenableBuilder<double>(
+            valueListenable: meter,
+            builder: (context, value, _) => value <= 0
+                ? const SizedBox(height: 20)
+                : Padding(
+                    padding: const EdgeInsets.only(top: 8),
+                    child: Text(
+                      '${formatBytes(value.round())}/s',
+                      style: const TextStyle(
+                        fontSize: 12,
+                        height: 1,
+                        color: Colors.white,
+                        fontWeight: FontWeight.w600,
+                        fontFeatures: [FontFeature.tabularFigures()],
+                        shadows: [
+                          Shadow(color: Color(0xB3000000), blurRadius: 4)
+                        ],
+                      ),
+                    ),
+                  ),
+          ),
+      ],
+    );
+  }
 }
 
 class WatchPage extends StatefulWidget {
@@ -264,6 +300,9 @@ class _WatchPageState extends State<WatchPage>
   /// 位置的插值時鐘. video_player 大約半秒才回報一次, 直接餵給彈幕會一格一格跳,
   /// 所以記下最後一次回報的位置與當下時間, 每一幀自己往前推。
   final ValueNotifier<double> _clock = ValueNotifier<double>(0);
+
+  /// 現在的下載速度 (bytes/秒), 給轉圈底下那一行用
+  final ValueNotifier<double> _netSpeed = ValueNotifier<double>(0);
   Ticker? _ticker;
   double _anchor = 0;
   int _anchorAt = 0;
@@ -351,8 +390,9 @@ class _WatchPageState extends State<WatchPage>
     WidgetsBinding.instance.addObserver(this);
     _sn = widget.sn;
     _rate = prefs.rate;
-    _volume = prefs.volume;
-    _brightness = prefs.brightness;
+    // 音量跟亮度是裝置的狀態, 不是這個 app 的偏好 —— 存起來下次套用回去只會
+    // 覆蓋掉使用者在別的地方調過的值. 開頁時問一次現在是多少.
+    unawaited(_syncDeviceLevels());
     _danmakuOn = prefs.danmakuOn;
     _danmakuOpacity = prefs.danmakuOpacity;
     _danmakuArea = prefs.danmakuArea;
@@ -396,8 +436,10 @@ class _WatchPageState extends State<WatchPage>
       unawaited(controller?.dispose());
     }
     _clock.dispose();
+    _netSpeed.dispose();
     _qualities.dispose();
     unawaited(WakelockPlus.disable());
+    unawaited(_releaseBrightness());
     if (_fullscreen) {
       unawaited(SystemChrome.setEnabledSystemUIMode(SystemUiMode.edgeToEdge));
       unawaited(
@@ -556,6 +598,22 @@ class _WatchPageState extends State<WatchPage>
     if (target > 1) unawaited(_seekTo(target, resume: _playing));
   }
 
+  /// 這一輪不要走快取 (它剛剛害這一集打不開)
+  bool _bypassCache = false;
+
+  /// 把伺服器上的位址換成本機快取的. 換不成就原樣回去.
+  Future<Uri> _cachedUrl(Uri direct, String key) async {
+    if (_bypassCache || state.offline) return direct;
+    try {
+      final cache = await state.ensureVideoCache();
+      if (cache == null) return direct;
+      return cache.wrap(
+          upstream: direct, headers: client.authHeaders, key: key);
+    } catch (_) {
+      return direct;
+    }
+  }
+
   /// 這一次要播的到底是哪一份. 拿來認暖機播放器 —— 換了畫質、改走離線檔或者
   /// 從下載中變成完成檔, 這個字串就不一樣, 手上那個就不能用了.
   String get _sourceKey {
@@ -599,6 +657,7 @@ class _WatchPageState extends State<WatchPage>
 
     final local = _localFile;
     late VideoPlayerController controller;
+    var usedCache = false;
     if (_needsProxy) {
       // 挑的畫質手上沒有, 只能請伺服器現去動畫瘋代抓. 放在最前面是因為這是使用者
       // 剛剛明確要求的, 比任何一份現成的檔都優先
@@ -619,8 +678,14 @@ class _WatchPageState extends State<WatchPage>
       );
     } else {
       final res = _video?.resolution ?? 0;
+      final direct = client.videoUrl(_sn, resolution: res > 0 ? res : null);
+      // 片庫裡的完整 mp4 走本機快取: 檔頭 (moov 在檔尾的話還包含檔尾那一塊)
+      // 留在磁碟上, app 關掉再開也算數. HLS 不走 —— 那份 playlist 裡的分片
+      // 是相對路徑, 換了 host 就解析到本機來了.
+      final cached = await _cachedUrl(direct, 'v$_sn-$res');
+      usedCache = cached != direct;
       controller = VideoPlayerController.networkUrl(
-        client.videoUrl(_sn, resolution: res > 0 ? res : null),
+        cached,
         httpHeaders: client.authHeaders,
         videoPlayerOptions: VideoPlayerOptions(allowBackgroundPlayback: true),
       );
@@ -630,7 +695,14 @@ class _WatchPageState extends State<WatchPage>
       await controller.initialize();
     } catch (error) {
       unawaited(controller.dispose());
-      if (!mounted) return;
+      if (!mounted || generation != _sourceGeneration) return;
+      if (usedCache) {
+        // 快取那一層是加速用的, 不該變成播不出來的理由. 關掉它重試一次,
+        // 這一輪剩下的時間都直連.
+        _bypassCache = true;
+        await _openSource(seekTo: seekTo, autoplay: autoplay);
+        return;
+      }
       setState(() {
         _initialising = false;
         _error = state.offline ? '離線中，而且這一集沒有下載到手機。' : '播放失敗: $error';
@@ -643,7 +715,8 @@ class _WatchPageState extends State<WatchPage>
     }
 
     controller.addListener(_onPlayerUpdate);
-    await controller.setVolume(_volume);
+    // 播放器自己一律開滿: 音量由系統那一層決定, 兩邊都衰減會變成乘起來
+    await controller.setVolume(1);
     await controller.setPlaybackSpeed(_rate);
     await controller.setLooping(false);
 
@@ -682,7 +755,7 @@ class _WatchPageState extends State<WatchPage>
       {required double target, bool autoplay = true}) async {
     final controller = warm.controller;
     try {
-      await controller.setVolume(_volume);
+      await controller.setVolume(1);
       await controller.setPlaybackSpeed(_rate);
     } catch (_) {
       warm.discard();
@@ -1014,6 +1087,7 @@ class _WatchPageState extends State<WatchPage>
   // =============================================================== 時鐘
 
   void _onFrame(Duration _) {
+    _sampleSpeed();
     final controller = _controller;
     if (controller == null || !controller.value.isInitialized) return;
     if (_background || _scrubbing || _pendingSeek != null) return;
@@ -1267,17 +1341,69 @@ class _WatchPageState extends State<WatchPage>
     _flashMessage('播放速度 ${rate == 1 ? '正常' : '$rate×'}');
   }
 
+  /// 右半邊上下滑 = 系統音量.
+  ///
+  /// 本來改的是 controller.setVolume() —— 那只是播放器自己的衰減, 系統音量
+  /// 沒有動, 所以音量鍵、控制中心看到的都還是原來那個數字, 而且它預設就是
+  /// 100%, 往上滑根本沒有東西可調. 現在直接改系統的.
   Future<void> _setVolume(double value) async {
     final volume = value.clamp(0.0, 1.0);
     setState(() => _volume = volume);
-    await _controller?.setVolume(volume);
-    await state.savePref(() => prefs.setVolume(volume));
+    try {
+      // 我們自己畫了 HUD, 不要再疊一個系統的音量條上來
+      VolumeController.instance.showSystemUI = false;
+      await VolumeController.instance.setVolume(volume);
+    } catch (_) {
+      // 平台不支援 / 測試環境沒有這個 plugin: 手勢照樣有回饋, 只是沒作用
+    }
   }
 
+  /// 進播放頁時把兩個滑桿對到裝置現在的實際值, 不然第一下會從一個假的
+  /// 起點跳過去.
+  Future<void> _syncDeviceLevels() async {
+    double? volume;
+    double? brightness;
+    try {
+      volume = await VolumeController.instance.getVolume();
+    } catch (_) {
+      volume = null;
+    }
+    try {
+      brightness = await ScreenBrightness().application;
+    } catch (_) {
+      brightness = null;
+    }
+    if (!mounted) return;
+    setState(() {
+      if (volume != null) _volume = volume.clamp(0.0, 1.0);
+      if (brightness != null) _brightness = brightness.clamp(0.0, 1.0);
+    });
+  }
+
+  /// 左半邊上下滑 = 螢幕亮度.
+  ///
+  /// 本來是在畫面上疊一層半透明的黑 —— 看起來像變暗, 但背光沒動, 省不到電,
+  /// 而且往上滑不會比原本更亮. 改成真的去調背光。
+  ///
+  /// 用 application 而不是 system: 只在這個 app 在前景時生效, 離開就回到使用者
+  /// 原本的設定, Android 上也不必要 WRITE_SETTINGS 權限.
   Future<void> _setBrightness(double value) async {
     final brightness = value.clamp(kMinBrightness, 1.0);
     setState(() => _brightness = brightness);
-    await state.savePref(() => prefs.setBrightness(brightness));
+    try {
+      await ScreenBrightness().setApplicationScreenBrightness(brightness);
+    } catch (_) {
+      // 平台不支援就算了, 不值得為了亮度在播放頁上彈錯誤
+    }
+  }
+
+  /// 離開播放頁就把亮度還給系統
+  static Future<void> _releaseBrightness() async {
+    try {
+      await ScreenBrightness().resetApplicationScreenBrightness();
+    } catch (_) {
+      // 沒設過就沒得還
+    }
   }
 
   Future<void> _setDanmaku(bool on) async {
@@ -1697,7 +1823,10 @@ class _WatchPageState extends State<WatchPage>
                     );
                     if (constraints.maxWidth >= 1100 &&
                         constraints.maxHeight >= 600) {
-                      final videoWidth = constraints.maxWidth - 320;
+                      // 動畫瘋的右欄是一整條貼齊螢幕邊的面板, 不是一張留了
+                      // 邊界又有圓角的卡片. 影片那一側也一路貼到左邊.
+                      const panelWidth = 300.0;
+                      final videoWidth = constraints.maxWidth - panelWidth;
                       return Column(children: [
                         _titleBar(),
                         Expanded(
@@ -1714,9 +1843,17 @@ class _WatchPageState extends State<WatchPage>
                               Expanded(child: _pageBody(includeInfo: false)),
                             ])),
                             SizedBox(
-                                width: 320,
-                                child:
-                                    SingleChildScrollView(child: _infoCard())),
+                              width: panelWidth,
+                              child: ColoredBox(
+                                // 跟著主題走: 這個 app 有淺色模式, 寫死深色
+                                // 的話那邊會變成一條黑柱
+                                color: Theme.of(context)
+                                    .colorScheme
+                                    .surfaceContainerHighest,
+                                child: SingleChildScrollView(
+                                    child: _infoCard(flush: true)),
+                              ),
+                            ),
                           ],
                         )),
                       ]);
@@ -1918,20 +2055,11 @@ class _WatchPageState extends State<WatchPage>
                         ),
                       ),
                     ),
-                  if (_brightness < 1)
-                    Positioned.fill(
-                      child: IgnorePointer(
-                        child: ColoredBox(
-                          color:
-                              Colors.black.withValues(alpha: 1 - _brightness),
-                        ),
-                      ),
-                    ),
                   if ((_initialising || !ready) && _error.isEmpty)
-                    const Center(child: _PlayerSpinner(size: 36)),
+                    Center(child: _PlayerSpinner(size: 36, speed: _netSpeed)),
                   if (_error.isNotEmpty) _errorOverlay(),
                   if (ready && (_buffering || _pendingSeek != null))
-                    const Center(child: _PlayerSpinner(size: 32)),
+                    Center(child: _PlayerSpinner(size: 32, speed: _netSpeed)),
                   if (_downloading.isNotEmpty) _downloadBadge(),
                   AnimatedOpacity(
                     opacity: _controlsVisible ? 1 : 0,
@@ -2219,12 +2347,15 @@ class _WatchPageState extends State<WatchPage>
                           IconButton(
                             icon: const Icon(Icons.arrow_back_rounded,
                                 color: Colors.white),
-                            onPressed: () {
-                              if (_fullscreen) {
-                                unawaited(_setFullscreen(false));
-                              } else {
-                                Navigator.of(context).maybePop();
-                              }
+                            tooltip: '返回',
+                            // 箭頭就是「回上一頁」. 只離開全螢幕的話右下角
+                            // 那顆本來就在做這件事, 這裡再放一顆一樣的,
+                            // 從觀看紀錄點進來的人要按兩次才回得去.
+                            // 先收掉全螢幕再 pop, 免得上一頁閃一下橫的.
+                            onPressed: () async {
+                              if (_fullscreen) await _setFullscreen(false);
+                              if (!mounted) return;
+                              await Navigator.of(context).maybePop();
                             },
                           ),
                         Expanded(
@@ -2496,6 +2627,18 @@ class _WatchPageState extends State<WatchPage>
     );
   }
 
+  /// 現在跟伺服器之間有多快. 只有走本機快取那條路才量得到 —— 那時候每個
+  /// byte 都是我們自己轉手的. 離線檔跟 HLS 一律回 0, 畫面上就不顯示.
+  void _sampleSpeed() {
+    final cache = state.videoCache;
+    final speed = cache == null ? 0.0 : cache.bytesPerSecond;
+    // 小數點後那一位每幀都在跳, 差得夠多才更新, 不然數字看起來在抖
+    final shown = _netSpeed.value;
+    if ((speed - shown).abs() > shown * 0.08 + 16 * 1024) {
+      _netSpeed.value = speed;
+    }
+  }
+
   double _bufferedSeconds() {
     final controller = _controller;
     if (controller == null || !controller.value.isInitialized) return 0;
@@ -2558,7 +2701,9 @@ class _WatchPageState extends State<WatchPage>
       padding: padding,
       child: LayoutBuilder(builder: (context, constraints) {
         const gap = 8.0;
-        final columns = (constraints.maxWidth / 150).round().clamp(5, 9);
+        // 動畫瘋一格大約 72-76pt 寬, 平板上剛好排九格. 150 那個除數排出來
+        // 只有五六格, 每一格寬得像按鈕而不是集數.
+        final columns = (constraints.maxWidth / 82).round().clamp(5, 10);
         final cell =
             (constraints.maxWidth - gap * (columns - 1)) / columns;
         return Wrap(
@@ -2593,9 +2738,11 @@ class _WatchPageState extends State<WatchPage>
       message:
           remote ? '尚未下載，點一下邊看邊下載' : (downloaded ? '已下載到這支手機' : '從伺服器片庫播放'),
       child: Material(
+        // 動畫瘋那排是實心色塊, 沒有框線. 只有「還沒下載」那些描一圈, 用來
+        // 跟手上就有的分開 —— 站上不必分是因為它每一集都在.
         color: here
             ? AgpColors.bahamut
-            : (remote ? Colors.transparent : AgpColors.card),
+            : (remote ? Colors.transparent : AgpColors.cardHover),
         borderRadius: BorderRadius.circular(kRadiusSmall),
         child: InkWell(
           borderRadius: BorderRadius.circular(kRadiusSmall),
@@ -2606,11 +2753,7 @@ class _WatchPageState extends State<WatchPage>
             padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 8),
             decoration: BoxDecoration(
               borderRadius: BorderRadius.circular(kRadiusSmall),
-              border: Border.all(
-                color: here
-                    ? AgpColors.bahamut
-                    : (remote ? AgpColors.line : AgpColors.lineStrong),
-              ),
+              border: remote ? Border.all(color: AgpColors.line) : null,
             ),
             child: Stack(
               alignment: Alignment.center,
@@ -2642,7 +2785,8 @@ class _WatchPageState extends State<WatchPage>
     );
   }
 
-  Widget _infoCard() {
+  /// [flush] = 平板右欄那一版: 沒有外邊界、沒有圓角、沒有框線, 直接鋪滿整條.
+  Widget _infoCard({bool flush = false}) {
     final info = _series;
     final video = _video;
     final rows = <MapEntry<String, String>>[];
@@ -2685,14 +2829,20 @@ class _WatchPageState extends State<WatchPage>
     final tags = info?.tags ?? const <String>[];
 
     return Padding(
-      padding: const EdgeInsets.fromLTRB(16, 8, 16, 4),
+      padding: flush
+          ? EdgeInsets.zero
+          : const EdgeInsets.fromLTRB(16, 8, 16, 4),
       child: Container(
-        padding: const EdgeInsets.fromLTRB(14, 13, 14, 13),
-        decoration: BoxDecoration(
-          color: Theme.of(context).cardTheme.color,
-          borderRadius: BorderRadius.circular(kRadius),
-          border: Border.all(color: AgpColors.line),
-        ),
+        padding: flush
+            ? const EdgeInsets.fromLTRB(16, 16, 16, 24)
+            : const EdgeInsets.fromLTRB(14, 13, 14, 13),
+        decoration: flush
+            ? null
+            : BoxDecoration(
+                color: Theme.of(context).cardTheme.color,
+                borderRadius: BorderRadius.circular(kRadius),
+                border: Border.all(color: AgpColors.line),
+              ),
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [

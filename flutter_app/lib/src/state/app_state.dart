@@ -5,13 +5,16 @@
 library;
 
 import 'dart:async';
+import 'dart:io';
 
 import 'package:flutter/material.dart';
+import 'package:path_provider/path_provider.dart';
 
 import '../api/client.dart';
 import '../api/models.dart';
 import 'downloads.dart';
 import 'prefs.dart';
+import 'video_cache.dart';
 
 class AppState extends ChangeNotifier {
   AppState._(this.prefs)
@@ -43,6 +46,11 @@ class AppState extends ChangeNotifier {
 
   ServerInfo serverInfo = ServerInfo();
   CurrentUser? currentUser;
+
+  /// 影片的本機快取. 第一次要用時才起 —— 沒在看影片的人不必背一台伺服器,
+  /// 而且 widget test 不會碰到它 (那邊一律 offline).
+  VideoCacheServer? videoCache;
+  Future<VideoCacheServer?>? _videoCacheBoot;
 
   /// 連不上伺服器. 這時首頁只剩下載好的那幾集.
   bool offline = false;
@@ -231,6 +239,19 @@ class AppState extends ChangeNotifier {
       watchTimes = const {};
     }
     notifyListeners();
+  }
+
+  /// 起 (或取得) 影片快取. 起不來就回 null, 呼叫端直接連伺服器.
+  Future<VideoCacheServer?> ensureVideoCache() {
+    final running = videoCache;
+    if (running != null) return Future.value(running);
+    return _videoCacheBoot ??= () async {
+      final dir = Directory('${(await getApplicationSupportDirectory()).path}'
+          '/video-cache');
+      final server = await VideoCacheServer.start(dir);
+      videoCache = server;
+      return server;
+    }();
   }
 
   WatchTime? watchTimeOf(String sn) => watchTimes[sn];

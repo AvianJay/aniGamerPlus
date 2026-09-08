@@ -29,6 +29,10 @@ dependencies:
   # 播放中別讓螢幕睡著
   wakelock_plus: ">=1.2.0 <2.0.0"
 
+  # 左右滑動要改的是真的螢幕亮度跟系統音量, 不是播放器自己的那兩個值
+  screen_brightness: ">=2.0.0 <3.0.0"
+  volume_controller: ">=3.0.0 <4.0.0"
+
   # 「在動畫瘋開啟」要把連結丟給瀏覽器
   url_launcher: ">=6.2.0 <7.0.0"
 
