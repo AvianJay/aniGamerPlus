@@ -20,6 +20,9 @@ dependencies:
   shared_preferences: ">=2.2.0 <3.0.0"
   path_provider: ">=2.1.0 <3.0.0"
 
+  cached_network_image: ^3.4.1
+  crypto: ^3.0.6
+
   # 播放器 (mp4 + HLS 邊看邊下載)
   video_player: ">=2.8.0 <3.0.0"
 
@@ -32,6 +35,9 @@ dependencies:
 dev_dependencies:
   flutter_test:
     sdk: flutter
+  video_player_platform_interface: ^6.6.0
+  path_provider_platform_interface: ^2.1.2
+  wakelock_plus_platform_interface: ^1.2.0
   flutter_lints: ">=3.0.0 <7.0.0"
 
 flutter:

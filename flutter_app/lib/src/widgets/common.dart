@@ -2,8 +2,11 @@
 library;
 
 import 'dart:io';
+import 'dart:convert';
+import 'package:crypto/crypto.dart';
 
 import 'package:flutter/material.dart';
+import 'package:cached_network_image/cached_network_image.dart';
 
 import '../theme.dart';
 import '../util/format.dart';
@@ -58,21 +61,21 @@ class CoverImage extends StatelessWidget {
             if (file != null)
               Image.file(file!, fit: fit, errorBuilder: _fallback)
             else if (url != null && url!.isNotEmpty)
-              Image.network(
-                url!,
+              CachedNetworkImage(
+                imageUrl: url!,
+                cacheKey: sha256
+                    .convert(utf8.encode(jsonEncode([
+                      url,
+                      if (headers != null)
+                        for (final key in (headers!.keys.toList()..sort()))
+                          [key, headers![key]],
+                    ])))
+                    .toString(),
                 fit: fit,
-                headers: headers,
-                errorBuilder: _fallback,
-                frameBuilder: (context, child, frame, wasSync) {
-                  if (wasSync || frame != null) {
-                    return AnimatedOpacity(
-                      opacity: 1,
-                      duration: const Duration(milliseconds: 180),
-                      child: child,
-                    );
-                  }
-                  return const SizedBox.shrink();
-                },
+                httpHeaders: headers,
+                placeholder: (_, __) => const SizedBox.shrink(),
+                errorWidget: (_, __, ___) => const SizedBox.shrink(),
+                fadeInDuration: const Duration(milliseconds: 180),
               ),
           ],
         ),
@@ -80,7 +83,8 @@ class CoverImage extends StatelessWidget {
     );
   }
 
-  static Widget _fallback(BuildContext context, Object error, StackTrace? stack) =>
+  static Widget _fallback(
+          BuildContext context, Object error, StackTrace? stack) =>
       const SizedBox.shrink();
 }
 
@@ -114,7 +118,8 @@ class SectionHeader extends StatelessWidget {
               children: [
                 Text(
                   title,
-                  style: const TextStyle(fontSize: 18, fontWeight: FontWeight.w800),
+                  style: const TextStyle(
+                      fontSize: 18, fontWeight: FontWeight.w800),
                 ),
                 if (subtitle != null && subtitle!.isNotEmpty)
                   Padding(
@@ -123,7 +128,10 @@ class SectionHeader extends StatelessWidget {
                       subtitle!,
                       style: TextStyle(
                         fontSize: 12.5,
-                        color: Theme.of(context).textTheme.bodySmall?.color
+                        color: Theme.of(context)
+                            .textTheme
+                            .bodySmall
+                            ?.color
                             ?.withValues(alpha: 0.7),
                       ),
                     ),
@@ -178,7 +186,8 @@ class EmptyState extends StatelessWidget {
               Text(
                 message!,
                 textAlign: TextAlign.center,
-                style: const TextStyle(fontSize: 13.5, color: AgpColors.fgFaint),
+                style:
+                    const TextStyle(fontSize: 13.5, color: AgpColors.fgFaint),
               ),
             ],
             if (actionLabel != null) ...[
@@ -241,7 +250,8 @@ class Pill extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return Container(
-      padding: EdgeInsets.symmetric(horizontal: dense ? 6 : 8, vertical: dense ? 2 : 3),
+      padding: EdgeInsets.symmetric(
+          horizontal: dense ? 6 : 8, vertical: dense ? 2 : 3),
       decoration: BoxDecoration(
         color: color ?? const Color(0xB3000000),
         borderRadius: BorderRadius.circular(999),

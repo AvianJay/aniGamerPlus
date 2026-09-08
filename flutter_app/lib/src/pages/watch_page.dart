@@ -40,7 +40,7 @@ import '../widgets/common.dart';
 // --------------------------------------------------------------- 常數
 // 全部照抄 static/js/watch.js, 改了就跟網頁版對不起來了
 
-const List<double> kPlaybackRates = [0.5, 0.75, 1, 1.25, 1.5, 1.75, 2];
+const List<double> kPlaybackRates = [0.25, 0.5, 0.75, 1, 1.25, 1.5, 1.75, 2];
 const List<int> kDanmakuOpacities = [100, 75, 50, 25];
 const List<int> kBrightnessLevels = [100, 80, 60, 40, 20];
 
@@ -175,10 +175,13 @@ class _WatchPageState extends State<WatchPage>
   /// 想看幾 P. 跟手上那份 (離線檔 / 下載中 / 伺服器片庫) 一樣時什麼都不會發生;
   /// 對不上才會走 /stream/*, 讓伺服器現去動畫瘋要那個畫質
   int _quality = 1080;
+
   /// 是不是在這個播放頁裡當場挑過. 分得出「設定裡留著的偏好」跟「他現在就要換」
   bool _qualityPicked = false;
+
   /// 這一集還有哪些畫質可以挑. 開設定選單時才去問, 由高到低
-  final ValueNotifier<List<int>> _qualities = ValueNotifier<List<int>>(const []);
+  final ValueNotifier<List<int>> _qualities =
+      ValueNotifier<List<int>>(const []);
   bool _qualitiesLoading = false;
 
   // ------------------------------------------------------------- 介面狀態
@@ -188,6 +191,10 @@ class _WatchPageState extends State<WatchPage>
   String _flash = '';
   Timer? _flashTimer;
   String _hud = '';
+  double? _pendingSeek;
+  bool _seekWorkerRunning = false;
+  bool _resumeAfterSeek = false;
+  int _sourceGeneration = 0;
   bool _scrubbing = false;
   double _scrubValue = 0;
   bool _boosting = false;
@@ -248,6 +255,8 @@ class _WatchPageState extends State<WatchPage>
     _nextTimer?.cancel();
     _streamTimer?.cancel();
     _ticker?.dispose();
+    _sourceGeneration++;
+    _pendingSeek = null;
     final controller = _controller;
     _controller = null;
     controller?.removeListener(_onPlayerUpdate);
@@ -257,7 +266,8 @@ class _WatchPageState extends State<WatchPage>
     unawaited(WakelockPlus.disable());
     if (_fullscreen) {
       unawaited(SystemChrome.setEnabledSystemUIMode(SystemUiMode.edgeToEdge));
-      unawaited(SystemChrome.setPreferredOrientations(DeviceOrientation.values));
+      unawaited(
+          SystemChrome.setPreferredOrientations(DeviceOrientation.values));
     }
     super.dispose();
   }
@@ -291,7 +301,9 @@ class _WatchPageState extends State<WatchPage>
     _localFile = store.localVideo(_sn);
     if (_localFile == null) {
       final video = _video;
-      if (video != null && (video.streaming || video.pending)) _streaming = true;
+      if (video != null && (video.streaming || video.pending)) {
+        _streaming = true;
+      }
     } else {
       // 本機已經有完整檔了, 沒必要再去追下載進度
       _streaming = false;
@@ -299,6 +311,7 @@ class _WatchPageState extends State<WatchPage>
 
     _resumeAt = await _readResume();
 
+    unawaited(_loadQualities());
     unawaited(_loadSeries());
     unawaited(_loadDanmaku());
 
@@ -332,6 +345,8 @@ class _WatchPageState extends State<WatchPage>
 
   /// 建立 / 換掉 VideoPlayerController
   Future<void> _openSource({double? seekTo, bool autoplay = true}) async {
+    final generation = ++_sourceGeneration;
+    _pendingSeek = null;
     final previous = _controller;
     if (previous != null) {
       previous.removeListener(_onPlayerUpdate);
@@ -371,13 +386,11 @@ class _WatchPageState extends State<WatchPage>
       if (!mounted) return;
       setState(() {
         _initialising = false;
-        _error = state.offline
-            ? '離線中，而且這一集沒有下載到手機。'
-            : '播放失敗: $error';
+        _error = state.offline ? '離線中，而且這一集沒有下載到手機。' : '播放失敗: $error';
       });
       return;
     }
-    if (!mounted) {
+    if (!mounted || generation != _sourceGeneration) {
       unawaited(controller.dispose());
       return;
     }
@@ -389,11 +402,8 @@ class _WatchPageState extends State<WatchPage>
 
     final duration = controller.value.duration.inMilliseconds / 1000.0;
     final target = seekTo ?? _resumeAt;
-    if (target > 1) {
-      await controller.seekTo(Duration(milliseconds: (target * 1000).round()));
-    }
 
-    if (!mounted) {
+    if (!mounted || generation != _sourceGeneration) {
       unawaited(controller.dispose());
       return;
     }
@@ -407,7 +417,9 @@ class _WatchPageState extends State<WatchPage>
     });
     _clock.value = _anchor;
 
-    if (autoplay) {
+    if (target > 1) {
+      unawaited(_seekTo(target, resume: autoplay));
+    } else if (autoplay) {
       await controller.play();
       unawaited(WakelockPlus.enable());
     }
@@ -493,7 +505,9 @@ class _WatchPageState extends State<WatchPage>
   }
 
   Future<void> _loadQualities() async {
-    if (state.offline || _qualitiesLoading || _qualities.value.isNotEmpty) return;
+    if (state.offline || _qualitiesLoading || _qualities.value.isNotEmpty) {
+      return;
+    }
     _qualitiesLoading = true;
     // 開設定選單時才問, 不放在開頁流程裡: 伺服器那一支會真的去動畫瘋解析播放位址,
     // 每開一集就打一次太重了, 而且絕大多數人根本不會動畫質
@@ -505,11 +519,15 @@ class _WatchPageState extends State<WatchPage>
 
   List<PlayerChoice<int>> _qualityChoices(List<int> options) {
     final have = _onHandResolution;
-    final values = <int>{...options, if (have > 0) have, if (_quality > 0) _quality}
-        .toList()
+    final values = <int>{
+      ...options,
+      if (have > 0) have,
+      if (_quality > 0) _quality
+    }.toList()
       ..sort((a, b) => b - a);
     return [
-      for (final res in values) PlayerChoice(res, '${res}P${_qualitySuffix(res)}'),
+      for (final res in values)
+        PlayerChoice(res, '${res}P${_qualitySuffix(res)}'),
     ];
   }
 
@@ -525,7 +543,7 @@ class _WatchPageState extends State<WatchPage>
     if (res <= 0 || res == _currentQuality) return;
     final previousQuality = _quality;
     final previousPicked = _qualityPicked;
-    final at = _clock.value;
+    final at = _pendingSeek ?? _clock.value;
     setState(() {
       _quality = res;
       _qualityPicked = true;
@@ -611,7 +629,7 @@ class _WatchPageState extends State<WatchPage>
       await _openSource(autoplay: false);
       if (!mounted) return;
     }
-    _maybeAutoplay();
+    if (_pendingSeek == null) _maybeAutoplay();
   }
 
   String _downloadingLabel(HlsStatus status) {
@@ -643,7 +661,7 @@ class _WatchPageState extends State<WatchPage>
   }
 
   Future<void> _rebuildStream() async {
-    final at = _clock.value;
+    final at = _pendingSeek ?? _clock.value;
     _streamAttached = false;
     _streamAutoplayed = false;
     await _openSource(seekTo: at, autoplay: false);
@@ -652,7 +670,8 @@ class _WatchPageState extends State<WatchPage>
   /// 下載完成: 換成完整 mp4, 位置留在原地, 彈幕重讀一次
   Future<void> _finishStream() async {
     _stopPoll();
-    final at = _clock.value;
+    final at = _pendingSeek ?? _clock.value;
+    final resume = _pendingSeek != null ? _resumeAfterSeek : _playing;
     setState(() {
       _streaming = false;
       _streamAttached = false;
@@ -668,7 +687,7 @@ class _WatchPageState extends State<WatchPage>
       unawaited(_loadDanmaku());
       return;
     }
-    await _openSource(seekTo: at);
+    await _openSource(seekTo: at, autoplay: resume);
     if (!mounted) return;
     unawaited(_loadDanmaku());
     _flashMessage('下載完成，已切換到完整影片');
@@ -686,11 +705,12 @@ class _WatchPageState extends State<WatchPage>
   void _onFrame(Duration _) {
     final controller = _controller;
     if (controller == null || !controller.value.isInitialized) return;
-    if (_scrubbing) return;
+    if (_scrubbing || _pendingSeek != null) return;
     final value = controller.value;
     var position = _anchor;
-    if (value.isPlaying) {
-      final elapsed = (DateTime.now().millisecondsSinceEpoch - _anchorAt) / 1000;
+    if (value.isPlaying && !value.isBuffering) {
+      final elapsed =
+          (DateTime.now().millisecondsSinceEpoch - _anchorAt) / 1000;
       position = _anchor + elapsed * _rate;
     }
     final limit = _playableDuration;
@@ -706,7 +726,11 @@ class _WatchPageState extends State<WatchPage>
     if (!value.isInitialized) return;
 
     final position = value.position.inMilliseconds / 1000.0;
-    if ((position - _anchor).abs() > 0.05 || !value.isPlaying) {
+    if (_pendingSeek == null &&
+        !_scrubbing &&
+        ((position - _anchor).abs() > 0.05 ||
+            !value.isPlaying ||
+            value.isBuffering)) {
       _anchor = position;
       _anchorAt = DateTime.now().millisecondsSinceEpoch;
     }
@@ -717,7 +741,9 @@ class _WatchPageState extends State<WatchPage>
       _noteStall();
     }
 
-    if (!_ended &&
+    if (_pendingSeek == null &&
+        !_scrubbing &&
+        !_ended &&
         duration > 1 &&
         !value.isPlaying &&
         position >= duration - 0.4) {
@@ -731,7 +757,9 @@ class _WatchPageState extends State<WatchPage>
       setState(() {
         _playing = value.isPlaying;
         _buffering = value.isBuffering;
-        if (duration > 0) _duration = duration;
+        if (duration > 0) {
+          _duration = math.max(duration, _streaming ? _streamTotal : 0);
+        }
       });
       if (value.isPlaying) {
         unawaited(WakelockPlus.enable());
@@ -744,6 +772,7 @@ class _WatchPageState extends State<WatchPage>
   // =============================================================== 進度同步
 
   Future<void> _syncTime({bool ended = false, bool force = false}) async {
+    if (_pendingSeek != null || _scrubbing) return;
     final now = DateTime.now().millisecondsSinceEpoch;
     if (!force && now - _lastSync < 10000) return;
     _lastSync = now;
@@ -774,7 +803,7 @@ class _WatchPageState extends State<WatchPage>
       _streaming && _streamTotal > 0 ? _streamTotal : _duration;
 
   double get _seekableDuration {
-    if (!_streaming) return _duration;
+    if (!_streaming || _needsProxy) return _duration;
     if (_streamReady > 0) return _streamReady;
     return 0;
   }
@@ -784,26 +813,85 @@ class _WatchPageState extends State<WatchPage>
     var target = value;
     if (target < 0) target = 0;
     if (playable > 0 && target > playable) target = playable;
-    if (_streaming) {
-      final limit = _seekableDuration;
-      if (limit > 0 && target > limit - 1) {
-        _flashMessage('還沒下載到這裡');
-        return math.max(0, limit - 1);
-      }
-    }
     return target;
   }
 
-  Future<void> _seekTo(double seconds) async {
+  Future<void> _seekTo(double seconds, {bool? resume}) async {
     final controller = _controller;
     if (controller == null || !controller.value.isInitialized) return;
+    if (_pendingSeek == null) {
+      _resumeAfterSeek = resume ?? controller.value.isPlaying;
+    }
     final target = _clampSeek(seconds);
-    _anchor = target;
-    _anchorAt = DateTime.now().millisecondsSinceEpoch;
+    setState(() {
+      _pendingSeek = target;
+      _ended = false;
+    });
     _clock.value = target;
-    _ended = false;
-    await controller.seekTo(Duration(milliseconds: (target * 1000).round()));
-    unawaited(_syncTime(force: true));
+    if (_seekWorkerRunning) return;
+    _seekWorkerRunning = true;
+    var workingGeneration = _sourceGeneration;
+    try {
+      while (mounted && _pendingSeek != null) {
+        final active = _controller;
+        final generation = _sourceGeneration;
+        workingGeneration = generation;
+        final wanted = _pendingSeek!;
+        if (active == null) break;
+        await active.pause();
+        if (!mounted ||
+            generation != _sourceGeneration ||
+            _pendingSeek != wanted) {
+          continue;
+        }
+        // EVENT playlists cannot seek into segments the server has not produced.
+        // Keep the requested position visible until both server and player know it.
+        final known = active.value.duration.inMilliseconds / 1000;
+        if (_streaming && !_needsProxy && wanted > _streamReady - 1) {
+          await Future<void>.delayed(const Duration(milliseconds: 250));
+          continue;
+        }
+        if (_streaming && !_needsProxy && wanted > known) {
+          // Some native backends only publish EVENT duration on initialization.
+          // Refresh their playlist once the server has the requested segments.
+          await _openSource(seekTo: wanted, autoplay: _resumeAfterSeek);
+          await Future<void>.delayed(const Duration(seconds: 2));
+          continue;
+        }
+        await active.seekTo(Duration(milliseconds: (wanted * 1000).round()));
+        final deadline = DateTime.now().add(const Duration(seconds: 45));
+        while (mounted &&
+            generation == _sourceGeneration &&
+            _pendingSeek == wanted) {
+          final actual = await active.position;
+          if (actual != null &&
+              (actual.inMilliseconds / 1000 - wanted).abs() <= 1.5 &&
+              !active.value.isBuffering) {
+            break;
+          }
+          if (active.value.hasError || DateTime.now().isAfter(deadline)) {
+            throw StateError('跳轉逾時，請重試或檢查網路');
+          }
+          await Future<void>.delayed(const Duration(milliseconds: 100));
+        }
+        if (!mounted) return;
+        if (generation != _sourceGeneration || _pendingSeek != wanted) continue;
+        setState(() => _pendingSeek = null);
+        _anchor = wanted;
+        _anchorAt = DateTime.now().millisecondsSinceEpoch;
+        _clock.value = wanted;
+        if (_resumeAfterSeek) await active.play();
+        unawaited(_syncTime(force: true));
+      }
+    } catch (_) {
+      if (mounted && workingGeneration == _sourceGeneration) {
+        setState(() => _pendingSeek = null);
+        _flashMessage('跳轉失敗，請重試或檢查網路');
+      }
+    } finally {
+      _seekWorkerRunning = false;
+      if (mounted && _pendingSeek != null) unawaited(_seekTo(_pendingSeek!));
+    }
   }
 
   Future<void> _seekBy(double delta) => _seekTo(_clock.value + delta);
@@ -811,6 +899,10 @@ class _WatchPageState extends State<WatchPage>
   Future<void> _togglePlay() async {
     final controller = _controller;
     if (controller == null || !controller.value.isInitialized) return;
+    if (_pendingSeek != null) {
+      setState(() => _resumeAfterSeek = !_resumeAfterSeek);
+      return;
+    }
     if (controller.value.isPlaying) {
       await controller.pause();
       unawaited(_syncTime(force: true));
@@ -897,6 +989,10 @@ class _WatchPageState extends State<WatchPage>
     _idleTimer = Timer(kControlsIdle, () {
       if (!mounted) return;
       if (!(_controller?.value.isPlaying ?? false)) return;
+      if (_scrubbing || _dragSide.isNotEmpty || _pendingSeek != null) {
+        _armIdle();
+        return;
+      }
       setState(() => _controlsVisible = false);
     });
   }
@@ -915,7 +1011,8 @@ class _WatchPageState extends State<WatchPage>
 
   void _onDoubleTapDown(TapDownDetails details, Size size) {
     final left = details.localPosition.dx < size.width / 2;
-    unawaited(_seekBy(left ? -kSkipSeconds.toDouble() : kSkipSeconds.toDouble()));
+    unawaited(
+        _seekBy(left ? -kSkipSeconds.toDouble() : kSkipSeconds.toDouble()));
     _flashMessage(left ? '倒退 $kSkipSeconds 秒' : '快進 $kSkipSeconds 秒');
   }
 
@@ -951,6 +1048,7 @@ class _WatchPageState extends State<WatchPage>
         .clamp(0.0, math.max(0.0, _playableDuration))
         .toDouble();
     _scrubbing = true;
+    _scrubValue = target;
     _clock.value = target;
     final delta = target - _dragFrom;
     final sign = delta >= 0 ? '+' : '-';
@@ -965,7 +1063,8 @@ class _WatchPageState extends State<WatchPage>
   }
 
   void _onVerticalStart(DragStartDetails details, Size size) {
-    _dragSide = details.localPosition.dx < size.width / 2 ? 'brightness' : 'volume';
+    _dragSide =
+        details.localPosition.dx < size.width / 2 ? 'brightness' : 'volume';
     _showControls();
   }
 
@@ -977,9 +1076,8 @@ class _WatchPageState extends State<WatchPage>
       setState(() => _hud = '畫面亮度 ${(_brightness * 100).round()}%');
     } else {
       unawaited(_setVolume(_volume + step));
-      setState(() => _hud = _volume <= 0
-          ? '靜音'
-          : '音量 ${(_volume * 100).round()}%');
+      setState(
+          () => _hud = _volume <= 0 ? '靜音' : '音量 ${(_volume * 100).round()}%');
     }
   }
 
@@ -1032,6 +1130,8 @@ class _WatchPageState extends State<WatchPage>
       return;
     }
     await _syncTime(force: true);
+    _sourceGeneration++;
+    _pendingSeek = null;
     _stopPoll();
     _nextTimer?.cancel();
     _flashTimer?.cancel();
@@ -1088,6 +1188,8 @@ class _WatchPageState extends State<WatchPage>
     }
     if (!mounted) return;
     await _syncTime(force: true);
+    _sourceGeneration++;
+    _pendingSeek = null;
     _stopPoll();
     _nextTimer?.cancel();
     final controller = _controller;
@@ -1164,7 +1266,8 @@ class _WatchPageState extends State<WatchPage>
     return 'sn $_sn';
   }
 
-  String get _hereLabel => episodeLabel(_video?.episode ?? _currentEpisode?.episode);
+  String get _hereLabel =>
+      episodeLabel(_video?.episode ?? _currentEpisode?.episode);
 
   SeriesEpisode? get _currentEpisode {
     for (final episode in _orderedEpisodes()) {
@@ -1295,13 +1398,15 @@ class _WatchPageState extends State<WatchPage>
                   _seriesName,
                   maxLines: 1,
                   overflow: TextOverflow.ellipsis,
-                  style: const TextStyle(fontSize: 15, fontWeight: FontWeight.w800),
+                  style: const TextStyle(
+                      fontSize: 15, fontWeight: FontWeight.w800),
                 ),
                 Text(
                   '$_hereLabel${_video != null && _video!.resolution > 0 ? ' · ${_video!.resolution}P' : ''}',
                   maxLines: 1,
                   overflow: TextOverflow.ellipsis,
-                  style: const TextStyle(fontSize: 11.5, color: AgpColors.fgFaint),
+                  style:
+                      const TextStyle(fontSize: 11.5, color: AgpColors.fgFaint),
                 ),
               ],
             ),
@@ -1309,7 +1414,9 @@ class _WatchPageState extends State<WatchPage>
           IconButton(
             tooltip: favourite ? '已收藏' : '收藏',
             icon: Icon(
-              favourite ? Icons.favorite_rounded : Icons.favorite_border_rounded,
+              favourite
+                  ? Icons.favorite_rounded
+                  : Icons.favorite_border_rounded,
               color: favourite ? AgpColors.accent : null,
             ),
             onPressed: _toggleFavourite,
@@ -1414,67 +1521,71 @@ class _WatchPageState extends State<WatchPage>
 
         return ColoredBox(
           color: Colors.black,
-          child: Stack(
-            fit: StackFit.expand,
-            children: [
-              if (ready) _fitted(controller) else _poster(),
-              if (_danmakuOn && _danmaku.isNotEmpty)
-                Positioned.fill(
-                  child: IgnorePointer(
-                    child: ValueListenableBuilder<double>(
-                      valueListenable: _clock,
-                      builder: (context, position, _) => DanmakuOverlay(
-                        comments: _danmaku,
-                        positionSeconds: position,
-                        playing: _playing && !_scrubbing,
-                        enabled: _danmakuOn,
-                        opacity: _danmakuOpacity / 100,
-                        area: _danmakuArea,
-                        scale: _danmakuScale,
-                        speed: _danmakuSpeed,
+          child: _gestureLayer(size,
+              child: Stack(
+                fit: StackFit.expand,
+                children: [
+                  if (ready) _fitted(controller) else _poster(),
+                  if (_danmakuOn && _danmaku.isNotEmpty)
+                    Positioned.fill(
+                      child: IgnorePointer(
+                        child: ValueListenableBuilder<double>(
+                          valueListenable: _clock,
+                          builder: (context, position, _) => DanmakuOverlay(
+                            comments: _danmaku,
+                            positionSeconds: position,
+                            playing: _playing &&
+                                !_scrubbing &&
+                                _pendingSeek == null &&
+                                !_buffering,
+                            enabled: _danmakuOn,
+                            opacity: _danmakuOpacity / 100,
+                            area: _danmakuArea,
+                            scale: _danmakuScale,
+                            speed: _danmakuSpeed,
+                          ),
+                        ),
                       ),
                     ),
-                  ),
-                ),
-              if (_brightness < 1)
-                Positioned.fill(
-                  child: IgnorePointer(
-                    child: ColoredBox(
-                      color: Colors.black.withValues(alpha: 1 - _brightness),
+                  if (_brightness < 1)
+                    Positioned.fill(
+                      child: IgnorePointer(
+                        child: ColoredBox(
+                          color:
+                              Colors.black.withValues(alpha: 1 - _brightness),
+                        ),
+                      ),
+                    ),
+                  if ((_initialising || !ready) && _error.isEmpty)
+                    const Center(
+                      child: SizedBox(
+                        width: 34,
+                        height: 34,
+                        child: CircularProgressIndicator(strokeWidth: 2.4),
+                      ),
+                    ),
+                  if (_error.isNotEmpty) _errorOverlay(),
+                  if (ready && (_buffering || _pendingSeek != null))
+                    const Center(
+                      child: SizedBox(
+                        width: 30,
+                        height: 30,
+                        child: CircularProgressIndicator(strokeWidth: 2.4),
+                      ),
+                    ),
+                  if (_downloading.isNotEmpty) _downloadBadge(),
+                  AnimatedOpacity(
+                    opacity: _controlsVisible ? 1 : 0,
+                    duration: const Duration(milliseconds: 180),
+                    child: IgnorePointer(
+                      ignoring: !_controlsVisible,
+                      child: _controls(),
                     ),
                   ),
-                ),
-              Positioned.fill(child: _gestureLayer(size)),
-              if ((_initialising || !ready) && _error.isEmpty)
-                const Center(
-                  child: SizedBox(
-                    width: 34,
-                    height: 34,
-                    child: CircularProgressIndicator(strokeWidth: 2.4),
-                  ),
-                ),
-              if (_error.isNotEmpty) _errorOverlay(),
-              if (ready && _buffering)
-                const Center(
-                  child: SizedBox(
-                    width: 30,
-                    height: 30,
-                    child: CircularProgressIndicator(strokeWidth: 2.4),
-                  ),
-                ),
-              if (_downloading.isNotEmpty) _downloadBadge(),
-              AnimatedOpacity(
-                opacity: _controlsVisible ? 1 : 0,
-                duration: const Duration(milliseconds: 180),
-                child: IgnorePointer(
-                  ignoring: !_controlsVisible,
-                  child: _controls(),
-                ),
-              ),
-              if (_flash.isNotEmpty || _hud.isNotEmpty) _hudChip(),
-              if (_nextOffer != null) _nextCard(),
-            ],
-          ),
+                  if (_flash.isNotEmpty || _hud.isNotEmpty) _hudChip(),
+                  if (_nextOffer != null) _nextCard(),
+                ],
+              )),
         );
       },
     );
@@ -1657,7 +1768,7 @@ class _WatchPageState extends State<WatchPage>
 
   // ------------------------------------------------------------- 手勢層
 
-  Widget _gestureLayer(Size size) {
+  Widget _gestureLayer(Size size, {Widget? child}) {
     return GestureDetector(
       behavior: HitTestBehavior.opaque,
       onTap: _toggleControls,
@@ -1672,6 +1783,17 @@ class _WatchPageState extends State<WatchPage>
       onVerticalDragStart: (details) => _onVerticalStart(details, size),
       onVerticalDragUpdate: (details) => _onVerticalUpdate(details, size),
       onVerticalDragEnd: _onVerticalEnd,
+      onVerticalDragCancel: () {
+        _dragSide = '';
+        setState(() => _hud = '');
+      },
+      onHorizontalDragCancel: () {
+        setState(() {
+          _scrubbing = false;
+          _hud = '';
+        });
+      },
+      child: child,
     );
   }
 
@@ -1681,7 +1803,8 @@ class _WatchPageState extends State<WatchPage>
     return Stack(
       fit: StackFit.expand,
       children: [
-        const DecoratedBox(
+        const IgnorePointer(
+            child: DecoratedBox(
           decoration: BoxDecoration(
             gradient: LinearGradient(
               begin: Alignment.topCenter,
@@ -1695,39 +1818,110 @@ class _WatchPageState extends State<WatchPage>
               stops: [0, 0.28, 0.62, 1],
             ),
           ),
-        ),
-        if (_fullscreen)
-          Positioned(
-            left: 6,
-            right: 6,
-            top: 6,
-            child: SafeArea(
-              bottom: false,
-              child: Row(
-                children: [
-                  IconButton(
-                    icon: const Icon(Icons.arrow_back_rounded, color: Colors.white),
-                    onPressed: () => unawaited(_setFullscreen(false)),
-                  ),
-                  Expanded(
-                    child: Text(
-                      '$_seriesName · $_hereLabel',
-                      maxLines: 1,
-                      overflow: TextOverflow.ellipsis,
-                      style: const TextStyle(
-                        fontSize: 14,
-                        color: Colors.white,
-                        fontWeight: FontWeight.w700,
-                      ),
+        )),
+        Positioned(
+          left: 6,
+          right: 6,
+          top: 6,
+          child: SafeArea(
+            bottom: false,
+            child: Row(
+              children: [
+                IconButton(
+                  icon:
+                      const Icon(Icons.arrow_back_rounded, color: Colors.white),
+                  onPressed: () {
+                    if (_fullscreen) {
+                      unawaited(_setFullscreen(false));
+                    } else {
+                      Navigator.of(context).maybePop();
+                    }
+                  },
+                ),
+                Expanded(
+                  child: Text(
+                    '$_seriesName · $_hereLabel',
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: const TextStyle(
+                      fontSize: 14,
+                      color: Colors.white,
+                      fontWeight: FontWeight.w700,
                     ),
                   ),
-                ],
-              ),
+                ),
+                _topMenu<double>(
+                  label:
+                      '${_rate.toStringAsFixed(_rate == _rate.roundToDouble() ? 1 : 2)}x',
+                  current: _rate,
+                  choices: [
+                    for (final r in kPlaybackRates) PlayerChoice(r, '${r}x')
+                  ],
+                  onPick: (r) => unawaited(_setRate(r)),
+                ),
+                ValueListenableBuilder<List<int>>(
+                  valueListenable: _qualities,
+                  builder: (context, options, _) => _topMenu<int>(
+                    label: '${_currentQuality}p',
+                    current: _currentQuality,
+                    choices: _qualityChoices(options).reversed.toList(),
+                    onOpen: () => unawaited(_loadQualities()),
+                    onPick: (r) => unawaited(_switchQuality(r)),
+                  ),
+                ),
+                _barButton(
+                    Icons.video_library_outlined, '選集', _openEpisodeSheet),
+              ],
             ),
           ),
-        Center(child: _centreButtons()),
+        ),
+        Positioned(right: 16, bottom: 94, child: _centreButtons()),
         Positioned(left: 0, right: 0, bottom: 0, child: _bottomBar()),
       ],
+    );
+  }
+
+  Widget _topMenu<T>(
+      {required String label,
+      required T current,
+      required List<PlayerChoice<T>> choices,
+      required ValueChanged<T> onPick,
+      VoidCallback? onOpen}) {
+    return PopupMenuButton<T>(
+      tooltip: label,
+      onOpened: () {
+        _idleTimer?.cancel();
+        onOpen?.call();
+      },
+      onCanceled: _armIdle,
+      onSelected: (value) {
+        onPick(value);
+        _armIdle();
+      },
+      initialValue: current,
+      color: const Color(0xE6191919),
+      position: PopupMenuPosition.under,
+      itemBuilder: (_) => [
+        for (final choice in choices)
+          PopupMenuItem<T>(
+              value: choice.value,
+              child: Row(children: [
+                Icon(Icons.circle,
+                    size: 9,
+                    color: choice.value == current
+                        ? const Color(0xFF00B5D4)
+                        : Colors.transparent),
+                const SizedBox(width: 12),
+                Text(choice.label, style: const TextStyle(color: Colors.white)),
+              ])),
+      ],
+      child: Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 14),
+          child: Text(label,
+              style: const TextStyle(
+                  color: Colors.white,
+                  fontWeight: FontWeight.w800,
+                  fontSize: 16))),
     );
   }
 
@@ -1742,15 +1936,17 @@ class _WatchPageState extends State<WatchPage>
         ),
         const SizedBox(width: 26),
         _roundButton(
-          _playing ? Icons.pause_rounded : Icons.play_arrow_rounded,
-          () => unawaited(_togglePlay()),
-          size: 40,
-        ),
-        const SizedBox(width: 26),
-        _roundButton(
           Icons.forward_10_rounded,
           () => unawaited(_seekBy(kSkipSeconds.toDouble())),
           size: 26,
+        ),
+        const SizedBox(width: 26),
+        _roundButton(
+          (_pendingSeek != null ? _resumeAfterSeek : _playing)
+              ? Icons.pause_circle_filled
+              : Icons.play_circle_fill,
+          () => unawaited(_togglePlay()),
+          size: 40,
         ),
       ],
     );
@@ -1758,7 +1954,7 @@ class _WatchPageState extends State<WatchPage>
 
   Widget _roundButton(IconData icon, VoidCallback onTap, {double size = 26}) {
     return Material(
-      color: Colors.black.withValues(alpha: 0.34),
+      color: Colors.transparent,
       shape: const CircleBorder(),
       child: InkWell(
         customBorder: const CircleBorder(),
@@ -1775,124 +1971,89 @@ class _WatchPageState extends State<WatchPage>
   }
 
   Widget _bottomBar() {
-    final playable = _playableDuration;
-    final seekable = _seekableDuration;
     return SafeArea(
-      top: false,
-      child: Padding(
-        padding: const EdgeInsets.fromLTRB(8, 0, 8, 4),
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            ValueListenableBuilder<double>(
-              valueListenable: _clock,
-              builder: (context, position, _) {
-                final shown = _scrubbing ? _scrubValue : position;
-                final max = playable > 0 ? playable : 1.0;
-                final secondary = _streaming && seekable > 0
-                    ? seekable.clamp(0.0, max)
-                    : _bufferedSeconds().clamp(0.0, max);
-                return Row(
-                  children: [
-                    SizedBox(
-                      width: 52,
-                      child: Text(
-                        formatClock(shown),
-                        style: const TextStyle(fontSize: 11.5, color: Colors.white),
-                      ),
-                    ),
-                    Expanded(
-                      child: SliderTheme(
-                        data: SliderTheme.of(context).copyWith(
-                          trackHeight: 3,
-                          thumbShape:
-                              const RoundSliderThumbShape(enabledThumbRadius: 6),
-                          overlayShape:
-                              const RoundSliderOverlayShape(overlayRadius: 14),
-                          activeTrackColor: AgpColors.accent,
-                          inactiveTrackColor: const Color(0x4DFFFFFF),
-                          secondaryActiveTrackColor: const Color(0x80FFFFFF),
-                          thumbColor: AgpColors.accent,
-                        ),
-                        child: Slider(
-                          value: shown.clamp(0.0, max),
-                          max: max,
-                          secondaryTrackValue: secondary,
-                          onChangeStart: (value) {
-                            _scrubbing = true;
-                            _showControls();
-                            setState(() => _scrubValue = value);
-                          },
-                          onChanged: (value) {
-                            setState(() => _scrubValue = value);
-                            _clock.value = value;
-                          },
-                          onChangeEnd: (value) {
-                            _scrubbing = false;
-                            unawaited(_seekTo(value));
-                          },
-                        ),
-                      ),
-                    ),
-                    SizedBox(
-                      width: 52,
-                      child: Text(
-                        formatClock(playable),
-                        textAlign: TextAlign.right,
-                        style: const TextStyle(fontSize: 11.5, color: Colors.white),
-                      ),
-                    ),
-                  ],
-                );
+        top: false,
+        child: Padding(
+          padding: const EdgeInsets.fromLTRB(12, 0, 12, 8),
+          child: LayoutBuilder(builder: (context, constraints) {
+            final actions = Row(mainAxisSize: MainAxisSize.min, children: [
+              _barButton(
+                  _danmakuOn
+                      ? Icons.subtitles_rounded
+                      : Icons.subtitles_off_rounded,
+                  _danmakuOn ? '關閉彈幕' : '開啟彈幕',
+                  () => unawaited(_setDanmaku(!_danmakuOn))),
+              _barButton(Icons.settings_outlined, '設定', _openSettingsSheet),
+              _barButton(
+                  _fullscreen
+                      ? Icons.fullscreen_exit_rounded
+                      : Icons.fullscreen_rounded,
+                  _fullscreen ? '離開全螢幕' : '全螢幕',
+                  () => unawaited(_setFullscreen(!_fullscreen))),
+              _barButton(Icons.fit_screen_outlined, '畫面比例', () {
+                final index =
+                    kAspectModes.indexWhere((m) => m.value == _aspect);
+                unawaited(_setAspect(
+                    kAspectModes[(index + 1) % kAspectModes.length].value));
+              }),
+            ]);
+            if (constraints.maxWidth >= 600) {
+              return Row(children: [Expanded(child: _timeline()), actions]);
+            }
+            return Column(mainAxisSize: MainAxisSize.min, children: [
+              _timeline(),
+              Align(alignment: Alignment.centerRight, child: actions),
+            ]);
+          }),
+        ));
+  }
+
+  Widget _timeline() {
+    return ValueListenableBuilder<double>(
+      valueListenable: _clock,
+      builder: (context, position, _) {
+        final shown = _scrubbing ? _scrubValue : position;
+        final playable = _playableDuration;
+        final max = playable > 0 ? playable : 1.0;
+        final secondary = _streaming && !_needsProxy
+            ? _seekableDuration.clamp(0.0, max)
+            : _bufferedSeconds().clamp(0.0, max);
+        return Row(children: [
+          _barButton(Icons.skip_next_rounded, '下一集', () => _goRelative(1)),
+          Text('${formatClock(shown)}/${formatClock(playable)}',
+              style: const TextStyle(fontSize: 11.5, color: Colors.white)),
+          Expanded(
+              child: SliderTheme(
+            data: SliderTheme.of(context).copyWith(
+              trackHeight: 2,
+              thumbShape: const RoundSliderThumbShape(enabledThumbRadius: 7),
+              overlayShape: const RoundSliderOverlayShape(overlayRadius: 14),
+              activeTrackColor: const Color(0xFF00B5D4),
+              inactiveTrackColor: const Color(0x4DFFFFFF),
+              secondaryActiveTrackColor: const Color(0x80FFFFFF),
+              thumbColor: const Color(0xFF00B5D4),
+            ),
+            child: Slider(
+              value: shown.clamp(0.0, max),
+              max: max,
+              secondaryTrackValue: secondary,
+              onChangeStart: (value) {
+                _scrubbing = true;
+                _showControls();
+                setState(() => _scrubValue = value);
+              },
+              onChanged: (value) {
+                setState(() => _scrubValue = value);
+                _clock.value = value;
+              },
+              onChangeEnd: (value) {
+                _scrubbing = false;
+                unawaited(_seekTo(value));
               },
             ),
-            SizedBox(
-              height: 40,
-              child: Row(
-                children: [
-                  _barButton(Icons.skip_previous_rounded, '上一集',
-                      () => _goRelative(-1)),
-                  _barButton(
-                      Icons.skip_next_rounded, '下一集', () => _goRelative(1)),
-                  _barButton(
-                    _danmakuOn
-                        ? Icons.subtitles_rounded
-                        : Icons.subtitles_off_rounded,
-                    _danmakuOn ? '關閉彈幕' : '開啟彈幕',
-                    () => unawaited(_setDanmaku(!_danmakuOn)),
-                    active: _danmakuOn && _danmaku.isNotEmpty,
-                  ),
-                  const Spacer(),
-                  TextButton(
-                    onPressed: () {
-                      _showControls();
-                      _openRateSheet();
-                    },
-                    style: TextButton.styleFrom(
-                      foregroundColor: Colors.white,
-                      minimumSize: const Size(40, 34),
-                      padding: const EdgeInsets.symmetric(horizontal: 8),
-                    ),
-                    child: Text(
-                      _rate == 1 ? '倍速' : '$_rate×',
-                      style: const TextStyle(fontSize: 12.5),
-                    ),
-                  ),
-                  _barButton(Icons.view_list_rounded, '選集', _openEpisodeSheet),
-                  _barButton(Icons.tune_rounded, '設定', _openSettingsSheet),
-                  _barButton(
-                    _fullscreen
-                        ? Icons.fullscreen_exit_rounded
-                        : Icons.fullscreen_rounded,
-                    _fullscreen ? '離開全螢幕' : '全螢幕',
-                    () => unawaited(_setFullscreen(!_fullscreen)),
-                  ),
-                ],
-              ),
-            ),
-          ],
-        ),
-      ),
+          )),
+        ]);
+      },
     );
   }
 
@@ -1976,12 +2137,12 @@ class _WatchPageState extends State<WatchPage>
     final here = episode.videoSn == _sn;
     final downloaded = store.isDownloaded(episode.videoSn);
     final remote = !episode.local && !downloaded;
-    final label = episode.episode.trim().isEmpty ? '單集' : episode.episode.trim();
+    final label =
+        episode.episode.trim().isEmpty ? '單集' : episode.episode.trim();
 
     return Tooltip(
-      message: remote
-          ? '尚未下載，點一下邊看邊下載'
-          : (downloaded ? '已下載到這支手機' : '從伺服器片庫播放'),
+      message:
+          remote ? '尚未下載，點一下邊看邊下載' : (downloaded ? '已下載到這支手機' : '從伺服器片庫播放'),
       child: Material(
         color: here
             ? AgpColors.accent
@@ -2103,7 +2264,9 @@ class _WatchPageState extends State<WatchPage>
               Wrap(
                 spacing: 6,
                 runSpacing: 6,
-                children: [for (final tag in tags) Pill(label: tag, dense: true)],
+                children: [
+                  for (final tag in tags) Pill(label: tag, dense: true)
+                ],
               ),
             ],
             if (rows.isNotEmpty) ...[
@@ -2202,7 +2365,8 @@ class _WatchPageState extends State<WatchPage>
                         Expanded(
                           child: Text(
                             comment.text,
-                            style: TextStyle(fontSize: 12.6, color: comment.color),
+                            style:
+                                TextStyle(fontSize: 12.6, color: comment.color),
                           ),
                         ),
                       ],
@@ -2226,34 +2390,6 @@ class _WatchPageState extends State<WatchPage>
   }
 
   // ------------------------------------------------------------- 各種 sheet
-
-  void _openRateSheet() {
-    showModalBottomSheet<void>(
-      context: context,
-      builder: (sheetContext) => SafeArea(
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            const _SheetTitle('播放速度'),
-            for (final rate in kPlaybackRates)
-              ListTile(
-                dense: true,
-                title: Text(rate == 1 ? '正常' : '$rate×'),
-                trailing: _rate == rate
-                    ? const Icon(Icons.check_rounded,
-                        size: 18, color: AgpColors.accent)
-                    : null,
-                onTap: () {
-                  Navigator.of(sheetContext).pop();
-                  unawaited(_setRate(rate));
-                },
-              ),
-            const SizedBox(height: 8),
-          ],
-        ),
-      ),
-    );
-  }
 
   void _openEpisodeSheet() {
     final info = _series;
@@ -2348,7 +2484,8 @@ class _WatchPageState extends State<WatchPage>
                       _currentQuality > 0 ? '${_currentQuality}P' : '自動',
                       _qualityChoices(options),
                       _currentQuality,
-                      (value) => refresh(() => unawaited(_switchQuality(value))),
+                      (value) =>
+                          refresh(() => unawaited(_switchQuality(value))),
                       note: state.offline
                           ? '離線中，只能播手機裡的那一份。'
                           : (options.isEmpty ? '正在問伺服器這一集還有哪些畫質…' : ''),
@@ -2388,7 +2525,8 @@ class _WatchPageState extends State<WatchPage>
                     _danmakuArea,
                     (value) => refresh(() {
                       setState(() => _danmakuArea = value);
-                      unawaited(state.savePref(() => prefs.setDanmakuArea(value)));
+                      unawaited(
+                          state.savePref(() => prefs.setDanmakuArea(value)));
                     }),
                   ),
                   _pickerTile<double>(
@@ -2401,7 +2539,8 @@ class _WatchPageState extends State<WatchPage>
                     _danmakuScale,
                     (value) => refresh(() {
                       setState(() => _danmakuScale = value);
-                      unawaited(state.savePref(() => prefs.setDanmakuScale(value)));
+                      unawaited(
+                          state.savePref(() => prefs.setDanmakuScale(value)));
                     }),
                   ),
                   _pickerTile<double>(
@@ -2414,7 +2553,8 @@ class _WatchPageState extends State<WatchPage>
                     _danmakuSpeed,
                     (value) => refresh(() {
                       setState(() => _danmakuSpeed = value);
-                      unawaited(state.savePref(() => prefs.setDanmakuSpeed(value)));
+                      unawaited(
+                          state.savePref(() => prefs.setDanmakuSpeed(value)));
                     }),
                   ),
                   _pickerTile<String>(
@@ -2430,10 +2570,12 @@ class _WatchPageState extends State<WatchPage>
                   _pickerTile<int>(
                     '畫面亮度',
                     '${(_brightness * 100).round()}%',
-                    kBrightnessLevels.map((b) => PlayerChoice(b, '$b%')).toList(),
+                    kBrightnessLevels
+                        .map((b) => PlayerChoice(b, '$b%'))
+                        .toList(),
                     (_brightness * 100).round(),
-                    (value) => refresh(
-                        () => unawaited(_setBrightness(value / 100))),
+                    (value) =>
+                        refresh(() => unawaited(_setBrightness(value / 100))),
                     note: '這會調暗播放畫面本身；App 不會改到裝置的螢幕亮度。',
                   ),
                   SwitchListTile(
@@ -2524,7 +2666,8 @@ class _WatchPageState extends State<WatchPage>
             const _SheetTitle('手勢說明'),
             for (final row in kGestureHelp)
               Padding(
-                padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 7),
+                padding:
+                    const EdgeInsets.symmetric(horizontal: 20, vertical: 7),
                 child: Row(
                   children: [
                     SizedBox(

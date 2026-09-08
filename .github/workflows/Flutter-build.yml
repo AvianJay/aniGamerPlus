@@ -63,6 +63,9 @@ jobs:
       - name: Analyze
         run: flutter analyze --no-fatal-infos
 
+      - name: Player regression tests
+        run: flutter test
+
   android:
     needs: analyze
     runs-on: ubuntu-latest
