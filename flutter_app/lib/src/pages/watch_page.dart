@@ -603,7 +603,7 @@ class _WatchPageState extends State<WatchPage>
 
   /// 把伺服器上的位址換成本機快取的. 換不成就原樣回去.
   Future<Uri> _cachedUrl(Uri direct, String key) async {
-    if (_bypassCache || state.offline) return direct;
+    if (_bypassCache || state.offline || !prefs.videoCache) return direct;
     try {
       final cache = await state.ensureVideoCache();
       if (cache == null) return direct;

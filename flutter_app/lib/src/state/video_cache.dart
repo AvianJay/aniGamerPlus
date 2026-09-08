@@ -22,18 +22,31 @@ import 'dart:io';
 
 import 'package:http/http.dart' as http;
 
-/// 檔案開頭留多少. ftyp/moov 在前面的話這一塊就把整個檔頭涵蓋掉了.
-const int kCacheHeadBytes = 2 * 1024 * 1024;
+/// 檔案開頭留多少. ftyp 加上前面幾個 box 而已, 不必留大.
+const int kCacheHeadBytes = 512 * 1024;
 
 /// 檔案結尾留多少. moov 在檔尾時播放器會來要這一段, 一集 24 分鐘的 1080p
-/// 大約 1 MB, 留 4 MB 有餘裕.
-const int kCacheTailBytes = 4 * 1024 * 1024;
+/// 大約 1 MB.
+const int kCacheTailBytes = 2 * 1024 * 1024;
 
-/// 整個快取目錄的上限. 一集頭尾加起來 6 MB, 這個額度大約放得下五十集.
+/// 整個快取目錄的上限. 一集頭尾加起來 2.5 MB, 這個額度放得下一百多集.
 const int kCacheBudgetBytes = 320 * 1024 * 1024;
 
 /// 速度是拿這段時間內轉手的量算的
 const Duration kSpeedWindow = Duration(milliseconds: 2500);
+
+/// 補齊快取之前, 要先看到播放這條路安靜多久.
+///
+/// 這是整個快取最重要的一條規矩: 補快取是為了「下次開快一點」, 不能拿現在
+/// 正在看的那一集的頻寬去換. 線路慢的時候, 一邊補 quota 一邊要播放器在
+/// 14:00 那裡緩衝, 結果就是兩邊都卡住 —— 補快取永遠讓路.
+const Duration kPrimeIdleGap = Duration(seconds: 4);
+
+/// 等不到空檔就放棄這一輪, 下次開這一集再說
+const Duration kPrimeGiveUp = Duration(minutes: 3);
+
+/// 被打斷的話重排幾次
+const int kPrimeAttempts = 4;
 
 class _Target {
   _Target({required this.upstream, required this.headers, required this.key});
@@ -155,7 +168,8 @@ class VideoCacheServer {
     final token = (++_token).toString();
     _targets[token] = _Target(
         upstream: upstream, headers: headers, key: _sanitize(key));
-    // 開播的同時就把頭尾補齊, 不必等播放器自己來要
+    // 刻意不在這裡開始補快取: 這一刻播放器正要去要它開播需要的東西, 跟它搶
+    // 頻寬只會讓開播更慢. _prime() 自己會等到播放那條路安靜下來再動.
     unawaited(_prime(token));
     return Uri.parse('http://127.0.0.1:${_server.port}/v/$token');
   }
@@ -248,14 +262,47 @@ class VideoCacheServer {
     if (meta == null || _closed) return;
     final head = _headSpan(meta);
     final tail = _tailSpan(meta);
-    if (!_complete(_headFile(target.key), head)) {
-      await _download(target, _headFile(target.key), 0, head - 1);
-    }
-    if (tail > 0 && !_complete(_tailFile(target.key), tail)) {
-      await _download(
-          target, _tailFile(target.key), meta.total - tail, meta.total - 1);
+
+    // 補到一半被播放器打斷的那一塊要再排一次. 不重試的話, 只要使用者一直在
+    // 動 (拉進度條、換集), 檔頭就永遠補不齊 —— 那正是最需要它的情況.
+    for (var attempt = 0; attempt < kPrimeAttempts; attempt++) {
+      if (_closed) return;
+      final headMissing = !_complete(_headFile(target.key), head);
+      final tailMissing = tail > 0 && !_complete(_tailFile(target.key), tail);
+      if (!headMissing && !tailMissing) break;
+      if (!await _waitForQuiet()) return;
+
+      // 尾巴先補: moov 在那裡, 那一塊才是開播前真正在等的東西
+      if (tailMissing) {
+        await _download(
+            target, _tailFile(target.key), meta.total - tail, meta.total - 1);
+      }
+      if (headMissing && _quiet) {
+        await _download(target, _headFile(target.key), 0, head - 1);
+      }
     }
     unawaited(_evict());
+  }
+
+  /// 播放那條路最後一次搬東西是什麼時候
+  int _playbackAt = 0;
+
+  void _notePlayback() =>
+      _playbackAt = DateTime.now().millisecondsSinceEpoch;
+
+  bool get _quiet =>
+      DateTime.now().millisecondsSinceEpoch - _playbackAt >
+      kPrimeIdleGap.inMilliseconds;
+
+  /// 等到播放器不再要東西為止. 等太久就放棄 —— 一直在看的人不需要我們現在
+  /// 就把快取補好.
+  Future<bool> _waitForQuiet() async {
+    final deadline = DateTime.now().add(kPrimeGiveUp);
+    while (!_closed && DateTime.now().isBefore(deadline)) {
+      if (_quiet) return true;
+      await Future<void>.delayed(const Duration(seconds: 1));
+    }
+    return false;
   }
 
   int _headSpan(_Meta meta) =>
@@ -287,16 +334,22 @@ class VideoCacheServer {
       final response = await _http.send(request);
       if (response.statusCode >= 400) return;
       final sink = part.openWrite();
+      var abandoned = false;
       try {
         await for (final chunk in response.stream) {
           if (_closed) break;
+          // 播放器中途又開始要東西: 立刻把頻寬讓回去, 這一份下次再補
+          if (!_quiet) {
+            abandoned = true;
+            break;
+          }
           _note(chunk.length);
           sink.add(chunk);
         }
       } finally {
         await sink.close();
       }
-      if (await part.length() == end - start + 1) {
+      if (!abandoned && await part.length() == end - start + 1) {
         await part.rename(file.path);
       } else {
         await part.delete();
@@ -366,6 +419,7 @@ class VideoCacheServer {
       for (final segment in _plan(target.key, meta, start, end)) {
         if (_closed) break;
         if (segment.cached) {
+          _notePlayback();
           await response.addStream(segment.file!
               .openRead(segment.offset, segment.offset + segment.length));
         } else {
@@ -451,8 +505,10 @@ class VideoCacheServer {
       await for (final chunk in upstream.stream) {
         if (_closed) return false;
         _note(chunk.length);
+        _notePlayback();
+        // 不要每一塊都 flush: 那會把「讀一塊 → 等socket排空 → 再讀」串成
+        // 一條, 吞吐量直接砍掉一半以上. HttpResponse 自己會排程送出.
         response.add(chunk);
-        await response.flush();
       }
       return true;
     } catch (_) {
@@ -477,6 +533,7 @@ class VideoCacheServer {
       await for (final chunk in upstream.stream) {
         if (_closed) break;
         _note(chunk.length);
+        _notePlayback();
         response.add(chunk);
       }
       await response.close();

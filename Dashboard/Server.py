@@ -2447,10 +2447,34 @@ if settings["dashboard"]["online_watch"]:
             vaild_user, user_role = verify_user(request.cookies)
             if not vaild_user:
                 return jsonify({"error": "login required"}), 403
-        # 走 _read_video_list_file(): 它會指定 encoding='utf-8', 檔案還沒生成時
-        # 也不會 500. 直接 open() 會拿系統預設編碼去讀 (繁中 Windows 是 cp950),
-        # 片名一律變成亂碼.
-        return jsonify(_read_video_list_file())
+
+        # 這一支是整個 app 開機時最重的一筆: 片庫大一點 (四千集就是 2.7 MB)
+        # 的話, jsonify(_read_video_list_file()) 等於每次都把整份重新解析再
+        # 重新序列化一遍, 實測要一秒多. 但磁碟上那個檔本來就是要送出去的那份
+        # JSON —— 直接發檔案, 中間那兩步都不必做.
+        #
+        # 再配一組 ETag: 沒有新下載的集數時客戶端只會收到一個 304, 連那 100 KB
+        # 都不必再傳.
+        video_list_path = os.path.join(Config.get_working_dir(), 'video_list.json')
+        if not os.path.exists(video_list_path):
+            # 還沒下載過任何一集
+            return jsonify({'videos': []})
+
+        etag, last_modified, _ = get_file_headers(video_list_path)
+        if request.headers.get('If-None-Match') == etag or                 request.headers.get('If-Modified-Since') == last_modified:
+            resp = Response(status=304)
+        else:
+            resp = send_file(video_list_path, mimetype='application/json')
+        resp.headers['ETag'] = etag
+        resp.headers['Last-Modified'] = last_modified
+        # must-revalidate: 片庫隨時可能多一集, 客戶端每次都該問一下 —— 但問完
+        # 通常就是一個 304, 便宜得很
+        if current_settings['dashboard']['online_watch_requires_login']:
+            resp.headers['Cache-Control'] = 'private, no-cache, must-revalidate'
+            resp.headers['Vary'] = 'Cookie'
+        else:
+            resp.headers['Cache-Control'] = 'public, no-cache, must-revalidate'
+        return resp
 
 
     @app.route('/watch/time', methods=['GET', 'POST'])

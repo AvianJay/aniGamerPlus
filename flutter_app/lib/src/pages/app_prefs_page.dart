@@ -148,6 +148,12 @@ class _AppPrefsPageState extends State<AppPrefsPage> {
             onChanged: (value) => _save(() => prefs.setDownloadDanmaku(value)),
           ),
           SwitchListTile(
+            title: const Text('線上播放先讀本機快取'),
+            subtitle: const Text('把每一集的檔頭留在手機上，下次開同一集不必再抓一遍'),
+            value: prefs.videoCache,
+            onChanged: (value) => _save(() => prefs.setVideoCache(value)),
+          ),
+          SwitchListTile(
             title: const Text('只在 Wi-Fi 下載'),
             subtitle: const Text('行動網路時佇列會停著等連上 Wi-Fi'),
             value: prefs.downloadWifiOnly,

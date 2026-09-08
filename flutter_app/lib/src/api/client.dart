@@ -191,11 +191,43 @@ class AgpClient {
 
   Future<List<VideoItem>> videoList() async {
     final data = await _json('/video_list.json');
-    final videos = ((data as Map)['videos'] as List?) ?? [];
+    return parseVideoList(data);
+  }
+
+  static List<VideoItem> parseVideoList(dynamic data) {
+    if (data is! Map) return const [];
+    final videos = (data['videos'] as List?) ?? [];
     return videos
         .whereType<Map>()
         .map((e) => VideoItem.fromJson(e.cast<String, dynamic>()))
         .toList();
+  }
+
+  /// 片庫加上 ETag 條件請求.
+  ///
+  /// 這是開機時最重的一筆: 四千集的片庫是 2.7 MB 的 JSON. 伺服器現在會給
+  /// ETag, 所以沒有新集數時這一趟就只是一個 304 —— 手上那份原封不動繼續用,
+  /// 不必再傳一次, 也不必再解析一次.
+  ///
+  /// 回傳的 body 為 null 表示「沒變, 用你手上那份」.
+  Future<({String? body, String etag, bool notModified})> videoListIfChanged(
+      String? etag) async {
+    final response = await _http.get(
+      uri('/video_list.json'),
+      headers: {
+        ...authHeaders,
+        if (etag != null && etag.isNotEmpty) 'If-None-Match': etag,
+      },
+    );
+    if (response.statusCode == 304) {
+      return (body: null, etag: etag ?? '', notModified: true);
+    }
+    if (response.statusCode >= 400) _fail(response);
+    return (
+      body: utf8.decode(response.bodyBytes),
+      etag: response.headers['etag'] ?? '',
+      notModified: false,
+    );
   }
 
   Future<SeriesInfo> series(String videoSn) async =>

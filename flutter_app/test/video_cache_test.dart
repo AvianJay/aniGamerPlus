@@ -21,6 +21,9 @@ class Upstream {
   int requests = 0;
   bool refuse = false;
 
+  /// 每 64 KB 之間歇一下, 用來模擬一條慢線路
+  Duration chunkDelay = Duration.zero;
+
   static Future<Upstream> start(int total) async {
     final server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
     final upstream = Upstream(server, body(total));
@@ -49,7 +52,17 @@ class Upstream {
       }
       response.headers.set(HttpHeaders.etagHeader, '"stub-v1"');
       response.headers.set(HttpHeaders.acceptRangesHeader, 'bytes');
-      response.add(data.sublist(start, end + 1));
+      if (upstream.chunkDelay == Duration.zero) {
+        response.add(data.sublist(start, end + 1));
+      } else {
+        const step = 64 * 1024;
+        for (var at = start; at <= end; at += step) {
+          final stop = (at + step - 1) > end ? end : at + step - 1;
+          response.add(data.sublist(at, stop + 1));
+          await response.flush();
+          await Future<void>.delayed(upstream.chunkDelay);
+        }
+      }
       await response.close();
     });
     return upstream;
@@ -81,7 +94,7 @@ void main() {
   late Upstream upstream;
   late VideoCacheServer cache;
 
-  // 頭 2 MB + 尾 4 MB, 所以 8 MB 的檔案中間會空著一段要跟上游要
+  // 頭尾加起來要小於 total, 中間才會空出一段必須跟上游要的
   const total = 8 * 1024 * 1024;
 
   setUp(() async {
@@ -101,15 +114,15 @@ void main() {
   Uri wrap() => cache.wrap(
       upstream: upstream.url, headers: const {}, key: 'v123-1080');
 
-  /// 補齊是背景做的, 等它把頭尾都寫完
+  /// 補齊是背景做的, 而且會等播放那條路安靜下來才動 —— 等它把頭尾都寫完
   Future<void> settle() async {
-    for (var i = 0; i < 100; i++) {
+    for (var i = 0; i < 300; i++) {
       final head = File('${temp.path}/v123-1080.head');
       final tail = File('${temp.path}/v123-1080.tail');
       if (head.existsSync() &&
           tail.existsSync() &&
-          head.lengthSync() == 2 * 1024 * 1024 &&
-          tail.lengthSync() == 4 * 1024 * 1024) {
+          head.lengthSync() == kCacheHeadBytes &&
+          tail.lengthSync() == kCacheTailBytes) {
         return;
       }
       await Future<void>.delayed(const Duration(milliseconds: 50));
@@ -129,13 +142,13 @@ void main() {
     final url = wrap();
     await settle();
 
-    final head = await fetch(url, range: 'bytes=0-1048575');
-    expect(head.length, 1024 * 1024);
-    expect(head, equals(upstream.data.sublist(0, 1024 * 1024)));
+    final head = await fetch(url, range: 'bytes=0-${kCacheHeadBytes - 1}');
+    expect(head.length, kCacheHeadBytes);
+    expect(head, equals(upstream.data.sublist(0, kCacheHeadBytes)));
 
-    final tailStart = total - 1024 * 1024;
+    final tailStart = total - kCacheTailBytes;
     final tail = await fetch(url, range: 'bytes=$tailStart-${total - 1}');
-    expect(tail.length, 1024 * 1024);
+    expect(tail.length, kCacheTailBytes);
     expect(tail, equals(upstream.data.sublist(tailStart)));
   });
 
@@ -143,8 +156,8 @@ void main() {
     final url = wrap();
     await settle();
     // 從頭快取裡面一路要到中間那段沒快取的地方
-    const start = 2 * 1024 * 1024 - 4096;
-    const end = 2 * 1024 * 1024 + 4096;
+    const start = kCacheHeadBytes - 4096;
+    const end = kCacheHeadBytes + 4096;
     final bytes = await fetch(url, range: 'bytes=$start-$end');
     expect(bytes.length, end - start + 1);
     expect(bytes, equals(upstream.data.sublist(start, end + 1)));
@@ -192,7 +205,7 @@ void main() {
     final url = wrap();
     for (var i = 0; i < 100; i++) {
       final head = File('${temp.path}/v123-1080.head');
-      if (head.existsSync() && head.lengthSync() == 2 * 1024 * 1024) {
+      if (head.existsSync() && head.lengthSync() == kCacheHeadBytes) {
         final bytes = await fetch(url, range: 'bytes=0-4095');
         if (bytes[0] == upstream.data[0]) break;
       }
@@ -202,6 +215,28 @@ void main() {
     expect(bytes.length, total ~/ 2);
     expect(bytes, equals(upstream.data));
   });
+
+  test('播放器在要東西的時候, 補快取要讓路', () async {
+    // 這是整個快取最重要的一條規矩. 之前它一 wrap 就衝去抓 6 MB, 在慢線路上
+    // 直接把播放要的頻寬吃光, 畫面就卡在轉圈 —— 這個測試把那件事釘住.
+    upstream.chunkDelay = const Duration(milliseconds: 30);
+    final url = wrap();
+
+    // 持續讓播放那條路有動靜, 時間拉得比 kPrimeIdleGap 長
+    final until = DateTime.now().add(const Duration(seconds: 7));
+    while (DateTime.now().isBefore(until)) {
+      // 中間那段沒有快取, 一定會走上游
+      await fetch(url, range: 'bytes=${total ~/ 2}-${total ~/ 2 + 32767}');
+      await Future<void>.delayed(const Duration(milliseconds: 100));
+      // 一直有人在看的時候, 快取不該偷偷補完
+      expect(File('${temp.path}/v123-1080.tail').existsSync(), isFalse,
+          reason: '播放中不該把頻寬拿去補快取');
+    }
+
+    // 人停下來了, 這時候補才是對的
+    upstream.chunkDelay = Duration.zero;
+    await settle();
+  }, timeout: const Timeout(Duration(minutes: 2)));
 
   test('轉手過的量算得出速度, 從磁碟讀的不算', () async {
     final url = wrap();

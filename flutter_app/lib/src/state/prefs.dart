@@ -147,6 +147,13 @@ class Prefs {
   int get downloadConcurrency => _sp.getInt('agp-dl-jobs') ?? 1;
   Future<void> setDownloadConcurrency(int value) => _sp.setInt('agp-dl-jobs', value);
 
+  /// 線上播放要不要走本機的影片快取 (把檔頭留在手機上, 下次開快一點).
+  ///
+  /// 有開關是因為它擋在播放器跟伺服器中間: 萬一在某個網路環境下反而更糟,
+  /// 關掉就直連, 不必等新版.
+  bool get videoCache => _sp.getBool('agp-video-cache') ?? true;
+  Future<void> setVideoCache(bool value) => _sp.setBool('agp-video-cache', value);
+
   // -------------------------------------------------------------------- 外觀
 
   /// system / dark / light

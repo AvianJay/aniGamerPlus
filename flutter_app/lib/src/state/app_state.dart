@@ -5,6 +5,7 @@
 library;
 
 import 'dart:async';
+import 'dart:convert';
 import 'dart:io';
 
 import 'package:flutter/material.dart';
@@ -116,6 +117,7 @@ class AppState extends ChangeNotifier {
 
   Future<void> refreshAll() async {
     booting = true;
+    await _libraryDir();
     // 上次的片庫跟片單先擺上去: 開機畫面後面已經有東西了, 網路回來再換掉
     seedCachedCatalog();
     if (library.isEmpty) {
@@ -175,9 +177,22 @@ class AppState extends ChangeNotifier {
       return;
     }
     try {
-      library = await client.videoList();
-      _indexLibrary();
-      await prefs.cacheJson('library', library.map((v) => v.toJson()).toList());
+      // 帶著上次的 ETag 去問. 沒有新集數的話伺服器只回一個 304, 手上那份原封
+      // 不動 —— 四千集的片庫是 2.7 MB, 每次開 app 重抓一遍太浪費了.
+      final fresh = await client.videoListIfChanged(await _libraryEtag());
+      if (fresh.notModified && library.isNotEmpty) {
+        lastError = '';
+        notifyListeners();
+        return;
+      }
+      final body = fresh.body;
+      if (body != null) {
+        library = AgpClient.parseVideoList(jsonDecode(body));
+        _indexLibrary();
+        // 存伺服器發下來的原文, 不要自己再序列化一次: 省掉一趟 4000 個物件的
+        // encode, 而且下次 304 時用的就是同一份 bytes.
+        unawaited(_saveLibraryCache(body, fresh.etag));
+      }
       lastError = '';
     } on ApiException catch (error) {
       if (error.needsLogin) {
@@ -196,14 +211,69 @@ class AppState extends ChangeNotifier {
     notifyListeners();
   }
 
+  // ------------------------------------------------------------- 片庫快取
+  //
+  // 放檔案不放 SharedPreferences: 那邊是給小設定用的, 塞一份 2.7 MB 的字串
+  // 進去等於每次刷新都在主執行緒上寫一次幾 MB 的 XML.
+
+  Directory? _cacheDir;
+
+  Future<Directory> _libraryDir() async =>
+      _cacheDir ??= await getApplicationSupportDirectory();
+
+  Future<File> _libraryFile() async =>
+      File('${(await _libraryDir()).path}/library.json');
+
+  Future<File> _libraryEtagFile() async =>
+      File('${(await _libraryDir()).path}/library.etag');
+
+  Future<String?> _libraryEtag() async {
+    try {
+      final file = await _libraryEtagFile();
+      if (!file.existsSync()) return null;
+      // 手上沒有內容的話 ETag 就沒有意義, 拿了只會換到一個沒東西可用的 304
+      final body = await _libraryFile();
+      if (!body.existsSync()) return null;
+      return (await file.readAsString()).trim();
+    } catch (_) {
+      return null;
+    }
+  }
+
+  Future<void> _saveLibraryCache(String body, String etag) async {
+    try {
+      await (await _libraryFile()).writeAsString(body);
+      await (await _libraryEtagFile()).writeAsString(etag);
+    } catch (_) {
+      // 存不下就算了, 下次還是抓得到
+    }
+  }
+
+  /// 開機時先擺上去的那一份. 同步讀 —— 開機路徑上不值得為它多轉一次事件圈.
   List<VideoItem> _cachedLibrary() {
+    try {
+      final dir = _cacheDir;
+      if (dir != null) {
+        final file = File('${dir.path}/library.json');
+        if (file.existsSync()) {
+          final cached =
+              AgpClient.parseVideoList(jsonDecode(file.readAsStringSync()));
+          if (cached.isNotEmpty) return cached;
+        }
+      }
+    } catch (_) {
+      // 壞掉就當作沒有
+    }
+    // 舊版是存在 SharedPreferences 裡的, 讀得到就沿用, 下一次刷新會搬到檔案
     final raw = prefs.readCachedJson('library');
-    if (raw is! List) return downloads.asVideoItems();
-    final cached = raw
-        .whereType<Map>()
-        .map((e) => VideoItem.fromJson(e.cast<String, dynamic>()))
-        .toList();
-    return cached.isEmpty ? downloads.asVideoItems() : cached;
+    if (raw is List) {
+      final cached = raw
+          .whereType<Map>()
+          .map((e) => VideoItem.fromJson(e.cast<String, dynamic>()))
+          .toList();
+      if (cached.isNotEmpty) return cached;
+    }
+    return downloads.asVideoItems();
   }
 
   Future<void> refreshCatalog() async {
