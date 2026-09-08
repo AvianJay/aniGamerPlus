@@ -611,60 +611,65 @@ def __download_only(sn, dl_resolution='', dl_save_dir='', realtime_show_file_siz
     thread_limiter.acquire()
     err_counter = 0
 
-    anime = build_anime(sn)
-    if anime['failed']:
-        sys.exit(1)
-    anime = anime['anime']
-
     try:
-        if dl_resolution:
-            anime.download(dl_resolution, dl_save_dir, realtime_show_file_size=realtime_show_file_size,
-                           classify=classify)
-        else:
-            anime.download(settings['download_resolution'], dl_save_dir,
-                           realtime_show_file_size=realtime_show_file_size, classify=classify)
-    except BaseException as e:
-        err_print(sn, '下載異常', '發生未知異常: ' + str(e), status=1)
-        err_print(sn, '下載異常', '異常詳情:\n' + traceback.format_exc(), status=1, display=False)
-        anime.video_size = 0
-
-    while anime.video_size < 5:
-        if err_counter >= 3:
-            err_print(sn, '終止任務', 'title=' + anime.get_title() + ' 任務失敗達三次! 終止任務!', status=1)
-            thread_limiter.release()
-            if int(sn) in Config.tasks_progress_rate.keys():
-                del Config.tasks_progress_rate[int(sn)]
+        anime = build_anime(sn)
+        if anime['failed']:
             return
-        else:
-            err_print(sn, '任務失敗', 'title=' + anime.get_title() + ' 10s后自動重啟,最多重試三次', status=1)
-            err_counter = err_counter + 1
-            if int(sn) in Config.tasks_progress_rate.keys():
-                Config.tasks_progress_rate[int(sn)]['status'] = '失敗! 重啟中'
-            time.sleep(10)
-            anime.renew()
+        anime = anime['anime']
 
-            try:
-                if dl_resolution:
-                    anime.download(dl_resolution, dl_save_dir, realtime_show_file_size=realtime_show_file_size,
-                                   classify=classify)
-                else:
-                    anime.download(settings['download_resolution'], dl_save_dir,
-                                   realtime_show_file_size=realtime_show_file_size, classify=classify)
-            except BaseException as e:
-                err_print(sn, '下載異常', '發生未知異常: ' + str(e), status=1)
-                err_print(sn, '下載異常', '異常詳情:\n' + traceback.format_exc(), status=1, display=False)
-                anime.video_size = 0
+        try:
+            if dl_resolution:
+                anime.download(dl_resolution, dl_save_dir, realtime_show_file_size=realtime_show_file_size,
+                               classify=classify)
+            else:
+                anime.download(settings['download_resolution'], dl_save_dir,
+                               realtime_show_file_size=realtime_show_file_size, classify=classify)
+        except BaseException as e:
+            err_print(sn, '下載異常', '發生未知異常: ' + str(e), status=1)
+            err_print(sn, '下載異常', '異常詳情:\n' + traceback.format_exc(), status=1, display=False)
+            anime.video_size = 0
 
-    # 手動任務原本完全不碰資料庫, 下載好的檔案因此不會進 video_list.json,
-    # 首頁片庫與線上看都看不到它. 這裡補登記一筆, 讓手動下載的劇集跟追番下載的
-    # 一樣可以直接線上觀看.
-    try:
-        insert_db(anime)
-        update_db(anime)
-        if settings['dashboard']['online_watch']:
-            updatelist()
-    except BaseException:
-        err_print(sn, 'ＤＢ错误', '手動任務登記失敗: ' + traceback.format_exc(), status=1, display=False)
+        while anime.video_size < 5:
+            if err_counter >= 3:
+                err_print(sn, '終止任務', 'title=' + anime.get_title() + ' 任務失敗達三次! 終止任務!', status=1)
+                if int(sn) in Config.tasks_progress_rate.keys():
+                    del Config.tasks_progress_rate[int(sn)]
+                return
+            else:
+                err_print(sn, '任務失敗', 'title=' + anime.get_title() + ' 10s后自動重啟,最多重試三次', status=1)
+                err_counter = err_counter + 1
+                if int(sn) in Config.tasks_progress_rate.keys():
+                    Config.tasks_progress_rate[int(sn)]['status'] = '失敗! 重啟中'
+                time.sleep(10)
+                anime.renew()
+
+                try:
+                    if dl_resolution:
+                        anime.download(dl_resolution, dl_save_dir, realtime_show_file_size=realtime_show_file_size,
+                                       classify=classify)
+                    else:
+                        anime.download(settings['download_resolution'], dl_save_dir,
+                                       realtime_show_file_size=realtime_show_file_size, classify=classify)
+                except BaseException as e:
+                    err_print(sn, '下載異常', '發生未知異常: ' + str(e), status=1)
+                    err_print(sn, '下載異常', '異常詳情:\n' + traceback.format_exc(), status=1, display=False)
+                    anime.video_size = 0
+
+        # 手動任務原本完全不碰資料庫, 下載好的檔案因此不會進 video_list.json,
+        # 首頁片庫與線上看都看不到它. 這裡補登記一筆, 讓手動下載的劇集跟追番下載的
+        # 一樣可以直接線上觀看.
+        try:
+            insert_db(anime)
+            update_db(anime)
+            if settings['dashboard']['online_watch']:
+                updatelist()
+        except BaseException:
+            err_print(sn, 'ＤＢ错误', '手動任務登記失敗: ' + traceback.format_exc(), status=1, display=False)
+    finally:
+        # 原本只有失敗路徑會 release, 成功下載完直接 return 出去 —— 併發限制器
+        # 的名額被永久吃掉一個. 網頁手動任務一次補幾發, 之後所有下載(包括追番)就
+        # 全部卡在 acquire() 上, 看起來像「排隊排不完」, 其實是 semaphore 洩漏.
+        thread_limiter.release()
 
     download_cd = threading.Thread(target=download_cd_counter)
     download_cd.start()
@@ -732,11 +737,17 @@ def __get_danmu_only(sn, bangumi_name, video_path, display=True, track_progress=
 
 def __cui(sn, cui_resolution, cui_download_mode, cui_thread_limit, ep_range,
           cui_save_dir='', classify=True, get_info=False, user_cmd=False, realtime_show=True, cui_danmu=False):
-    global thread_limiter
-    thread_limiter = threading.Semaphore(cui_thread_limit)
-
     global danmu
     danmu = cui_danmu
+
+    # 原本這裡直接把全域 thread_limiter 換成 Semaphore(cui_thread_limit):
+    # 網頁手動任務表單預設 thread=1, 送一次任務, 整個程序(包括背景追番)的
+    # 下載併發就永久掉到 1, 之後每個任務都卡在 acquire() 排隊.
+    # 從 Dashboard 進來時(__name__ 不是 __main__)改用「不動全域」—— 手動任務
+    # 直接跟背景追番共用全域 limiter(multi-thread 設定值), 各自排隊互不干擾;
+    # 直接跑 CLI 時行為不變, 還是用命令列指定的執行緒數.
+    if __name__ == '__main__':
+        globals()['thread_limiter'] = threading.Semaphore(cui_thread_limit)
 
     if realtime_show:
         if cui_thread_limit == 1 or cui_download_mode in ('single', 'latest', 'largest-sn'):
