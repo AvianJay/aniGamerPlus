@@ -2,6 +2,7 @@ import 'dart:async';
 import 'dart:io';
 import 'dart:ui' as ui;
 import 'package:flutter/rendering.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:shared_preferences/shared_preferences.dart';
@@ -29,10 +30,16 @@ class DelayedPlayer extends VideoPlayerPlatform {
   final seeks = <Duration>[];
   double volume = 1;
   bool playing = false;
+  double speed = 1;
+  int creations = 0;
   @override
   Future<void> init() async {}
   @override
-  Future<int?> createWithOptions(VideoCreationOptions options) async => 1;
+  Future<int?> createWithOptions(VideoCreationOptions options) async {
+    creations++;
+    return 1;
+  }
+
   @override
   Stream<VideoEvent> videoEventsFor(int id) {
     scheduleMicrotask(() => events.add(VideoEvent(
@@ -64,18 +71,38 @@ class DelayedPlayer extends VideoPlayerPlatform {
   @override
   Future<void> setLooping(int id, bool looping) async {}
   @override
+  Future<void> setMixWithOthers(bool value) async {}
+  @override
   Future<void> setVolume(int id, double value) async {
     volume = value;
   }
 
   @override
-  Future<void> setPlaybackSpeed(int id, double speed) async {}
+  Future<void> setPlaybackSpeed(int id, double value) async {
+    speed = value;
+  }
+
   @override
   Widget buildView(int id) => const ColoredBox(color: Color(0xFF384054));
 }
 
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
+  setUpAll(() async {
+    final fonts = Platform.environment['AGP_FONT_DIR'];
+    if (fonts != null) {
+      for (final entry in {
+        'Roboto': 'roboto-regular.ttf',
+        'MaterialIcons': 'materialicons-regular.otf'
+      }.entries) {
+        final loader = FontLoader(entry.key)
+          ..addFont(File('$fonts/${entry.value}')
+              .readAsBytes()
+              .then((bytes) => ByteData.sublistView(bytes)));
+        await loader.load();
+      }
+    }
+  });
   late Directory temp;
   late AppState state;
   late DelayedPlayer player;
@@ -98,7 +125,10 @@ void main() {
     await tester.binding.setSurfaceSize(const Size(1000, 800));
     await tester.pumpWidget(RepaintBoundary(
         key: const ValueKey('capture'),
-        child: MaterialApp(home: WatchPage(state: state, sn: '1'))));
+        child: MaterialApp(
+            debugShowCheckedModeBanner: false,
+            theme: ThemeData(fontFamily: 'Roboto'),
+            home: WatchPage(state: state, sn: '1'))));
     for (var i = 0; i < 8; i++) {
       await tester.pump(const Duration(milliseconds: 100));
     }
@@ -185,5 +215,91 @@ void main() {
     await tester.pumpWidget(const SizedBox());
     await tester.pump(const Duration(seconds: 1));
     expect(tester.takeException(), isNull);
+  });
+  Offset middle(WidgetTester tester) {
+    final element = find.byType(ColoredBox).evaluate().firstWhere(
+        (e) => (e.widget as ColoredBox).color == const Color(0xFF384054));
+    final box = element.renderObject! as RenderBox;
+    return box.localToGlobal(box.size.center(Offset.zero));
+  }
+
+  testWidgets('center double tap toggles playback without seeking',
+      (tester) async {
+    await open(tester);
+    final center = middle(tester);
+    await tester.tapAt(center);
+    await tester.pump(const Duration(milliseconds: 80));
+    await tester.tapAt(center);
+    await tester.pump(const Duration(milliseconds: 300));
+    expect(player.playing, false);
+    expect(player.seeks, isEmpty);
+    await tester.tapAt(center);
+    await tester.pump(const Duration(milliseconds: 80));
+    await tester.tapAt(center);
+    await tester.pump(const Duration(milliseconds: 300));
+    expect(player.playing, true);
+    expect(player.seeks, isEmpty);
+    await tester.pumpWidget(const SizedBox());
+  });
+  testWidgets('boost label persists until release and restores original speed',
+      (tester) async {
+    await open(tester);
+    final gesture = await tester.startGesture(middle(tester));
+    await tester.pump(const Duration(milliseconds: 600));
+    expect(player.speed, 2);
+    expect(find.text('2x 倍速中'), findsOneWidget);
+    await tester.pump(const Duration(seconds: 4));
+    expect(find.text('2x 倍速中'), findsOneWidget);
+    await gesture.up();
+    await tester.pump();
+    expect(player.speed, 1);
+    expect(find.text('2x 倍速中'), findsNothing);
+    await tester.pumpWidget(const SizedBox());
+  });
+  testWidgets('background resume preserves the controller and never seeks',
+      (tester) async {
+    await open(tester);
+    final count = player.creations;
+    tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.inactive);
+    tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.paused);
+    await tester.pump();
+    expect(player.playing, false);
+    await tester.pump(const Duration(seconds: 20));
+    tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.resumed);
+    await tester.pump();
+    expect(player.playing, true);
+    expect(player.creations, count);
+    expect(player.seeks, isEmpty);
+    // An intentional pause must remain paused after another background round trip.
+    await tester.tapAt(middle(tester));
+    await tester.pump(const Duration(milliseconds: 70));
+    await tester.tapAt(middle(tester));
+    await tester.pump(const Duration(milliseconds: 300));
+    expect(player.playing, false);
+    tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.paused);
+    await tester.pump();
+    tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.resumed);
+    await tester.pump();
+    expect(player.playing, false);
+    await tester.pumpWidget(const SizedBox());
+  });
+  testWidgets(
+      'tablet layout uses available width; fit is fullscreen only with large targets',
+      (tester) async {
+    await open(tester);
+    await tester.binding.setSurfaceSize(const Size(1280, 882));
+    await tester.pump();
+    expect(find.byTooltip('畫面比例'), findsNothing);
+    final settings = find.byTooltip('設定');
+    expect(tester.getSize(settings).width, greaterThanOrEqualTo(48));
+    expect(tester.getSize(settings).height, greaterThanOrEqualTo(48));
+    await tester.tap(find.byTooltip('全螢幕'));
+    await tester.pump(const Duration(milliseconds: 350));
+    expect(find.byTooltip('畫面比例'), findsOneWidget);
+    expect(tester.takeException(), isNull);
+    await tester.tap(find.byTooltip('離開全螢幕'));
+    await tester.pump(const Duration(milliseconds: 350));
+    expect(find.byTooltip('畫面比例'), findsNothing);
+    await tester.pumpWidget(const SizedBox());
   });
 }

@@ -101,6 +101,7 @@ const List<List<String>> kGestureHelp = [
   ['左右滑動', '快轉 / 倒退 (整個畫面 = 120 秒)'],
   ['左半邊上下滑', '畫面亮度'],
   ['右半邊上下滑', '音量'],
+  ['連點兩下中央', '播放 / 暫停'],
   ['連點兩下左 / 右', '倒退 / 快進 10 秒'],
   ['長按畫面', '2 倍速播放'],
 ];
@@ -124,7 +125,7 @@ class WatchPage extends StatefulWidget {
 }
 
 class _WatchPageState extends State<WatchPage>
-    with SingleTickerProviderStateMixin {
+    with SingleTickerProviderStateMixin, WidgetsBindingObserver {
   // ------------------------------------------------------------- 依賴
   AppState get state => widget.state;
   AgpClient get client => state.client;
@@ -197,6 +198,10 @@ class _WatchPageState extends State<WatchPage>
   int _sourceGeneration = 0;
   bool _scrubbing = false;
   double _scrubValue = 0;
+  bool _background = false;
+  bool _resumeAfterBackground = false;
+  Future<void> _lifecycleWork = Future<void>.value();
+  Offset? _doubleTapPosition;
   bool _boosting = false;
   double _boostFrom = 1;
 
@@ -231,6 +236,7 @@ class _WatchPageState extends State<WatchPage>
   @override
   void initState() {
     super.initState();
+    WidgetsBinding.instance.addObserver(this);
     _sn = widget.sn;
     _rate = prefs.rate;
     _volume = prefs.volume;
@@ -250,6 +256,7 @@ class _WatchPageState extends State<WatchPage>
 
   @override
   void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
     _idleTimer?.cancel();
     _flashTimer?.cancel();
     _nextTimer?.cancel();
@@ -270,6 +277,52 @@ class _WatchPageState extends State<WatchPage>
           SystemChrome.setPreferredOrientations(DeviceOrientation.values));
     }
     super.dispose();
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState lifecycle) {
+    if (lifecycle == AppLifecycleState.resumed) {
+      if (!_background) return;
+      _background = false;
+      _lifecycleWork = _lifecycleWork.then((_) async {
+        final controller = _controller;
+        if (!mounted || _background || controller == null) return;
+        // Retain the native player and its buffered media. Never seek or reopen
+        // merely because the app returned from the background.
+        final position = await controller.position;
+        if (!mounted || _background || controller != _controller) return;
+        if (_pendingSeek == null && position != null) {
+          _anchor = position.inMilliseconds / 1000;
+          _anchorAt = DateTime.now().millisecondsSinceEpoch;
+          _clock.value = _anchor;
+        }
+        if (_resumeAfterBackground && _pendingSeek == null) {
+          await controller.play();
+        }
+        if (!mounted || _background) return;
+        if (_streaming) _startPoll();
+        _armIdle();
+      }).catchError((Object _) {
+        if (mounted && !_background) _flashMessage('恢復播放失敗，請再按播放');
+      });
+      return;
+    }
+    if (_background) return;
+    _background = true;
+    final controller = _controller;
+    _resumeAfterBackground = _pendingSeek != null
+        ? _resumeAfterSeek
+        : (controller?.value.isPlaying ?? false);
+    _onLongPressEnd();
+    _idleTimer?.cancel();
+    _streamTimer?.cancel();
+    _lifecycleWork = _lifecycleWork.then((_) async {
+      if (controller == null || controller != _controller) return;
+      await controller.pause();
+      if (!mounted) return;
+      await _syncTime(force: true);
+      await WakelockPlus.disable();
+    }).catchError((Object _) {});
   }
 
   // =============================================================== 開場
@@ -363,19 +416,24 @@ class _WatchPageState extends State<WatchPage>
       controller = VideoPlayerController.networkUrl(
         client.streamPlaylistUrl(_sn, _quality),
         httpHeaders: client.authHeaders,
+        videoPlayerOptions: VideoPlayerOptions(allowBackgroundPlayback: true),
       );
     } else if (local != null) {
-      controller = VideoPlayerController.file(local);
+      controller = VideoPlayerController.file(local,
+          videoPlayerOptions:
+              VideoPlayerOptions(allowBackgroundPlayback: true));
     } else if (_streaming) {
       controller = VideoPlayerController.networkUrl(
         client.hlsPlaylistUrl(_sn),
         httpHeaders: client.authHeaders,
+        videoPlayerOptions: VideoPlayerOptions(allowBackgroundPlayback: true),
       );
     } else {
       final res = _video?.resolution ?? 0;
       controller = VideoPlayerController.networkUrl(
         client.videoUrl(_sn, resolution: res > 0 ? res : null),
         httpHeaders: client.authHeaders,
+        videoPlayerOptions: VideoPlayerOptions(allowBackgroundPlayback: true),
       );
     }
 
@@ -417,9 +475,10 @@ class _WatchPageState extends State<WatchPage>
     });
     _clock.value = _anchor;
 
+    if (autoplay && _background) _resumeAfterBackground = true;
     if (target > 1) {
       unawaited(_seekTo(target, resume: autoplay));
-    } else if (autoplay) {
+    } else if (autoplay && !_background) {
       await controller.play();
       unawaited(WakelockPlus.enable());
     }
@@ -568,6 +627,7 @@ class _WatchPageState extends State<WatchPage>
   // =============================================================== 邊看邊下載
 
   void _startPoll() {
+    if (_background) return;
     _streamTimer?.cancel();
     _streamTimer = Timer.periodic(kStreamPoll, (_) => unawaited(_pollStream()));
     unawaited(_pollStream());
@@ -579,14 +639,14 @@ class _WatchPageState extends State<WatchPage>
   }
 
   Future<void> _pollStream() async {
-    if (!mounted || !_streaming) return;
+    if (!mounted || _background || !_streaming) return;
     HlsStatus status;
     try {
       status = await client.hlsStatus(_sn);
     } catch (_) {
       return;
     }
-    if (!mounted || !_streaming) return;
+    if (!mounted || _background || !_streaming) return;
 
     if (status.mode == 'file') {
       await _finishStream();
@@ -646,6 +706,7 @@ class _WatchPageState extends State<WatchPage>
 
   /// 攢夠 45 秒 (或已經在合併) 才開播, 免得開頭就卡住
   void _maybeAutoplay() {
+    if (_background) return;
     if (_streamAutoplayed) return;
     final controller = _controller;
     if (controller == null || !controller.value.isInitialized) return;
@@ -705,13 +766,13 @@ class _WatchPageState extends State<WatchPage>
   void _onFrame(Duration _) {
     final controller = _controller;
     if (controller == null || !controller.value.isInitialized) return;
-    if (_scrubbing || _pendingSeek != null) return;
+    if (_background || _scrubbing || _pendingSeek != null) return;
     final value = controller.value;
     var position = _anchor;
     if (value.isPlaying && !value.isBuffering) {
       final elapsed =
           (DateTime.now().millisecondsSinceEpoch - _anchorAt) / 1000;
-      position = _anchor + elapsed * _rate;
+      position = _anchor + elapsed * (_boosting ? 2 : _rate);
     }
     final limit = _playableDuration;
     if (limit > 0 && position > limit) position = limit;
@@ -833,6 +894,10 @@ class _WatchPageState extends State<WatchPage>
     var workingGeneration = _sourceGeneration;
     try {
       while (mounted && _pendingSeek != null) {
+        if (_background) {
+          await Future<void>.delayed(const Duration(milliseconds: 250));
+          continue;
+        }
         final active = _controller;
         final generation = _sourceGeneration;
         workingGeneration = generation;
@@ -880,7 +945,7 @@ class _WatchPageState extends State<WatchPage>
         _anchor = wanted;
         _anchorAt = DateTime.now().millisecondsSinceEpoch;
         _clock.value = wanted;
-        if (_resumeAfterSeek) await active.play();
+        if (_resumeAfterSeek && !_background) await active.play();
         unawaited(_syncTime(force: true));
       }
     } catch (_) {
@@ -1009,8 +1074,14 @@ class _WatchPageState extends State<WatchPage>
 
   // =============================================================== 手勢
 
-  void _onDoubleTapDown(TapDownDetails details, Size size) {
-    final left = details.localPosition.dx < size.width / 2;
+  void _onDoubleTap(Size size) {
+    final x = _doubleTapPosition?.dx ?? size.width / 2;
+    if (x >= size.width / 3 && x <= size.width * 2 / 3) {
+      unawaited(_togglePlay());
+      _showControls();
+      return;
+    }
+    final left = x < size.width / 3;
     unawaited(
         _seekBy(left ? -kSkipSeconds.toDouble() : kSkipSeconds.toDouble()));
     _flashMessage(left ? '倒退 $kSkipSeconds 秒' : '快進 $kSkipSeconds 秒');
@@ -1024,7 +1095,6 @@ class _WatchPageState extends State<WatchPage>
     unawaited(controller.setPlaybackSpeed(2));
     _anchor = _clock.value;
     _anchorAt = DateTime.now().millisecondsSinceEpoch;
-    _flashMessage('2× 快轉中');
   }
 
   void _onLongPressEnd() {
@@ -1241,6 +1311,7 @@ class _WatchPageState extends State<WatchPage>
         timer.cancel();
         return;
       }
+      if (_background) return;
       setState(() => _nextCountdown -= 1);
       if (_nextCountdown <= 0) {
         timer.cancel();
@@ -1350,6 +1421,32 @@ class _WatchPageState extends State<WatchPage>
                       constraints.maxWidth,
                       height * 16 / 9,
                     );
+                    if (constraints.maxWidth >= 1100 &&
+                        constraints.maxHeight >= 600) {
+                      final videoWidth = constraints.maxWidth - 320;
+                      return Column(children: [
+                        _titleBar(),
+                        Expanded(
+                            child: Row(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Expanded(
+                                child: Column(children: [
+                              SizedBox(
+                                  height: math.min(videoWidth * 9 / 16,
+                                      constraints.maxHeight - 200),
+                                  width: videoWidth,
+                                  child: _playerSurface()),
+                              Expanded(child: _pageBody(includeInfo: false)),
+                            ])),
+                            SizedBox(
+                                width: 320,
+                                child:
+                                    SingleChildScrollView(child: _infoCard())),
+                          ],
+                        )),
+                      ]);
+                    }
                     return Column(
                       children: [
                         _titleBar(),
@@ -1583,6 +1680,25 @@ class _WatchPageState extends State<WatchPage>
                     ),
                   ),
                   if (_flash.isNotEmpty || _hud.isNotEmpty) _hudChip(),
+                  if (_boosting)
+                    Positioned(
+                        top: 62,
+                        left: 0,
+                        right: 0,
+                        child: IgnorePointer(
+                            child: Center(
+                                child: Container(
+                          padding: const EdgeInsets.symmetric(
+                              horizontal: 18, vertical: 9),
+                          decoration: BoxDecoration(
+                              color: const Color(0xB3000000),
+                              borderRadius: BorderRadius.circular(24)),
+                          child: const Text('2x 倍速中',
+                              style: TextStyle(
+                                  color: Colors.white,
+                                  fontSize: 16,
+                                  fontWeight: FontWeight.w700)),
+                        )))),
                   if (_nextOffer != null) _nextCard(),
                 ],
               )),
@@ -1595,7 +1711,7 @@ class _WatchPageState extends State<WatchPage>
     final size = controller.value.size;
     final width = size.width > 0 ? size.width : 16.0;
     final height = size.height > 0 ? size.height : 9.0;
-    final fit = switch (_aspect) {
+    final fit = switch (_fullscreen ? _aspect : 'contain') {
       'cover' => BoxFit.cover,
       'fill' => BoxFit.fill,
       _ => BoxFit.contain,
@@ -1772,8 +1888,8 @@ class _WatchPageState extends State<WatchPage>
     return GestureDetector(
       behavior: HitTestBehavior.opaque,
       onTap: _toggleControls,
-      onDoubleTapDown: (details) => _onDoubleTapDown(details, size),
-      onDoubleTap: () {},
+      onDoubleTapDown: (details) => _doubleTapPosition = details.localPosition,
+      onDoubleTap: () => _onDoubleTap(size),
       onLongPressStart: (_) => _onLongPressStart(),
       onLongPressEnd: (_) => _onLongPressEnd(),
       onLongPressCancel: _onLongPressEnd,
@@ -1800,85 +1916,92 @@ class _WatchPageState extends State<WatchPage>
   // ------------------------------------------------------------- 控制列
 
   Widget _controls() {
-    return Stack(
-      fit: StackFit.expand,
-      children: [
-        const IgnorePointer(
-            child: DecoratedBox(
-          decoration: BoxDecoration(
-            gradient: LinearGradient(
-              begin: Alignment.topCenter,
-              end: Alignment.bottomCenter,
-              colors: [
-                Color(0x99000000),
-                Color(0x00000000),
-                Color(0x00000000),
-                Color(0xB3000000),
-              ],
-              stops: [0, 0.28, 0.62, 1],
-            ),
-          ),
-        )),
-        Positioned(
-          left: 6,
-          right: 6,
-          top: 6,
-          child: SafeArea(
-            bottom: false,
-            child: Row(
+    return LayoutBuilder(
+        builder: (context, constraints) => Stack(
+              fit: StackFit.expand,
               children: [
-                IconButton(
-                  icon:
-                      const Icon(Icons.arrow_back_rounded, color: Colors.white),
-                  onPressed: () {
-                    if (_fullscreen) {
-                      unawaited(_setFullscreen(false));
-                    } else {
-                      Navigator.of(context).maybePop();
-                    }
-                  },
-                ),
-                Expanded(
-                  child: Text(
-                    '$_seriesName · $_hereLabel',
-                    maxLines: 1,
-                    overflow: TextOverflow.ellipsis,
-                    style: const TextStyle(
-                      fontSize: 14,
-                      color: Colors.white,
-                      fontWeight: FontWeight.w700,
+                const IgnorePointer(
+                    child: DecoratedBox(
+                  decoration: BoxDecoration(
+                    gradient: LinearGradient(
+                      begin: Alignment.topCenter,
+                      end: Alignment.bottomCenter,
+                      colors: [
+                        Color(0x99000000),
+                        Color(0x00000000),
+                        Color(0x00000000),
+                        Color(0xB3000000),
+                      ],
+                      stops: [0, 0.28, 0.62, 1],
+                    ),
+                  ),
+                )),
+                Positioned(
+                  left: 6,
+                  right: 6,
+                  top: 6,
+                  child: SafeArea(
+                    bottom: false,
+                    child: Row(
+                      children: [
+                        if (_fullscreen)
+                          IconButton(
+                            icon: const Icon(Icons.arrow_back_rounded,
+                                color: Colors.white),
+                            onPressed: () {
+                              if (_fullscreen) {
+                                unawaited(_setFullscreen(false));
+                              } else {
+                                Navigator.of(context).maybePop();
+                              }
+                            },
+                          ),
+                        Expanded(
+                          child: Text(
+                            _fullscreen ? '$_seriesName · $_hereLabel' : '',
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
+                            style: const TextStyle(
+                              fontSize: 14,
+                              color: Colors.white,
+                              fontWeight: FontWeight.w700,
+                            ),
+                          ),
+                        ),
+                        _topMenu<double>(
+                          label:
+                              '${_rate.toStringAsFixed(_rate == _rate.roundToDouble() ? 1 : 2)}x',
+                          current: _rate,
+                          choices: [
+                            for (final r in kPlaybackRates)
+                              PlayerChoice(r, '${r}x')
+                          ],
+                          onPick: (r) => unawaited(_setRate(r)),
+                        ),
+                        ValueListenableBuilder<List<int>>(
+                          valueListenable: _qualities,
+                          builder: (context, options, _) => _topMenu<int>(
+                            label: '${_currentQuality}p',
+                            current: _currentQuality,
+                            choices: _qualityChoices(options).reversed.toList(),
+                            onOpen: () => unawaited(_loadQualities()),
+                            onPick: (r) => unawaited(_switchQuality(r)),
+                          ),
+                        ),
+                        _barButton(Icons.video_library_outlined, '選集',
+                            _openEpisodeSheet),
+                      ],
                     ),
                   ),
                 ),
-                _topMenu<double>(
-                  label:
-                      '${_rate.toStringAsFixed(_rate == _rate.roundToDouble() ? 1 : 2)}x',
-                  current: _rate,
-                  choices: [
-                    for (final r in kPlaybackRates) PlayerChoice(r, '${r}x')
-                  ],
-                  onPick: (r) => unawaited(_setRate(r)),
-                ),
-                ValueListenableBuilder<List<int>>(
-                  valueListenable: _qualities,
-                  builder: (context, options, _) => _topMenu<int>(
-                    label: '${_currentQuality}p',
-                    current: _currentQuality,
-                    choices: _qualityChoices(options).reversed.toList(),
-                    onOpen: () => unawaited(_loadQualities()),
-                    onPick: (r) => unawaited(_switchQuality(r)),
-                  ),
-                ),
-                _barButton(
-                    Icons.video_library_outlined, '選集', _openEpisodeSheet),
+                Positioned(
+                    right: 14,
+                    bottom: (constraints.maxWidth >= 600 ? 76 : 108) +
+                        MediaQuery.paddingOf(context).bottom,
+                    child: _centreButtons(compact: constraints.maxWidth < 600)),
+                Positioned(left: 0, right: 0, bottom: 0, child: _bottomBar()),
               ],
-            ),
-          ),
-        ),
-        Positioned(right: 16, bottom: 94, child: _centreButtons()),
-        Positioned(left: 0, right: 0, bottom: 0, child: _bottomBar()),
-      ],
-    );
+            ));
   }
 
   Widget _topMenu<T>(
@@ -1925,34 +2048,38 @@ class _WatchPageState extends State<WatchPage>
     );
   }
 
-  Widget _centreButtons() {
+  Widget _centreButtons({bool compact = false}) {
     return Row(
       mainAxisSize: MainAxisSize.min,
       children: [
         _roundButton(
           Icons.replay_10_rounded,
           () => unawaited(_seekBy(-kSkipSeconds.toDouble())),
-          size: 26,
+          size: compact ? 34 : 42,
+          hitSize: compact ? 52 : 68,
         ),
-        const SizedBox(width: 26),
+        const SizedBox(width: 10),
         _roundButton(
           Icons.forward_10_rounded,
           () => unawaited(_seekBy(kSkipSeconds.toDouble())),
-          size: 26,
+          size: compact ? 34 : 42,
+          hitSize: compact ? 52 : 68,
         ),
-        const SizedBox(width: 26),
+        const SizedBox(width: 10),
         _roundButton(
           (_pendingSeek != null ? _resumeAfterSeek : _playing)
               ? Icons.pause_circle_filled
               : Icons.play_circle_fill,
           () => unawaited(_togglePlay()),
-          size: 40,
+          size: compact ? 48 : 58,
+          hitSize: compact ? 52 : 68,
         ),
       ],
     );
   }
 
-  Widget _roundButton(IconData icon, VoidCallback onTap, {double size = 26}) {
+  Widget _roundButton(IconData icon, VoidCallback onTap,
+      {double size = 26, double hitSize = 68}) {
     return Material(
       color: Colors.transparent,
       shape: const CircleBorder(),
@@ -1962,10 +2089,10 @@ class _WatchPageState extends State<WatchPage>
           _showControls();
           onTap();
         },
-        child: Padding(
-          padding: EdgeInsets.all(size * 0.28),
-          child: Icon(icon, size: size, color: Colors.white),
-        ),
+        child: SizedBox(
+            width: hitSize,
+            height: hitSize,
+            child: Icon(icon, size: size, color: Colors.white)),
       ),
     );
   }
@@ -1977,10 +2104,9 @@ class _WatchPageState extends State<WatchPage>
           padding: const EdgeInsets.fromLTRB(12, 0, 12, 8),
           child: LayoutBuilder(builder: (context, constraints) {
             final actions = Row(mainAxisSize: MainAxisSize.min, children: [
+              _barButton(Icons.message_rounded, '彈幕設定', _openSettingsSheet),
               _barButton(
-                  _danmakuOn
-                      ? Icons.subtitles_rounded
-                      : Icons.subtitles_off_rounded,
+                  Icons.comments_disabled_outlined,
                   _danmakuOn ? '關閉彈幕' : '開啟彈幕',
                   () => unawaited(_setDanmaku(!_danmakuOn))),
               _barButton(Icons.settings_outlined, '設定', _openSettingsSheet),
@@ -1990,12 +2116,13 @@ class _WatchPageState extends State<WatchPage>
                       : Icons.fullscreen_rounded,
                   _fullscreen ? '離開全螢幕' : '全螢幕',
                   () => unawaited(_setFullscreen(!_fullscreen))),
-              _barButton(Icons.fit_screen_outlined, '畫面比例', () {
-                final index =
-                    kAspectModes.indexWhere((m) => m.value == _aspect);
-                unawaited(_setAspect(
-                    kAspectModes[(index + 1) % kAspectModes.length].value));
-              }),
+              if (_fullscreen)
+                _barButton(Icons.fit_screen_outlined, '畫面比例', () {
+                  final index =
+                      kAspectModes.indexWhere((m) => m.value == _aspect);
+                  unawaited(_setAspect(
+                      kAspectModes[(index + 1) % kAspectModes.length].value));
+                }),
             ]);
             if (constraints.maxWidth >= 600) {
               return Row(children: [Expanded(child: _timeline()), actions]);
@@ -2061,10 +2188,19 @@ class _WatchPageState extends State<WatchPage>
       {bool active = false}) {
     return IconButton(
       tooltip: tooltip,
-      iconSize: 20,
-      visualDensity: VisualDensity.compact,
+      iconSize: 28,
+      constraints: const BoxConstraints.tightFor(width: 52, height: 52),
+      padding: const EdgeInsets.all(12),
+      visualDensity: VisualDensity.standard,
       color: active ? AgpColors.accent : Colors.white,
-      icon: Icon(icon),
+      icon: icon == Icons.comments_disabled_outlined
+          ? const Stack(alignment: Alignment.center, children: [
+              Icon(Icons.chat_bubble_outline_rounded),
+              Padding(
+                  padding: EdgeInsets.only(bottom: 3),
+                  child: Icon(Icons.close_rounded, size: 15)),
+            ])
+          : Icon(icon),
       onPressed: () {
         _showControls();
         onTap();
@@ -2082,12 +2218,12 @@ class _WatchPageState extends State<WatchPage>
 
   // ------------------------------------------------------------- 頁面內容
 
-  Widget _pageBody() {
+  Widget _pageBody({bool includeInfo = true}) {
     return ListView(
       padding: const EdgeInsets.only(bottom: 30),
       children: [
         _episodeSection(),
-        _infoCard(),
+        if (includeInfo) _infoCard(),
         _danmakuSection(),
       ],
     );
@@ -2557,16 +2693,17 @@ class _WatchPageState extends State<WatchPage>
                           state.savePref(() => prefs.setDanmakuSpeed(value)));
                     }),
                   ),
-                  _pickerTile<String>(
-                    '畫面比例',
-                    kAspectModes
-                        .firstWhere((m) => m.value == _aspect,
-                            orElse: () => kAspectModes.first)
-                        .label,
-                    kAspectModes,
-                    _aspect,
-                    (value) => refresh(() => unawaited(_setAspect(value))),
-                  ),
+                  if (_fullscreen)
+                    _pickerTile<String>(
+                      '畫面比例',
+                      kAspectModes
+                          .firstWhere((m) => m.value == _aspect,
+                              orElse: () => kAspectModes.first)
+                          .label,
+                      kAspectModes,
+                      _aspect,
+                      (value) => refresh(() => unawaited(_setAspect(value))),
+                    ),
                   _pickerTile<int>(
                     '畫面亮度',
                     '${(_brightness * 100).round()}%',
