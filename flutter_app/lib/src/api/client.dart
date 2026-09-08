@@ -76,6 +76,29 @@ class AgpClient {
   /// 邊看邊下載: 還沒合併完的那一集是一份 EVENT playlist
   Uri hlsPlaylistUrl(String sn) => uri('/hls/playlist.m3u8', {'id': sn});
 
+  /// 線上切換畫質: 伺服器現去動畫瘋要那個畫質的 HLS, 代理成一份 VOD playlist.
+  /// 片庫裡一集只留一種畫質, 所以這是換畫質唯一的來源.
+  Uri streamPlaylistUrl(String sn, int resolution) =>
+      uri('/stream/playlist.m3u8', {'id': sn, 'res': resolution});
+
+  /// 這一集在動畫瘋那邊還有哪些畫質. 由高到低.
+  ///
+  /// 失敗一律回空陣列而不是丟例外: 舊版伺服器根本沒有這條路由, 那種情況該退化成
+  /// 「沒有畫質可選」, 不是在播放頁上彈一條錯誤.
+  Future<List<int>> streamSources(String sn) async {
+    try {
+      final data = await _json('/stream/sources.json', {'id': sn});
+      final raw = (data as Map)['resolutions'];
+      if (raw is! List) return const [];
+      return raw
+          .map((value) => int.tryParse(value.toString()) ?? 0)
+          .where((value) => value > 0)
+          .toList();
+    } catch (_) {
+      return const [];
+    }
+  }
+
   Uri thumbnailUrl(String sn) => uri('/thumbnail.jpg', {'id': sn});
 
   Uri danmuUrl(String sn) => uri('/get_danmu.ass', {'id': sn});

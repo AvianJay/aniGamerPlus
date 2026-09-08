@@ -457,7 +457,7 @@ def _curl_perform(session_kwargs, url, request_kwargs):
     return session.request('get', url, **request_kwargs)
 
 
-def _bahamut_get(url, timeout=10, allow_redirects=True):
+def _bahamut_get(url, timeout=10, allow_redirects=True, extra_headers=None):
     """跟 Config.bahamut_request 用同一套指纹, 但配置在 greenlet 上读完再下线程池.
 
     read_settings() 顺手会删过期日志、必要时重写配置文件, 这些副作用一直只在
@@ -472,6 +472,9 @@ def _bahamut_get(url, timeout=10, allow_redirects=True):
         'akamai': fingerprint.get('akamai') or None,
     }
     request_kwargs = {'headers': {'User-Agent': settings['ua']}, 'timeout': timeout}
+    if extra_headers:
+        # CDN 上的 chunklist/分片要 Origin 才肯给, 见 Anime.py parse_playlist()
+        request_kwargs['headers'].update(extra_headers)
     if not allow_redirects:
         request_kwargs['allow_redirects'] = False
     if settings.get('use_proxy') and settings.get('proxy'):
@@ -1268,6 +1271,230 @@ def _hls_bootstrap_entry(sn, current_settings):
     }
 
 
+# --------------------------------------------------------------- 線上切換畫質
+# 片庫裡一集只留一種畫質 —— video_list.json 一個 sn 就一筆, Config.getpath() 又是
+# 拿 resolution 去精確比對, 所以 /get_video.mp4 換個 res 只會 404. 上面那組 /hls/*
+# 也救不了: _hls_state() 只要看到片庫裡有這一集就直接回 mode=file.
+#
+# 真正還留著別的畫質的地方只有動畫瘋自己. Anime.get_m3u8_dict() 會把 master
+# playlist 拆成 {畫質: chunklist 網址}, 這一段就是把那份東西代理出去 —— 播放器要
+# 720P, 伺服器就現去拿 720P 的 chunklist, 金鑰跟分片轉手發給它. 磁碟上什麼都不留,
+# 也完全不碰下載佇列.
+STREAM_TTL = 30 * 60      # chunklist 網址是簽名過的, 半小時內重用是安全的
+STREAM_CACHE_MAX = 16     # 解析結果只是幾 KB 的字串表, 留最近幾集就夠
+STREAM_ORIGIN_HEADER = {
+    'Origin': 'https://ani.gamer.com.tw',
+    'Referer': 'https://ani.gamer.com.tw/',
+}
+
+_stream_dict_cache = {}   # sn(str) -> {'at': monotonic, 'dict': {res(str): chunklist url}}
+_stream_media_cache = {}  # 'sn/res' -> {'at':, 'parsed':, 'base':, 'key': bytes|None}
+
+
+def _stream_trim_cache(cache):
+    # 沒有 TTL 掃描執行緒, 就在寫入時順手把最舊的踢掉, 免得開久了無限長
+    while len(cache) > STREAM_CACHE_MAX:
+        oldest = min(cache, key=lambda key: cache[key]['at'])
+        cache.pop(oldest, None)
+
+
+def _stream_allowed(sn):
+    """跟 /watch/series.json 同一道門: 不讓任何人隨手指定 sn 就叫伺服器去捶動畫瘋.
+
+    這裡比那邊更值得防 —— 代理會真的用我們的帳號去解析播放位址, 變成請求放大器的
+    代價比多抓一份劇集列表高得多. 只認片庫裡有的、正在下載的, 或是某部已快取劇集
+    表裡列到的集數.
+    """
+    if _find_video_entry(sn) is not None:
+        return True
+    if _hls_task(sn) is not None:
+        return True
+    return str(sn) in _episode_owners()
+
+
+def _stream_resolve_blocking(sn):
+    # 延後匯入: Anime 進來會一路拉起 yt_dlp/bs4, 而且它跟 Server.py 是被
+    # aniGamerPlus.py 一起載的 —— 擺在模組頂端就得跟那邊的匯入順序賭運氣
+    from Anime import Anime
+    anime = Anime(int(sn))
+    return dict(anime.get_m3u8_dict())
+
+
+def _stream_dict(sn):
+    """{畫質: chunklist 網址}, 解析一次快取 30 分鐘."""
+    sn_key = str(sn)
+    cached = _stream_dict_cache.get(sn_key)
+    if cached and time.monotonic() - cached['at'] < STREAM_TTL:
+        return cached['dict']
+
+    # 一集只解析一次: 同一集被兩個人同時打開時, 不該把解鎖/廣告那一串跟動畫瘋的
+    # 互動做兩遍
+    with _keyed_lock('stream-%s' % sn_key):
+        cached = _stream_dict_cache.get(sn_key)
+        if cached and time.monotonic() - cached['at'] < STREAM_TTL:
+            return cached['dict']
+        try:
+            m3u8_dict = _offload(_stream_resolve_blocking, sn_key)
+        except KeyboardInterrupt:
+            raise
+        except BaseException as error:
+            # BaseException 不是手滑: Anime.__get_m3u8_dict() 碰到地區限制、帳號
+            # 問題或去廣告失敗是直接 sys.exit(1), 在 threadpool 裡那會變成
+            # SystemExit 掛在 future 上. 讓它飛出去這條請求就只會是一個沒說明的 500
+            err_print(sn_key, '線上畫質', '解析可用畫質失敗: %s' % error,
+                      status=1, display=False)
+            m3u8_dict = {}
+        entry = {'at': time.monotonic(), 'dict': m3u8_dict}
+        _stream_dict_cache[sn_key] = entry
+        _stream_trim_cache(_stream_dict_cache)
+        return m3u8_dict
+
+
+def _stream_absolute(base, uri):
+    # chunklist 裡的金鑰跟分片不保證是完整網址, 相對路徑要自己補回去
+    if re.match(r'https?://', uri, re.I):
+        return uri
+    return base.rstrip('/') + '/' + uri.lstrip('/')
+
+
+def _stream_parse_media(text):
+    """把 chunklist 拆成 (金鑰行, 有序的分片 URI 表).
+
+    不共用 _hls_parse_playlist(): 那一支刻意只留 media_b….ts 那一段檔名, 因為下載器
+    是拿同一個名字去 stat 磁碟上的分片, 帶著查詢字串就對不上了. 代理要的剛好相反
+    —— 原樣的 URI 才組得回回源網址. 所以這裡什麼都不砍, 也不挑檔名長什麼樣子.
+    """
+    key_line = ''
+    key_uri = ''
+    target_duration = 10
+    segments = []
+    pending_extinf = ''
+    pending_duration = 10.0
+
+    for raw_line in text.splitlines():
+        line = raw_line.strip()
+        if not line:
+            continue
+        if line.startswith('#EXT-X-KEY') and 'AES-128' in line:
+            key_line = line
+            match = re.search(r'URI="([^"]*)"', line)
+            key_uri = match.group(1) if match else ''
+        elif line.startswith('#EXT-X-TARGETDURATION'):
+            try:
+                target_duration = max(1, int(float(line.split(':', 1)[1])))
+            except (IndexError, ValueError):
+                pass
+        elif line.startswith('#EXTINF'):
+            pending_extinf = line
+            try:
+                pending_duration = float(line.split(':', 1)[1].split(',')[0])
+            except (IndexError, ValueError):
+                pending_duration = float(target_duration)
+        elif not line.startswith('#'):
+            segments.append({
+                'uri': line,
+                'extinf': pending_extinf or '#EXTINF:%.3f,' % pending_duration,
+                'duration': pending_duration,
+            })
+            pending_extinf = ''
+            pending_duration = float(target_duration)
+
+    if not key_line or not key_uri or not segments:
+        # 動畫瘋的 VOD 一律是 AES-128 加密的. 解不出金鑰行就表示我們拿到的根本不是
+        # 想要的東西 (多半是錯誤頁), 寧可整份不認
+        return None
+    return {
+        'key_line': key_line,
+        'key_uri': key_uri,
+        'target_duration': target_duration,
+        'segments': segments,
+        'total_duration': sum(segment['duration'] for segment in segments),
+    }
+
+
+def _stream_media(sn, res):
+    """某個畫質解析好的分片表, 外加組回源網址用的前綴."""
+    cache_key = '%s/%s' % (sn, res)
+    cached = _stream_media_cache.get(cache_key)
+    if cached and time.monotonic() - cached['at'] < STREAM_TTL:
+        return cached
+
+    with _keyed_lock('stream-media-%s' % cache_key):
+        cached = _stream_media_cache.get(cache_key)
+        if cached and time.monotonic() - cached['at'] < STREAM_TTL:
+            return cached
+
+        url = _stream_dict(sn).get(str(res))
+        if not url:
+            return None
+        try:
+            upstream = _bahamut_get(url, timeout=15, extra_headers=STREAM_ORIGIN_HEADER)
+        except KeyboardInterrupt:
+            raise
+        except BaseException as error:
+            err_print(sn, '線上畫質', '取得 %sP 播放清單失敗: %s' % (res, error),
+                      status=1, display=False)
+            return None
+        if upstream.status_code != 200:
+            return None
+
+        parsed = _stream_parse_media(upstream.content.decode('utf-8', 'replace'))
+        if parsed is None:
+            return None
+        entry = {
+            'at': time.monotonic(),
+            'parsed': parsed,
+            'base': url.split('?', 1)[0].rsplit('/', 1)[0],
+            'key': None,  # 真的有人來要 key.bin 時才回源, 拿到就留著
+        }
+        _stream_media_cache[cache_key] = entry
+        _stream_trim_cache(_stream_media_cache)
+        return entry
+
+
+def _stream_key(sn, res, media):
+    # 金鑰只有 16 bytes, 但 ExoPlayer/AVPlayer 不保證只要一次. 拿到就跟著這一份
+    # chunklist 一起留著, 免得每次重載清單都往回源多打一發
+    if media['key']:
+        return media['key']
+    try:
+        upstream = _bahamut_get(_stream_absolute(media['base'], media['parsed']['key_uri']),
+                                timeout=15, extra_headers=STREAM_ORIGIN_HEADER)
+    except KeyboardInterrupt:
+        raise
+    except BaseException as error:
+        err_print(sn, '線上畫質', '取得 %sP 金鑰失敗: %s' % (res, error),
+                  status=1, display=False)
+        return b''
+    if upstream.status_code != 200 or not upstream.content:
+        return b''
+    media['key'] = upstream.content
+    return media['key']
+
+
+def _stream_render(sn, res, parsed):
+    """把上游的 chunklist 改寫成全部指回我們自己的版本."""
+    lines = [
+        '#EXTM3U',
+        '#EXT-X-VERSION:3',
+        '#EXT-X-TARGETDURATION:%d' % parsed['target_duration'],
+        # 跟 _hls_render() 同一個理由: #EXT-X-KEY 沒帶 IV 時, IV 就是分片序號.
+        # 重新編號會讓解密整個對不上
+        '#EXT-X-MEDIA-SEQUENCE:0',
+        # 這裡跟邊看邊下載不一樣 —— 上游那份是完整的一集, 不是還在長的東西, 所以是
+        # VOD 而且一開始就有 ENDLIST, 播放器才肯讓人拖時間軸
+        '#EXT-X-PLAYLIST-TYPE:VOD',
+        # 用 re.sub 換掉 URI 而不是重寫整行: 上游要是有帶 IV=, 那個一定要原樣留著
+        re.sub(r'URI="[^"]*"', 'URI="key.bin?id=%s&res=%s"' % (sn, res),
+               parsed['key_line']),
+    ]
+    for index, segment in enumerate(parsed['segments']):
+        lines.append(segment['extinf'])
+        lines.append('segment.ts?id=%s&res=%s&n=%d' % (sn, res, index))
+    lines.append('#EXT-X-ENDLIST')
+    return '\n'.join(lines) + '\n'
+
+
 def _build_watch_bootstrap(current_settings=None):
     current_settings = current_settings or _get_current_settings()
     requested_sn = str(request.args.get('id') or '').strip()
@@ -1987,6 +2214,115 @@ if settings["dashboard"]["online_watch"]:
 
         resp = Response(data, mimetype='video/mp2t')
         # 分片一旦寫下就不會再變, 往回拖時間軸可以直接吃瀏覽器快取, 不必重讀磁碟
+        return _apply_cache_headers(resp, current_settings, 3600)
+
+
+    # ----------------------------------------------------------- 線上切換畫質
+    # 片庫裡一集只有一種畫質, 想換就只能回頭跟動畫瘋要. 這四條路由把 Bahamut 的
+    # per-resolution HLS 代理出來: 清單改寫成指回自己, 金鑰跟分片轉手發出去.
+    # 跟上面那組 /hls/* 的差別是那邊讀本機磁碟、清單還在長 (EVENT), 這邊是回源、
+    # 整集一次給完 (VOD).
+
+    def _stream_request_state():
+        """四條路由共用的門口: 驗登入、驗 sn、驗這個 sn 我們願不願意代抓."""
+        current_settings = _hls_settings()
+        denied = _catalog_login_error(current_settings)
+        if denied is not None:
+            return None, None, denied
+        sn = str(request.args.get('id') or '')
+        if not sn.isdigit():
+            return None, None, (jsonify({"error": "invalid sn"}), 400)
+        if not _stream_allowed(sn):
+            return None, None, (jsonify({"error": "unknown sn"}), 404)
+        return current_settings, sn, None
+
+    def _stream_request_media():
+        """再多驗一個 res, 並且把那個畫質的分片表準備好."""
+        current_settings, sn, denied = _stream_request_state()
+        if denied is not None:
+            return None, None, None, None, denied
+        res = str(request.args.get('res') or '')
+        if not res.isdigit():
+            return None, None, None, None, (jsonify({"error": "invalid resolution"}), 400)
+        media = _stream_media(sn, res)
+        if media is None:
+            return None, None, None, None, (jsonify({"error": "resolution unavailable"}), 404)
+        return current_settings, sn, res, media, None
+
+    @app.route('/stream/sources.json')
+    def stream_sources():
+        # 播放器開設定選單時問一次: 這一集在動畫瘋那邊還有哪些畫質可以挑
+        current_settings, sn, denied = _stream_request_state()
+        if denied is not None:
+            return denied
+        resolutions = sorted(
+            (int(key) for key in _stream_dict(sn) if str(key).isdigit()), reverse=True)
+        resp = jsonify({'sn': sn, 'resolutions': resolutions})
+        # 解析結果伺服器自己就快取 30 分鐘了, 這裡讓客戶端也留一下, 免得轉個螢幕
+        # 方向、重開一次選單就再問一遍. 一律 private —— 這是拿我們的帳號解析出來
+        # 的東西, 不該讓前面的共用快取原樣發給別人
+        resp.headers['Cache-Control'] = 'private, max-age=300'
+        if current_settings['dashboard']['online_watch_requires_login']:
+            resp.headers['Vary'] = 'Cookie'
+        return resp
+
+    @app.route('/stream/playlist.m3u8')
+    def stream_playlist():
+        current_settings, sn, res, media, denied = _stream_request_media()
+        if denied is not None:
+            return denied
+        resp = Response(_stream_render(sn, res, media['parsed']), mimetype=HLS_MIME)
+        # chunklist 的網址是簽名過的, 過期就得重解析. 不能讓客戶端把這份清單釘住
+        resp.headers['Cache-Control'] = 'no-store'
+        if current_settings['dashboard']['online_watch_requires_login']:
+            resp.headers['Vary'] = 'Cookie'
+        return resp
+
+    @app.route('/stream/key.bin')
+    def stream_key():
+        # 跟 /hls/key.bin 一樣, 金鑰原樣交給播放器, 伺服器這邊不解密
+        current_settings, sn, res, media, denied = _stream_request_media()
+        if denied is not None:
+            return denied
+        data = _stream_key(sn, res, media)
+        if not data:
+            return jsonify({"error": "key unavailable"}), 502
+        resp = Response(data, mimetype='application/octet-stream')
+        resp.headers['Cache-Control'] = 'no-store'
+        if current_settings['dashboard']['online_watch_requires_login']:
+            resp.headers['Vary'] = 'Cookie'
+        return resp
+
+    @app.route('/stream/segment.ts')
+    def stream_segment():
+        current_settings, sn, res, media, denied = _stream_request_media()
+        if denied is not None:
+            return denied
+
+        # 用序號定位而不是讓客戶端傳 URI: 這樣沒有任何一段客戶端字串會變成回源網址,
+        # 也就沒有拿這台伺服器當跳板亂打別人的空間
+        try:
+            index = int(request.args.get('n'))
+        except (TypeError, ValueError):
+            return jsonify({"error": "invalid segment"}), 400
+        segments = media['parsed']['segments']
+        if index < 0 or index >= len(segments):
+            return jsonify({"error": "invalid segment"}), 404
+
+        url = _stream_absolute(media['base'], segments[index]['uri'])
+        try:
+            upstream = _bahamut_get(url, timeout=30, extra_headers=STREAM_ORIGIN_HEADER)
+        except KeyboardInterrupt:
+            raise
+        except BaseException as error:
+            err_print(sn, '線上畫質', '取得 %sP 第 %d 片失敗: %s' % (res, index, error),
+                      status=1, display=False)
+            return jsonify({"error": "segment unavailable"}), 502
+        if upstream.status_code != 200 or not upstream.content:
+            return jsonify({"error": "segment unavailable"}), 502
+
+        resp = Response(upstream.content, mimetype='video/mp2t')
+        # 分片內容不會變, 往回拖時間軸就吃客戶端快取, 不必再回源一次
         return _apply_cache_headers(resp, current_settings, 3600)
 
 

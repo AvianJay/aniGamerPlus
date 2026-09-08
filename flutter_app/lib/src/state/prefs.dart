@@ -127,6 +127,11 @@ class Prefs {
   bool get autoNext => _sp.getBool('agp-auto-next') ?? true;
   Future<void> setAutoNext(bool value) => _sp.setBool('agp-auto-next', value);
 
+  /// 線上播放預設用幾 P. 跟 downloadResolution 分開存 —— 一個是「我在這支手機上
+  /// 想看多清楚」, 另一個是「我要存多大一份到手機裡」, 常常不是同一個答案
+  int get playbackResolution => _sp.getInt('agp-play-res') ?? 1080;
+  Future<void> setPlaybackResolution(int value) => _sp.setInt('agp-play-res', value);
+
   // ------------------------------------------------------------------ 下載器
 
   /// 手機端要下幾 P

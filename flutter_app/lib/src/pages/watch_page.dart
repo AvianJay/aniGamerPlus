@@ -4,7 +4,9 @@
 /// Flutter 的樣子, 但行為刻意跟著網頁走: 同一組播放速度、同一組彈幕透明度、
 /// 同一句「還沒下載到這裡」、同一個 8 秒的下一集倒數。
 ///
-/// 三種片源, 優先序由上往下:
+/// 四種片源, 優先序由上往下:
+///   0. 使用者當場挑的畫質 (/stream/playlist.m3u8) —— 只有挑的跟手上那份對不上
+///      才會走到這裡, 見 _needsProxy
 ///   1. 這支手機上的離線檔 (DownloadStore) —— 沒網路照樣能看
 ///   2. 邊看邊下載的 HLS EVENT 播放清單 (/hls/playlist.m3u8)
 ///   3. 伺服器片庫的完整 mp4 (/get_video.mp4)
@@ -169,6 +171,16 @@ class _WatchPageState extends State<WatchPage>
   String _aspect = 'contain';
   bool _autoNext = true;
 
+  // ------------------------------------------------------------- 畫質
+  /// 想看幾 P. 跟手上那份 (離線檔 / 下載中 / 伺服器片庫) 一樣時什麼都不會發生;
+  /// 對不上才會走 /stream/*, 讓伺服器現去動畫瘋要那個畫質
+  int _quality = 1080;
+  /// 是不是在這個播放頁裡當場挑過. 分得出「設定裡留著的偏好」跟「他現在就要換」
+  bool _qualityPicked = false;
+  /// 這一集還有哪些畫質可以挑. 開設定選單時才去問, 由高到低
+  final ValueNotifier<List<int>> _qualities = ValueNotifier<List<int>>(const []);
+  bool _qualitiesLoading = false;
+
   // ------------------------------------------------------------- 介面狀態
   bool _controlsVisible = true;
   Timer? _idleTimer;
@@ -192,6 +204,7 @@ class _WatchPageState extends State<WatchPage>
   double _streamReady = 0;
   double _streamTotal = 0;
   String _streamPlaylistId = '';
+  int _streamResolution = 0;
   int _streamNoneSince = 0;
   bool _streamAttached = false;
   bool _streamAutoplayed = false;
@@ -222,6 +235,7 @@ class _WatchPageState extends State<WatchPage>
     _danmakuSpeed = prefs.danmakuSpeed;
     _aspect = prefs.aspect;
     _autoNext = prefs.autoNext;
+    _quality = prefs.playbackResolution;
     _streaming = widget.streaming;
     _ticker = createTicker(_onFrame)..start();
     unawaited(_boot());
@@ -239,6 +253,7 @@ class _WatchPageState extends State<WatchPage>
     controller?.removeListener(_onPlayerUpdate);
     unawaited(controller?.dispose());
     _clock.dispose();
+    _qualities.dispose();
     unawaited(WakelockPlus.disable());
     if (_fullscreen) {
       unawaited(SystemChrome.setEnabledSystemUIMode(SystemUiMode.edgeToEdge));
@@ -255,7 +270,11 @@ class _WatchPageState extends State<WatchPage>
       _error = '';
       _ended = false;
       _nextOffer = null;
+      // 換一集就重來: 上一集挑的畫質不該讓這一集直接放棄手機裡那份離線檔
+      _qualityPicked = false;
+      _streamResolution = 0;
     });
+    _qualities.value = const [];
 
     _video = state.videoOf(_sn);
     final entry = store.entryFor(_sn);
@@ -323,7 +342,14 @@ class _WatchPageState extends State<WatchPage>
 
     final local = _localFile;
     late VideoPlayerController controller;
-    if (local != null) {
+    if (_needsProxy) {
+      // 挑的畫質手上沒有, 只能請伺服器現去動畫瘋代抓. 放在最前面是因為這是使用者
+      // 剛剛明確要求的, 比任何一份現成的檔都優先
+      controller = VideoPlayerController.networkUrl(
+        client.streamPlaylistUrl(_sn, _quality),
+        httpHeaders: client.authHeaders,
+      );
+    } else if (local != null) {
       controller = VideoPlayerController.file(local);
     } else if (_streaming) {
       controller = VideoPlayerController.networkUrl(
@@ -435,6 +461,92 @@ class _WatchPageState extends State<WatchPage>
     });
   }
 
+  // =============================================================== 畫質
+
+  /// 手上這一份是幾 P. 0 表示不知道 —— 舊資料沒帶 resolution, 那就當成怎樣都算數
+  int get _onHandResolution {
+    if (_localFile != null) return store.entryFor(_sn)?.resolution ?? 0;
+    if (_streaming) return _streamResolution;
+    return _video?.resolution ?? 0;
+  }
+
+  /// 要不要走 /stream/* 代理.
+  ///
+  /// 片庫一集只留一種畫質, 所以「換畫質」實際上就是「這一份不合用, 回頭跟動畫瘋
+  /// 要別的」. 兩個地方刻意不換:
+  ///  - 離線時. 手上只有那一份, 沒得挑, 更不該去撞一個連不上的伺服器.
+  ///  - 手機裡有離線檔, 而且使用者這次沒有當場挑過. 那份是他自己特地下載的,
+  ///    不該因為設定裡留著一個偏好值就繞過去重新連線抓.
+  bool get _needsProxy {
+    if (state.offline || _quality <= 0) return false;
+    final have = _onHandResolution;
+    if (have <= 0 || have == _quality) return false;
+    if (_localFile != null && !_qualityPicked) return false;
+    return true;
+  }
+
+  /// 選單上現在該顯示哪一個
+  int get _currentQuality {
+    if (_needsProxy) return _quality;
+    final have = _onHandResolution;
+    return have > 0 ? have : _quality;
+  }
+
+  Future<void> _loadQualities() async {
+    if (state.offline || _qualitiesLoading || _qualities.value.isNotEmpty) return;
+    _qualitiesLoading = true;
+    // 開設定選單時才問, 不放在開頁流程裡: 伺服器那一支會真的去動畫瘋解析播放位址,
+    // 每開一集就打一次太重了, 而且絕大多數人根本不會動畫質
+    final list = await client.streamSources(_sn);
+    _qualitiesLoading = false;
+    if (!mounted) return;
+    _qualities.value = list;
+  }
+
+  List<PlayerChoice<int>> _qualityChoices(List<int> options) {
+    final have = _onHandResolution;
+    final values = <int>{...options, if (have > 0) have, if (_quality > 0) _quality}
+        .toList()
+      ..sort((a, b) => b - a);
+    return [
+      for (final res in values) PlayerChoice(res, '${res}P${_qualitySuffix(res)}'),
+    ];
+  }
+
+  /// 標一下哪個是現成的, 哪個要重新跟動畫瘋要
+  String _qualitySuffix(int res) {
+    if (res != _onHandResolution) return '';
+    if (_localFile != null) return ' · 已下載';
+    if (_streaming) return ' · 下載中';
+    return ' · 伺服器片庫';
+  }
+
+  Future<void> _switchQuality(int res) async {
+    if (res <= 0 || res == _currentQuality) return;
+    final previousQuality = _quality;
+    final previousPicked = _qualityPicked;
+    final at = _clock.value;
+    setState(() {
+      _quality = res;
+      _qualityPicked = true;
+    });
+    unawaited(state.savePref(() => prefs.setPlaybackResolution(res)));
+
+    await _openSource(seekTo: at);
+    if (!mounted) return;
+    if (_error.isEmpty) {
+      _flashMessage('已切換到 ${res}P');
+      return;
+    }
+    // 換過去打不開就原路換回來: 挑錯畫質的代價不該是整個播放頁掛在那裡
+    setState(() {
+      _quality = previousQuality;
+      _qualityPicked = previousPicked;
+    });
+    await _openSource(seekTo: at);
+    if (mounted) _flashMessage('切換到 ${res}P 失敗，已還原');
+  }
+
   // =============================================================== 邊看邊下載
 
   void _startPoll() {
@@ -477,7 +589,8 @@ class _WatchPageState extends State<WatchPage>
       final changed = _streamPlaylistId.isNotEmpty &&
           status.playlistId != _streamPlaylistId;
       _streamPlaylistId = status.playlistId;
-      if (changed) {
+      // 正在看代理串流的話手上那份 HLS 早就不在畫面上了, 重建只是白跑一趟
+      if (changed && !_needsProxy) {
         // 伺服器重開了一份清單 (例如換畫質重抓), 手上這份已經失效
         await _rebuildStream();
         if (!mounted) return;
@@ -488,6 +601,7 @@ class _WatchPageState extends State<WatchPage>
       _streamMode = status.mode;
       _streamReady = status.readyDuration;
       _streamTotal = status.totalDuration;
+      _streamResolution = status.resolution;
       if (status.totalDuration > _duration) _duration = status.totalDuration;
       _downloading = _downloadingLabel(status);
     });
@@ -517,7 +631,12 @@ class _WatchPageState extends State<WatchPage>
     if (_streamAutoplayed) return;
     final controller = _controller;
     if (controller == null || !controller.value.isInitialized) return;
-    if (_streamReady < kStreamHeadStart && _streamMode != 'finalising') return;
+    // 代理串流是整集一次給完的 VOD, 不必陪下載器等頭
+    if (!_needsProxy &&
+        _streamReady < kStreamHeadStart &&
+        _streamMode != 'finalising') {
+      return;
+    }
     _streamAutoplayed = true;
     unawaited(controller.play());
     unawaited(WakelockPlus.enable());
@@ -544,6 +663,11 @@ class _WatchPageState extends State<WatchPage>
       if (!mounted) return;
       setState(() => _video = state.videoOf(_sn) ?? _video);
     }));
+    if (_needsProxy) {
+      // 他正在看自己挑的畫質, 而下載的是另一種. 換過去等於把人從選好的東西上拽走
+      unawaited(_loadDanmaku());
+      return;
+    }
     await _openSource(seekTo: at);
     if (!mounted) return;
     unawaited(_loadDanmaku());
@@ -2189,6 +2313,7 @@ class _WatchPageState extends State<WatchPage>
   }
 
   void _openSettingsSheet() {
+    unawaited(_loadQualities());
     showModalBottomSheet<void>(
       context: context,
       isScrollControlled: true,
@@ -2213,6 +2338,21 @@ class _WatchPageState extends State<WatchPage>
                         .toList(),
                     _rate,
                     (value) => refresh(() => unawaited(_setRate(value))),
+                  ),
+                  // 清單是開這張選單時才去問的, 用 ValueNotifier 而不是頁面的
+                  // setState —— StatefulBuilder 在另一棵樹上, 頁面重建帶不動它
+                  ValueListenableBuilder<List<int>>(
+                    valueListenable: _qualities,
+                    builder: (context, options, _) => _pickerTile<int>(
+                      '畫質',
+                      _currentQuality > 0 ? '${_currentQuality}P' : '自動',
+                      _qualityChoices(options),
+                      _currentQuality,
+                      (value) => refresh(() => unawaited(_switchQuality(value))),
+                      note: state.offline
+                          ? '離線中，只能播手機裡的那一份。'
+                          : (options.isEmpty ? '正在問伺服器這一集還有哪些畫質…' : ''),
+                    ),
                   ),
                   SwitchListTile(
                     dense: true,
