@@ -345,6 +345,13 @@ class AgpClient {
     } catch (_) {
       // 不是 JSON, 那就是還沒更新的伺服器丟回來的整頁 HTML —— 往下撈
     }
+
+    // token 過期的話伺服器回的是 302, http 套件預設會自己跟著走, 最後停在
+    // 登入頁而且是 200. 那一頁沒有 userlist 這張表, 拿來跟「真的沒有用戶」
+    // 分開 —— 不然畫面會說「還沒有任何用戶」, 但其實是沒登入。
+    if (!body.contains('id="userlist"')) {
+      throw ApiException(401, '需要管理員權限，請重新登入。');
+    }
     return _usersFromHtml(body);
   }
 
