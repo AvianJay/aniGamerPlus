@@ -53,6 +53,10 @@ class AppState extends ChangeNotifier {
   CatalogIndex catalog = CatalogIndex();
   Map<String, WatchTime> watchTimes = const {};
 
+  /// sn -> 片庫條目. videoOf() 在觀看紀錄那一頁是每一列各叫一次, 片庫大起來
+  /// 之後線性掃描會變成整頁重畫時最貴的一段.
+  Map<String, VideoItem> _libraryIndex = const {};
+
   /// 這一輪按過「加入下載」的集數. 伺服器要等排程跑到才會回報, 在那之前
   /// 畫面上得先認帳, 不然按鈕看起來像沒反應.
   final Set<String> queued = <String>{};
@@ -104,6 +108,12 @@ class AppState extends ChangeNotifier {
 
   Future<void> refreshAll() async {
     booting = true;
+    // 上次的片庫跟片單先擺上去: 開機畫面後面已經有東西了, 網路回來再換掉
+    seedCachedCatalog();
+    if (library.isEmpty) {
+      library = _cachedLibrary();
+      _indexLibrary();
+    }
     notifyListeners();
     await _loadSession();
     await Future.wait([
@@ -152,11 +162,13 @@ class AppState extends ChangeNotifier {
   Future<void> refreshLibrary() async {
     if (offline || !hasServer) {
       library = downloads.asVideoItems();
+      _indexLibrary();
       notifyListeners();
       return;
     }
     try {
       library = await client.videoList();
+      _indexLibrary();
       await prefs.cacheJson('library', library.map((v) => v.toJson()).toList());
       lastError = '';
     } on ApiException catch (error) {
@@ -165,11 +177,13 @@ class AppState extends ChangeNotifier {
       } else {
         library = _cachedLibrary();
       }
+      _indexLibrary();
       lastError = error.message;
     } catch (error) {
       offline = true;
       lastError = error.toString();
       library = _cachedLibrary();
+      _indexLibrary();
     }
     notifyListeners();
   }
@@ -187,11 +201,22 @@ class AppState extends ChangeNotifier {
   Future<void> refreshCatalog() async {
     if (offline || !hasServer) return;
     try {
-      catalog = await client.catalogIndex();
+      final json = await client.catalogIndexJson();
+      catalog = CatalogIndex.fromJson(json);
+      unawaited(prefs.cacheJson('catalog', json));
     } catch (_) {
-      // 片單是站上的東西, 抓不到就先留空, 首頁的片庫區塊照樣畫得出來
+      // 片單是站上的東西, 抓不到就用上次那份, 首頁不必為此空一塊
     }
     notifyListeners();
+  }
+
+  /// 冷啟動時先把上次的片單畫出來, 不必等 /catalog/index.json 回來.
+  /// 伺服器那邊本來就是一小時才重爬一次, 這份不會差到哪去.
+  void seedCachedCatalog() {
+    if (catalog.season.isNotEmpty || catalog.hot.isNotEmpty) return;
+    final raw = prefs.readCachedJson('catalog');
+    if (raw is! Map) return;
+    catalog = CatalogIndex.fromJson(raw.cast<String, dynamic>());
   }
 
   Future<void> refreshWatchTimes() async {
@@ -259,11 +284,46 @@ class AppState extends ChangeNotifier {
 
   // ------------------------------------------------------------------- 片庫
 
-  VideoItem? videoOf(String sn) {
+  VideoItem? videoOf(String sn) => _libraryIndex[sn];
+
+  void _indexLibrary() {
+    final index = <String, VideoItem>{};
     for (final video in library) {
-      if (video.sn == sn) return video;
+      index.putIfAbsent(video.sn, () => video);
     }
-    return null;
+    _libraryIndex = index;
+  }
+
+  // ------------------------------------------------------------- 劇集表快取
+
+  /// 播放頁的作品資訊 / 選集. 落盤留一份, 下次開同一集時先畫出來再去對答案 ——
+  /// 這一段本來是空白等著 /watch/series.json 回來.
+  static const Duration _seriesCacheTtl = Duration(days: 3);
+
+  SeriesInfo? cachedSeries(String sn) {
+    final memo = client.seriesJsonCached(sn);
+    if (memo != null) return SeriesInfo.fromJson(memo);
+
+    final raw = prefs.readCachedJson('series-$sn');
+    if (raw is! Map) return null;
+    final saved = raw.cast<String, dynamic>();
+    final at = int.tryParse('${saved['_cachedAt']}') ?? 0;
+    if (at > 0 &&
+        DateTime.now().millisecondsSinceEpoch - at >
+            _seriesCacheTtl.inMilliseconds) {
+      return null;
+    }
+    client.seedSeriesJson(sn, saved);
+    return SeriesInfo.fromJson(saved);
+  }
+
+  Future<SeriesInfo> loadSeries(String sn) async {
+    final json = await client.seriesJson(sn);
+    unawaited(prefs.cacheJson('series-$sn', {
+      ...json,
+      '_cachedAt': DateTime.now().millisecondsSinceEpoch,
+    }));
+    return SeriesInfo.fromJson(json);
   }
 
   /// 同一部作品的其他集數 (依 sn 排序, 跟網頁版一樣)

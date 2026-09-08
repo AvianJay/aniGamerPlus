@@ -362,9 +362,15 @@ class _WatchPageState extends State<WatchPage>
       _streaming = false;
     }
 
-    _resumeAt = await _readResume();
+    // 進度先用本機那份: app 一開機就同步過一輪 /watch/time, 手上這份幾乎一定
+    // 是對的. 為了它擋住整個開播流程不划算 —— 那是一次完整的來回, 而且伺服器
+    // 在區網外的時候, 使用者等的就是這一段. 對答案改成開播之後在背景做.
+    _resumeAt = _localResume();
+    unawaited(_refreshResume());
 
-    unawaited(_loadQualities());
+    // 畫質清單刻意不在這裡問: /stream/sources.json 會讓伺服器真的去動畫瘋解析
+    // 播放位址 (登入、解鎖、去廣告), 一次十幾秒. 每開一集就打一次會把開播卡在
+    // 那裡, 而絕大多數人根本不會動畫質 —— 開設定選單時才問, 見 _loadQualities.
     unawaited(_loadSeries());
     unawaited(_loadDanmaku());
 
@@ -379,21 +385,40 @@ class _WatchPageState extends State<WatchPage>
     await _openSource();
   }
 
-  Future<double> _readResume() async {
-    var saved = state.watchTimeOf(_sn);
-    if (!state.offline) {
-      try {
-        final fresh = await client.watchTime(_sn);
-        if (fresh.timestamp > 0 || fresh.time > 0) {
-          saved = fresh;
-          state.noteWatchTime(_sn, fresh);
-        }
-      } catch (_) {
-        // 讀不到就用本機那份, 不值得為了進度擋住播放
-      }
-    }
+  static double _positionOf(WatchTime? saved) {
     if (saved == null || saved.ended) return 0;
     return saved.time.toDouble();
+  }
+
+  double _localResume() => _positionOf(state.watchTimeOf(_sn));
+
+  /// 開播之後才跟伺服器對一次進度.
+  ///
+  /// 會有落差的只有一種情況: 上次是在別的裝置上看的, 而這支手機自從那之後沒有
+  /// 重新整理過片庫. 那時候才把播放位置搬過去, 而且只在使用者還沒自己動過的
+  /// 前提下 —— 不然畫面會在他剛拉完進度條之後自己跳走.
+  Future<void> _refreshResume() async {
+    if (state.offline) return;
+    final generation = _sourceGeneration;
+    WatchTime fresh;
+    try {
+      fresh = await client.watchTime(_sn);
+    } catch (_) {
+      return; // 讀不到就算了, 本機那份已經在用了
+    }
+    if (fresh.timestamp <= 0 && fresh.time <= 0) return;
+    if (!mounted) return;
+    state.noteWatchTime(_sn, fresh);
+
+    final target = _positionOf(fresh);
+    if ((target - _resumeAt).abs() < 5) return;
+    _resumeAt = target;
+    // 換過集數 / 換過畫質 / 已經自己拉過進度條了就不要插手
+    if (generation != _sourceGeneration) return;
+    if (_scrubbing || _pendingSeek != null) return;
+    if ((_clock.value - _positionOf(state.watchTimeOf(_sn))).abs() < 5) return;
+    if (_clock.value > 5) return;
+    if (target > 1) unawaited(_seekTo(target, resume: _playing));
   }
 
   /// 建立 / 換掉 VideoPlayerController
@@ -488,9 +513,14 @@ class _WatchPageState extends State<WatchPage>
   // =============================================================== 片單 / 彈幕
 
   Future<void> _loadSeries() async {
+    // 上次存下來的那份先畫出來: 選集跟作品資訊不必等網路回來才有東西看
+    final cached = state.cachedSeries(_sn);
+    if (cached != null && mounted) {
+      setState(() => _series = cached);
+    }
     if (state.offline) return;
     try {
-      final info = await client.series(_sn);
+      final info = await state.loadSeries(_sn);
       if (!mounted) return;
       setState(() => _series = info);
     } catch (_) {
@@ -512,12 +542,15 @@ class _WatchPageState extends State<WatchPage>
         text = null;
       }
     }
+    // 沒下載到手機的集數, 上次線上看時抓的那份還新的話就直接用
+    text ??= await store.readCachedDanmaku(_sn);
     if ((text == null || text.isEmpty) && !state.offline) {
       try {
         text = await client.danmakuAss(_sn);
-        // 這一集有下載但還沒存到彈幕的話, 順手補一份給離線用
         if (text.trim().isNotEmpty) {
+          // 這一集有下載但還沒存到彈幕的話, 順手補一份給離線用
           unawaited(store.cacheDanmaku(_sn, text));
+          unawaited(store.writeCachedDanmaku(_sn, text));
         }
       } catch (_) {
         text = null;
@@ -2032,7 +2065,7 @@ class _WatchPageState extends State<WatchPage>
                 Icon(Icons.circle,
                     size: 9,
                     color: choice.value == current
-                        ? const Color(0xFF00B5D4)
+                        ? AgpColors.bahamut
                         : Colors.transparent),
                 const SizedBox(width: 12),
                 Text(choice.label, style: const TextStyle(color: Colors.white)),
@@ -2103,6 +2136,10 @@ class _WatchPageState extends State<WatchPage>
         child: Padding(
           padding: const EdgeInsets.fromLTRB(12, 0, 12, 8),
           child: LayoutBuilder(builder: (context, constraints) {
+            // 排列照動畫瘋: 彈幕 → 關彈幕 → 設定 →(全螢幕時多一個)畫面比例 →
+            // 全螢幕. 全螢幕鍵固定在最右邊那一格, 進出全螢幕都不會換位置 ——
+            // 之前是畫面比例排在它右邊, 一進全螢幕整排就往左挪一格, 拇指
+            // 按原來的位置按下去變成在改畫面比例.
             final actions = Row(mainAxisSize: MainAxisSize.min, children: [
               _barButton(Icons.message_rounded, '彈幕設定', _openSettingsSheet),
               _barButton(
@@ -2110,12 +2147,6 @@ class _WatchPageState extends State<WatchPage>
                   _danmakuOn ? '關閉彈幕' : '開啟彈幕',
                   () => unawaited(_setDanmaku(!_danmakuOn))),
               _barButton(Icons.settings_outlined, '設定', _openSettingsSheet),
-              _barButton(
-                  _fullscreen
-                      ? Icons.fullscreen_exit_rounded
-                      : Icons.fullscreen_rounded,
-                  _fullscreen ? '離開全螢幕' : '全螢幕',
-                  () => unawaited(_setFullscreen(!_fullscreen))),
               if (_fullscreen)
                 _barButton(Icons.fit_screen_outlined, '畫面比例', () {
                   final index =
@@ -2123,6 +2154,12 @@ class _WatchPageState extends State<WatchPage>
                   unawaited(_setAspect(
                       kAspectModes[(index + 1) % kAspectModes.length].value));
                 }),
+              _barButton(
+                  _fullscreen
+                      ? Icons.fullscreen_exit_rounded
+                      : Icons.fullscreen_rounded,
+                  _fullscreen ? '離開全螢幕' : '全螢幕',
+                  () => unawaited(_setFullscreen(!_fullscreen))),
             ]);
             if (constraints.maxWidth >= 600) {
               return Row(children: [Expanded(child: _timeline()), actions]);
@@ -2155,10 +2192,10 @@ class _WatchPageState extends State<WatchPage>
               trackHeight: 2,
               thumbShape: const RoundSliderThumbShape(enabledThumbRadius: 7),
               overlayShape: const RoundSliderOverlayShape(overlayRadius: 14),
-              activeTrackColor: const Color(0xFF00B5D4),
+              activeTrackColor: AgpColors.bahamut,
               inactiveTrackColor: const Color(0x4DFFFFFF),
               secondaryActiveTrackColor: const Color(0x80FFFFFF),
-              thumbColor: const Color(0xFF00B5D4),
+              thumbColor: AgpColors.bahamut,
             ),
             child: Slider(
               value: shown.clamp(0.0, max),
@@ -2184,12 +2221,18 @@ class _WatchPageState extends State<WatchPage>
     );
   }
 
+  /// 控制列一顆鍵佔多寬. 動畫瘋的圖示看起來大約 24, 一格 48 —— 圖示照抄,
+  /// 但格子不再往下縮: 48 是點得到的下限, 再小就開始按錯隔壁那顆.
+  static const double kBarIcon = 24;
+  static const double kBarSlot = 48;
+
   Widget _barButton(IconData icon, String tooltip, VoidCallback onTap,
       {bool active = false}) {
     return IconButton(
       tooltip: tooltip,
-      iconSize: 28,
-      constraints: const BoxConstraints.tightFor(width: 52, height: 52),
+      iconSize: kBarIcon,
+      constraints:
+          const BoxConstraints.tightFor(width: kBarSlot, height: kBarSlot),
       padding: const EdgeInsets.all(12),
       visualDensity: VisualDensity.standard,
       color: active ? AgpColors.accent : Colors.white,
@@ -2198,7 +2241,7 @@ class _WatchPageState extends State<WatchPage>
               Icon(Icons.chat_bubble_outline_rounded),
               Padding(
                   padding: EdgeInsets.only(bottom: 3),
-                  child: Icon(Icons.close_rounded, size: 15)),
+                  child: Icon(Icons.close_rounded, size: 13)),
             ])
           : Icon(icon),
       onPressed: () {
@@ -2254,18 +2297,37 @@ class _WatchPageState extends State<WatchPage>
                 ),
               ),
             ),
-          Padding(
-            padding: const EdgeInsets.fromLTRB(14, 4, 14, 8),
-            child: Wrap(
-              spacing: 8,
-              runSpacing: 8,
-              children: [
-                for (final episode in group.episodes) _episodeChip(episode),
-              ],
-            ),
-          ),
+          _episodeGrid(group.episodes),
         ],
       ],
+    );
+  }
+
+  /// 選集. 動畫瘋是一格一格等寬的方塊, 不是隨字寬長短不一的膠囊 —— 每一格
+  /// 一樣大, 眼睛掃得快, 手指也按得準. 每列幾格跟著寬度走: 手機五格, 平板
+  /// 到九格, 跟站上一樣.
+  Widget _episodeGrid(List<SeriesEpisode> episodes,
+      {VoidCallback Function(SeriesEpisode)? onTap,
+      EdgeInsets padding = const EdgeInsets.fromLTRB(14, 4, 14, 8)}) {
+    return Padding(
+      padding: padding,
+      child: LayoutBuilder(builder: (context, constraints) {
+        const gap = 8.0;
+        final columns = (constraints.maxWidth / 150).round().clamp(5, 9);
+        final cell =
+            (constraints.maxWidth - gap * (columns - 1)) / columns;
+        return Wrap(
+          spacing: gap,
+          runSpacing: gap,
+          children: [
+            for (final episode in episodes)
+              SizedBox(
+                width: cell,
+                child: _episodeChip(episode, onTap: onTap?.call(episode)),
+              ),
+          ],
+        );
+      }),
     );
   }
 
@@ -2276,52 +2338,56 @@ class _WatchPageState extends State<WatchPage>
     final label =
         episode.episode.trim().isEmpty ? '單集' : episode.episode.trim();
 
+    // 集數維持置中 —— 動畫瘋的格子裡只有數字. 有沒有離線檔、在不在伺服器上
+    // 改用右上角一顆小點表示, 資訊還在, 但不會把數字擠歪.
+    final marker = here
+        ? null
+        : (downloaded ? AgpColors.bahamut : (remote ? null : AgpColors.fgFaint));
+
     return Tooltip(
       message:
           remote ? '尚未下載，點一下邊看邊下載' : (downloaded ? '已下載到這支手機' : '從伺服器片庫播放'),
       child: Material(
         color: here
-            ? AgpColors.accent
+            ? AgpColors.bahamut
             : (remote ? Colors.transparent : AgpColors.card),
         borderRadius: BorderRadius.circular(kRadiusSmall),
         child: InkWell(
           borderRadius: BorderRadius.circular(kRadiusSmall),
           onTap: here ? null : (onTap ?? () => unawaited(_switchTo(episode))),
           child: Container(
-            constraints: const BoxConstraints(minWidth: 48),
-            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 9),
+            // 44 是點得準的下限, 跟動畫瘋那排方塊差不多高
+            constraints: const BoxConstraints(minWidth: 48, minHeight: 44),
+            padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 8),
             decoration: BoxDecoration(
               borderRadius: BorderRadius.circular(kRadiusSmall),
               border: Border.all(
                 color: here
-                    ? AgpColors.accent
+                    ? AgpColors.bahamut
                     : (remote ? AgpColors.line : AgpColors.lineStrong),
               ),
             ),
-            child: Row(
-              mainAxisSize: MainAxisSize.min,
+            child: Stack(
+              alignment: Alignment.center,
               children: [
-                if (downloaded && !here)
-                  const Padding(
-                    padding: EdgeInsets.only(right: 4),
-                    child: Icon(Icons.smartphone_rounded,
-                        size: 12, color: AgpColors.fgFaint),
-                  ),
                 Text(
                   label,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  textAlign: TextAlign.center,
                   style: TextStyle(
-                    fontSize: 13,
+                    fontSize: 14,
                     fontWeight: here ? FontWeight.w800 : FontWeight.w600,
                     color: here
                         ? Colors.white
                         : (remote ? AgpColors.fgFaint : AgpColors.fg),
                   ),
                 ),
-                if (remote)
-                  const Padding(
-                    padding: EdgeInsets.only(left: 4),
-                    child: Icon(Icons.cloud_download_outlined,
-                        size: 12, color: AgpColors.fgFaint),
+                if (marker != null)
+                  Positioned(
+                    top: 0,
+                    right: 0,
+                    child: Icon(Icons.circle, size: 5, color: marker),
                   ),
               ],
             ),
@@ -2560,19 +2626,14 @@ class _WatchPageState extends State<WatchPage>
                           ),
                         ),
                       ),
-                    Wrap(
-                      spacing: 8,
-                      runSpacing: 8,
-                      children: [
-                        for (final episode in group.episodes)
-                          _episodeChip(
-                            episode,
-                            onTap: () {
-                              Navigator.of(sheetContext).pop();
-                              unawaited(_switchTo(episode));
-                            },
-                          ),
-                      ],
+                    _episodeGrid(
+                      group.episodes,
+                      // ListView 已經留過左右, 這裡只補上下
+                      padding: const EdgeInsets.symmetric(vertical: 4),
+                      onTap: (episode) => () {
+                        Navigator.of(sheetContext).pop();
+                        unawaited(_switchTo(episode));
+                      },
                     ),
                   ],
                 ],

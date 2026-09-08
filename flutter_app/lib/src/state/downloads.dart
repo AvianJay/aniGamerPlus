@@ -163,6 +163,7 @@ class DownloadStore extends ChangeNotifier {
     final dir = Directory('${base.path}/downloads');
     if (!await dir.exists()) await dir.create(recursive: true);
     _dir = dir;
+    _danmakuCache = Directory('${base.path}/danmaku-cache');
 
     final index = File('${dir.path}/index.json');
     if (await index.exists()) {
@@ -537,6 +538,73 @@ class DownloadStore extends ChangeNotifier {
       entry.hasDanmaku = false;
       await _save();
       notifyListeners();
+    }
+  }
+
+  // --------------------------------------------------------- 線上彈幕快取
+  //
+  // 沒下載到手機的那些集數, 每次開播放頁都要把整份 .ass 重抓一次 —— 一集
+  // 動輒好幾百 KB, 而且伺服器要現生. 這裡照著伺服器那邊的更新週期留六小時,
+  // 檔案數有上限, 滿了就先丟最舊的.
+
+  Directory? _danmakuCache;
+  static const Duration _danmakuCacheTtl = Duration(hours: 6);
+  static const int _danmakuCacheMax = 60;
+
+  File? _danmakuCacheFile(String sn) {
+    final dir = _danmakuCache;
+    if (dir == null) return null;
+    return File('${dir.path}/$sn.ass');
+  }
+
+  Future<String?> readCachedDanmaku(String sn) async {
+    final file = _danmakuCacheFile(sn);
+    if (file == null || !file.existsSync()) return null;
+    try {
+      final age = DateTime.now().difference(await file.lastModified());
+      if (age > _danmakuCacheTtl) return null;
+      final text = await file.readAsString();
+      return text.trim().isEmpty ? null : text;
+    } catch (_) {
+      return null;
+    }
+  }
+
+  Future<void> writeCachedDanmaku(String sn, String ass) async {
+    final file = _danmakuCacheFile(sn);
+    if (file == null || ass.trim().isEmpty) return;
+    try {
+      final dir = _danmakuCache!;
+      if (!await dir.exists()) await dir.create(recursive: true);
+      await file.writeAsString(ass);
+      await _trimDanmakuCache(dir);
+    } catch (_) {
+      // 存不下就算了, 下次重抓而已
+    }
+  }
+
+  Future<void> _trimDanmakuCache(Directory dir) async {
+    final files = <File>[];
+    await for (final item in dir.list()) {
+      if (item is File) files.add(item);
+    }
+    if (files.length <= _danmakuCacheMax) return;
+    final stamped = <MapEntry<File, DateTime>>[];
+    for (final file in files) {
+      try {
+        stamped.add(MapEntry(file, await file.lastModified()));
+      } catch (_) {
+        // 量不到就當它最舊, 優先丟掉
+        stamped.add(MapEntry(file, DateTime.fromMillisecondsSinceEpoch(0)));
+      }
+    }
+    stamped.sort((a, b) => a.value.compareTo(b.value));
+    for (final entry in stamped.take(stamped.length - _danmakuCacheMax)) {
+      try {
+        await entry.key.delete();
+      } catch (_) {
+        // 刪不掉下次再說
+      }
     }
   }
 

@@ -26,6 +26,16 @@ class ApiException implements Exception {
   String toString() => message;
 }
 
+/// 一份存活到過期為止的答案. 同一次開機裡重複問同一件事的都走這裡.
+class _Memo<T> {
+  _Memo(this.value) : at = DateTime.now();
+
+  final T value;
+  final DateTime at;
+
+  bool fresh(Duration ttl) => DateTime.now().difference(at) < ttl;
+}
+
 class AgpClient {
   AgpClient({required String baseUrl, this.token}) : _base = _normalize(baseUrl);
 
@@ -33,6 +43,21 @@ class AgpClient {
   String? token;
 
   final http.Client _http = http.Client();
+
+  /// 劇集表跟可選畫質在一次觀看裡會被問很多次: 開播放頁一次, 換一集再一次,
+  /// 觀看紀錄那一頁又一次. 內容幾乎不會在這段時間裡變, 伺服器端也已經在快取,
+  /// 這裡再攔一層純粹是為了省掉來回的那段延遲.
+  static const Duration _seriesTtl = Duration(minutes: 10);
+  static const Duration _sourcesTtl = Duration(minutes: 5);
+
+  final Map<String, _Memo<Map<String, dynamic>>> _seriesMemo = {};
+  final Map<String, _Memo<List<int>>> _sourcesMemo = {};
+
+  /// 換伺服器或換帳號之後手上這份就不算數了
+  void clearMemo() {
+    _seriesMemo.clear();
+    _sourcesMemo.clear();
+  }
 
   static String _normalize(String raw) {
     var text = raw.trim();
@@ -48,7 +73,10 @@ class AgpClient {
 
   String get baseUrl => _base;
 
-  set baseUrl(String value) => _base = _normalize(value);
+  set baseUrl(String value) {
+    _base = _normalize(value);
+    clearMemo();
+  }
 
   bool get hasServer => _base.isNotEmpty;
 
@@ -86,14 +114,19 @@ class AgpClient {
   /// 失敗一律回空陣列而不是丟例外: 舊版伺服器根本沒有這條路由, 那種情況該退化成
   /// 「沒有畫質可選」, 不是在播放頁上彈一條錯誤.
   Future<List<int>> streamSources(String sn) async {
+    final memo = _sourcesMemo[sn];
+    if (memo != null && memo.fresh(_sourcesTtl)) return memo.value;
     try {
       final data = await _json('/stream/sources.json', {'id': sn});
       final raw = (data as Map)['resolutions'];
       if (raw is! List) return const [];
-      return raw
+      final list = raw
           .map((value) => int.tryParse(value.toString()) ?? 0)
           .where((value) => value > 0)
           .toList();
+      // 空陣列不留: 那通常是解析當下失敗, 不是這一集真的只有一種畫質
+      if (list.isNotEmpty) _sourcesMemo[sn] = _Memo(list);
+      return list;
     } catch (_) {
       return const [];
     }
@@ -165,9 +198,30 @@ class AgpClient {
         .toList();
   }
 
-  Future<SeriesInfo> series(String videoSn) async {
+  Future<SeriesInfo> series(String videoSn) async =>
+      SeriesInfo.fromJson(await seriesJson(videoSn));
+
+  /// 原始的那份 JSON. 呼叫端要拿去落盤存起來時用這個 —— SeriesInfo 沒有
+  /// toJson(), 而且存原樣的話伺服器將來多回幾個欄位也不必改這裡.
+  Future<Map<String, dynamic>> seriesJson(String videoSn) async {
+    final memo = _seriesMemo[videoSn];
+    if (memo != null && memo.fresh(_seriesTtl)) return memo.value;
     final data = await _json('/watch/series.json', {'id': videoSn});
-    return SeriesInfo.fromJson((data as Map).cast<String, dynamic>());
+    final map = (data as Map).cast<String, dynamic>();
+    _seriesMemo[videoSn] = _Memo(map);
+    return map;
+  }
+
+  /// 手上這份還新的話直接給, 不新就回 null. 讓畫面先畫得出來, 網路慢的時候
+  /// 使用者看到的是上次那份劇集表, 不是一片空白.
+  Map<String, dynamic>? seriesJsonCached(String videoSn) {
+    final memo = _seriesMemo[videoSn];
+    return (memo != null && memo.fresh(_seriesTtl)) ? memo.value : null;
+  }
+
+  /// 從落盤的快取把記憶體這一層補回來 (app 剛開起來時)
+  void seedSeriesJson(String videoSn, Map<String, dynamic> json) {
+    _seriesMemo.putIfAbsent(videoSn, () => _Memo(json));
   }
 
   Future<Map<String, dynamic>> animeInfo(String videoSn) async {
@@ -183,9 +237,12 @@ class AgpClient {
 
   // -------------------------------------------------------------------- 片單
 
-  Future<CatalogIndex> catalogIndex() async {
+  Future<CatalogIndex> catalogIndex() async =>
+      CatalogIndex.fromJson(await catalogIndexJson());
+
+  Future<Map<String, dynamic>> catalogIndexJson() async {
     final data = await _json('/catalog/index.json');
-    return CatalogIndex.fromJson((data as Map).cast<String, dynamic>());
+    return (data as Map).cast<String, dynamic>();
   }
 
   Future<CatalogPage> catalogAll({String query = '', int page = 1}) async {
@@ -348,6 +405,7 @@ class AgpClient {
       // 伺服器連不上也要能在本機登出
     }
     token = null;
+    clearMemo();
   }
 
   // ---------------------------------------------------------------- 用戶管理

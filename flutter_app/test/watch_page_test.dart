@@ -302,4 +302,20 @@ void main() {
     expect(find.byTooltip('畫面比例'), findsNothing);
     await tester.pumpWidget(const SizedBox());
   });
+  testWidgets('fullscreen toggle keeps the rightmost slot in both modes',
+      (tester) async {
+    // 進出全螢幕會多一顆「畫面比例」出來. 它要是插在全螢幕鍵右邊, 整排就往
+    // 左挪一格, 使用者照原來的位置按下去按到的是畫面比例 —— 動畫瘋不會這樣,
+    // 這裡把「最右邊永遠是全螢幕」釘住.
+    await open(tester);
+    await tester.binding.setSurfaceSize(const Size(1280, 882));
+    await tester.pump();
+    double x(String tooltip) => tester.getCenter(find.byTooltip(tooltip)).dx;
+    expect(x('全螢幕'), greaterThan(x('設定')));
+    await tester.tap(find.byTooltip('全螢幕'));
+    await tester.pump(const Duration(milliseconds: 350));
+    expect(x('離開全螢幕'), greaterThan(x('畫面比例')));
+    expect(x('畫面比例'), greaterThan(x('設定')));
+    await tester.pumpWidget(const SizedBox());
+  });
 }

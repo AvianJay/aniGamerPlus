@@ -18,6 +18,11 @@ class AgpColors {
   static const accent = Color(0xFFFF0033);
   static const accentSoft = Color(0x24FF0033);
 
+  /// 動畫瘋自己的那個青色. 播放器跟選集刻意跟著站上走 —— 這兩塊是使用者拿來
+  /// 跟官方 app 對照著用的地方, 顏色一樣才不會每次都要重新找按鈕在哪.
+  static const bahamut = Color(0xFF00B5D4);
+  static const bahamutSoft = Color(0x2900B5D4);
+
   // 淺色模式: 同一個紅, 底換成近白
   static const lightBg = Color(0xFFF7F7F8);
   static const lightCard = Color(0xFFFFFFFF);

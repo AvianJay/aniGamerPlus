@@ -54,7 +54,7 @@ sn_list_path = os.path.join(working_dir, 'sn_list.txt')
 cookie_path = os.path.join(working_dir, 'cookie.txt')
 logs_dir = os.path.join(working_dir, 'logs')
 aniGamerPlus_version = 'v25.2'
-latest_config_version = 18.3
+latest_config_version = 18.4
 latest_database_version = 2.0
 cookie = None
 max_multi_thread = 5
@@ -181,7 +181,7 @@ def __init_settings():
                 'plex_token': '',
                 'plex_section': '',
                 'plex_naming': False,  # 適配PLEX命名規則
-                'faststart_movflags': False,
+                'faststart_movflags': True,
                 'audio_language': False,
                 'use_mobile_api': False,
                 'danmu': False,
@@ -357,7 +357,16 @@ def __update_settings(old_settings):  # 升级配置文件
     if 'faststart_movflags' not in new_settings.keys():
         # v9.0 新增功能: 将 metadata 移至视频文件头部
         # 此功能可以更快的在线播放视频
-        new_settings['faststart_movflags'] = False
+        new_settings['faststart_movflags'] = True
+
+    if old_settings['config_version'] < 18.4:
+        # v18.4: 默认打开 metadata 前置.
+        # moov 留在文件尾部时, 播放器必须先把整个文件的尾巴要回来才知道第一帧
+        # 在哪 —— 隔着网络看自己的服务器, 这一步就是开播前那十几秒的等待.
+        # -movflags faststart 只是搬动 metadata, 不重新编码、不掉画质, 代价
+        # 只有合并时多一次顺序读写. 已经下载好的那些档案不受影响, 要重新下载
+        # 才会前置.
+        new_settings['faststart_movflags'] = True
 
     if 'video_filename_extension' not in new_settings.keys():
         # v17 新增用户自定义视频扩展名

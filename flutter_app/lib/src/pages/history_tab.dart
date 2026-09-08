@@ -4,6 +4,8 @@
 /// 一次最多問 8 部, 免得紀錄裡有幾十部沒下載的作品時打出幾十個請求.
 library;
 
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 
 import '../api/models.dart';
@@ -25,10 +27,48 @@ class _Remote {
   final String name;
   final String episode;
   final String cover;
+
+  factory _Remote.fromJson(Map<String, dynamic> json) => _Remote(
+        name: (json['name'] ?? '').toString(),
+        episode: (json['episode'] ?? '').toString(),
+        cover: (json['cover'] ?? '').toString(),
+      );
+
+  Map<String, dynamic> toJson() =>
+      {'name': name, 'episode': episode, 'cover': cover};
 }
 
 /// 問過的作品留著, 換分頁再回來不用重問
 final Map<String, _Remote?> _remote = {};
+
+/// 落盤那一份的鍵. 認得出來的名字存起來, 下次開 app 這一頁就不必再打
+/// 八次 /watch/series.json —— 那是每次冷啟動之後最先塞住連線的一批請求.
+const String _kNameCacheKey = 'history-names';
+bool _nameCacheLoaded = false;
+
+void _loadNameCache(AppState state) {
+  if (_nameCacheLoaded) return;
+  _nameCacheLoaded = true;
+  final raw = state.prefs.readCachedJson(_kNameCacheKey);
+  if (raw is! Map) return;
+  raw.forEach((key, value) {
+    if (value is Map) {
+      _remote.putIfAbsent(
+          key.toString(), () => _Remote.fromJson(value.cast<String, dynamic>()));
+    }
+  });
+}
+
+/// 只存真的認出來的那些. 認不出來的下次還是要再試一次 —— 那多半是當時
+/// 連不上, 不是這一集永遠查不到.
+Future<void> _saveNameCache(AppState state) {
+  final known = <String, dynamic>{};
+  for (final entry in _remote.entries) {
+    final value = entry.value;
+    if (value != null) known[entry.key] = value.toJson();
+  }
+  return state.prefs.cacheJson(_kNameCacheKey, known);
+}
 
 class HistoryTab extends StatefulWidget {
   const HistoryTab({super.key, required this.state});
@@ -67,7 +107,7 @@ class _HistoryTabState extends State<HistoryTab> {
         if (pending == null) break;
         tries++;
         try {
-          final detail = await state.client.series(pending);
+          final detail = await state.loadSeries(pending);
           for (final group in detail.groups) {
             for (final episode in group.episodes) {
               _remote[episode.videoSn] = _Remote(
@@ -87,7 +127,15 @@ class _HistoryTabState extends State<HistoryTab> {
     } finally {
       _resolving = false;
     }
-    if (found && mounted) setState(() {});
+    if (!found) return;
+    unawaited(_saveNameCache(state));
+    if (mounted) setState(() {});
+  }
+
+  @override
+  void initState() {
+    super.initState();
+    _loadNameCache(state);
   }
 
   @override

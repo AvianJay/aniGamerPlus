@@ -100,7 +100,14 @@ class SafeWebSocketHandler(WebSocketHandler):
             super().log_exception(exc_info)
 
 
-def generate_file(path, start, length, chunk_size=8192):
+# 8 KB 一塊是給區網外的細線路留的保守值, 但代價是一集 500 MB 要跑六萬多次
+# read + write. 播放器一開就是幾十 MB 的 Range, 每一塊都要繞一趟 gevent 的
+# 排程, CPU 全花在切塊上. 256 KB 仍然遠小於任何一個播放器的緩衝區, 記憶體
+# 占用可以忽略, 但系統呼叫少了三十倍.
+VIDEO_CHUNK_SIZE = 256 * 1024
+
+
+def generate_file(path, start, length, chunk_size=VIDEO_CHUNK_SIZE):
     """逐步讀取檔案 (generator)，避免一次讀整份進 memory"""
     with open(path, 'rb') as f:
         f.seek(start)
@@ -395,21 +402,72 @@ danmu_update_timestamps = {}
 DANMU_UPDATE_INTERVAL_SECONDS = 6 * 60 * 60
 
 
+# video_list.json 是幾乎每一條路由的第一件事: 播放要查路徑, 縮圖、劇集表、
+# 線上畫質都要先確認這個 sn 是自己人. 播一集光是 Range 請求就有上百個, 每個
+# 都重讀重解析整份片庫 —— 片庫大起來之後這是伺服器最花時間的一段. 用檔案的
+# (mtime, size) 當版本號快取, 下載器一寫新的一集就自動失效.
+_video_list_cache = {'sig': None, 'data': {'videos': []}, 'index': {}}
+
+
 def _read_video_list_file():
+    return _load_video_list()['data']
+
+
+def _load_video_list():
     video_list_path = os.path.join(Config.get_working_dir(), 'video_list.json')
-    if not os.path.exists(video_list_path):
-        return {'videos': []}
-    with open(video_list_path, 'r', encoding='utf-8') as f:
-        return json.load(f)
+    try:
+        stat = os.stat(video_list_path)
+        sig = (stat.st_mtime_ns, stat.st_size)
+    except OSError:
+        # 還沒下載過任何一集, 檔案根本不存在
+        if _video_list_cache['sig'] is not None:
+            _video_list_cache.update(sig=None, data={'videos': []}, index={})
+        return _video_list_cache
+
+    if _video_list_cache['sig'] == sig:
+        return _video_list_cache
+
+    try:
+        with open(video_list_path, 'r', encoding='utf-8') as f:
+            data = json.load(f)
+    except (OSError, ValueError):
+        # 下載器正在改寫這份檔案. 舊的那份還能用, 下一次請求再試
+        return _video_list_cache
+
+    index = {}
+    for video in data.get('videos', []):
+        # 同一集可能存了好幾種畫質, 先來的先贏跟原本的線性掃描結果一致
+        index.setdefault(str(video.get('sn')), video)
+    _video_list_cache.update(sig=sig, data=data, index=index)
+    return _video_list_cache
 
 
 def _find_video_entry(sn):
-    video_data = _read_video_list_file()
+    return _load_video_list()['index'].get(str(sn))
+
+
+def _find_video_path(sn, resolution=None):
+    """Config.getpath(sn, 'video') 的快取版.
+
+    順手補掉原本那個行為: 沒帶 res 或帶了看不懂的 res 時, getpath() 會在
+    int(None) 上丟例外, 吞掉之後一律回 None —— 也就是 /get_video.mp4?id=123
+    永遠 404. 片庫裡有這一集就該播得出來, 挑不到指定畫質才退回第一個。
+    """
     sn_str = str(sn)
-    for video in video_data.get('videos', []):
-        if str(video.get('sn')) == sn_str:
-            return video
-    return None
+    try:
+        wanted = int(resolution)
+    except (TypeError, ValueError):
+        wanted = None
+
+    fallback = None
+    for video in _load_video_list()['data'].get('videos', []):
+        if str(video.get('sn')) != sn_str:
+            continue
+        if wanted is not None and video.get('resolution') == wanted:
+            return video.get('path')
+        if fallback is None:
+            fallback = video.get('path')
+    return fallback
 
 
 _ffmpeg_path_cache = None
@@ -898,8 +956,27 @@ def cache(id, time=600, set=None):
     return caches.get(id, {}).get("data")
 
 
+# read_settings() 每次都重讀重驗 config.json, 還會順手掃 log 目錄、必要時回寫
+# 檔案. 播一集的 Range 請求、進度輪詢、縮圖加起來一分鐘就有上百個請求, 每個都
+# 跑一遍太浪費. 三秒內共用同一份 —— 從控制臺存設定會直接把它作廢, 所以使用者
+# 不會看到自己剛改的東西沒生效.
+SETTINGS_TTL = 3.0
+_settings_cache = {'at': 0.0, 'settings': None}
+
+
+def _invalidate_settings_cache():
+    _settings_cache['settings'] = None
+
+
 def _get_current_settings():
-    return Config.read_settings()
+    now = time.monotonic()
+    cached = _settings_cache['settings']
+    # 不上鎖: greenlet 之間不會撕裂, 最壞只是兩個人同時去讀一次設定
+    if cached is None or now - _settings_cache['at'] > SETTINGS_TTL:
+        cached = Config.read_settings()
+        _settings_cache['settings'] = cached
+        _settings_cache['at'] = now
+    return cached
 
 
 def _get_dashboard_flags(current_settings=None):
@@ -952,24 +1029,16 @@ HLS_TEMP_SUFFIX = '-downloading-by-aniGamerPlusPlus'
 # key.m3u8key 是 Anime.py 自己取的檔名, 出現在 m3u8 裡就表示這份已經被改寫成
 # 給 ffmpeg 吃的本機路徑版, 不能再發給瀏覽器
 HLS_LOCALISED_MARKER = 'key.m3u8key'
-HLS_SETTINGS_TTL = 5.0
 HLS_MIME = 'application/vnd.apple.mpegurl'
 
-_hls_settings_cache = {'at': 0.0, 'settings': None}
 _hls_playlist_cache = {}  # sn(str) -> {'sig': (mtime, size), 'parsed': {...}}
 
 
 def _hls_settings():
     # hls.js 每 5~10 秒重抓一次 playlist, 加上狀態輪詢跟 chunk, 一個觀眾一分鐘就有
-    # 十幾個請求. read_settings() 每次都重讀重驗 config.json, 還會順手掃 log 目錄、
-    # 有機會回寫檔案 —— 不快取的話光是放一集就會把它跑上千次.
-    now = time.monotonic()
-    if (_hls_settings_cache['settings'] is None
-            or now - _hls_settings_cache['at'] > HLS_SETTINGS_TTL):
-        # 不上鎖: greenlet 之間不會撕裂, 最壞只是兩個人同時去讀一次設定
-        _hls_settings_cache['settings'] = Config.read_settings()
-        _hls_settings_cache['at'] = now
-    return _hls_settings_cache['settings']
+    # 十幾個請求. 這裡本來自己留一份快取, 現在 _get_current_settings() 已經是
+    # 快取版, 直接共用同一份就好 —— 少一個各自過期、各自不一致的來源.
+    return _get_current_settings()
 
 
 def _hls_temp_dir(sn, current_settings):
@@ -1546,11 +1615,20 @@ def _settings_signature(current_settings):
 
 
 def _sync_plugin_manager(force=False):
-    global plugin_manager_last_reload_at, plugin_manager_settings_signature, settings
+    global plugin_manager_last_reload_at, plugin_manager_settings_signature
+    global plugin_manager_settings_object, settings
 
     current_settings = _get_current_settings()
-    signature = _settings_signature(current_settings)
     now = time.monotonic()
+
+    # /get_video.mp4 每一個 Range 請求都會走到這裡, 一集就有上百次. 設定現在是
+    # 快取的, 同一份物件連指紋都不必重算 —— json.dumps 整份設定不便宜.
+    if current_settings is plugin_manager_settings_object and not force:
+        if now - plugin_manager_last_reload_at < PLUGIN_RELOAD_INTERVAL_SECONDS:
+            return current_settings
+        signature = plugin_manager_settings_signature
+    else:
+        signature = _settings_signature(current_settings)
 
     if force or signature != plugin_manager_settings_signature or now - plugin_manager_last_reload_at >= PLUGIN_RELOAD_INTERVAL_SECONDS:
         plugin_manager.reload(current_settings)
@@ -1558,6 +1636,7 @@ def _sync_plugin_manager(force=False):
         plugin_manager_last_reload_at = now
         settings = current_settings
 
+    plugin_manager_settings_object = current_settings
     return current_settings
 
 
@@ -1576,6 +1655,7 @@ def after_request(response):
 settings = _get_current_settings()
 plugin_manager = PluginManager(settings)
 plugin_manager_settings_signature = _settings_signature(settings)
+plugin_manager_settings_object = settings
 plugin_manager_last_reload_at = time.monotonic()
 
 
@@ -1627,6 +1707,7 @@ def recv_config():
         else:
             new_settings[id] = data[id]  # 更新配置
     Config.write_settings(new_settings)  # 保存配置
+    _invalidate_settings_cache()
     _sync_plugin_manager(force=True)
     err_print(0, 'Dashboard', '通過 Web 控制臺更新了 config.json', no_sn=True, status=2)
     return '{"status":"200"}'
@@ -2024,7 +2105,7 @@ if settings["dashboard"]["online_watch"]:
         if playback_source and playback_source.get('url'):
             return redirect(playback_source['url'])
 
-        path = Config.getpath(sn, 'video', resolution=res)
+        path = _find_video_path(sn, res)
         if not path or not os.path.exists(path):
             return jsonify({"error": "video not found"}), 404
         filename = os.path.basename(path)

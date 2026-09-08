@@ -223,7 +223,7 @@ docker run -td --name anigamerplus \
         ]
     },
     "plex_naming": false, // 適配PLEX命名規則
-    "faststart_movflags": false,  // 是否將影片 metadata 前置, 啓用此功能時在綫觀看會更快播放, 僅在 video_filename_extension 為 mp4 時有效
+    "faststart_movflags": true,  // 是否將影片 metadata 前置, 啓用此功能時在綫觀看會更快播放 (v18.4 起預設開啓), 僅在 video_filename_extension 為 mp4 時有效
     "audio_language": false,  // 是否添加音軌標簽
     "use_mobile_api": false,  // 使用移動端API進行影片解析
     "danmu": false, // 是否下載彈幕(已包含動畫瘋內建的關鍵字過濾)
