@@ -72,6 +72,17 @@ String formatClock(num? seconds) {
 
 String formatDuration(Duration d) => formatClock(d.inSeconds);
 
+/// 播放器時間軸專用: 分鐘一律補到兩位, 跟動畫瘋一樣寫成 04:09.
+///
+/// formatClock() 在不滿十分鐘時寫 4:09, 那會讓整條時間軸在跨過 9:59 跟
+/// 59:59 的時候整個橫向跳一格.
+String formatPlayerClock(num? seconds) {
+  final text = formatClock(seconds);
+  final head = text.indexOf(':');
+  if (head == 1) return '0$text';
+  return text;
+}
+
 /// 人氣: 站上寫的是 "65萬", 這裡把原始數字也折成同一種寫法.
 String formatCount(dynamic raw) {
   final text = (raw ?? '').toString().trim();

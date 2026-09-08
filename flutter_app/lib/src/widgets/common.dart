@@ -22,42 +22,52 @@ class CoverImage extends StatelessWidget {
     this.aspectRatio = 16 / 9,
     this.radius = kRadiusSmall,
     this.fit = BoxFit.cover,
+    this.art = true,
   });
 
   final String name;
   final String? url;
   final File? file;
   final Map<String, String>? headers;
-  final double aspectRatio;
+
+  /// null = 填滿給的空間, 不自己決定比例. 播放器背後那張劇照就是這樣用的:
+  /// 播放區不一定是 16:9, 硬套的話兩邊會露出底下那層漸層.
+  final double? aspectRatio;
   final double radius;
   final BoxFit fit;
 
+  /// 抓不到圖時要不要退回片名 hash 的漸層. 播放器背後不要 —— 那裡該是黑的,
+  /// 不是一塊有字母的彩色方塊.
+  final bool art;
+
   @override
   Widget build(BuildContext context) {
-    return AspectRatio(
-      aspectRatio: aspectRatio,
-      child: ClipRRect(
+    final ratio = aspectRatio;
+    final content = ClipRRect(
         borderRadius: BorderRadius.circular(radius),
         child: Stack(
           fit: StackFit.expand,
           children: [
-            DecoratedBox(decoration: BoxDecoration(gradient: artFor(name))),
-            Center(
-              child: Padding(
-                padding: const EdgeInsets.all(6),
-                child: Text(
-                  initials(name),
-                  maxLines: 1,
-                  overflow: TextOverflow.clip,
-                  style: const TextStyle(
-                    color: Color(0x59FFFFFF),
-                    fontSize: 26,
-                    fontWeight: FontWeight.w800,
-                    letterSpacing: 1,
+            if (art) ...[
+              DecoratedBox(decoration: BoxDecoration(gradient: artFor(name))),
+              Center(
+                child: Padding(
+                  padding: const EdgeInsets.all(6),
+                  child: Text(
+                    initials(name),
+                    maxLines: 1,
+                    overflow: TextOverflow.clip,
+                    style: const TextStyle(
+                      color: Color(0x59FFFFFF),
+                      fontSize: 26,
+                      fontWeight: FontWeight.w800,
+                      letterSpacing: 1,
+                    ),
                   ),
                 ),
               ),
-            ),
+            ] else
+              const ColoredBox(color: Color(0xFF000000)),
             if (file != null)
               Image.file(file!, fit: fit, errorBuilder: _fallback)
             else if (url != null && url!.isNotEmpty)
@@ -78,9 +88,8 @@ class CoverImage extends StatelessWidget {
                 fadeInDuration: const Duration(milliseconds: 180),
               ),
           ],
-        ),
-      ),
-    );
+        ));
+    return ratio == null ? content : AspectRatio(aspectRatio: ratio, child: content);
   }
 
   static Widget _fallback(

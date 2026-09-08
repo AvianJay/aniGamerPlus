@@ -25,28 +25,48 @@ class Wake extends WakelockPlusPlatformInterface {
 }
 
 class DelayedPlayer extends VideoPlayerPlatform {
-  final events = StreamController<VideoEvent>.broadcast();
+  // 一個 id 一條事件流, 跟真的平台一樣. 共用一條的話, 第二個 controller 建起來
+  // 時第一個 (停在架上等使用者回來的那個) 會收到第二份 initialized, 撞上
+  // video_player 內部的 '!initializingCompleter.isCompleted'.
+  final Map<int, StreamController<VideoEvent>> streams = {};
   Duration actual = const Duration(seconds: 20);
   final seeks = <Duration>[];
   double volume = 1;
   bool playing = false;
   double speed = 1;
   int creations = 0;
+
+  /// 第一個播放器的那一條. 多數測試只會有這一個.
+  StreamController<VideoEvent> get events => _streamFor(1);
+
+  StreamController<VideoEvent> _streamFor(int id) => streams.putIfAbsent(
+      id, () => StreamController<VideoEvent>.broadcast());
+
+  Future<void> closeStreams() async {
+    for (final stream in streams.values) {
+      await stream.close();
+    }
+  }
+
   @override
   Future<void> init() async {}
   @override
   Future<int?> createWithOptions(VideoCreationOptions options) async {
     creations++;
-    return 1;
+    return creations;
   }
 
   @override
   Stream<VideoEvent> videoEventsFor(int id) {
-    scheduleMicrotask(() => events.add(VideoEvent(
-        eventType: VideoEventType.initialized,
-        duration: const Duration(seconds: 600),
-        size: const Size(1920, 1080))));
-    return events.stream;
+    final stream = _streamFor(id);
+    scheduleMicrotask(() {
+      if (stream.isClosed) return;
+      stream.add(VideoEvent(
+          eventType: VideoEventType.initialized,
+          duration: const Duration(seconds: 600),
+          size: const Size(1920, 1080)));
+    });
+    return stream.stream;
   }
 
   @override
@@ -118,7 +138,10 @@ void main() {
     VideoPlayerPlatform.instance = player;
   });
   tearDown(() async {
-    await player.events.close();
+    // 播放頁離開時會把原生播放器停在架上等使用者回來, 連帶留一個 TTL Timer.
+    // 那是正式行為, 但測試結束時不接受還有 Timer 掛著.
+    disposeWarmPlayer();
+    await player.closeStreams();
     await temp.delete(recursive: true);
   });
   Future<void> open(WidgetTester tester) async {
@@ -300,6 +323,45 @@ void main() {
     await tester.tap(find.byTooltip('離開全螢幕'));
     await tester.pump(const Duration(milliseconds: 350));
     expect(find.byTooltip('畫面比例'), findsNothing);
+    await tester.pumpWidget(const SizedBox());
+  });
+  testWidgets('reopening the same episode reuses the parked native player',
+      (tester) async {
+    // 從觀看紀錄退出去再點回同一集: 原生播放器還停在架上, 不該再 initialize
+    // 一次 —— 重開一次要把檔頭整個重新要一遍, 那就是回來時空等的那幾秒.
+    await open(tester);
+    expect(player.creations, 1);
+    await tester.pumpWidget(const SizedBox());
+    await tester.pump();
+
+    await tester.pumpWidget(RepaintBoundary(
+        child: MaterialApp(
+            debugShowCheckedModeBanner: false,
+            theme: ThemeData(fontFamily: 'Roboto'),
+            home: WatchPage(state: state, sn: '1'))));
+    for (var i = 0; i < 8; i++) {
+      await tester.pump(const Duration(milliseconds: 100));
+    }
+    expect(player.creations, 1);
+    expect(find.byType(Slider), findsOneWidget);
+    await tester.pumpWidget(const SizedBox());
+  });
+  testWidgets('a different episode cannot adopt the parked player',
+      (tester) async {
+    await open(tester);
+    expect(player.creations, 1);
+    await tester.pumpWidget(const SizedBox());
+    await tester.pump();
+
+    await tester.pumpWidget(RepaintBoundary(
+        child: MaterialApp(
+            debugShowCheckedModeBanner: false,
+            theme: ThemeData(fontFamily: 'Roboto'),
+            home: WatchPage(state: state, sn: '2'))));
+    for (var i = 0; i < 8; i++) {
+      await tester.pump(const Duration(milliseconds: 100));
+    }
+    expect(player.creations, 2);
     await tester.pumpWidget(const SizedBox());
   });
   testWidgets('fullscreen toggle keeps the rightmost slot in both modes',

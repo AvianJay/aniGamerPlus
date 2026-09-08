@@ -63,6 +63,90 @@ const double kStreamHeadStart = 45;
 const Duration kStreamPoll = Duration(seconds: 5);
 const Duration kStreamPendingGrace = Duration(seconds: 120);
 
+/// 離開播放頁之後, 原生播放器還留著多久.
+///
+/// 退出去看一眼選集、翻一下觀看紀錄再回來是最常見的動作, 而重新 initialize()
+/// 一次要把整個檔頭 (moov 在檔尾的話就是整條尾巴) 重新要一遍 —— 那是回來時
+/// 空等的那幾秒. 留著同一個原生播放器就完全不必再要一次.
+const Duration kWarmPlayerTtl = Duration(minutes: 5);
+
+/// 停在那裡等使用者回來的那一個播放器. 同一時間最多一個.
+class _WarmPlayer {
+  _WarmPlayer({
+    required this.sn,
+    required this.key,
+    required this.controller,
+    required this.position,
+  }) : parkedAt = DateTime.now();
+
+  final String sn;
+
+  /// 片源的身分 (哪一個檔 / 哪一條網址). 換了畫質或改走離線檔就對不上, 那時
+  /// 手上這一個就沒用了, 得重開.
+  final String key;
+  final VideoPlayerController controller;
+  final double position;
+  final DateTime parkedAt;
+
+  bool get stale => DateTime.now().difference(parkedAt) > kWarmPlayerTtl;
+
+  void discard() => unawaited(controller.dispose());
+}
+
+_WarmPlayer? _warmPlayer;
+
+/// app 被切到背景就把架上那個放掉. 過期刻意不用 Timer: 一個掛著的 Timer 會讓
+/// 每一個離開播放頁的 widget test 都失敗, 而且真正該還資源的時機本來就是「使用
+/// 者離開這支 app」, 不是某個固定的秒數。TTL 留著當上限, 在取用時才檢查.
+class _WarmPlayerReaper extends WidgetsBindingObserver {
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state == AppLifecycleState.paused ||
+        state == AppLifecycleState.detached) {
+      disposeWarmPlayer();
+    }
+  }
+}
+
+_WarmPlayerReaper? _warmReaper;
+
+void _parkWarmPlayer(_WarmPlayer warm) {
+  _warmPlayer?.discard();
+  _warmPlayer = warm;
+  if (_warmReaper == null) {
+    final reaper = _WarmPlayerReaper();
+    _warmReaper = reaper;
+    WidgetsBinding.instance.addObserver(reaper);
+  }
+}
+
+/// 把架上那個收掉. 平常靠上面那個 reaper, 但 widget test 之間也要清乾淨,
+/// 不然下一個測試會接到上一個測試那顆已經拆掉平台的播放器.
+@visibleForTesting
+void disposeWarmPlayer() {
+  _warmPlayer?.discard();
+  _warmPlayer = null;
+  final reaper = _warmReaper;
+  if (reaper != null) {
+    WidgetsBinding.instance.removeObserver(reaper);
+    _warmReaper = null;
+  }
+}
+
+/// 手上這一個就是要找的那一個嗎? 是的話交出來, 並且從架上拿掉.
+_WarmPlayer? _takeWarmPlayer(String sn, String key) {
+  final warm = _warmPlayer;
+  if (warm == null) return null;
+  // 對不上就順手收掉: 這個函式只在「反正要開一個新的播放器了」的時候被叫,
+  // 留著那個沒人要的只會讓兩個原生播放器同時佔著記憶體跟解碼器.
+  if (warm.stale || warm.sn != sn || warm.key != key) {
+    disposeWarmPlayer();
+    return null;
+  }
+  _warmPlayer = null;
+  return warm;
+}
+
 class PlayerChoice<T> {
   const PlayerChoice(this.value, this.label);
   final T value;
@@ -106,6 +190,25 @@ const List<List<String>> kGestureHelp = [
   ['長按畫面', '2 倍速播放'],
 ];
 
+/// 播放器上的轉圈. 用動畫瘋的青色 —— 預設是主題色 (紅), 在一片青色的
+/// 進度條、選集旁邊看起來像是出了什麼錯.
+class _PlayerSpinner extends StatelessWidget {
+  const _PlayerSpinner({required this.size});
+
+  final double size;
+
+  @override
+  Widget build(BuildContext context) => SizedBox(
+        width: size,
+        height: size,
+        child: const CircularProgressIndicator(
+          strokeWidth: 2.6,
+          color: AgpColors.bahamut,
+          backgroundColor: Color(0x33FFFFFF),
+        ),
+      );
+}
+
 class WatchPage extends StatefulWidget {
   const WatchPage({
     super.key,
@@ -148,6 +251,15 @@ class _WatchPageState extends State<WatchPage>
   bool _playing = false;
   bool _buffering = false;
   bool _ended = false;
+
+  /// 剛剛按下去要的是播還是停. 原生播放器要等它自己緩衝完才會回報狀態, 網路
+  /// 慢的時候那是好幾秒 —— 按鈕在那段時間裡不能還畫著按之前的樣子, 不然看
+  /// 起來就是沒反應. 等實際狀態追上來再把這個清掉.
+  bool? _playIntent;
+
+  /// 按鈕現在該畫成什麼. 有跳轉在進行中的話, 跟著跳轉完要不要續播走.
+  bool get _showsPlaying =>
+      _pendingSeek != null ? _resumeAfterSeek : (_playIntent ?? _playing);
 
   /// 位置的插值時鐘. video_player 大約半秒才回報一次, 直接餵給彈幕會一格一格跳,
   /// 所以記下最後一次回報的位置與當下時間, 每一幀自己往前推。
@@ -267,7 +379,22 @@ class _WatchPageState extends State<WatchPage>
     final controller = _controller;
     _controller = null;
     controller?.removeListener(_onPlayerUpdate);
-    unawaited(controller?.dispose());
+    if (controller != null &&
+        controller.value.isInitialized &&
+        !controller.value.hasError) {
+      // 不丟掉, 停在架上等他回來 —— 從觀看紀錄退出去再點回同一集是最常做的
+      // 動作, 而重開一次播放器要重新要一遍檔頭. 先暫停, 免得離開頁面之後
+      // 聲音還在響 (背景播放是開著的).
+      unawaited(controller.pause());
+      _parkWarmPlayer(_WarmPlayer(
+        sn: _sn,
+        key: _sourceKey,
+        controller: controller,
+        position: _clock.value,
+      ));
+    } else {
+      unawaited(controller?.dispose());
+    }
     _clock.dispose();
     _qualities.dispose();
     unawaited(WakelockPlus.disable());
@@ -368,6 +495,14 @@ class _WatchPageState extends State<WatchPage>
     _resumeAt = _localResume();
     unawaited(_refreshResume());
 
+    // 播放器還沒 initialize 完的那幾秒, 時間軸本來寫著 0:00/0:00, 看起來像
+    // 一集空的. 觀看紀錄裡連片長都存著, 先拿來把時間軸畫成它待會該有的樣子.
+    final known = state.watchTimeOf(_sn);
+    if (known != null && known.duration > 0) {
+      _duration = known.duration.toDouble();
+    }
+    _clock.value = _resumeAt;
+
     // 畫質清單刻意不在這裡問: /stream/sources.json 會讓伺服器真的去動畫瘋解析
     // 播放位址 (登入、解鎖、去廣告), 一次十幾秒. 每開一集就打一次會把開播卡在
     // 那裡, 而絕大多數人根本不會動畫質 —— 開設定選單時才問, 見 _loadQualities.
@@ -421,10 +556,21 @@ class _WatchPageState extends State<WatchPage>
     if (target > 1) unawaited(_seekTo(target, resume: _playing));
   }
 
+  /// 這一次要播的到底是哪一份. 拿來認暖機播放器 —— 換了畫質、改走離線檔或者
+  /// 從下載中變成完成檔, 這個字串就不一樣, 手上那個就不能用了.
+  String get _sourceKey {
+    if (_needsProxy) return 'proxy:$_quality';
+    final local = _localFile;
+    if (local != null) return 'file:${local.path}';
+    if (_streaming) return 'hls';
+    return 'mp4:${_video?.resolution ?? 0}';
+  }
+
   /// 建立 / 換掉 VideoPlayerController
   Future<void> _openSource({double? seekTo, bool autoplay = true}) async {
     final generation = ++_sourceGeneration;
     _pendingSeek = null;
+    _playIntent = null;
     final previous = _controller;
     if (previous != null) {
       previous.removeListener(_onPlayerUpdate);
@@ -432,6 +578,24 @@ class _WatchPageState extends State<WatchPage>
       unawaited(previous.dispose());
     }
     if (mounted) setState(() => _initialising = true);
+
+    // 剛剛才離開這一集的話, 原生播放器還停在架上. 它已經 initialize 過, 緩衝
+    // 也還在 —— 直接接手, 省掉重新要一次檔頭的那幾秒.
+    final warm = _takeWarmPlayer(_sn, _sourceKey);
+    if (warm != null) {
+      if (!mounted || generation != _sourceGeneration) {
+        warm.discard();
+        return;
+      }
+      final adopted = warm.controller;
+      // 停在架上這段時間裡它可能被系統回收掉了, 那就當作沒這回事
+      if (adopted.value.isInitialized && !adopted.value.hasError) {
+        await _adoptWarm(warm, generation,
+            target: seekTo ?? _resumeAt, autoplay: autoplay);
+        return;
+      }
+      warm.discard();
+    }
 
     final local = _localFile;
     late VideoPlayerController controller;
@@ -504,6 +668,59 @@ class _WatchPageState extends State<WatchPage>
     if (target > 1) {
       unawaited(_seekTo(target, resume: autoplay));
     } else if (autoplay && !_background) {
+      await controller.play();
+      unawaited(WakelockPlus.enable());
+    }
+    _armIdle();
+  }
+
+  /// 接手停在架上的那個播放器.
+  ///
+  /// 跟開一個新的差別只在中間沒有 initialize() 跟那一串 HTTP —— 音量、速度
+  /// 這些還是要重設 (使用者可能在別的地方改過), 位置對得上就不跳轉。
+  Future<void> _adoptWarm(_WarmPlayer warm, int generation,
+      {required double target, bool autoplay = true}) async {
+    final controller = warm.controller;
+    try {
+      await controller.setVolume(_volume);
+      await controller.setPlaybackSpeed(_rate);
+    } catch (_) {
+      warm.discard();
+      // 這一個叫不動了, 老老實實開一個新的
+      if (mounted && generation == _sourceGeneration) {
+        await _openSource(
+            seekTo: target > 1 ? target : null, autoplay: autoplay);
+      }
+      return;
+    }
+    if (!mounted || generation != _sourceGeneration) {
+      warm.discard();
+      return;
+    }
+
+    controller.addListener(_onPlayerUpdate);
+    final duration = controller.value.duration.inMilliseconds / 1000.0;
+    // 架上那個停在哪裡就從哪裡接: 只有離要回去的位置差得夠遠才值得跳轉
+    final resting = warm.position;
+    final needsSeek = target > 1 && (target - resting).abs() > 2;
+
+    setState(() {
+      _controller = controller;
+      _initialising = false;
+      _error = '';
+      _duration = duration > 0 ? duration : _duration;
+      _anchor = needsSeek ? target : resting;
+      _anchorAt = DateTime.now().millisecondsSinceEpoch;
+      _playing = controller.value.isPlaying;
+      _buffering = controller.value.isBuffering;
+    });
+    _clock.value = _anchor;
+
+    if (autoplay && _background) _resumeAfterBackground = true;
+    if (needsSeek) {
+      unawaited(_seekTo(target, resume: autoplay));
+    } else if (autoplay && !_background) {
+      setState(() => _playIntent = true);
       await controller.play();
       unawaited(WakelockPlus.enable());
     }
@@ -844,13 +1061,18 @@ class _WatchPageState extends State<WatchPage>
       _onEnded();
     }
 
+    // 實際狀態追上剛剛按的那一下了, 樂觀顯示就功成身退
+    final intentSettled = _playIntent != null && value.isPlaying == _playIntent;
+
     if (value.isPlaying != _playing ||
         value.isBuffering != _buffering ||
+        intentSettled ||
         (duration > 0 && (duration - _duration).abs() > 0.5)) {
       if (!mounted) return;
       setState(() {
         _playing = value.isPlaying;
         _buffering = value.isBuffering;
+        if (intentSettled) _playIntent = null;
         if (duration > 0) {
           _duration = math.max(duration, _streaming ? _streamTotal : 0);
         }
@@ -958,14 +1180,24 @@ class _WatchPageState extends State<WatchPage>
         }
         await active.seekTo(Duration(milliseconds: (wanted * 1000).round()));
         final deadline = DateTime.now().add(const Duration(seconds: 45));
+        // 位置到了但還在緩衝時只再寬限這麼久. 跳轉沒放手之前, 播放鍵按下去
+        // 只會改「跳完要不要續播」而不是真的播 —— 從觀看紀錄接著看的時候,
+        // 整個緩衝的過程按鈕都像壞掉. 位置對了就交還控制權, 還在讀的話畫面
+        // 中央本來就有轉圈可以說明.
+        const settleGrace = Duration(milliseconds: 1200);
+        DateTime? matchedAt;
         while (mounted &&
             generation == _sourceGeneration &&
             _pendingSeek == wanted) {
           final actual = await active.position;
-          if (actual != null &&
-              (actual.inMilliseconds / 1000 - wanted).abs() <= 1.5 &&
-              !active.value.isBuffering) {
-            break;
+          final atTarget = actual != null &&
+              (actual.inMilliseconds / 1000 - wanted).abs() <= 1.5;
+          if (atTarget) {
+            if (!active.value.isBuffering) break;
+            matchedAt ??= DateTime.now();
+            if (DateTime.now().difference(matchedAt) > settleGrace) break;
+          } else {
+            matchedAt = null;
           }
           if (active.value.hasError || DateTime.now().isAfter(deadline)) {
             throw StateError('跳轉逾時，請重試或檢查網路');
@@ -1001,18 +1233,27 @@ class _WatchPageState extends State<WatchPage>
       setState(() => _resumeAfterSeek = !_resumeAfterSeek);
       return;
     }
-    if (controller.value.isPlaying) {
-      await controller.pause();
-      unawaited(_syncTime(force: true));
-      unawaited(WakelockPlus.disable());
-    } else {
-      if (_ended) {
-        _ended = false;
-        await _seekTo(0);
+    // 先把按鈕改掉再去叫原生播放器: 底下那一步要等緩衝, 圖示不該陪著等
+    final wantPlaying = !_showsPlaying;
+    setState(() => _playIntent = wantPlaying);
+    try {
+      if (!wantPlaying) {
+        await controller.pause();
+        unawaited(_syncTime(force: true));
+        unawaited(WakelockPlus.disable());
+      } else {
+        if (_ended) {
+          _ended = false;
+          await _seekTo(0);
+        }
+        _streamAutoplayed = true;
+        await controller.play();
+        unawaited(WakelockPlus.enable());
       }
-      _streamAutoplayed = true;
-      await controller.play();
-      unawaited(WakelockPlus.enable());
+    } catch (_) {
+      // 叫不動就把按鈕改回去, 不要留一個永遠對不上的樣子
+      if (mounted) setState(() => _playIntent = null);
+      rethrow;
     }
     _armIdle();
   }
@@ -1687,22 +1928,10 @@ class _WatchPageState extends State<WatchPage>
                       ),
                     ),
                   if ((_initialising || !ready) && _error.isEmpty)
-                    const Center(
-                      child: SizedBox(
-                        width: 34,
-                        height: 34,
-                        child: CircularProgressIndicator(strokeWidth: 2.4),
-                      ),
-                    ),
+                    const Center(child: _PlayerSpinner(size: 36)),
                   if (_error.isNotEmpty) _errorOverlay(),
                   if (ready && (_buffering || _pendingSeek != null))
-                    const Center(
-                      child: SizedBox(
-                        width: 30,
-                        height: 30,
-                        child: CircularProgressIndicator(strokeWidth: 2.4),
-                      ),
-                    ),
+                    const Center(child: _PlayerSpinner(size: 32)),
                   if (_downloading.isNotEmpty) _downloadBadge(),
                   AnimatedOpacity(
                     opacity: _controlsVisible ? 1 : 0,
@@ -1761,19 +1990,28 @@ class _WatchPageState extends State<WatchPage>
     );
   }
 
+  /// 播放器還沒有畫面時墊在底下的那張劇照.
+  ///
+  /// 底是純黑而不是片名漸層 —— 那塊彩色方塊配上中央的轉圈, 看起來像出錯而不是
+  /// 在載入. 比例也不鎖 16:9: 播放區不一定是那個比例, 鎖了兩邊會露出底色。
   Widget _poster() {
     final thumb = store.localThumb(_sn);
-    return Opacity(
-      opacity: 0.35,
-      child: CoverImage(
-        name: _seriesName,
-        file: thumb,
-        url: (thumb == null && !state.offline)
-            ? client.thumbnailUrl(_sn).toString()
-            : null,
-        headers: client.authHeaders,
-        radius: 0,
-        fit: BoxFit.cover,
+    return ColoredBox(
+      color: Colors.black,
+      child: Opacity(
+        opacity: 0.55,
+        child: CoverImage(
+          name: _seriesName,
+          file: thumb,
+          url: (thumb == null && !state.offline)
+              ? client.thumbnailUrl(_sn).toString()
+              : null,
+          headers: client.authHeaders,
+          aspectRatio: null,
+          art: false,
+          radius: 0,
+          fit: BoxFit.cover,
+        ),
       ),
     );
   }
@@ -2100,9 +2338,7 @@ class _WatchPageState extends State<WatchPage>
         ),
         const SizedBox(width: 10),
         _roundButton(
-          (_pendingSeek != null ? _resumeAfterSeek : _playing)
-              ? Icons.pause_circle_filled
-              : Icons.play_circle_fill,
+          _showsPlaying ? Icons.pause_circle_filled : Icons.play_circle_fill,
           () => unawaited(_togglePlay()),
           size: compact ? 48 : 58,
           hitSize: compact ? 52 : 68,
@@ -2134,7 +2370,9 @@ class _WatchPageState extends State<WatchPage>
     return SafeArea(
         top: false,
         child: Padding(
-          padding: const EdgeInsets.fromLTRB(12, 0, 12, 8),
+          // 底下留多一點: 貼著螢幕邊緣的控制列在有 home indicator 的機器上
+          // 會被壓到, 動畫瘋那條也是浮在離底邊一點的位置
+          padding: const EdgeInsets.fromLTRB(10, 0, 10, 12),
           child: LayoutBuilder(builder: (context, constraints) {
             // 排列照動畫瘋: 彈幕 → 關彈幕 → 設定 →(全螢幕時多一個)畫面比例 →
             // 全螢幕. 全螢幕鍵固定在最右邊那一格, 進出全螢幕都不會換位置 ——
@@ -2184,8 +2422,15 @@ class _WatchPageState extends State<WatchPage>
             : _bufferedSeconds().clamp(0.0, max);
         return Row(children: [
           _barButton(Icons.skip_next_rounded, '下一集', () => _goRelative(1)),
-          Text('${formatClock(shown)}/${formatClock(playable)}',
-              style: const TextStyle(fontSize: 11.5, color: Colors.white)),
+          const SizedBox(width: 2),
+          Text('${formatPlayerClock(shown)}/${formatPlayerClock(playable)}',
+              style: const TextStyle(
+                fontSize: 13,
+                color: Colors.white,
+                fontWeight: FontWeight.w600,
+                // 等寬數字: 不然秒數每跳一次整條時間軸就跟著抖一下
+                fontFeatures: [FontFeature.tabularFigures()],
+              )),
           Expanded(
               child: SliderTheme(
             data: SliderTheme.of(context).copyWith(
