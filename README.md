@@ -7,9 +7,13 @@
  <img alt="GitHub Releases" src="https://img.shields.io/github/downloads/AvianJay/aniGamerPlus/latest/total.svg?style=flat-square">
 </p>
 
-哥們這是我fork出來的至少我覺得很糟糕 非常糟糕
+這是 [miyouzi/aniGamerPlus](https://github.com/miyouzi/aniGamerPlus) 的 fork. 當年只是想加點小功能, 結果一路越寫越多, 現在比原版多了這些:
 
-只有加了一些功能而已
+- **Web 介面整個重寫** —— 首頁分頁 (最近更新/繼續看/收藏/每日更新)、直接逛動畫瘋**整個片庫**、搜尋、作品資訊
+- **線上觀看** —— 邊看邊下載、播放器可切畫質 (伺服器代理動畫瘋的其他解析度)、手機可加到主畫面當 PWA 用
+- **帳號系統** —— 註冊/登入/用戶管理, 線上看可以要求登入
+- **Flutter 原生 App** (iOS/Android) —— 不是包網頁的殼, 直接打 Dashboard API, 還能**把整集下載到手機離線看**, 詳見 [flutter_app/](flutter_app/README.md)
+- Windows 有 `start-dashboard.bat`, 雙擊就開伺服器
 
 巴哈姆特動畫瘋自動下載工具, 可隨著番劇更新自動下載, 適合部署在全天開機的伺服器或NAS上.
 
@@ -25,7 +29,7 @@ ffmpeg 需要另外下載, [**點擊這裡前往下載頁**](https://ffmpeg.org/
 
 ## EXE 檔案運行(對於不熟悉Python的使用者)
 
-windows 使用者可以[**點擊這裡**](https://github.com/miyouzi/aniGamerPlus/releases/latest)下載exe文件使用.
+windows 使用者可以[**點擊這裡**](https://github.com/AvianJay/aniGamerPlus/releases/latest)下載可執行文件使用.
 
 ## 源碼運行
 
@@ -33,7 +37,7 @@ Python 版本 3 以上
 
 下載源碼
 ```bash
-git clone https://github.com/miyouzi/aniGamerPlus.git
+git clone https://github.com/AvianJay/aniGamerPlus.git
 ```
 
 **第一次使用前，進入原始碼所在資料夾，安裝依賴（重要）**
@@ -44,7 +48,7 @@ pip3 install -r requirements.txt
 
 升級
 ```bash
-git pull https://github.com/miyouzi/aniGamerPlus.git
+git pull
 ```
 
 使用
@@ -59,7 +63,7 @@ python3 aniGamerPlus.py
 下載原始碼
 
 ```bash
-git clone https://github.com/miyouzi/aniGamerPlus.git
+git clone https://github.com/AvianJay/aniGamerPlus.git
 ```
 
 Build Image
@@ -115,6 +119,8 @@ docker run -td --name anigamerplus \
     * [任務狀態資料庫 aniGamer.db](#anigamerdb)
 * [命令行使用](#命令行使用)
 * [Web控制臺使用](#Dashboard)
+* [線上觀看](#線上觀看)
+* [Flutter App](#flutter-app)
 
 ## 特性
 
@@ -138,16 +144,21 @@ docker run -td --name anigamerplus \
  - v20 上綫Web控制面板
  - v20.2 支援命令行下載時同時下載彈幕
  - v25.0 支援自定義ja3、akamai指紋
+ - **本 fork**: Web 介面整個重寫 —— 首頁分頁、瀏覽動畫瘋整個片庫、搜尋、作品資訊
+ - **本 fork**: 線上觀看 —— 邊看邊下載、播放器切畫質、PWA (加到主畫面)
+ - **本 fork**: 多用戶帳號系統 (註冊/登入/用戶管理), 線上看可要求登入
+ - **本 fork**: Flutter 原生 App (iOS/Android), 支援下載至手機離線觀看
+ - **本 fork**: `start-dashboard.bat` Windows 一鍵啟動伺服器
 
 ## 任務列表
  - [x] 下載使用代理
  - [x] 使用ftp上傳至遠程伺服器
  - [x] Web控制臺(持續完善中)
- - [ ] Web線上看(持續完善中 too)
+ - [x] Web線上看(已上線: 邊看邊下載、切畫質、PWA, 手機另有 Flutter App)
  - [ ] 從YouTube搜尋並下載以得到1080P畫質(或許)
- - [ ] 自動更新彈幕(持續完善中)
+ - [x] 自動更新彈幕
  - [x] 從動畫瘋首頁獲取更新中動漫並自動把沒有在上面的sn註釋掉(BETA)
- - [ ] 修好websocket
+ - [x] 修好websocket(任務監控即時進度)
 
 ## 配置説明
 
@@ -229,7 +240,16 @@ docker run -td --name anigamerplus \
         "SSL": false,  // 是否開啓SSL, 證書保存在 Dashboard\sslkey, 如果有需要可以自行替換證書
         "BasicAuth": false,  // 是否使用 BasicAuth 進行認證, 注意, 用戶密碼是明文傳輸的, 如有需要建議同時啓用 SSL
         "username": "admin",  // BasicAuth 用戶名
-        "password": "admin"  // BasicAuth 密碼
+        "password": "admin",  // BasicAuth 密碼
+        "online_watch": false,  // 線上觀看開關
+        "online_watch_requires_login": false,  // 線上觀看是否要求登入 (需開啟 user_control)
+        "user_control": {  // 帳號系統
+            "enabled": false,  // 開啟後才有登入/註冊/用戶管理
+            "allow_register": false,  // 是否開放註冊
+            "default_user": [  // 初始用戶
+                {"username": "admin", "password": "admin", "role": "admin"}
+            ]
+        }
     },
     "save_logs": true,  // 是否記錄日志, 一天一個日志
     "quantity_of_logs": 7,  // 日志保留數量, 正整數值, 必須大於等於 1, 默認為 7
@@ -434,7 +454,7 @@ sqlite3資料庫, 可以使用 [SQLite Expert](http://www.sqliteexpert.com/) 等
 參數:
 ```
 >python3 aniGamerPlus.py -h
-當前aniGamerPlus版本: v24.4
+當前aniGamerPlus版本: v24.8
 usage: aniGamerPlus.py [-h] [--sn SN] [--resolution {360,480,540,576,720,1080}] [--download_mode {single,latest,largest-sn,multi,all,range,list,sn-list,sn-range,db}]
                        [--thread_limit THREAD_LIMIT] [--current_path] [--episodes EPISODES] [--no_classify] [--user_command] [--information_only] [--danmu] [--my_anime]
 
@@ -554,7 +574,7 @@ Web 控制臺默認啓用, 默認端口 5000, 支援 SSL (https), 證書保存�
 
 支援在 Web 控制臺下達手動任務(即命令行模式啓動的任務), 爲了控制臺輸出工整, 控制臺不會顯示下載進度.
 
-**目前控制臺僅能配置部分主要配置, 另外Web任務進度顯示等其他擴展功能正在銳意製作中……**
+**目前控制臺功能**: 配置編輯、sn_list 線上編輯、手動任務、任務監控 (WebSocket 即時進度)、片庫瀏覽與搜尋、線上觀看、多用戶管理.
 
 相關配置:
 ```
@@ -566,7 +586,16 @@ Web 控制臺默認啓用, 默認端口 5000, 支援 SSL (https), 證書保存�
     "SSL": false,  # 是否開啓SSL
     "BasicAuth": false,  # 是否使用 BasicAuth 進行認證
     "username": "admin",  # BasicAuth 用戶名
-    "password": "admin"  # BasicAuth 密碼
+    "password": "admin",  # BasicAuth 密碼
+    "online_watch": false,  # 線上觀看開關
+    "online_watch_requires_login": false,  # 線上觀看是否要求登入 (需開啟 user_control)
+    "user_control": {  # 帳號系統
+        "enabled": false,  # 開啟後才有登入/註冊/用戶管理
+        "allow_register": false,  # 是否開放註冊
+        "default_user": [
+            {"username": "admin", "password": "admin", "role": "admin"}
+        ]
+    }
 }
 ```
 
@@ -579,3 +608,22 @@ Web控制臺截圖:
     ![](screenshot/Dashboard_sn_list.png)
  - 控制臺輸出:
     ![](screenshot/Dashboard_Console.png)
+
+## 線上觀看
+
+把 `config.json` 裡 `dashboard.online_watch` 打開後, 控制臺可以直接線上看片庫裡的動畫:
+
+- **邊看邊下載** —— 排一個 single 任務, 播放器直接讀伺服器邊下邊產生的 HLS EVENT 播放清單, 下載完自動轉本機檔案
+- **切畫質** —— 片庫一集只存一種畫質, 但播放器可以現場叫伺服器去動畫瘋代理其他解析度來播
+- 播放器具備彈幕、倍速、畫面比例、亮度/音量手勢、自動下一集、選集
+- 手機瀏覽器可以加到主畫面, 當 PWA 用
+
+開了帳號系統 (`dashboard.user_control.enabled`) 的話, 可以再把 `online_watch_requires_login` 打開, 要求登入才能線上看.
+
+## Flutter App
+
+`flutter_app/` 是用 Flutter 寫的 iOS/Android 原生 App —— **不是包網頁的殼**, 直接打 Dashboard 的 HTTP API. 網頁版有的它幾乎都有 (播放、邊看邊下載、片庫、任務監控、用戶管理、伺服器設定), 還多了一個網頁做不到的:
+
+**把整集下載到手機, 沒網路也能看** (連彈幕一起抓, 離線播放照樣有彈幕).
+
+詳細說明見 [flutter_app/README.md](flutter_app/README.md).
