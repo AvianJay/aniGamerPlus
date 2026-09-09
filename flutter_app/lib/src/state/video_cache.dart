@@ -32,12 +32,24 @@ const int kCacheBudgetBytes = 1536 * 1024 * 1024;
 /// 速度是拿這段時間內轉手的量算的
 const Duration kSpeedWindow = Duration(milliseconds: 2500);
 
+// ignore: constant_identifier_names
+const String HLS_MIME = 'application/vnd.apple.mpegurl';
+
 class _Target {
-  _Target({required this.upstream, required this.headers, required this.key});
+  _Target({
+    required this.upstream,
+    required this.headers,
+    required this.key,
+    this.hls = false,
+  });
 
   final Uri upstream;
   final Map<String, String> headers;
   final String key;
+
+  /// 換畫質時走的是 /stream/playlist.m3u8, 那是一份 HLS 播放清單, 不是可以用
+  /// Range 切的單一檔案 —— 快取的方式完全不一樣, 一片一片存.
+  final bool hls;
 }
 
 class _Meta {
@@ -98,6 +110,24 @@ class VideoCacheServer {
 
   bool get closed => _closed;
 
+  /// 這台還連得上嗎.
+  ///
+  /// app 被切到背景之後, 監聽中的 socket 有機會已經被系統收走 (iOS 掛起時
+  /// 尤其會). 那時候播放器連過來只會拿到一個連不上, 畫面就卡在載入 —— 回到
+  /// 前景時要能發現這件事, 重起一台.
+  Future<bool> healthy() async {
+    if (_closed) return false;
+    try {
+      final socket = await Socket.connect(
+          InternetAddress.loopbackIPv4, _server.port,
+          timeout: const Duration(milliseconds: 800));
+      socket.destroy();
+      return true;
+    } catch (_) {
+      return false;
+    }
+  }
+
   /// 現在跟伺服器之間的實際速度 (bytes/秒). 從磁碟讀的不算 —— 那不是流量.
   double get bytesPerSecond {
     final now = DateTime.now().millisecondsSinceEpoch;
@@ -138,6 +168,27 @@ class VideoCacheServer {
     // 只有一個 byte, 但它必須在發任何一塊快取出去之前做完.
     _metaWork[target.key] = _resolveMeta(target);
     return Uri.parse('http://127.0.0.1:${_server.port}/v/$token');
+  }
+
+  /// 換畫質那條路 (/stream/playlist.m3u8) 的版本.
+  ///
+  /// 那份清單裡的分片寫的是相對路徑 (segment.ts?id=..&res=..&n=N), 所以只要
+  /// 清單本身是從這台發出去的, 播放器要分片時就會回頭問我們 —— 於是每一片都
+  /// 能存下來. 分片的內容由 (sn, res, n) 決定, 不會變, 存了就一直有效.
+  Uri wrapHls({
+    required Uri playlist,
+    required Map<String, String> headers,
+    required String key,
+  }) {
+    if (_closed) return playlist;
+    final token = (++_token).toString();
+    _targets[token] = _Target(
+        upstream: playlist,
+        headers: headers,
+        key: _sanitize(key),
+        hls: true);
+    return Uri.parse(
+        'http://127.0.0.1:${_server.port}/h/$token/playlist.m3u8');
   }
 
   static String _sanitize(String key) =>
@@ -278,12 +329,17 @@ class VideoCacheServer {
   Future<void> _handle(HttpRequest request) async {
     final response = request.response;
     try {
-      final token =
-          request.uri.pathSegments.length > 1 ? request.uri.pathSegments[1] : '';
+      final parts = request.uri.pathSegments;
+      final token = parts.length > 1 ? parts[1] : '';
       final target = _targets[token];
       if (target == null) {
         response.statusCode = HttpStatus.notFound;
         await response.close();
+        return;
+      }
+
+      if (target.hls) {
+        await _handleHls(target, request, response, parts.length > 2 ? parts[2] : '');
         return;
       }
 
@@ -332,6 +388,118 @@ class VideoCacheServer {
         await response.close();
       } catch (_) {
         // 已經斷了
+      }
+    }
+  }
+
+  /// HLS: 清單原樣轉手, 分片一片一片存起來.
+  Future<void> _handleHls(_Target target, HttpRequest request,
+      HttpResponse response, String name) async {
+    // 清單裡的相對路徑會被解析成 /h/<token>/segment.ts?..., 所以名字就是
+    // 上游那條路徑的最後一段
+    final upstream = target.upstream.resolve(name.isEmpty ? '.' : name).replace(
+        queryParameters: name == 'playlist.m3u8' || name.isEmpty
+            ? target.upstream.queryParameters
+            : request.uri.queryParameters);
+
+    // 只有分片值得存: 清單很小而且可能過期, 金鑰也小
+    if (name == 'segment.ts') {
+      final index = request.uri.queryParameters['n'] ?? '';
+      if (index.isNotEmpty) {
+        final file = File('${_dir.path}/${target.key}/seg-$index.ts');
+        if (file.existsSync() && file.lengthSync() > 0) {
+          response.statusCode = HttpStatus.ok;
+          response.headers.set(HttpHeaders.contentTypeHeader, 'video/mp2t');
+          response.contentLength = file.lengthSync();
+          await response.addStream(file.openRead());
+          await response.close();
+          unawaited(_touch(target.key));
+          return;
+        }
+        await _fetchSegment(target, upstream, file, response);
+        return;
+      }
+    }
+
+    await _relay(target, upstream, response,
+        mime: name == 'playlist.m3u8' ? HLS_MIME : null);
+  }
+
+  /// 抓一片, 邊送邊存
+  Future<void> _fetchSegment(_Target target, Uri upstream, File file,
+      HttpResponse response) async {
+    final part = File('${file.path}.part');
+    IOSink? sink;
+    try {
+      await Directory('${_dir.path}/${target.key}').create(recursive: true);
+      sink = part.openWrite();
+    } catch (_) {
+      sink = null;
+    }
+    var ok = true;
+    try {
+      final result = await _http.send(
+          http.Request('GET', upstream)..headers.addAll(target.headers));
+      if (result.statusCode >= 400) {
+        response.statusCode = result.statusCode;
+        await response.close();
+        return;
+      }
+      response.statusCode = HttpStatus.ok;
+      response.headers.set(HttpHeaders.contentTypeHeader, 'video/mp2t');
+      final length = result.contentLength;
+      if (length != null) response.contentLength = length;
+      await response.addStream(result.stream.map((chunk) {
+        _note(chunk.length);
+        sink?.add(chunk);
+        return chunk;
+      }));
+      // 落盤要在 response.close() 之前做完. 客戶端看到 EOF 就會馬上回來要
+      // 下一片 (或同一片), 那時候這一片必須已經是磁碟上的完成品, 不然它會
+      // 再跟上游要一次.
+      await sink?.close();
+      sink = null;
+      if (part.existsSync() && await part.length() > 0) {
+        await part.rename(file.path);
+        unawaited(_evict());
+      }
+      await response.close();
+    } catch (_) {
+      ok = false;
+      try {
+        await response.close();
+      } catch (_) {
+        // 對面已經走了
+      }
+    }
+    try {
+      await sink?.close();
+      if (!ok && part.existsSync()) await part.delete();
+    } catch (_) {
+      // 收不乾淨就算了, 下次重抓
+    }
+  }
+
+  /// 原樣轉手一個小東西 (清單 / 金鑰)
+  Future<void> _relay(_Target target, Uri upstream, HttpResponse response,
+      {String? mime}) async {
+    try {
+      final result = await _http.send(
+          http.Request('GET', upstream)..headers.addAll(target.headers));
+      response.statusCode = result.statusCode;
+      if (mime != null) {
+        response.headers.set(HttpHeaders.contentTypeHeader, mime);
+      }
+      await response.addStream(result.stream.map((chunk) {
+        _note(chunk.length);
+        return chunk;
+      }));
+      await response.close();
+    } catch (_) {
+      try {
+        await response.close();
+      } catch (_) {
+        // 對面已經走了
       }
     }
   }

@@ -312,9 +312,15 @@ class AppState extends ChangeNotifier {
   }
 
   /// 起 (或取得) 影片快取. 起不來就回 null, 呼叫端直接連伺服器.
-  Future<VideoCacheServer?> ensureVideoCache() {
+  Future<VideoCacheServer?> ensureVideoCache() async {
     final running = videoCache;
-    if (running != null) return Future.value(running);
+    if (running != null) {
+      if (!running.closed && await running.healthy()) return running;
+      // 切到背景時被系統收掉了, 重起一台 (磁碟上那些塊還在, 不受影響)
+      videoCache = null;
+      _videoCacheBoot = null;
+      await running.close();
+    }
     return _videoCacheBoot ??= () async {
       final dir = Directory('${(await getApplicationSupportDirectory()).path}'
           '/video-cache');

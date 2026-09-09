@@ -456,6 +456,12 @@ class _WatchPageState extends State<WatchPage>
       _lifecycleWork = _lifecycleWork.then((_) async {
         final controller = _controller;
         if (!mounted || _background || controller == null) return;
+        // 回到前景時播放器已經壞掉的話, 多半是本機快取那台在背景被系統收走了,
+        // 連不上. 從剛剛的位置重開一次 —— 磁碟上的快取還在, 所以這一趟很快.
+        if (controller.value.hasError) {
+          await _openSource(seekTo: _clock.value, autoplay: _resumeAfterBackground);
+          return;
+        }
         // Retain the native player and its buffered media. Never seek or reopen
         // merely because the app returned from the background.
         final position = await controller.position;
@@ -601,6 +607,19 @@ class _WatchPageState extends State<WatchPage>
   /// 這一輪不要走快取 (它剛剛害這一集打不開)
   bool _bypassCache = false;
 
+  /// 換畫質那條路的版本 (HLS 清單, 一片一片存)
+  Future<Uri> _cachedHlsUrl(Uri direct, String key) async {
+    if (_bypassCache || state.offline || !prefs.videoCache) return direct;
+    try {
+      final cache = await state.ensureVideoCache();
+      if (cache == null) return direct;
+      return cache.wrapHls(
+          playlist: direct, headers: client.authHeaders, key: key);
+    } catch (_) {
+      return direct;
+    }
+  }
+
   /// 把伺服器上的位址換成本機快取的. 換不成就原樣回去.
   Future<Uri> _cachedUrl(Uri direct, String key) async {
     if (_bypassCache || state.offline || !prefs.videoCache) return direct;
@@ -660,9 +679,16 @@ class _WatchPageState extends State<WatchPage>
     var usedCache = false;
     if (_needsProxy) {
       // 挑的畫質手上沒有, 只能請伺服器現去動畫瘋代抓. 放在最前面是因為這是使用者
-      // 剛剛明確要求的, 比任何一份現成的檔都優先
+      // 剛剛明確要求的, 比任何一份現成的檔都優先.
+      //
+      // 這條路以前完全沒有快取 —— 換過畫質之後看的每一集, 關掉 app 再回來都
+      // 要整個重抓. 那份清單裡的分片是相對路徑, 所以只要清單本身從本機快取
+      // 那台發出去, 播放器要分片時就會回頭問我們, 一片一片存得下來.
+      final direct = client.streamPlaylistUrl(_sn, _quality);
+      final cached = await _cachedHlsUrl(direct, 's$_sn-$_quality');
+      usedCache = cached != direct;
       controller = VideoPlayerController.networkUrl(
-        client.streamPlaylistUrl(_sn, _quality),
+        cached,
         httpHeaders: client.authHeaders,
         videoPlayerOptions: VideoPlayerOptions(allowBackgroundPlayback: true),
       );

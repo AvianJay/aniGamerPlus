@@ -28,6 +28,9 @@ class Upstream {
   /// 真的送進 socket 的量. 用來確認播放器不讀的時候, 我們也就不抓.
   int served = 0;
 
+  /// 分片被跟上游要了幾次
+  int segmentHits = 0;
+
   static Future<Upstream> start(int total) async {
     final server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
     final upstream = Upstream(server, body(total));
@@ -39,6 +42,27 @@ class Upstream {
         await response.close();
         return;
       }
+      // 換畫質那條路: /stream/playlist.m3u8 + 相對路徑的分片
+      if (request.uri.path.endsWith('playlist.m3u8')) {
+        response.headers.set(HttpHeaders.contentTypeHeader,
+            'application/vnd.apple.mpegurl');
+        response.write('#EXTM3U\n#EXT-X-VERSION:3\n'
+            '#EXT-X-TARGETDURATION:4\n#EXT-X-PLAYLIST-TYPE:VOD\n'
+            '#EXTINF:4.0,\nsegment.ts?id=1&res=720&n=0\n'
+            '#EXTINF:4.0,\nsegment.ts?id=1&res=720&n=1\n'
+            '#EXT-X-ENDLIST\n');
+        await response.close();
+        return;
+      }
+      if (request.uri.path.endsWith('segment.ts')) {
+        final n = int.tryParse(request.uri.queryParameters['n'] ?? '0') ?? 0;
+        upstream.segmentHits++;
+        response.headers.set(HttpHeaders.contentTypeHeader, 'video/mp2t');
+        response.add(List<int>.filled(4096, 100 + n));
+        await response.close();
+        return;
+      }
+
       final data = upstream.data;
       final header = request.headers.value(HttpHeaders.rangeHeader);
       var start = 0;
@@ -80,6 +104,9 @@ class Upstream {
   }
 
   Uri get url => Uri.parse('http://127.0.0.1:${server.port}/get_video.mp4');
+
+  Uri get playlist => Uri.parse(
+      'http://127.0.0.1:${server.port}/stream/playlist.m3u8?id=1&res=720');
 
   Future<void> stop() => server.close(force: true);
 }
@@ -277,6 +304,38 @@ void main() {
     final again = await fetch(url, range: 'bytes=0-${128 * 1024 - 1}');
     expect(again, equals(upstream.data.sublist(0, 128 * 1024)),
         reason: '沒讀滿一塊的前綴沒有被快取住');
+  });
+
+  test('換畫質那條路 (HLS) 的分片也要存下來', () async {
+    // 這條路以前完全沒有快取: 換過畫質之後看的每一集, 關掉 app 再回來都要
+    // 整個重抓. 使用者在慢網路上把畫質調低, 結果反而完全享受不到快取.
+    var url = cache.wrapHls(
+        playlist: upstream.playlist, headers: const {}, key: 's1-720');
+
+    final list = await fetch(url);
+    expect(String.fromCharCodes(list), contains('segment.ts?id=1&res=720&n=0'));
+
+    // 播放器照著清單去要分片 —— 相對路徑會落回這台上
+    final seg0 = url.resolve('segment.ts?id=1&res=720&n=0');
+    final first = await fetch(seg0);
+    expect(first.length, 4096);
+    expect(upstream.segmentHits, 1);
+
+    // 再要一次同一片: 該從磁碟出來, 不再問上游
+    final again = await fetch(seg0);
+    expect(again, equals(first));
+    expect(upstream.segmentHits, 1, reason: '分片沒有被快取住');
+
+    // app 關掉再開, 分片還在
+    await cache.close();
+    final second = await VideoCacheServer.start(temp);
+    cache = second!;
+    url = cache.wrapHls(
+        playlist: upstream.playlist, headers: const {}, key: 's1-720');
+    upstream.refuse = true;
+    final afterRestart =
+        await fetch(url.resolve('segment.ts?id=1&res=720&n=0'));
+    expect(afterRestart, equals(first), reason: '重開之後分片不見了');
   });
 
   test('完全不預抓: 沒被要求過的段落不會出現在磁碟上', () async {
