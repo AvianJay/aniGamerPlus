@@ -3,50 +3,34 @@
 /// 為什麼要繞這一圈: video_player 底下是 ExoPlayer / AVPlayer, 它們自己去抓
 /// http 位址, 中間沒有任何地方讓我們插手. 於是有兩件事做不到 ——
 ///
-///  1. 快取. 播放器每次 initialize() 都要重新把檔頭要一遍. 巴哈那邊下下來的
-///     mp4 moov 在檔尾 (faststart 是這個 fork 才改成預設開的), 所以「檔頭」
-///     實際上是檔案開頭 + 檔案結尾兩塊, 加起來三四 MB. app 關掉再開, 這三四
-///     MB 就要重來一次 —— 那就是從觀看紀錄點進去空等的前半段.
+///  1. 快取. 播放器緩衝起來的東西全在記憶體裡, app 一關就沒了. 看到一半退出
+///     再回來, 剛剛已經載好的那一段要整個重抓.
 ///  2. 現在到底下載多快. 播放器不會說, 而緩衝進度換算出來的是估計值.
 ///
-/// 把播放位址換成 `http://127.0.0.1:<port>/...` 之後兩件事都成立: 檔頭落在磁碟
-/// 上, app 重開照樣算數; 而每一個 byte 都是我們自己轉手的, 速度是真的量出來的.
+/// 作法: 經過這裡的每一個 byte 都順手落盤, 之後同一段再被要就直接從磁碟發.
+/// 「已經載過的就不要再載一次」在這裡是字面上的意思 —— 不分檔頭還是影片內容,
+/// 看過的段落 app 重開之後照樣算數.
 ///
-/// 只快取頭尾兩塊, 不是整支影片 —— 整支要離線看的話, 這個 app 本來就有「下載
-/// 到手機」。這裡要解決的只有「開播前那一段」。
+/// 刻意不做預抓. 快取只從「播放器本來就要的東西」順手撿, 所以永遠不會跟正在
+/// 看的那一集搶頻寬 —— 慢線路上那是最要命的事.
 library;
 
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
+import 'dart:math' as math;
 
 import 'package:http/http.dart' as http;
 
-/// 檔案開頭留多少. ftyp 加上前面幾個 box 而已, 不必留大.
-const int kCacheHeadBytes = 512 * 1024;
+/// 一塊多大. 小塊比較省 (跳轉時對齊浪費的少), 但一集會生出很多檔案;
+/// 1 MB 的話 428 MB 的一集全看完大約 428 塊.
+const int kCacheBlockBytes = 1024 * 1024;
 
-/// 檔案結尾留多少. moov 在檔尾時播放器會來要這一段, 一集 24 分鐘的 1080p
-/// 大約 1 MB.
-const int kCacheTailBytes = 2 * 1024 * 1024;
-
-/// 整個快取目錄的上限. 一集頭尾加起來 2.5 MB, 這個額度放得下一百多集.
-const int kCacheBudgetBytes = 320 * 1024 * 1024;
+/// 整個快取目錄的上限. 滿了就整集整集地丟, 最久沒碰的先走.
+const int kCacheBudgetBytes = 1536 * 1024 * 1024;
 
 /// 速度是拿這段時間內轉手的量算的
 const Duration kSpeedWindow = Duration(milliseconds: 2500);
-
-/// 補齊快取之前, 要先看到播放這條路安靜多久.
-///
-/// 這是整個快取最重要的一條規矩: 補快取是為了「下次開快一點」, 不能拿現在
-/// 正在看的那一集的頻寬去換. 線路慢的時候, 一邊補 quota 一邊要播放器在
-/// 14:00 那裡緩衝, 結果就是兩邊都卡住 —— 補快取永遠讓路.
-const Duration kPrimeIdleGap = Duration(seconds: 4);
-
-/// 等不到空檔就放棄這一輪, 下次開這一集再說
-const Duration kPrimeGiveUp = Duration(minutes: 3);
-
-/// 被打斷的話重排幾次
-const int kPrimeAttempts = 4;
 
 class _Target {
   _Target({required this.upstream, required this.headers, required this.key});
@@ -83,27 +67,6 @@ class _Meta {
   }
 }
 
-/// 一段要送出去的位元組: 不是從磁碟讀, 就是跟伺服器要.
-class _Segment {
-  _Segment.cache(this.file, this.offset, this.length)
-      : upstreamStart = -1,
-        upstreamEnd = -1;
-
-  _Segment.upstream(this.upstreamStart, this.upstreamEnd)
-      : file = null,
-        offset = 0,
-        length = 0;
-
-  final File? file;
-  final int offset;
-  final int length;
-  final int upstreamStart;
-  final int upstreamEnd;
-
-  bool get cached => file != null;
-  int get size => cached ? length : upstreamEnd - upstreamStart + 1;
-}
-
 class VideoCacheServer {
   VideoCacheServer._(this._server, this._dir);
 
@@ -111,7 +74,7 @@ class VideoCacheServer {
   final Directory _dir;
   final http.Client _http = http.Client();
   final Map<String, _Target> _targets = {};
-  final Map<String, Future<void>> _priming = {};
+  final Map<String, Future<_Meta?>> _metaWork = {};
   final List<List<int>> _samples = <List<int>>[];
 
   int _token = 0;
@@ -132,6 +95,8 @@ class VideoCacheServer {
   }
 
   int get port => _server.port;
+
+  bool get closed => _closed;
 
   /// 現在跟伺服器之間的實際速度 (bytes/秒). 從磁碟讀的不算 —— 那不是流量.
   double get bytesPerSecond {
@@ -166,22 +131,68 @@ class VideoCacheServer {
   }) {
     if (_closed) return upstream;
     final token = (++_token).toString();
-    _targets[token] = _Target(
-        upstream: upstream, headers: headers, key: _sanitize(key));
-    // 刻意不在這裡開始補快取: 這一刻播放器正要去要它開播需要的東西, 跟它搶
-    // 頻寬只會讓開播更慢. _prime() 自己會等到播放那條路安靜下來再動.
-    unawaited(_prime(token));
+    final target =
+        _Target(upstream: upstream, headers: headers, key: _sanitize(key));
+    _targets[token] = target;
+    // 開一集就跟伺服器對一次長度/驗證標頭: 檔案換過的話手上那堆塊就不算數了.
+    // 只有一個 byte, 但它必須在發任何一塊快取出去之前做完.
+    _metaWork[target.key] = _resolveMeta(target);
     return Uri.parse('http://127.0.0.1:${_server.port}/v/$token');
   }
 
   static String _sanitize(String key) =>
       key.replaceAll(RegExp(r'[^A-Za-z0-9_.-]'), '_');
 
-  File _headFile(String key) => File('${_dir.path}/$key.head');
-  File _tailFile(String key) => File('${_dir.path}/$key.tail');
-  File _metaFile(String key) => File('${_dir.path}/$key.json');
+  Directory _episodeDir(String key) => Directory('${_dir.path}/$key');
+  File _metaFile(String key) => File('${_dir.path}/$key/meta.json');
+  File _blockFile(String key, int index) => File('${_dir.path}/$key/$index.blk');
 
-  // ------------------------------------------------------------------ 中繼資料
+  int _blockOf(int offset) => offset ~/ kCacheBlockBytes;
+  int _blockStart(int index) => index * kCacheBlockBytes;
+
+  /// 這一塊該有多長 (最後一塊通常不滿)
+  int _blockLength(int index, _Meta meta) =>
+      math.min(kCacheBlockBytes, meta.total - _blockStart(index));
+
+  /// 這一塊從塊開頭算起存了幾個 byte.
+  ///
+  /// 不是「有沒有」而是「到哪裡」: 播放器開一集時只會把檔頭讀個兩三百 KB 就
+  /// 跑去拿 moov, 那一塊永遠湊不滿. 只認滿塊的話, 最常走的那條路就永遠快取
+  /// 不到 —— 半塊也是有用的, 前綴照樣發得出去.
+  int _blockCovered(String key, int index) {
+    try {
+      final file = _blockFile(key, index);
+      return file.existsSync() ? file.lengthSync() : 0;
+    } catch (_) {
+      return 0;
+    }
+  }
+
+  bool _hasFullBlock(String key, int index, _Meta meta) {
+    if (_blockStart(index) >= meta.total) return false;
+    return _blockCovered(key, index) == _blockLength(index, meta);
+  }
+
+  /// 從 [at] 開始, 磁碟上連續有幾個 byte 可以直接發 (最多到 [limit])
+  int _cachedRun(String key, int at, int limit, _Meta meta) {
+    var run = 0;
+    var pos = at;
+    while (pos <= limit) {
+      final index = _blockOf(pos);
+      final covered = _blockCovered(key, index);
+      if (covered <= 0) break;
+      final lastCached = _blockStart(index) + covered - 1;
+      if (pos > lastCached) break;
+      final take = math.min(limit, lastCached) - pos + 1;
+      run += take;
+      pos += take;
+      // 這一塊沒存滿, 後面就一定接不下去了
+      if (covered < _blockLength(index, meta)) break;
+    }
+    return run;
+  }
+
+  // ---------------------------------------------------------------- 中繼資料
 
   Future<_Meta?> _readMeta(String key) async {
     final file = _metaFile(key);
@@ -218,14 +229,21 @@ class VideoCacheServer {
     }
   }
 
-  /// 磁碟上那份還算數嗎. 不算數就把它清掉, 回傳新的中繼資料.
-  Future<_Meta?> _validate(_Target target) async {
-    final live = await _fetchMeta(target);
-    if (live == null) return null;
+  /// 磁碟上那堆塊還算數嗎. 不算數就整集丟掉.
+  Future<_Meta?> _resolveMeta(_Target target) async {
     final saved = await _readMeta(target.key);
-    if (saved != null && saved.matches(live)) return saved;
+    final live = await _fetchMeta(target);
+    if (live == null) {
+      // 連不上就先用手上那份 —— 離線時已經快取的段落還是該播得出來
+      return saved;
+    }
+    if (saved != null && saved.matches(live)) {
+      unawaited(_touch(target.key));
+      return saved;
+    }
     await _forget(target.key);
     try {
+      await _episodeDir(target.key).create(recursive: true);
       await _metaFile(target.key).writeAsString(jsonEncode(live.toJson()));
     } catch (_) {
       return null;
@@ -233,170 +251,60 @@ class VideoCacheServer {
     return live;
   }
 
+  Future<_Meta?> _metaFor(_Target target) =>
+      _metaWork[target.key] ??= _resolveMeta(target);
+
   Future<void> _forget(String key) async {
-    for (final file in [_headFile(key), _tailFile(key)]) {
-      try {
-        if (file.existsSync()) await file.delete();
-      } catch (_) {
-        // 刪不掉就讓它留著, 下面的長度檢查會判它不完整
-      }
-    }
-  }
-
-  // -------------------------------------------------------------------- 補齊
-
-  Future<void> _prime(String token) {
-    final target = _targets[token];
-    if (target == null) return Future<void>.value();
-    final existing = _priming[target.key];
-    if (existing != null) return existing;
-    final work = _primeNow(target).whenComplete(() {
-      _priming.remove(target.key);
-    });
-    _priming[target.key] = work;
-    return work;
-  }
-
-  Future<void> _primeNow(_Target target) async {
-    final meta = await _validate(target);
-    if (meta == null || _closed) return;
-    final head = _headSpan(meta);
-    final tail = _tailSpan(meta);
-
-    // 補到一半被播放器打斷的那一塊要再排一次. 不重試的話, 只要使用者一直在
-    // 動 (拉進度條、換集), 檔頭就永遠補不齊 —— 那正是最需要它的情況.
-    for (var attempt = 0; attempt < kPrimeAttempts; attempt++) {
-      if (_closed) return;
-      final headMissing = !_complete(_headFile(target.key), head);
-      final tailMissing = tail > 0 && !_complete(_tailFile(target.key), tail);
-      if (!headMissing && !tailMissing) break;
-      if (!await _waitForQuiet()) return;
-
-      // 尾巴先補: moov 在那裡, 那一塊才是開播前真正在等的東西
-      if (tailMissing) {
-        await _download(
-            target, _tailFile(target.key), meta.total - tail, meta.total - 1);
-      }
-      if (headMissing && _quiet) {
-        await _download(target, _headFile(target.key), 0, head - 1);
-      }
-    }
-    unawaited(_evict());
-  }
-
-  /// 播放那條路最後一次搬東西是什麼時候
-  int _playbackAt = 0;
-
-  void _notePlayback() =>
-      _playbackAt = DateTime.now().millisecondsSinceEpoch;
-
-  bool get _quiet =>
-      DateTime.now().millisecondsSinceEpoch - _playbackAt >
-      kPrimeIdleGap.inMilliseconds;
-
-  /// 等到播放器不再要東西為止. 等太久就放棄 —— 一直在看的人不需要我們現在
-  /// 就把快取補好.
-  Future<bool> _waitForQuiet() async {
-    final deadline = DateTime.now().add(kPrimeGiveUp);
-    while (!_closed && DateTime.now().isBefore(deadline)) {
-      if (_quiet) return true;
-      await Future<void>.delayed(const Duration(seconds: 1));
-    }
-    return false;
-  }
-
-  int _headSpan(_Meta meta) =>
-      meta.total < kCacheHeadBytes ? meta.total : kCacheHeadBytes;
-
-  /// 頭尾不重疊. 小到頭就已經蓋掉整支的話, 尾巴那塊就不要了.
-  int _tailSpan(_Meta meta) {
-    final remaining = meta.total - _headSpan(meta);
-    if (remaining <= 0) return 0;
-    return remaining < kCacheTailBytes ? remaining : kCacheTailBytes;
-  }
-
-  bool _complete(File file, int expected) {
-    if (expected <= 0) return false;
     try {
-      return file.existsSync() && file.lengthSync() == expected;
+      final dir = _episodeDir(key);
+      if (dir.existsSync()) await dir.delete(recursive: true);
     } catch (_) {
-      return false;
+      // 刪不掉的話下面的長度檢查會把那些塊判成不完整
     }
   }
 
-  /// 抓一段存成一個檔. 先寫 .part 再改名 —— 中途被砍掉的話, 留在磁碟上的
-  /// 不會是一份長度對不上的半成品.
-  Future<void> _download(_Target target, File file, int start, int end) async {
-    final part = File('${file.path}.part');
+  /// 標記「這一集剛剛被用到」, 給 LRU 淘汰看的
+  Future<void> _touch(String key) async {
     try {
-      final request = http.Request('GET', target.upstream)
-        ..headers.addAll({...target.headers, 'Range': 'bytes=$start-$end'});
-      final response = await _http.send(request);
-      if (response.statusCode >= 400) return;
-      final sink = part.openWrite();
-      var abandoned = false;
-      try {
-        await for (final chunk in response.stream) {
-          if (_closed) break;
-          // 播放器中途又開始要東西: 立刻把頻寬讓回去, 這一份下次再補
-          if (!_quiet) {
-            abandoned = true;
-            break;
-          }
-          _note(chunk.length);
-          sink.add(chunk);
-        }
-      } finally {
-        await sink.close();
-      }
-      if (!abandoned && await part.length() == end - start + 1) {
-        await part.rename(file.path);
-      } else {
-        await part.delete();
-      }
+      final file = _metaFile(key);
+      if (file.existsSync()) await file.setLastModified(DateTime.now());
     } catch (_) {
-      try {
-        if (part.existsSync()) await part.delete();
-      } catch (_) {
-        // 清不掉就算了, 下次會被覆蓋
-      }
+      // 標不到就算了, 最壞是淘汰順序不準
     }
   }
 
-  // ------------------------------------------------------------------ 請求
+  // -------------------------------------------------------------------- 請求
 
   Future<void> _handle(HttpRequest request) async {
     final response = request.response;
     try {
-      final token = request.uri.pathSegments.length > 1
-          ? request.uri.pathSegments[1]
-          : '';
+      final token =
+          request.uri.pathSegments.length > 1 ? request.uri.pathSegments[1] : '';
       final target = _targets[token];
       if (target == null) {
         response.statusCode = HttpStatus.notFound;
         await response.close();
         return;
       }
-      if (request.method == 'HEAD') {
-        // 播放器偶爾會先問一下. 有中繼資料就答, 沒有就讓它改用 Range
-        final meta = await _readMeta(target.key);
-        response.statusCode = HttpStatus.ok;
-        response.headers.set(HttpHeaders.acceptRangesHeader, 'bytes');
-        response.headers.set(HttpHeaders.contentTypeHeader, 'video/mp4');
-        if (meta != null) response.contentLength = meta.total;
-        await response.close();
-        return;
-      }
 
-      final meta = await _readMeta(target.key) ?? await _validate(target);
+      final meta = await _metaFor(target);
       if (meta == null) {
         // 問不到長度就純轉手, 至少不要因為快取壞掉就播不了
         await _passThrough(target, request, response);
         return;
       }
 
-      final span = _parseRange(request.headers.value(HttpHeaders.rangeHeader),
-          meta.total);
+      if (request.method == 'HEAD') {
+        response.statusCode = HttpStatus.ok;
+        response.headers.set(HttpHeaders.acceptRangesHeader, 'bytes');
+        response.headers.set(HttpHeaders.contentTypeHeader, 'video/mp4');
+        response.contentLength = meta.total;
+        await response.close();
+        return;
+      }
+
+      final header = request.headers.value(HttpHeaders.rangeHeader);
+      final span = _parseRange(header, meta.total);
       final start = span[0];
       final end = span[1];
       if (start > end || start >= meta.total) {
@@ -405,29 +313,17 @@ class VideoCacheServer {
         return;
       }
 
-      final partial = request.headers.value(HttpHeaders.rangeHeader) != null;
       response.statusCode =
-          partial ? HttpStatus.partialContent : HttpStatus.ok;
+          header != null ? HttpStatus.partialContent : HttpStatus.ok;
       response.headers.set(HttpHeaders.acceptRangesHeader, 'bytes');
       response.headers.set(HttpHeaders.contentTypeHeader, 'video/mp4');
-      if (partial) {
-        response.headers
-            .set(HttpHeaders.contentRangeHeader, 'bytes $start-$end/${meta.total}');
+      if (header != null) {
+        response.headers.set(
+            HttpHeaders.contentRangeHeader, 'bytes $start-$end/${meta.total}');
       }
       response.contentLength = end - start + 1;
 
-      for (final segment in _plan(target.key, meta, start, end)) {
-        if (_closed) break;
-        if (segment.cached) {
-          _notePlayback();
-          await response.addStream(segment.file!
-              .openRead(segment.offset, segment.offset + segment.length));
-        } else {
-          final sent = await _stream(
-              target, response, segment.upstreamStart, segment.upstreamEnd);
-          if (!sent) break;
-        }
-      }
+      await _serve(target, meta, response, start, end);
       await response.close();
     } catch (_) {
       // 播放器中途放棄 (拉進度條、換一集) 時最常見: 對面已經不在了, 寫回去
@@ -440,38 +336,149 @@ class VideoCacheServer {
     }
   }
 
-  /// 一個 Range 要怎麼湊出來: 落在頭尾快取裡的從磁碟讀, 其餘的跟伺服器要.
-  List<_Segment> _plan(String key, _Meta meta, int start, int end) {
-    final head = _headSpan(meta);
-    final tail = _tailSpan(meta);
-    final headFile = _headFile(key);
-    final tailFile = _tailFile(key);
-    final hasHead = _complete(headFile, head);
-    final hasTail = tail > 0 && _complete(tailFile, tail);
-    final tailStart = meta.total - tail;
-
-    final segments = <_Segment>[];
+  /// 一個 Range 怎麼湊出來: 磁碟上有的直接發, 沒有的跟伺服器要 (順手存起來).
+  Future<void> _serve(_Target target, _Meta meta, HttpResponse response,
+      int start, int end) async {
     var at = start;
-    while (at <= end) {
-      if (hasHead && at < head) {
-        final stop = end < head - 1 ? end : head - 1;
-        segments.add(_Segment.cache(headFile, at, stop - at + 1));
-        at = stop + 1;
+    while (at <= end && !_closed) {
+      final run = _cachedRun(target.key, at, end, meta);
+      if (run > 0) {
+        await _sendCached(target, meta, response, at, at + run - 1);
+        at += run;
         continue;
       }
-      if (hasTail && at >= tailStart) {
-        segments.add(_Segment.cache(tailFile, at - tailStart, end - at + 1));
-        at = end + 1;
-        continue;
+
+      // 這裡沒有: 一路要到下一塊「完整的」為止. 半塊的也一起重要一次 ——
+      // 反正接下去那段本來就得抓, 順手把它補成整塊.
+      var stopIndex = _blockOf(at);
+      while (_blockStart(stopIndex + 1) <= end &&
+          !_hasFullBlock(target.key, stopIndex + 1, meta)) {
+        stopIndex++;
       }
-      // 這一段沒有快取: 一路要到下一塊快取的開頭為止
-      var stop = end;
-      if (hasTail && at < tailStart && end >= tailStart) stop = tailStart - 1;
-      if (hasHead && at < head) stop = head - 1 < stop ? head - 1 : stop;
-      segments.add(_Segment.upstream(at, stop));
+      final stop = math.min(
+          end, _blockStart(stopIndex) + _blockLength(stopIndex, meta) - 1);
+      final sent = await _fetchAndStore(target, meta, response, at, stop);
+      if (!sent) return;
       at = stop + 1;
     }
-    return segments;
+  }
+
+  /// 把 [from]..[to] 從磁碟上那幾塊讀出來發掉
+  Future<void> _sendCached(_Target target, _Meta meta, HttpResponse response,
+      int from, int to) async {
+    var at = from;
+    while (at <= to) {
+      final index = _blockOf(at);
+      final covered = _blockCovered(target.key, index);
+      if (covered <= 0) return;
+      final lastCached = _blockStart(index) + covered - 1;
+      final stop = math.min(to, lastCached);
+      await response.addStream(_blockFile(target.key, index)
+          .openRead(at - _blockStart(index), stop - _blockStart(index) + 1));
+      at = stop + 1;
+    }
+  }
+
+  /// 跟伺服器要 [start]..[stop], 邊送給播放器邊把完整的塊寫到磁碟.
+  ///
+  /// 起點會往前對齊到塊的開頭 (最多多要 1 MB). 不對齊的話, 跳轉之後那一塊
+  /// 永遠只拿得到半塊, 也就永遠存不起來 —— moov 在檔尾又不對齊, 正是會一直
+  /// 踩到這件事的地方.
+  Future<bool> _fetchAndStore(_Target target, _Meta meta,
+      HttpResponse response, int start, int stop) async {
+    final aligned = _blockStart(_blockOf(start));
+    IOSink? sink;
+    var sinkBlock = -1;
+    var pos = aligned;
+
+    Future<void> settle({required bool keep}) async {
+      final open = sink;
+      if (open == null) return;
+      sink = null;
+      final block = sinkBlock;
+      var ok = keep;
+      try {
+        await open.close();
+      } catch (_) {
+        ok = false;
+      }
+      final part = File('${_blockFile(target.key, block).path}.part');
+      try {
+        if (ok && part.existsSync()) {
+          final grown = await part.length();
+          // 半塊也留著 —— 但只有在比手上那份更長的時候才換, 不然中途被掐斷
+          // 的一小段會把已經存好的整塊蓋掉
+          if (grown > 0 && grown > _blockCovered(target.key, block)) {
+            await part.rename(_blockFile(target.key, block).path);
+          } else {
+            await part.delete();
+          }
+        } else if (part.existsSync()) {
+          await part.delete();
+        }
+      } catch (_) {
+        // 收不乾淨就算了, 下次會被覆蓋
+      }
+    }
+
+    try {
+      await _episodeDir(target.key).create(recursive: true);
+    } catch (_) {
+      // 建不出目錄就只是存不了, 照樣要能播
+    }
+
+    try {
+      final request = http.Request('GET', target.upstream)
+        ..headers.addAll({...target.headers, 'Range': 'bytes=$aligned-$stop'});
+      final upstream = await _http.send(request);
+      if (upstream.statusCode >= 400) return false;
+
+      // 一定要走 addStream: 它會照著 socket 排空的速度回壓上游那條 stream.
+      // 手動 add() 沒有這層回壓 —— 播放器緩衝滿了就不再從 socket 讀, 但我們
+      // 還是全速把上游灌進記憶體. 慢線路上那等於「頻寬全部拿去抓沒人要的
+      // 資料」, 畫面看起來就是明明有東西卻一直在轉圈.
+      await response.addStream(upstream.stream.asyncExpand((chunk) async* {
+        _note(chunk.length);
+        final chunkStart = pos;
+
+        var offset = 0;
+        while (offset < chunk.length) {
+          final block = _blockOf(pos);
+          if (block != sinkBlock) {
+            await settle(keep: true);
+            sinkBlock = block;
+            try {
+              sink =
+                  File('${_blockFile(target.key, block).path}.part').openWrite();
+            } catch (_) {
+              sink = null;
+            }
+          }
+          final blockEnd = _blockStart(block) + _blockLength(block, meta);
+          final take = math.min(chunk.length - offset, blockEnd - pos);
+          sink?.add(chunk.sublist(offset, offset + take));
+          offset += take;
+          pos += take;
+          // 一塞滿就馬上收尾, 不要等下一塊或整條 stream 結束. 這樣「播放器
+          // 收到這一塊的最後一個 byte」時, 那一塊在磁碟上已經是完成品 ——
+          // 中途被掐斷也不會白抓一塊.
+          if (pos == blockEnd) await settle(keep: true);
+
+        }
+
+        // 往前對齊多要的那一小段是拿來補快取的, 不能發給播放器
+        if (pos <= start) return;
+        yield chunkStart >= start
+            ? chunk
+            : chunk.sublist(start - chunkStart);
+      }));
+      await settle(keep: true);
+      unawaited(_evict());
+      return true;
+    } catch (_) {
+      await settle(keep: true);
+      return false;
+    }
   }
 
   static List<int> _parseRange(String? header, int total) {
@@ -490,33 +497,9 @@ class VideoCacheServer {
       return <int>[total - want, total - 1];
     }
     final start = int.tryParse(headText) ?? 0;
-    final end = tailText.isEmpty ? total - 1 : (int.tryParse(tailText) ?? total - 1);
+    final end =
+        tailText.isEmpty ? total - 1 : (int.tryParse(tailText) ?? total - 1);
     return <int>[start, end > total - 1 ? total - 1 : end];
-  }
-
-  /// 跟伺服器要一段, 邊收邊往播放器送.
-  Future<bool> _stream(
-      _Target target, HttpResponse response, int start, int end) async {
-    try {
-      final request = http.Request('GET', target.upstream)
-        ..headers.addAll({...target.headers, 'Range': 'bytes=$start-$end'});
-      final upstream = await _http.send(request);
-      if (upstream.statusCode >= 400) return false;
-      // 一定要走 addStream: 它會照著 socket 排空的速度去回壓上游那條 stream.
-      //
-      // 手動 add() 沒有這層回壓 —— 播放器緩衝滿了就不再從 socket 讀, 但我們
-      // 還是全速把上游灌進記憶體. 慢線路上那等於「頻寬全部拿去抓沒人要的
-      // 資料」, 畫面看起來就是明明有東西卻一直在轉圈. 每一塊都 flush() 也
-      // 不對, 那會把讀跟寫串成一條, 吞吐量砍半.
-      await response.addStream(upstream.stream.map((chunk) {
-        _note(chunk.length);
-        _notePlayback();
-        return chunk;
-      }));
-      return true;
-    } catch (_) {
-      return false;
-    }
   }
 
   /// 完全不管快取, 原樣轉手. 中繼資料拿不到時的退路.
@@ -526,8 +509,8 @@ class VideoCacheServer {
       final headers = {...target.headers};
       final range = request.headers.value(HttpHeaders.rangeHeader);
       if (range != null) headers['Range'] = range;
-      final upstream =
-          await _http.send(http.Request('GET', target.upstream)..headers.addAll(headers));
+      final upstream = await _http
+          .send(http.Request('GET', target.upstream)..headers.addAll(headers));
       response.statusCode = upstream.statusCode;
       upstream.headers.forEach((name, value) {
         if (name == 'transfer-encoding' || name == 'content-encoding') return;
@@ -535,7 +518,6 @@ class VideoCacheServer {
       });
       await response.addStream(upstream.stream.map((chunk) {
         _note(chunk.length);
-        _notePlayback();
         return chunk;
       }));
       await response.close();
@@ -548,42 +530,47 @@ class VideoCacheServer {
     }
   }
 
-  // -------------------------------------------------------------------- 清掃
+  // ------------------------------------------------------------------ 清掃
 
-  /// 超過額度就從最舊的開始丟. 一集的頭、尾、中繼資料是一組, 要一起丟.
+  /// 超過額度就整集整集地丟, 最久沒碰的先走. 丟半集沒有意義 —— 那只會留下
+  /// 一堆補不齊的洞.
   Future<void> _evict() async {
+    if (_closed) return;
     try {
-      final groups = <String, List<FileSystemEntity>>{};
-      final stamps = <String, DateTime>{};
+      final sizes = <String, int>{};
+      final seen = <String, DateTime>{};
       var total = 0;
       await for (final item in _dir.list()) {
-        if (item is! File) continue;
-        final name = item.uri.pathSegments.last;
-        final dot = name.lastIndexOf('.');
-        if (dot <= 0) continue;
-        final key = name.substring(0, dot);
-        groups.putIfAbsent(key, () => <FileSystemEntity>[]).add(item);
-        final stat = await item.stat();
-        total += stat.size;
-        final seen = stamps[key];
-        if (seen == null || stat.modified.isAfter(seen)) {
-          stamps[key] = stat.modified;
+        // close() 之後就別再碰磁碟了: 掃描開著的時候目錄被刪掉 (測試收尾、
+        // 使用者清快取) 會讓刪除那一邊拿到奇怪的錯
+        if (_closed) return;
+        if (item is! Directory) continue;
+        final key =
+            item.uri.pathSegments.where((part) => part.isNotEmpty).last;
+        var size = 0;
+        await for (final file in item.list()) {
+          if (_closed) return;
+          if (file is! File) continue;
+          size += (await file.stat()).size;
+        }
+        sizes[key] = size;
+        total += size;
+        try {
+          seen[key] = (await _metaFile(key).stat()).modified;
+        } catch (_) {
+          seen[key] = DateTime.fromMillisecondsSinceEpoch(0);
         }
       }
       if (total <= kCacheBudgetBytes) return;
 
-      final keys = stamps.keys.toList()
-        ..sort((a, b) => stamps[a]!.compareTo(stamps[b]!));
-      for (final key in keys) {
+      final order = sizes.keys.toList()
+        ..sort((a, b) => seen[a]!.compareTo(seen[b]!));
+      for (final key in order) {
         if (total <= kCacheBudgetBytes) break;
-        for (final file in groups[key] ?? const <FileSystemEntity>[]) {
-          try {
-            total -= await (file as File).length();
-            await file.delete();
-          } catch (_) {
-            // 正在被讀的檔案刪不掉, 下一輪再說
-          }
-        }
+        // 正在播的那一集不能丟
+        if (_targets.values.any((target) => target.key == key)) continue;
+        total -= sizes[key] ?? 0;
+        await _forget(key);
       }
     } catch (_) {
       // 掃不動就跳過這一輪, 額度下次再收
@@ -593,6 +580,7 @@ class VideoCacheServer {
   Future<void> close() async {
     _closed = true;
     _targets.clear();
+    _metaWork.clear();
     _http.close();
     try {
       await _server.close(force: true);

@@ -119,65 +119,96 @@ void main() {
   tearDown(() async {
     await cache.close();
     await upstream.stop();
-    await temp.delete(recursive: true);
+    try {
+      await temp.delete(recursive: true);
+    } catch (_) {
+      // 收尾刪暫存目錄失敗不該讓測試變紅 (Windows 上背景還在掃的時候會這樣)
+    }
   });
 
   Uri wrap() => cache.wrap(
       upstream: upstream.url, headers: const {}, key: 'v123-1080');
 
-  /// 補齊是背景做的, 而且會等播放那條路安靜下來才動 —— 等它把頭尾都寫完
-  Future<void> settle() async {
-    for (var i = 0; i < 300; i++) {
-      final head = File('${temp.path}/v123-1080.head');
-      final tail = File('${temp.path}/v123-1080.tail');
-      if (head.existsSync() &&
-          tail.existsSync() &&
-          head.lengthSync() == kCacheHeadBytes &&
-          tail.lengthSync() == kCacheTailBytes) {
-        return;
+  /// 這一段有沒有被存下來 (整塊整塊算)
+  bool blocksCached(int start, int end) {
+    for (var block = start ~/ kCacheBlockBytes;
+        block <= end ~/ kCacheBlockBytes;
+        block++) {
+      if (!File('${temp.path}/v123-1080/$block.blk').existsSync()) {
+        return false;
       }
-      await Future<void>.delayed(const Duration(milliseconds: 50));
     }
-    fail('頭尾沒有在時限內補齊');
+    return true;
   }
 
   test('整份抓下來跟上游一模一樣', () async {
     final url = wrap();
-    await settle();
     final bytes = await fetch(url);
     expect(bytes.length, total);
     expect(bytes, equals(upstream.data));
   });
 
+  test('讀過的段落會留在磁碟上, 再讀一次不必問上游', () async {
+    // 這就是「看到一半退出再回來」要的: 已經載過的別再載一次
+    final url = wrap();
+    const from = 3 * kCacheBlockBytes;
+    const to = from + 2 * kCacheBlockBytes - 1;
+    final first = await fetch(url, range: 'bytes=$from-$to');
+    expect(first, equals(upstream.data.sublist(from, to + 1)));
+    expect(blocksCached(from, to), isTrue);
+
+    // 上游倒掉, 同一段還是發得出來
+    upstream.refuse = true;
+    final again = await fetch(url, range: 'bytes=$from-$to');
+    expect(again, equals(upstream.data.sublist(from, to + 1)));
+  });
+
+  test('跳轉到不對齊的位置也存得起來', () async {
+    // moov 在檔尾而且不對齊. 不往前對齊到塊開頭的話, 那一塊永遠只拿得到半塊,
+    // 也就永遠存不進去 —— 每次開同一集都要重抓一次.
+    // 播放器跳轉時發的是開放式的 bytes=N- (要到檔尾), 所以尾巴那塊一定是完整的;
+    // 會不會存起來全看開頭那塊有沒有往前對齊.
+    final url = wrap();
+    const from = 5 * kCacheBlockBytes + 12345;
+    final first = await fetch(url, range: 'bytes=$from-');
+    expect(first, equals(upstream.data.sublist(from)));
+
+    upstream.refuse = true;
+    final again = await fetch(url, range: 'bytes=$from-');
+    expect(again, equals(upstream.data.sublist(from)),
+        reason: '不對齊的跳轉沒有被快取住');
+  });
+
+  test('一半在快取一半不在, 要拼得起來', () async {
+    final url = wrap();
+    const cachedFrom = 2 * kCacheBlockBytes;
+    const cachedTo = cachedFrom + kCacheBlockBytes - 1;
+    await fetch(url, range: 'bytes=$cachedFrom-$cachedTo');
+
+    // 跨過已經有的那一塊, 兩邊都要對
+    const from = cachedFrom - 4096;
+    const to = cachedTo + 4096;
+    final bytes = await fetch(url, range: 'bytes=$from-$to');
+    expect(bytes, equals(upstream.data.sublist(from, to + 1)));
+  });
+
   test('播放器要的那兩段 (開頭 + moov 所在的檔尾) 都對得上', () async {
     final url = wrap();
-    await settle();
 
-    final head = await fetch(url, range: 'bytes=0-${kCacheHeadBytes - 1}');
-    expect(head.length, kCacheHeadBytes);
-    expect(head, equals(upstream.data.sublist(0, kCacheHeadBytes)));
+    final head = await fetch(url, range: 'bytes=0-${kCacheBlockBytes - 1}');
+    expect(head.length, kCacheBlockBytes);
+    expect(head, equals(upstream.data.sublist(0, kCacheBlockBytes)));
 
-    final tailStart = total - kCacheTailBytes;
+    final tailStart = total - kCacheBlockBytes;
     final tail = await fetch(url, range: 'bytes=$tailStart-${total - 1}');
-    expect(tail.length, kCacheTailBytes);
+    expect(tail.length, kCacheBlockBytes);
     expect(tail, equals(upstream.data.sublist(tailStart)));
   });
 
-  test('跨越快取邊界的一段要拼得起來', () async {
+  test('上游倒了, 快取住的段落照樣發得出來', () async {
     final url = wrap();
-    await settle();
-    // 從頭快取裡面一路要到中間那段沒快取的地方
-    const start = kCacheHeadBytes - 4096;
-    const end = kCacheHeadBytes + 4096;
-    final bytes = await fetch(url, range: 'bytes=$start-$end');
-    expect(bytes.length, end - start + 1);
-    expect(bytes, equals(upstream.data.sublist(start, end + 1)));
-  });
-
-  test('上游倒了, 快取住的那兩塊照樣發得出來', () async {
-    final url = wrap();
-    await settle();
-    // 這正是「app 關掉再開」要的效果: 檔頭在磁碟上, 不必再問伺服器
+    // 先整份讀過一遍 (等於看完了)
+    await fetch(url);
     upstream.refuse = true;
 
     final head = await fetch(url, range: 'bytes=0-65535');
@@ -188,66 +219,76 @@ void main() {
     expect(tail, equals(upstream.data.sublist(tailStart)));
   });
 
-  test('磁碟上那份還在的話, 重開一台伺服器不必再跟上游要', () async {
-    wrap();
-    await settle();
+  test('app 重開之後, 看過的段落還在', () async {
+    // 這是使用者真正在意的那一句: 關掉再開, 剛剛載好的別再載一次
+    var url = wrap();
+    const from = 0;
+    const to = 2 * kCacheBlockBytes - 1;
+    await fetch(url, range: 'bytes=$from-$to');
     await cache.close();
 
     final second = await VideoCacheServer.start(temp);
     expect(second, isNotNull);
     cache = second!;
     upstream.requests = 0;
-    final url = wrap();
-    // 補齊那一輪只會去驗一次長度 (1 byte 的 Range), 不會把頭尾重抓一遍
-    await Future<void>.delayed(const Duration(milliseconds: 400));
-    final head = await fetch(url, range: 'bytes=0-65535');
-    expect(head, equals(upstream.data.sublist(0, 65536)));
+    url = wrap();
+
+    final bytes = await fetch(url, range: 'bytes=$from-$to');
+    expect(bytes, equals(upstream.data.sublist(from, to + 1)));
+    // 只該有那一個 byte 的驗證請求, 不該把資料重抓一遍
     expect(upstream.requests, lessThanOrEqualTo(1));
   });
 
   test('伺服器上換了檔案就把舊的丟掉', () async {
-    wrap();
-    await settle();
+    var url = wrap();
+    await fetch(url);
 
     // 換一份長度不一樣的
     upstream.data
       ..clear()
       ..addAll(body(total ~/ 2));
-    final url = wrap();
-    for (var i = 0; i < 100; i++) {
-      final head = File('${temp.path}/v123-1080.head');
-      if (head.existsSync() && head.lengthSync() == kCacheHeadBytes) {
-        final bytes = await fetch(url, range: 'bytes=0-4095');
-        if (bytes[0] == upstream.data[0]) break;
-      }
-      await Future<void>.delayed(const Duration(milliseconds: 50));
-    }
+    url = wrap();
     final bytes = await fetch(url);
     expect(bytes.length, total ~/ 2);
     expect(bytes, equals(upstream.data));
   });
 
-  test('播放器在要東西的時候, 補快取要讓路', () async {
-    // 這是整個快取最重要的一條規矩. 之前它一 wrap 就衝去抓 6 MB, 在慢線路上
-    // 直接把播放要的頻寬吃光, 畫面就卡在轉圈 —— 這個測試把那件事釘住.
-    upstream.chunkDelay = const Duration(milliseconds: 30);
+  test('讀到一半就跑掉, 那半塊也算數', () async {
+    // 播放器開一集時只會把檔頭讀個兩三百 KB 就跑去拿 moov, 那一塊永遠湊不滿.
+    // 只認滿塊的話最常走的那條路就永遠快取不到.
     final url = wrap();
-
-    // 持續讓播放那條路有動靜, 時間拉得比 kPrimeIdleGap 長
-    final until = DateTime.now().add(const Duration(seconds: 7));
-    while (DateTime.now().isBefore(until)) {
-      // 中間那段沒有快取, 一定會走上游
-      await fetch(url, range: 'bytes=${total ~/ 2}-${total ~/ 2 + 32767}');
-      await Future<void>.delayed(const Duration(milliseconds: 100));
-      // 一直有人在看的時候, 快取不該偷偷補完
-      expect(File('${temp.path}/v123-1080.tail').existsSync(), isFalse,
-          reason: '播放中不該把頻寬拿去補快取');
+    final client = HttpClient();
+    try {
+      final request = await client.getUrl(url);
+      request.headers.set(HttpHeaders.rangeHeader, 'bytes=0-');
+      final response = await request.close();
+      var read = 0;
+      await for (final chunk in response) {
+        read += chunk.length;
+        if (read >= 200 * 1024) break;
+      }
+    } finally {
+      client.close(force: true);
     }
+    await Future<void>.delayed(const Duration(milliseconds: 300));
 
-    // 人停下來了, 這時候補才是對的
-    upstream.chunkDelay = Duration.zero;
-    await settle();
-  }, timeout: const Timeout(Duration(minutes: 2)));
+    // 上游倒掉, 剛剛讀過的那前 128 KB 還是發得出來
+    upstream.refuse = true;
+    final again = await fetch(url, range: 'bytes=0-${128 * 1024 - 1}');
+    expect(again, equals(upstream.data.sublist(0, 128 * 1024)),
+        reason: '沒讀滿一塊的前綴沒有被快取住');
+  });
+
+  test('完全不預抓: 沒被要求過的段落不會出現在磁碟上', () async {
+    // 舊版一開播就衝去抓頭尾, 在慢線路上把播放要的頻寬吃光. 現在只從播放器
+    // 本來就要的東西順手撿, 所以沒讀過的地方不該有任何檔案.
+    final url = wrap();
+    await fetch(url, range: 'bytes=0-${kCacheBlockBytes - 1}');
+    await Future<void>.delayed(const Duration(seconds: 2));
+    expect(blocksCached(0, kCacheBlockBytes - 1), isTrue);
+    expect(File('${temp.path}/v123-1080/5.blk').existsSync(), isFalse,
+        reason: '沒人要過的段落不該被預抓');
+  });
 
   test('播放器停下來不讀時, 我們也停下來不抓', () async {
     // 之前這裡是手動 response.add(): 播放器緩衝滿了不再讀 socket, 但代理還是
@@ -290,7 +331,7 @@ void main() {
 
   test('轉手過的量算得出速度, 從磁碟讀的不算', () async {
     final url = wrap();
-    await settle();
+    await fetch(url, range: 'bytes=0-${kCacheBlockBytes - 1}');
     expect(cache.bytesPerSecond, greaterThan(0));
 
     // 等取樣視窗過去, 然後只讀快取住的那一段: 沒有流量, 速度該回到 0

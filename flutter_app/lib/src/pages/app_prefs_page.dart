@@ -36,6 +36,7 @@ class _AppPrefsPageState extends State<AppPrefsPage> {
   void initState() {
     super.initState();
     _measure();
+    _measureCache();
   }
 
   Future<void> _measure() async {
@@ -207,7 +208,7 @@ class _AppPrefsPageState extends State<AppPrefsPage> {
           ListTile(
             leading: const Icon(Icons.cleaning_services_outlined),
             title: const Text('清除離線快取'),
-            subtitle: const Text('首頁與片單的離線副本，不會刪掉已下載的影片'),
+            subtitle: Text(_cacheLabel),
             onTap: _clearCache,
           ),
         ],
@@ -215,9 +216,21 @@ class _AppPrefsPageState extends State<AppPrefsPage> {
     );
   }
 
+  String _cacheLabel = '首頁、片單與線上播放的暫存，不會刪掉已下載的影片';
+
+  Future<void> _measureCache() async {
+    final bytes = await state.videoCacheBytes();
+    if (!mounted || bytes <= 0) return;
+    setState(() => _cacheLabel =
+        '線上播放的暫存目前 ${formatBytes(bytes)}，不會刪掉已下載的影片');
+  }
+
   Future<void> _clearCache() async {
     await prefs.clearCache();
+    await state.clearVideoCache();
     if (!mounted) return;
+    setState(() =>
+        _cacheLabel = '首頁、片單與線上播放的暫存，不會刪掉已下載的影片');
     toast(context, '已清除離線快取。');
   }
 

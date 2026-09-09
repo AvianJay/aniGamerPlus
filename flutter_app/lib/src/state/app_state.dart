@@ -318,10 +318,42 @@ class AppState extends ChangeNotifier {
     return _videoCacheBoot ??= () async {
       final dir = Directory('${(await getApplicationSupportDirectory()).path}'
           '/video-cache');
+      _videoCacheDir = dir;
       final server = await VideoCacheServer.start(dir);
       videoCache = server;
       return server;
     }();
+  }
+
+  Directory? _videoCacheDir;
+
+  /// 影片快取現在佔多少
+  Future<int> videoCacheBytes() async {
+    final dir = _videoCacheDir;
+    if (dir == null || !dir.existsSync()) return 0;
+    var total = 0;
+    try {
+      await for (final item in dir.list(recursive: true)) {
+        if (item is File) total += (await item.stat()).size;
+      }
+    } catch (_) {
+      // 掃到一半被改也沒關係, 這只是拿來顯示的
+    }
+    return total;
+  }
+
+  /// 把影片快取整個丟掉. 已經下載到手機的那些集數不受影響 —— 它們在別的目錄.
+  Future<void> clearVideoCache() async {
+    final server = videoCache;
+    videoCache = null;
+    _videoCacheBoot = null;
+    if (server != null) await server.close();
+    final dir = _videoCacheDir;
+    try {
+      if (dir != null && dir.existsSync()) await dir.delete(recursive: true);
+    } catch (_) {
+      // 有檔案正被讀就留著, 下次再清
+    }
   }
 
   WatchTime? watchTimeOf(String sn) => watchTimes[sn];
