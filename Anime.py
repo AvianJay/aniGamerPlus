@@ -750,16 +750,24 @@ class Anime:
                 sys.exit(1)
 
             # 显示完成百分比
-            nonlocal finished_chunk_counter
-            finished_chunk_counter = finished_chunk_counter + 1
-            progress_rate = float(finished_chunk_counter / total_chunk_num * 100)
-            progress_rate = round(progress_rate, 2)
-            Config.tasks_progress_rate[int(self._sn)]['rate'] = progress_rate
+            # 同一集被兩條任務同時下載時(背景追番 + 手動邊看邊下載是日常情境),
+            # 先完成的那條會 del 掉進度紀錄. 這裡整段掛 try/finally:
+            # 登記處 KeyError 不能讓分片執行緒帶著併發名額一起死 —— 否則母執行緒
+            # 卡死在 limiter.acquire(), 無 log、無錯誤、temp 留一堆半成品.
+            try:
+                nonlocal finished_chunk_counter
+                finished_chunk_counter = finished_chunk_counter + 1
+                progress_rate = float(finished_chunk_counter / total_chunk_num * 100)
+                progress_rate = round(progress_rate, 2)
+                record = Config.tasks_progress_rate.get(int(self._sn))
+                if record is not None:
+                    record['rate'] = progress_rate
 
-            if self.realtime_show_file_size:
-                sys.stdout.write('\r正在下載: sn=' + str(self._sn) + ' ' + filename + ' ' + str(progress_rate) + '%  ')
-                sys.stdout.flush()
-            limiter.release()
+                if self.realtime_show_file_size:
+                    sys.stdout.write('\r正在下載: sn=' + str(self._sn) + ' ' + filename + ' ' + str(progress_rate) + '%  ')
+                    sys.stdout.flush()
+            finally:
+                limiter.release()
 
         if self.realtime_show_file_size:
             # 是否实时显示文件大小, 设计仅 cui 下载单个文件或线程数=1时适用
@@ -788,6 +796,11 @@ class Anime:
                 else:
                     break
 
+        # 分片全部落地. 領回進度紀錄(可能被同集的另一條任務 del 掉),
+        # 讓後面 ffmpeg 合併段跟 del 那行不會 KeyError.
+        Config.tasks_progress_rate.setdefault(int(self._sn),
+                                              {'rate': 100.0, 'filename': self.get_filename(), 'status': '正在下載'})
+
         # m3u8 本地化
         # replace('\\', '\\\\') 为转义win路径
         m3u8_text_local_version = m3u8_text.replace(original_key_uri, os.path.join(temp_dir, 'key.m3u8key')).replace('\\', '\\\\')
@@ -802,7 +815,7 @@ class Anime:
             sys.stdout.write('\n')
             sys.stdout.flush()
         err_print(self._sn, '下載狀態', filename + ' 下載完成, 正在解密合并……')
-        Config.tasks_progress_rate[int(self._sn)]['status'] = '下載完成'
+        Config.tasks_progress_rate.setdefault(int(self._sn), {'rate': 100.0, 'filename': filename, 'status': '下載完成'})['status'] = '下載完成'
 
         # 构造 ffmpeg 命令
         ffmpeg_cmd = [self._ffmpeg_path,
@@ -1067,7 +1080,11 @@ class Anime:
             self.__ffmpeg_download_mode(resolution)
 
         # 任务完成, 从任务进度表中删除
-        del Config.tasks_progress_rate[int(self._sn)]
+        # 同一集兩條任務並行時, 各自把紀錄 del 掉會互踩: 後完成那條的 del
+        # 已經找不到東西(前 1 條 del 過), KeyError 會炸掉收尾動作(彈幕/上傳).
+        # 改成 in 檢查, 不在就當已經被另一條收掉了.
+        if int(self._sn) in Config.tasks_progress_rate:
+            del Config.tasks_progress_rate[int(self._sn)]
 
         # 下載彈幕
         if self._danmu:
