@@ -624,6 +624,13 @@ def __download_only(sn, dl_resolution='', dl_save_dir='', realtime_show_file_siz
             else:
                 anime.download(settings['download_resolution'], dl_save_dir,
                                realtime_show_file_size=realtime_show_file_size, classify=classify)
+        except SystemExit:
+            # sys.exit(1) 是 Anime 內部「動畫瘋明確拒絕」(1007 裝置驗證/地區限制/
+            # 非 VIP 強制停止…) 的正常出口. 別把它當未知異常印整頁 traceback,
+            # 也別重試 —— 重試三次只是連續打風控端點. 印一行, 讓它出去終止執行緒.
+            err_print(sn, '下載終止', 'Anime 內部要求終止(收到明確錯誤或拒絕)', status=1)
+            anime.video_size = 0
+            raise
         except BaseException as e:
             err_print(sn, '下載異常', '發生未知異常: ' + str(e), status=1)
             err_print(sn, '下載異常', '異常詳情:\n' + traceback.format_exc(), status=1, display=False)

@@ -105,6 +105,11 @@ class Anime:
             os.environ['NO_PROXY'] = "127.0.0.1,localhost"
 
     def renew(self):
+        # __get_episode_list() 的重複集數邏輯靠「ep 已在 self._episode_list 裡」判斷,
+        # 但舊條目從來沒清掉 —— renew() 一次, 舊 dict 還在, 新解析的每一集都被當成
+        # 「重複集數」去拿 p[1], p[2]…(季標籤), 標籤沒那麼多個 → IndexError,
+        # __download_only 的重試迴圈整條執行緒炸掉, 進度永遠停在「失敗! 重啟中」.
+        self._episode_list = {}
         self.__get_src()
         self.__get_title()
         self.__get_bangumi_name()
