@@ -2,6 +2,7 @@
 /// 所以這裡對著一台假的上游把每一條路都走過一遍.
 library;
 
+import 'dart:async';
 import 'dart:io';
 
 import 'package:flutter_test/flutter_test.dart';
@@ -23,6 +24,9 @@ class Upstream {
 
   /// 每 64 KB 之間歇一下, 用來模擬一條慢線路
   Duration chunkDelay = Duration.zero;
+
+  /// 真的送進 socket 的量. 用來確認播放器不讀的時候, 我們也就不抓.
+  int served = 0;
 
   static Future<Upstream> start(int total) async {
     final server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
@@ -52,18 +56,25 @@ class Upstream {
       }
       response.headers.set(HttpHeaders.etagHeader, '"stub-v1"');
       response.headers.set(HttpHeaders.acceptRangesHeader, 'bytes');
-      if (upstream.chunkDelay == Duration.zero) {
-        response.add(data.sublist(start, end + 1));
-      } else {
-        const step = 64 * 1024;
+      // 一塊一塊送, 而且走 addStream —— 這樣「送出去多少」才會跟著對面讀多快
+      const step = 64 * 1024;
+      Stream<List<int>> pieces() async* {
         for (var at = start; at <= end; at += step) {
           final stop = (at + step - 1) > end ? end : at + step - 1;
-          response.add(data.sublist(at, stop + 1));
-          await response.flush();
-          await Future<void>.delayed(upstream.chunkDelay);
+          upstream.served += stop - at + 1;
+          yield data.sublist(at, stop + 1);
+          if (upstream.chunkDelay != Duration.zero) {
+            await Future<void>.delayed(upstream.chunkDelay);
+          }
         }
       }
-      await response.close();
+
+      try {
+        await response.addStream(pieces());
+        await response.close();
+      } catch (_) {
+        // 對面中途跑掉了
+      }
     });
     return upstream;
   }
@@ -236,6 +247,45 @@ void main() {
     // 人停下來了, 這時候補才是對的
     upstream.chunkDelay = Duration.zero;
     await settle();
+  }, timeout: const Timeout(Duration(minutes: 2)));
+
+  test('播放器停下來不讀時, 我們也停下來不抓', () async {
+    // 之前這裡是手動 response.add(): 播放器緩衝滿了不再讀 socket, 但代理還是
+    // 全速把上游灌進記憶體 —— 慢線路上頻寬全花在沒人要的資料上, 畫面就一直
+    // 轉圈. addStream 會把 socket 的回壓一路傳到上游.
+    final url = wrap();
+    final client = HttpClient();
+    try {
+      final request = await client.getUrl(url);
+      // 中間那段沒有快取, 一定走上游
+      request.headers.set(HttpHeaders.rangeHeader, 'bytes=${total ~/ 2}-');
+      final response = await request.close();
+
+      upstream.served = 0;
+      var read = 0;
+      final done = Completer<void>();
+      late StreamSubscription<List<int>> sub;
+      sub = response.listen((chunk) {
+        read += chunk.length;
+        if (read >= 128 * 1024 && !done.isCompleted) {
+          // 播放器緩衝滿了: 不再讀, 但也還沒斷線
+          sub.pause();
+          done.complete();
+        }
+      }, onError: (Object _) {}, cancelOnError: false);
+      await done.future;
+
+      // 對面不讀了, 上游那邊就該停下來
+      await Future<void>.delayed(const Duration(seconds: 3));
+      final servedWhilePaused = upstream.served;
+      await sub.cancel();
+
+      // socket 跟中間那幾層本來就吃得下一些, 但不該是整段 4 MB
+      expect(servedWhilePaused, lessThan(total ~/ 4),
+          reason: '播放器沒在讀, 卻還是把上游抓了 $servedWhilePaused bytes 進來');
+    } finally {
+      client.close(force: true);
+    }
   }, timeout: const Timeout(Duration(minutes: 2)));
 
   test('轉手過的量算得出速度, 從磁碟讀的不算', () async {

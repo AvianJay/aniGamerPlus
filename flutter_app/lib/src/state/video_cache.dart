@@ -502,14 +502,17 @@ class VideoCacheServer {
         ..headers.addAll({...target.headers, 'Range': 'bytes=$start-$end'});
       final upstream = await _http.send(request);
       if (upstream.statusCode >= 400) return false;
-      await for (final chunk in upstream.stream) {
-        if (_closed) return false;
+      // 一定要走 addStream: 它會照著 socket 排空的速度去回壓上游那條 stream.
+      //
+      // 手動 add() 沒有這層回壓 —— 播放器緩衝滿了就不再從 socket 讀, 但我們
+      // 還是全速把上游灌進記憶體. 慢線路上那等於「頻寬全部拿去抓沒人要的
+      // 資料」, 畫面看起來就是明明有東西卻一直在轉圈. 每一塊都 flush() 也
+      // 不對, 那會把讀跟寫串成一條, 吞吐量砍半.
+      await response.addStream(upstream.stream.map((chunk) {
         _note(chunk.length);
         _notePlayback();
-        // 不要每一塊都 flush: 那會把「讀一塊 → 等socket排空 → 再讀」串成
-        // 一條, 吞吐量直接砍掉一半以上. HttpResponse 自己會排程送出.
-        response.add(chunk);
-      }
+        return chunk;
+      }));
       return true;
     } catch (_) {
       return false;
@@ -530,12 +533,11 @@ class VideoCacheServer {
         if (name == 'transfer-encoding' || name == 'content-encoding') return;
         response.headers.set(name, value);
       });
-      await for (final chunk in upstream.stream) {
-        if (_closed) break;
+      await response.addStream(upstream.stream.map((chunk) {
         _note(chunk.length);
         _notePlayback();
-        response.add(chunk);
-      }
+        return chunk;
+      }));
       await response.close();
     } catch (_) {
       try {
