@@ -1,4 +1,4 @@
-"""A standalone Flask app that serves the real dashboard templates and static
+"""A standalone FastAPI app that serves the real dashboard templates and static
 files against fixture data.
 
 ``Dashboard/Server.py`` pulls in ``Config`` -> ``Loginer`` -> ``selenium`` and a
@@ -17,9 +17,12 @@ import subprocess
 import threading
 import time
 from datetime import datetime, timedelta
-from wsgiref.simple_server import WSGIRequestHandler, make_server
 
-from flask import Flask, jsonify, make_response, render_template, request, send_file
+from fastapi import FastAPI, Request
+from fastapi.responses import FileResponse, JSONResponse, Response
+from fastapi.staticfiles import StaticFiles
+from fastapi.templating import Jinja2Templates
+import uvicorn
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 TEMPLATE_PATH = os.path.join(ROOT, 'Dashboard', 'templates')
@@ -479,8 +482,16 @@ MANUAL_TASKS = []
 
 
 def create_app(logged_in=True, catalog=True, hls=True):
-    app = Flask(__name__, template_folder=TEMPLATE_PATH, static_folder=STATIC_PATH)
-    app.config['TESTING'] = True
+    app = FastAPI(docs_url=None, redoc_url=None, openapi_url=None)
+    app.mount('/static', StaticFiles(directory=STATIC_PATH), name='static')
+    templates = Jinja2Templates(directory=TEMPLATE_PATH)
+
+    @app.middleware('http')
+    async def add_accept_ranges(request: Request, call_next):
+        response = await call_next(request)
+        if 'accept-ranges' not in response.headers:
+            response.headers['Accept-Ranges'] = 'bytes'
+        return response
 
     def dashboard_bootstrap():
         return {
@@ -493,9 +504,9 @@ def create_app(logged_in=True, catalog=True, hls=True):
             'currentUser': {'username': 'tester', 'role': 'admin'} if logged_in else None,
         }
 
-    def watch_bootstrap():
-        requested_sn = str(request.args.get('id') or '').strip()
-        requested_resolution = str(request.args.get('res') or '').strip()
+    def watch_bootstrap(request: Request):
+        requested_sn = str(request.query_params.get('id') or '').strip()
+        requested_resolution = str(request.query_params.get('res') or '').strip()
         bootstrap = {
             'requestedVideoId': requested_sn or None,
             'requestedResolution': requested_resolution or None,
@@ -514,7 +525,7 @@ def create_app(logged_in=True, catalog=True, hls=True):
         if not initial and hls and HLS_DURATIONS and requested_sn == HLS_SN:
             # Downloading, so not in video_list.json -- but the page still gets
             # something the right shape, exactly as the real bootstrap does.
-            if not _hls_registered() and not request.args.get('streaming'):
+            if not _hls_registered() and not request.query_params.get('streaming'):
                 return bootstrap
             initial = hls_video_entry()
             bootstrap['streaming'] = True
@@ -532,128 +543,148 @@ def create_app(logged_in=True, catalog=True, hls=True):
             bootstrap['resumeTime'] = int(entry.get('time', 0) or 0)
         return bootstrap
 
-    @app.context_processor
-    def inject_context():
-        return {'dashboard_bootstrap': dashboard_bootstrap()}
+    def render(request: Request, name, context=None):
+        merged = {'request': request, 'dashboard_bootstrap': dashboard_bootstrap()}
+        if context:
+            merged.update(context)
+        return templates.TemplateResponse(request, name, merged)
 
-    @app.route('/')
-    def home():
-        return render_template('index.html')
+    @app.get('/')
+    def home(request: Request):
+        return render(request, 'index.html')
 
-    @app.route('/watch')
-    def watch():
-        return render_template('watch.html', watch_bootstrap=watch_bootstrap())
+    @app.get('/watch')
+    def watch(request: Request):
+        return render(request, 'watch.html', {'watch_bootstrap': watch_bootstrap(request)})
 
-    @app.route('/control')
+    @app.get('/control')
     def control():
-        return '<!doctype html><title>control</title><p>control stub</p>'
+        return Response('<!doctype html><title>control</title><p>control stub</p>',
+                        media_type='text/html')
 
-    @app.route('/video_list.json')
+    @app.get('/video_list.json')
     def video_list():
-        return jsonify(VIDEO_LIST)
+        return JSONResponse(VIDEO_LIST)
 
-    @app.route('/watch/series.json')
-    def watch_series():
-        sn = str(request.args.get('id') or '')
+    @app.get('/watch/series.json')
+    def watch_series(request: Request):
+        sn = str(request.query_params.get('id') or '')
         detail = WATCH_SERIES.get(sn)
         if detail is None and hls and sn == HLS_SN:
             detail = WATCH_SERIES_STREAMING
         if detail is None:
             # 404 is what the real route says for anything it cannot look up,
             # and the page has to keep working on it.
-            return jsonify({'error': 'video not found'}), 404
-        return jsonify(detail)
+            return JSONResponse({'error': 'video not found'}, status_code=404)
+        return JSONResponse(detail)
 
-    @app.route('/cover.jpg')
+    @app.get('/cover.jpg')
     def cover():
-        return send_file(os.path.join(FIXTURES, 'sample-thumb.jpg'), mimetype='image/jpeg')
+        return FileResponse(os.path.join(FIXTURES, 'sample-thumb.jpg'), media_type='image/jpeg')
 
     # The real routes live behind ``if settings['dashboard']['online_watch']``
     # and simply do not exist when it is off; catalog=False reproduces that, so
     # the page's degrade-to-片庫-only path stays covered.
     if catalog:
-        @app.route('/catalog/index.json')
+        @app.get('/catalog/index.json')
         def catalog_index():
-            return jsonify(CATALOG_INDEX)
+            return JSONResponse(CATALOG_INDEX)
 
-        @app.route('/catalog/all.json')
-        def catalog_all():
-            query = (request.args.get('q') or '').strip().lower()
+        @app.get('/catalog/all.json')
+        def catalog_all(request: Request):
+            query = (request.query_params.get('q') or '').strip().lower()
             items = [item for item in CATALOG_ALL if query in item['title'].lower()]
             try:
-                page = max(1, int(request.args.get('page') or 1))
+                page = max(1, int(request.query_params.get('page') or 1))
             except ValueError:
                 page = 1
             pages = max(1, -(-len(items) // CATALOG_PAGE_SIZE))
             page = min(page, pages)
             start = (page - 1) * CATALOG_PAGE_SIZE
-            return jsonify({
+            return JSONResponse({
                 'items': items[start:start + CATALOG_PAGE_SIZE],
                 'page': page,
                 'pages': pages,
                 'total': len(items),
             })
 
-        @app.route('/catalog/anime.json')
-        def catalog_anime():
-            detail = catalog_detail(str(request.args.get('sn') or ''))
+        @app.get('/catalog/anime.json')
+        def catalog_anime(request: Request):
+            detail = catalog_detail(str(request.query_params.get('sn') or ''))
             if detail is None:
-                return jsonify({'error': 'unknown'}), 404
-            return jsonify(detail)
+                return JSONResponse({'error': 'unknown'}, status_code=404)
+            return JSONResponse(detail)
 
     # The real routes only exist while a download is running; HLS_STATE['mode']
     # == 'none' is what stands in for "nothing is downloading" here.
     if hls and HLS_DURATIONS:
-        @app.route('/hls/status.json')
+        @app.get('/hls/status.json')
         def hls_status():
-            response = jsonify(hls_status_body())
+            response = JSONResponse(hls_status_body())
             response.headers['Cache-Control'] = 'no-store'
             return response
 
-        @app.route('/hls/playlist.m3u8')
+        @app.get('/hls/playlist.m3u8')
         def hls_playlist():
             if HLS_STATE['mode'] in ('none', 'file', 'parsing', 'pending'):
-                return jsonify({'error': 'not ready'}), 404
-            response = make_response(hls_playlist_body())
-            response.headers['Content-Type'] = 'application/vnd.apple.mpegurl'
+                return JSONResponse({'error': 'not ready'}, status_code=404)
+            response = Response(hls_playlist_body(),
+                                media_type='application/vnd.apple.mpegurl')
             response.headers['Cache-Control'] = 'no-store'
             return response
 
-        @app.route('/hls/key.bin')
+        @app.get('/hls/key.bin')
         def hls_key():
-            return send_file(os.path.join(HLS_DIR, 'key.bin'),
-                             mimetype='application/octet-stream')
+            return FileResponse(os.path.join(HLS_DIR, 'key.bin'),
+                                media_type='application/octet-stream')
 
-        @app.route('/hls/segment.ts')
-        def hls_segment():
+        @app.get('/hls/segment.ts')
+        def hls_segment(request: Request):
             try:
-                index = int(request.args.get('n'))
+                index = int(request.query_params.get('n'))
             except (TypeError, ValueError):
-                return jsonify({'error': 'invalid segment'}), 400
+                return JSONResponse({'error': 'invalid segment'}, status_code=400)
             # Refusing anything past the published prefix is the server's real
             # behaviour, and the only way a test can tell a player that respects
             # the playlist from one that guesses ahead.
             if index < 0 or index >= min(int(HLS_STATE['ready']), HLS_SEGMENTS):
-                return jsonify({'error': 'segment not ready'}), 404
-            return send_file(os.path.join(HLS_DIR, HLS_SEGMENT_NAME % index),
-                             mimetype='video/mp2t')
+                return JSONResponse({'error': 'segment not ready'}, status_code=404)
+            return FileResponse(os.path.join(HLS_DIR, HLS_SEGMENT_NAME % index),
+                                media_type='video/mp2t')
 
-    @app.route('/manualTask', methods=['POST'])
-    def manual_task():
-        MANUAL_TASKS.append(request.get_json(force=True, silent=True) or {})
-        return '{"status":"200"}'
+    @app.post('/manualTask')
+    async def manual_task(request: Request):
+        try:
+            body = await request.json()
+        except Exception:
+            body = {}
+        MANUAL_TASKS.append(body if isinstance(body, dict) else {})
+        return Response('{"status":"200"}', media_type='text/html')
 
-    @app.route('/manualTask/_seen')
+    @app.get('/manualTask/_seen')
     def manual_tasks_seen():
-        return jsonify(MANUAL_TASKS)
+        return JSONResponse(MANUAL_TASKS)
 
-    @app.route('/get_server_info')
+    @app.get('/get_server_info')
     def server_info():
-        return jsonify(dashboard_bootstrap()['serverInfo'])
+        return JSONResponse(dashboard_bootstrap()['serverInfo'])
 
-    @app.route('/watch/time', methods=['GET', 'POST'])
-    def watch_time():
-        data = request.args if request.method == 'GET' else (request.get_json() or request.form)
+    @app.api_route('/watch/time', methods=['GET', 'POST'])
+    async def watch_time(request: Request):
+        if request.method == 'GET':
+            data = dict(request.query_params)
+        else:
+            try:
+                body = await request.json()
+            except Exception:
+                body = None
+            if isinstance(body, dict) and body:
+                data = body
+            else:
+                try:
+                    data = dict(await request.form())
+                except Exception:
+                    data = {}
         kind = data.get('type')
         sn = data.get('sn')
         if kind == 'set':
@@ -669,84 +700,83 @@ def create_app(logged_in=True, catalog=True, hls=True):
             except (TypeError, ValueError):
                 pass
             WATCH_TIMES[sn] = entry
-            return '{"status":"200"}'
+            return Response('{"status":"200"}', media_type='text/html')
         if kind == 'del':
             WATCH_TIMES.pop(sn, None)
-            return '{"status":"200"}'
+            return Response('{"status":"200"}', media_type='text/html')
         if kind == 'get':
             if not sn:
-                return jsonify(WATCH_TIMES)
-            return jsonify(WATCH_TIMES.get(sn, {'time': 0, 'ended': False}))
-        return '{"status":"404", "msg":"Invalid type"}'
+                return JSONResponse(WATCH_TIMES)
+            return JSONResponse(WATCH_TIMES.get(sn, {'time': 0, 'ended': False}))
+        return Response('{"status":"404", "msg":"Invalid type"}', media_type='text/html')
 
-    @app.route('/get_video.mp4')
+    @app.get('/get_video.mp4')
     def get_video():
         # The fixture is VP9/Opus rather than H.264: Playwright's bundled
         # Chromium ships without the proprietary codecs, and the browser goes by
-        # the Content-Type here, not by the route's .mp4 name. send_file handles
-        # the Range requests the player issues while seeking.
-        return send_file(os.path.join(FIXTURES, 'sample.webm'), mimetype='video/webm',
-                         conditional=True)
+        # the Content-Type here, not by the route's .mp4 name. FileResponse
+        # handles the Range requests the player issues while seeking.
+        return FileResponse(os.path.join(FIXTURES, 'sample.webm'), media_type='video/webm')
 
-    @app.route('/thumbnail.jpg')
-    def thumbnail():
+    @app.get('/thumbnail.jpg')
+    def thumbnail(request: Request):
         # The real server grabs this frame out of the downloaded episode with
         # ffmpeg and 404s when there is no file to grab from; NO_THUMBNAIL_SN
         # stands in for that case so the gradient fallback stays covered.
-        sn = request.args.get('id')
+        sn = request.query_params.get('id')
         if not sn or sn == NO_THUMBNAIL_SN:
-            return jsonify({'error': 'thumbnail unavailable'}), 404
-        return send_file(os.path.join(FIXTURES, 'sample-thumb.jpg'), mimetype='image/jpeg')
+            return JSONResponse({'error': 'thumbnail unavailable'}, status_code=404)
+        return FileResponse(os.path.join(FIXTURES, 'sample-thumb.jpg'), media_type='image/jpeg')
 
-    @app.route('/get_danmu.ass')
+    @app.get('/get_danmu.ass')
     def get_danmu():
-        response = make_response(send_file(os.path.join(FIXTURES, 'sample.ass')))
+        response = FileResponse(os.path.join(FIXTURES, 'sample.ass'))
         response.headers['Content-Type'] = 'text/plain; charset=utf-8'
         return response
 
-    @app.route('/manifest.webmanifest')
+    @app.get('/manifest.webmanifest')
     def manifest():
-        response = make_response(send_file(os.path.join(STATIC_PATH, 'manifest.webmanifest')))
+        response = FileResponse(os.path.join(STATIC_PATH, 'manifest.webmanifest'))
         response.headers['Content-Type'] = 'application/manifest+json; charset=utf-8'
         return response
 
-    @app.route('/sw.js')
+    @app.get('/sw.js')
     def service_worker():
-        response = make_response(send_file(os.path.join(STATIC_PATH, 'sw.js')))
+        response = FileResponse(os.path.join(STATIC_PATH, 'sw.js'))
         response.headers['Content-Type'] = 'application/javascript; charset=utf-8'
         response.headers['Service-Worker-Allowed'] = '/'
         return response
 
-    @app.route('/favicon.ico')
+    @app.get('/favicon.ico')
     def favicon():
-        return send_file(os.path.join(STATIC_PATH, 'img', 'aniGamerPlus.ico'))
+        return FileResponse(os.path.join(STATIC_PATH, 'img', 'aniGamerPlus.ico'))
 
-    @app.route('/apple-touch-icon.png')
-    @app.route('/apple-touch-icon-precomposed.png')
+    @app.get('/apple-touch-icon.png')
+    @app.get('/apple-touch-icon-precomposed.png')
     def apple_touch_icon():
-        return send_file(os.path.join(STATIC_PATH, 'img', 'pwa', 'apple-touch-icon.png'))
-
-    @app.after_request
-    def after_request(response):
-        response.headers.add('Accept-Ranges', 'bytes')
-        return response
+        return FileResponse(os.path.join(STATIC_PATH, 'img', 'pwa', 'apple-touch-icon.png'))
 
     return app
 
 
-class QuietHandler(WSGIRequestHandler):
-    def log_message(self, *args):
-        pass
+def _free_port():
+    import socket
+    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    sock.bind(('127.0.0.1', 0))
+    port = sock.getsockname()[1]
+    sock.close()
+    return port
 
 
 class HarnessServer(object):
     """Runs the harness on a background thread and exposes its base URL."""
 
     def __init__(self, logged_in=True, catalog=True, hls=True):
-        self.httpd = make_server('127.0.0.1', 0, create_app(logged_in, catalog, hls),
-                                 handler_class=QuietHandler)
-        self.port = self.httpd.server_address[1]
-        self.thread = threading.Thread(target=self.httpd.serve_forever, daemon=True)
+        self.port = _free_port()
+        config = uvicorn.Config(create_app(logged_in, catalog, hls),
+                                host='127.0.0.1', port=self.port, log_level='error')
+        self.server = uvicorn.Server(config)
+        self.thread = threading.Thread(target=self.server.run, daemon=True)
 
     @property
     def url(self):
@@ -754,12 +784,16 @@ class HarnessServer(object):
 
     def __enter__(self):
         self.thread.start()
+        deadline = time.time() + 15
+        while not self.server.started:
+            if time.time() > deadline:
+                raise RuntimeError('harness did not start in time')
+            time.sleep(0.05)
         return self
 
     def __exit__(self, *exc):
-        self.httpd.shutdown()
-        self.httpd.server_close()
-        self.thread.join(timeout=5)
+        self.server.should_exit = True
+        self.thread.join(timeout=10)
 
 
 def head_of(path):

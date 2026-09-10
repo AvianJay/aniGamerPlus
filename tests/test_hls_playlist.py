@@ -17,14 +17,7 @@ import os
 
 import pytest
 
-import gevent.monkey
-# Server.py monkey-patches gevent the moment it is imported. That rewrites the
-# thread-identity functions importlib keys its module locks on, and doing it
-# while pytest holds an import lock raises "cannot release un-acquired lock";
-# gevent's own answer is to patch before the process imports anything, which a
-# test module by definition cannot do. Nothing below runs on gevent -- Flask's
-# test client is an ordinary synchronous call -- so the patch is skipped.
-gevent.monkey.patch_all = lambda *args, **kwargs: None
+from fastapi.testclient import TestClient
 
 import Dashboard.Server as server
 from aniGamerPlus import Config
@@ -99,21 +92,20 @@ def settings(tmp_path):
     return {
         'temp_dir': str(tmp_path),
         'segment_download_mode': True,
-        'dashboard': {'online_watch_requires_login': False},
+        'dashboard': {'online_watch': True, 'online_watch_requires_login': False},
     }
 
 
 @pytest.fixture
 def client(monkeypatch, settings):
-    """Flask test client with the settings and the library both stubbed out.
+    """Starlette test client with the settings and the library both stubbed out.
 
     ``_hls_settings`` is replaced rather than the config file, so the tests never
     touch the operator's real config.json or their real temp directory.
     """
     monkeypatch.setattr(server, '_hls_settings', lambda: settings)
     monkeypatch.setattr(server, '_find_video_entry', lambda sn: None)
-    server.app.config['TESTING'] = True
-    return server.app.test_client()
+    return TestClient(server.app, raise_server_exceptions=True)
 
 
 # ------------------------------------------------------------------- parsing
@@ -346,14 +338,14 @@ def test_status_route_answers_200_even_when_nothing_is_downloading(client):
     """The player has to tell "not downloading" apart from "server broken"."""
     response = client.get('/hls/status.json?id=' + SN)
     assert response.status_code == 200
-    assert response.get_json()['mode'] == 'none'
+    assert response.json()['mode'] == 'none'
     assert response.headers['Cache-Control'] == 'no-store'
 
 
 def test_status_route_never_leaks_the_temp_path(client, temp_dir):
     Config.tasks_progress_rate[int(SN)] = {
         'rate': 5.0, 'filename': '《x》', 'status': '正在下載'}
-    payload = client.get('/hls/status.json?id=' + SN).get_json()
+    payload = client.get('/hls/status.json?id=' + SN).json()
     assert 'temp_dir' not in payload
     assert 'parsed' not in payload
 
@@ -377,8 +369,8 @@ def test_playlist_route_serves_the_prefix(client, temp_dir):
     write_chunks(temp_dir, [0, 1])
     response = client.get('/hls/playlist.m3u8?id=' + SN)
     assert response.status_code == 200
-    assert response.mimetype == 'application/vnd.apple.mpegurl'
-    body = response.get_data(as_text=True)
+    assert response.headers['Content-Type'].startswith('application/vnd.apple.mpegurl')
+    body = response.text
     assert body.count('#EXTINF') == 2
     assert '#EXT-X-ENDLIST' not in body
 
@@ -411,8 +403,8 @@ def test_segment_route_serves_a_landed_chunk(client, temp_dir):
     write_chunks(temp_dir, [0, 1], size=4096)
     response = client.get('/hls/segment.ts?id=%s&n=1' % SN)
     assert response.status_code == 200
-    assert response.mimetype == 'video/mp2t'
-    assert len(response.get_data()) == 4096
+    assert response.headers['Content-Type'].startswith('video/mp2t')
+    assert len(response.content) == 4096
 
 
 def test_segment_route_refuses_a_chunk_beyond_the_published_prefix(client, temp_dir):
@@ -434,7 +426,7 @@ def test_key_route_serves_the_key_only_while_downloading(client, temp_dir):
         f.write(b'0123456789abcdef')
     response = client.get('/hls/key.bin?id=' + SN)
     assert response.status_code == 200
-    assert response.get_data() == b'0123456789abcdef'
+    assert response.content == b'0123456789abcdef'
     assert response.headers['Cache-Control'] == 'no-store'
 
 

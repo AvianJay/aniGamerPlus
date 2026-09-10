@@ -33,7 +33,7 @@ for %%p in ("py -3.11" "py -3.12" "py -3.10" "py -3.9" "py -3.13" "py -3" "pytho
         %%~p -c "import sys" >nul 2>&1
         if not errorlevel 1 (
             if not defined PYANY set "PYANY=%%~p"
-            %%~p -c "import flask,gevent,geventwebsocket,curl_cffi,termcolor,flask_sock" >nul 2>&1
+            %%~p -c "import fastapi,uvicorn,jinja2,curl_cffi,termcolor,multipart" >nul 2>&1
             if not errorlevel 1 set "PY=%%~p"
         )
     )
