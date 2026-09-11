@@ -48,8 +48,8 @@
             <input type="password" class="form-control" id="password" name="password" placeholder="輸入密碼" />
             <button type="submit" class="btn btn-success">登入</button>
         </form>
-        {% if request.args.get('error') %}
-        {% set error_code = request.args.get('error') %}
+        {% if error %}
+        {% set error_code = error %}
         <div class="error-pw alert alert-danger alert-dismissible fade show">
             <button type="button" class="close" data-dismiss="alert">&times;</button>
             {% if error_code == '1' %}

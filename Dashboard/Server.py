@@ -5,104 +5,155 @@
 # @File    : Server.py
 # @Software: PyCharm
 
-# 非阻塞
-from gevent import monkey; monkey.patch_all()
-from gevent import spawn, get_hub, sleep as gevent_sleep
+# FastAPI/ASGI implementation of the Dashboard web server.
+#
+# This is a real migration, not a compatibility wrapper: every route below is
+# a native FastAPI/Starlette route, streaming uses Starlette responses, and
+# the task-progress channel is a native FastAPI WebSocket. No Flask, no
+# flask-sock, no gevent, no monkey patching.
+#
+# Blocking work (curl_cffi network I/O, filesystem reads, ffmpeg, downloader
+# threads, PBKDF2/scrypt hashing, config/userdata I/O, command handling) must
+# never run on the ASGI event loop. The convention in this file:
+# plain ``def`` endpoints are executed by FastAPI in its worker threadpool, so
+# ordinary blocking calls inside them are safe. ``async def`` endpoints run
+# authentication/settings guards in the threadpool before parsing bounded
+# request bodies, then dispatch remaining blocking work there as well.
+# ``_offload()`` is therefore a direct call -- the caller is already off the
+# event loop.
 
+import asyncio
 import json, sys, os, re, time
+import tempfile
 import threading, traceback
-import random, string, hashlib, secrets
+import random, string, hashlib, hmac, secrets
 import platform, shutil, subprocess
 
 from curl_cffi import requests as curl_requests
 from aniGamerPlus import Config
-from flask import Flask, request, jsonify, Response, redirect, make_response, g
-from flask import render_template, send_file, stream_with_context
 from aniGamerPlus import __cui as cui
 from aniGamerPlus import __get_danmu_only
 import Catalog
-import logging, termcolor
+import logging
 from ColorPrint import err_print
 from logging.handlers import TimedRotatingFileHandler
 import mimetypes
-from werkzeug.http import http_date
-from werkzeug.security import generate_password_hash, check_password_hash
+from email.utils import formatdate
 import urllib.parse
-from functools import wraps
-# ws 支持
-import ssl
-from flask_sock import Sock
-from gevent.pywsgi import WSGIServer
-from geventwebsocket.exceptions import WebSocketError
-from geventwebsocket.handler import WebSocketHandler
 from datetime import datetime
 from plugin_system import PluginManager
+
+from fastapi import FastAPI, Request, WebSocket, WebSocketDisconnect
+from fastapi.responses import (
+    JSONResponse, PlainTextResponse, RedirectResponse, Response,
+    StreamingResponse, FileResponse,
+)
+from fastapi.staticfiles import StaticFiles
+from fastapi.templating import Jinja2Templates
+from starlette.concurrency import run_in_threadpool
+import uvicorn
 
 mimetypes.add_type('text/css', '.css')
 mimetypes.add_type('application/x-javascript', '.js')
 template_path = os.path.join(Config.get_working_dir(), 'Dashboard', 'templates')
 static_path = os.path.join(Config.get_working_dir(), 'Dashboard', 'static')
-app = Flask(__name__, template_folder=template_path, static_folder=static_path)
-app.debug = False
-sock = Sock(app)
+templates = Jinja2Templates(directory=template_path)
+
+# No API docs: the original server exposed no schema endpoints, and this is a
+# self-hosted dashboard, not a public API.
+app = FastAPI(docs_url=None, redoc_url=None, openapi_url=None)
+app.mount('/static', StaticFiles(directory=static_path), name='static')
+
+# Dashboard requests are small JSON/forms. Bound both declared and streamed
+# bodies so unauthenticated clients cannot make Starlette buffer arbitrary
+# amounts of memory before a route can authenticate them.
+MAX_REQUEST_BODY_BYTES = 2 * 1024 * 1024
+
+
+class _RequestBodyTooLarge(Exception):
+    pass
+
+
+class _RequestBodyLimitMiddleware:
+    def __init__(self, asgi_app, max_body_size):
+        self.app = asgi_app
+        self.max_body_size = max_body_size
+
+    async def __call__(self, scope, receive, send):
+        if scope['type'] != 'http':
+            await self.app(scope, receive, send)
+            return
+
+        headers = dict(scope.get('headers') or [])
+        try:
+            content_length = int(headers.get(b'content-length', b'0'))
+        except (TypeError, ValueError):
+            content_length = 0
+        if content_length > self.max_body_size:
+            await JSONResponse({'detail': 'Request body too large'}, status_code=413)(
+                scope, receive, send)
+            return
+
+        received = 0
+        response_started = False
+
+        async def limited_receive():
+            nonlocal received
+            message = await receive()
+            if message['type'] == 'http.request':
+                received += len(message.get('body', b''))
+                if received > self.max_body_size:
+                    raise _RequestBodyTooLarge
+            return message
+
+        async def tracked_send(message):
+            nonlocal response_started
+            if message['type'] == 'http.response.start':
+                response_started = True
+            await send(message)
+
+        try:
+            await self.app(scope, limited_receive, tracked_send)
+        except _RequestBodyTooLarge:
+            if response_started:
+                raise
+            await JSONResponse({'detail': 'Request body too large'}, status_code=413)(
+                scope, receive, send)
+
+
+app.add_middleware(_RequestBodyLimitMiddleware,
+                   max_body_size=MAX_REQUEST_BODY_BYTES)
 
 # 日志处理
-# logger = logging.getLogger('werkzeug')
-logger = logging.getLogger('geventwebsocket')
+logger = logging.getLogger('dashboard')
 logging.basicConfig(level=logging.INFO)  # 记录访问
 web_log_path = os.path.join(Config.get_working_dir(), 'logs', 'web.log')
+os.makedirs(os.path.dirname(web_log_path), exist_ok=True)
 handler = TimedRotatingFileHandler(filename=web_log_path, when='midnight', backupCount=7, encoding='utf-8')
 handler.suffix = '%Y-%m-%d.log'
 handler.extMatch = re.compile(r'^\d{4}-\d{2}-\d{2}.log')
 logger.addHandler(handler)
 logger.propagate = False  # 不在控制台上输出
+logging.getLogger('uvicorn.access').addHandler(handler)
 
-# websocket鉴权需要的 token, 随机一个 32 位初始 token
+# websocket鉴权不再需要 token, 进度通道直接认管理員 cookie (见 tasks_progress).
+# 这个 token 只保留给 /data/get_token 的兼容回應 (monitor.js 之前的版本会来取).
 websocket_token = ''.join(random.sample(string.ascii_letters + string.digits, 32))
 
 
-# 处理 Flask 写日志到文件带有颜色控制符的问题
-def colored(text, color=None, on_color=None, attrs=None):
-    who_invoked = traceback.extract_stack()[-2][2]  # 函数调用人
-    if who_invoked == 'log_request':
-        # 如果是来自 Flask/werkzeug 的调用
-        return text
-    else:
-        # 来自其他的调用正常高亮
-        COLORS = termcolor.COLORS
-        HIGHLIGHTS = termcolor.HIGHLIGHTS
-        ATTRIBUTES = termcolor.ATTRIBUTES
-        RESET = termcolor.RESET
-        if os.getenv('ANSI_COLORS_DISABLED') is None:
-            fmt_str = '\033[%dm%s'
-            if color is not None:
-                text = fmt_str % (COLORS[color], text)
-            if on_color is not None:
-                text = fmt_str % (HIGHLIGHTS[on_color], text)
-            if attrs is not None:
-                for attr in attrs:
-                    text = fmt_str % (ATTRIBUTES[attr], text)
-            text += RESET
-        return text
-
-
-termcolor.colored = colored
-app.logger.addHandler(handler)
-
-
-# ssl log ignore
-class SafeWebSocketHandler(WebSocketHandler):
-    def log_exception(self, exc_info):
-        if isinstance(exc_info[1], ssl.SSLEOFError):
-            # print("[忽略] SSL EOF 發生，來自客戶端非正常斷開")
-            pass
-        else:
-            super().log_exception(exc_info)
+@app.middleware('http')
+async def add_accept_ranges(request: Request, call_next):
+    # 原 Flask 版 after_request 给每条回應都加 Accept-Ranges: bytes, 播放器和
+    # 下载器靠它判断能不能断点续传, 原样保留.
+    response = await call_next(request)
+    if 'accept-ranges' not in response.headers:
+        response.headers['Accept-Ranges'] = 'bytes'
+    return response
 
 
 # 8 KB 一塊是給區網外的細線路留的保守值, 但代價是一集 500 MB 要跑六萬多次
-# read + write. 播放器一開就是幾十 MB 的 Range, 每一塊都要繞一趟 gevent 的
-# 排程, CPU 全花在切塊上. 256 KB 仍然遠小於任何一個播放器的緩衝區, 記憶體
+# read + write. 播放器一開就是幾十 MB 的 Range, 每一塊都要繞一趟排程,
+# CPU 全花在切塊上. 256 KB 仍然遠小於任何一個播放器的緩衝區, 記憶體
 # 占用可以忽略, 但系統呼叫少了三十倍.
 VIDEO_CHUNK_SIZE = 256 * 1024
 
@@ -119,6 +170,11 @@ def generate_file(path, start, length, chunk_size=VIDEO_CHUNK_SIZE):
                 break
             yield data
             remaining -= len(data)
+
+
+def http_date(timestamp):
+    """RFC 1123 GMT 时间, 原来由 werkzeug.http.http_date 提供."""
+    return formatdate(timestamp, usegmt=True)
 
 
 def get_file_headers(path):
@@ -150,9 +206,16 @@ def _apply_cache_headers(resp, current_settings, max_age):
 # 什麼都不做. 兩邊的簽名必須一致, 否則 /checknow 只會拋 TypeError.
 checknow = lambda: None
 command_handler = None
-userdata_lock = threading.Lock()
+# Single global userdata lock. RLock so load/save stay re-entrant inside the
+# transactional helper below (and inside load's own normalize-and-save path);
+# there is exactly one userdata lock -- no inconsistent lock ordering.
+userdata_lock = threading.RLock()
 userdata_path = os.path.join(Config.get_working_dir(), 'Dashboard', 'userdata.json')
 PLUGIN_RELOAD_INTERVAL_SECONDS = 30
+
+# 新密码一律用这个格式存; _check_hash 同时认得 werkzeug 写下的旧格式, 老用户
+# 不必改密码就能继续登入.
+_PBKDF2_HASH_ITERATIONS = 260000
 
 
 def _generate_token():
@@ -168,13 +231,83 @@ def _normalize_role(value):
 
 
 def _hash_password(password):
-    return generate_password_hash(str(password))
+    # Canonical format going forward is werkzeug-compatible: the salt is a
+    # literal ASCII string and the digest runs over salt.encode().
+    salt = secrets.token_hex(16)
+    digest = hashlib.pbkdf2_hmac(
+        'sha256', str(password).encode('utf-8'),
+        salt.encode('utf-8'), _PBKDF2_HASH_ITERATIONS)
+    return 'pbkdf2:sha256:%d$%s$%s' % (_PBKDF2_HASH_ITERATIONS, salt, digest.hex())
+
+
+def _check_hash(stored, password):
+    """验 werkzeug 留下的旧哈希 (pbkdf2 与 scrypt 两种写法) 以及本模块的新哈希.
+
+    userdata.json 里躺着的是 generate_password_hash 写的东西, 换哈希库不能把
+    老用户锁在门外, 所以这里把它的两种字符串格式都认下来, 输对了就过.
+
+    werkzeug 把 salt 当成字面 ASCII 字符串, 摘要跑在 salt.encode() 上.
+    迁移初期的 _hash_password 误用了 bytes.fromhex(salt); 那些已写下的哈希
+    在这里用 fallback 继续认, 新写的一律走 ASCII 语义.
+    """
+    try:
+        method, _, rest = str(stored).partition('$')
+        salt, _, hashed = rest.partition('$')
+        if not method or not salt or not hashed:
+            return False
+        secret = str(password).encode('utf-8')
+        if method.startswith('pbkdf2:sha256:'):
+            iterations = int(method.rsplit(':', 1)[1])
+            candidate = hashlib.pbkdf2_hmac(
+                'sha256', secret, salt.encode('utf-8'), iterations)
+            if hmac.compare_digest(candidate.hex(), hashed):
+                return True
+            try:
+                legacy = hashlib.pbkdf2_hmac(
+                    'sha256', secret, bytes.fromhex(salt), iterations)
+            except (ValueError, TypeError):
+                return False
+            return hmac.compare_digest(legacy.hex(), hashed)
+        if method.startswith('scrypt:'):
+            try:
+                _, n, r, p = method.split(':')
+                n_i, r_i, p_i = int(n), int(r), int(p)
+            except (ValueError, TypeError):
+                return False
+            # werkzeug passes maxmem=132*n*r*p to hashlib.scrypt; without it
+            # OpenSSL rejects its default parameters ("memory limit exceeded").
+            # Bounds keep a malformed local hash from triggering unbounded
+            # allocation: real hashes use n=2**14..2**15, r=8, p=1.
+            if n_i < 2 or r_i < 1 or p_i < 1:
+                return False
+            if n_i > 2 ** 20 or r_i > 64 or p_i > 64:
+                return False
+            maxmem = 132 * n_i * r_i * p_i
+            dklen = len(hashed) // 2
+            try:
+                candidate = hashlib.scrypt(
+                    secret, salt=salt.encode('utf-8'),
+                    n=n_i, r=r_i, p=p_i, dklen=dklen, maxmem=maxmem)
+            except (ValueError, TypeError, MemoryError, OverflowError):
+                return False
+            if hmac.compare_digest(candidate.hex(), hashed):
+                return True
+            try:
+                legacy = hashlib.scrypt(
+                    secret, salt=bytes.fromhex(salt),
+                    n=n_i, r=r_i, p=p_i, dklen=dklen, maxmem=maxmem)
+            except (ValueError, TypeError, MemoryError, OverflowError):
+                return False
+            return hmac.compare_digest(legacy.hex(), hashed)
+    except (ValueError, TypeError):
+        return False
+    return False
 
 
 def _verify_password(user, password):
     password = str(password or '')
     password_hash = user.get('password_hash')
-    if password_hash and check_password_hash(password_hash, password):
+    if password_hash and _check_hash(password_hash, password):
         return True
     legacy_password = user.get('password')
     return legacy_password is not None and secrets.compare_digest(str(legacy_password), password)
@@ -224,13 +357,55 @@ def _build_default_user(default_user):
     return normalized
 
 
+def _save_userdata_locked(userdata):
+    """Atomic filesystem write. Caller must hold userdata_lock.
+
+    Writes a temp file in the same directory, flushes/fsyncs, then
+    os.replace() so readers never see a truncated document. On failure the
+    temp file is removed and the destination is left untouched.
+    """
+    directory = os.path.dirname(os.path.abspath(userdata_path))
+    if directory:
+        os.makedirs(directory, exist_ok=True)
+    else:
+        directory = '.'
+    fd, tmp_name = tempfile.mkstemp(prefix='.userdata-', suffix='.tmp', dir=directory)
+    try:
+        with os.fdopen(fd, 'w', encoding='utf-8') as f:
+            json.dump(userdata, f, ensure_ascii=False, indent=4)
+            f.flush()
+            try:
+                os.fsync(f.fileno())
+            except OSError:
+                pass
+        os.replace(tmp_name, userdata_path)
+        try:
+            dir_fd = os.open(directory, os.O_RDONLY | getattr(os, 'O_DIRECTORY', 0))
+        except OSError:
+            dir_fd = None
+        if dir_fd is not None:
+            try:
+                try:
+                    os.fsync(dir_fd)
+                except OSError:
+                    pass
+            finally:
+                os.close(dir_fd)
+    except BaseException:
+        try:
+            os.unlink(tmp_name)
+        except OSError:
+            pass
+        raise
+
+
 def save_user_data(userdata):
     with userdata_lock:
-        with open(userdata_path, 'w', encoding='utf-8') as f:
-            json.dump(userdata, f, ensure_ascii=False, indent=4)
+        _save_userdata_locked(userdata)
 
 
-def load_user_data():
+def _load_userdata_locked():
+    """Read + normalize + merge default users. Caller must hold userdata_lock."""
     settings = Config.read_settings()
     default_users = settings['dashboard']['user_control']['default_user']
     changed = False
@@ -282,8 +457,41 @@ def load_user_data():
 
     userdata = {"users": users}
     if changed:
-        save_user_data(userdata)
+        _save_userdata_locked(userdata)
     return userdata
+
+
+def load_user_data():
+    """Synchronized read: holds the userdata lock for the whole
+    read-normalize-(maybe-)write so readers never race a truncate/rewrite."""
+    with userdata_lock:
+        return _load_userdata_locked()
+
+
+def update_user_data(mutator):
+    """Run a complete read-modify-write under one lock scope.
+
+    ``mutator`` receives the live ``userdata`` dict and returns either
+    ``(result, dirty)`` or just ``result`` (saved when dirty is truthy).
+    Implemented via the public load/save funnels so monkeypatched
+    persistence in tests keeps working; the outer RLock still serializes
+    concurrent transactions.
+    """
+    with userdata_lock:
+        userdata = load_user_data()
+        outcome = mutator(userdata)
+        if isinstance(outcome, tuple) and len(outcome) == 2:
+            result, dirty = outcome
+        else:
+            result, dirty = outcome, True
+        if dirty:
+            save_user_data(userdata)
+        return result
+
+
+# Alias kept for readability at call sites / tests.
+def userdata_transaction(mutator):
+    return update_user_data(mutator)
 
 
 def find_user_by_token(token, userdata=None):
@@ -327,63 +535,150 @@ def _clear_login_cookies(response):
     return response
 
 
-def user_page_required(view):
-    @wraps(view)
-    def wrapped(*args, **kwargs):
-        if not Config.read_settings()['dashboard']['user_control']['enabled']:
-            return view(*args, **kwargs)
-        user = find_user_by_token(request.cookies.get('token'))
-        if not user:
-            return redirect("./login?error=2")
-        g.current_user = user
-        return view(*args, **kwargs)
-    return wrapped
+def _redirect(url):
+    # Starlette 默认 307, Flask 是 302: 浏览器/APP 都认的是 302, 必须显式指定.
+    return RedirectResponse(url, status_code=302)
 
 
-def admin_page_required(view):
-    @wraps(view)
-    def wrapped(*args, **kwargs):
-        if not Config.read_settings()['dashboard']['user_control']['enabled']:
-            return view(*args, **kwargs)
-        user = find_user_by_token(request.cookies.get('token'))
-        if not user:
-            return redirect("./login?error=2")
-        if user.get('role') != 'admin':
-            destination = "./watch" if Config.read_settings()['dashboard'].get('online_watch') else "/"
-            return redirect(destination)
-        g.current_user = user
-        return view(*args, **kwargs)
-    return wrapped
+def _html_response(text, status_code=200):
+    # 原 Flask 版直接 return 字符串, 默认 Content-Type 是 text/html, 原样保留.
+    return Response(content=text, media_type='text/html', status_code=status_code)
 
 
-def admin_api_required(view):
-    @wraps(view)
-    def wrapped(*args, **kwargs):
-        if not Config.read_settings()['dashboard']['user_control']['enabled']:
-            return view(*args, **kwargs)
-        user = find_user_by_token(request.cookies.get('token'))
-        if not user:
-            return jsonify({'success': False, 'message': 'login required'}), 401
-        if user.get('role') != 'admin':
-            return jsonify({'success': False, 'message': 'admin required'}), 403
-        g.current_user = user
-        return view(*args, **kwargs)
-    return wrapped
+def _user_page_guard(request, current_settings):
+    """user_page_required 的 FastAPI 版: 返回 None 表示放行, 否则直接回給客户端."""
+    if not current_settings['dashboard']['user_control']['enabled']:
+        return None
+    user = find_user_by_token(request.cookies.get('token'))
+    if not user:
+        return _redirect("./login?error=2")
+    request.state.current_user = user
+    return None
 
 
-def _handle_web_console_command():
-    payload = request.get_json(silent=True) or {}
-    raw_command = str(payload.get('command', '')).strip()
+def _admin_page_guard(request, current_settings):
+    if not current_settings['dashboard']['user_control']['enabled']:
+        return None
+    user = find_user_by_token(request.cookies.get('token'))
+    if not user:
+        return _redirect("./login?error=2")
+    if user.get('role') != 'admin':
+        destination = "./watch" if current_settings['dashboard'].get('online_watch') else "/"
+        return _redirect(destination)
+    request.state.current_user = user
+    return None
+
+
+def _admin_api_guard(request, current_settings):
+    if not current_settings['dashboard']['user_control']['enabled']:
+        return None
+    user = find_user_by_token(request.cookies.get('token'))
+    if not user:
+        return JSONResponse({'success': False, 'message': 'login required'}, status_code=401)
+    if user.get('role') != 'admin':
+        return JSONResponse({'success': False, 'message': 'admin required'}, status_code=403)
+    request.state.current_user = user
+    return None
+
+
+def _online_watch_gate(current_settings):
+    # 原版路由是 import 时按 online_watch 开关有条件注册的, 关掉就 404. 这里改成
+    # 每次请求现看开关, 行为一样 (关掉就是 404), 但改配置不必重启.
+    if current_settings['dashboard'].get('online_watch'):
+        return None
+    return JSONResponse({'error': 'not found'}, status_code=404)
+
+
+def _user_control_gate(current_settings):
+    # /login 等路由原版只在 user_control 打开时才存在, 关掉就是 404, 原样保留.
+    if current_settings['dashboard']['user_control']['enabled']:
+        return None
+    return JSONResponse({'error': 'not found'}, status_code=404)
+
+
+def _admin_api_preflight(request):
+    current_settings = _get_current_settings()
+    return _admin_api_guard(request, current_settings)
+
+
+def _admin_page_preflight(request):
+    current_settings = _get_current_settings()
+    gated = _user_control_gate(current_settings)
+    if gated is not None:
+        return gated
+    return _admin_page_guard(request, current_settings)
+
+
+def _user_page_preflight(request):
+    current_settings = _get_current_settings()
+    gated = _user_control_gate(current_settings)
+    if gated is not None:
+        return gated
+    return _user_page_guard(request, current_settings)
+
+
+def _login_preflight():
+    return _user_control_gate(_get_current_settings())
+
+
+def _register_preflight():
+    current_settings = _get_current_settings()
+    gated = _user_control_gate(current_settings)
+    if gated is not None:
+        return gated
+    if not current_settings['dashboard']['user_control']['allow_register']:
+        return _html_response('<script>alert("註冊功能未啟用");history.back();</script>')
+    return None
+
+
+def _watch_time_preflight(token):
+    if find_user_by_token(token):
+        return None
+    return _html_response('{"status":"403", "msg":"Invalid token"}')
+
+
+async def _form_or_json(request):
+    """Flask 版 `request.form if request.form else request.get_json()` 的等价写法."""
+    try:
+        form = await request.form()
+    except Exception:
+        form = None
+    if form:
+        return dict(form)
+    try:
+        data = await request.json()
+    except Exception:
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+async def _json_then_form(request):
+    """Flask 版 `request.get_json() or request.form` 的等价写法 (register/webtime 用这个顺序)."""
+    try:
+        data = await request.json()
+    except Exception:
+        data = None
+    if isinstance(data, dict) and data:
+        return data
+    try:
+        form = await request.form()
+    except Exception:
+        return {}
+    return dict(form)
+
+
+def _run_console_command_blocking(raw_command):
+    """Sync console-command execution; runs in a worker thread via run_in_threadpool."""
     if not raw_command:
-        return jsonify({'success': False, 'message': '請輸入指令'}), 400
+        return JSONResponse({'success': False, 'message': '請輸入指令'}, status_code=400)
 
     if not callable(command_handler):
-        return jsonify({'success': False, 'message': '指令處理器尚未初始化'}), 503
+        return JSONResponse({'success': False, 'message': '指令處理器尚未初始化'}, status_code=503)
 
     try:
         result = command_handler(raw_command, show_detail=True)
     except BaseException as e:
-        return jsonify({'success': False, 'message': str(e)}), 500
+        return JSONResponse({'success': False, 'message': str(e)}, status_code=500)
 
     success = bool(result.get('success', False))
     body = {
@@ -395,7 +690,18 @@ def _handle_web_console_command():
         body['commands'] = result.get('commands', [])
 
     err_print(0, 'Dashboard', f'通過 Web 控制臺執行指令: {raw_command}', no_sn=True, status=2 if success else 1)
-    return jsonify(body), 200 if success else 400
+    return JSONResponse(body, status_code=200 if success else 400)
+
+
+async def _handle_web_console_command(request):
+    try:
+        payload = await request.json()
+    except Exception:
+        payload = {}
+    if not isinstance(payload, dict):
+        payload = {}
+    raw_command = str(payload.get('command', '')).strip()
+    return await run_in_threadpool(_run_console_command_blocking, raw_command)
 
 caches = {}
 danmu_update_timestamps = {}
@@ -504,10 +810,10 @@ def _keyed_lock(name):
 
 
 def _offload(func, *args, **kwargs):
-    # curl_cffi 的 socket I/O 在 C 里, monkey.patch_all 管不到, 直接在 greenlet
-    # 里调用会把整个 hub 停住 —— 下载器、WebSocket 进度、别的请求全一起冻结.
-    # 它在 libcurl perform 期间放开 GIL, 丢进 gevent 的真线程池就不挡别人.
-    return get_hub().threadpool.apply(func, args, kwargs)
+    # 原 Flask/gevent 版把 curl_cffi 丢进 hub 的真线程池, 因为补丁管
+    # 不到 C 里的 socket I/O. 现在 plain-def 路由本来就跑在 FastAPI 的工作线程
+    # 池里, 根本不在事件循环上, 直接调就行 —— 再套一层线程池只是多一次切换.
+    return func(*args, **kwargs)
 
 
 def _curl_perform(session_kwargs, url, request_kwargs):
@@ -516,11 +822,11 @@ def _curl_perform(session_kwargs, url, request_kwargs):
 
 
 def _bahamut_get(url, timeout=10, allow_redirects=True, extra_headers=None):
-    """跟 Config.bahamut_request 用同一套指纹, 但配置在 greenlet 上读完再下线程池.
+    """跟 Config.bahamut_request 用同一套指纹, 但配置在工作线程上读完再请求.
 
     read_settings() 顺手会删过期日志、必要时重写配置文件, 这些副作用一直只在
-    greenlet 里发生, 彼此不会交错; 搬到线程池里就可能两个线程同时删同一个文件.
-    所以线程池那一步只留 libcurl 的 perform.
+    请求线程里发生, 彼此不会交错; 而 libcurl 的 perform 本来就是阻塞调用,
+    在工作线程里跑刚刚好.
     """
     settings = Config.read_settings()
     fingerprint = settings.get('browser_fingerprint') or {}
@@ -730,7 +1036,7 @@ def _fetch_list_html(page):
             return resp.text
         if status != 429:
             break
-        gevent_sleep(delay)
+        time.sleep(delay)
         delay *= 2
     raise IOError('animeList.php page %d: HTTP %s' % (page, status))
 
@@ -747,7 +1053,7 @@ def _crawl_catalog_all():
     total = Catalog.total_pages(html)
     missing = []
     for page in range(2, total + 1):
-        gevent_sleep(CATALOG_CRAWL_DELAY)
+        time.sleep(CATALOG_CRAWL_DELAY)
         try:
             items.extend(Catalog.parse_list_page(_fetch_list_html(page)))
         except BaseException:
@@ -800,7 +1106,8 @@ def _get_catalog_all():
     if _catalog_all_is_fresh(cached):
         return cached.get('items') or []
     if cached and cached.get('items'):
-        spawn(_refresh_catalog_all)
+        thread = threading.Thread(target=_refresh_catalog_all, daemon=True)
+        thread.start()
         return cached.get('items') or []
     return (_refresh_catalog_all() or {}).get('items') or []
 
@@ -884,12 +1191,12 @@ def _catalog_episodes(info):
     return groups
 
 
-def _catalog_login_error(current_settings):
+def _catalog_login_error(current_settings, request):
     # 片单跟片库同一道门: 设了要登入才能看, 片单也不该是敞开的
     if current_settings['dashboard']['online_watch_requires_login']:
         vaild_user, user_role = verify_user(request.cookies)
         if not vaild_user:
-            return jsonify({"error": "login required"}), 403
+            return JSONResponse({"error": "login required"}, status_code=403)
     return None
 
 
@@ -928,10 +1235,10 @@ def _thumbnail_recently_failed(sn):
 
 
 def _thumbnail_unavailable():
-    resp = jsonify({"error": "thumbnail unavailable"})
+    resp = JSONResponse({"error": "thumbnail unavailable"}, status_code=404)
     # 让浏览器也记着这次没图, 否则首页每重绘一次就要再问服务端一遍
     resp.headers['Cache-Control'] = 'private, max-age=%d' % THUMBNAIL_RETRY_INTERVAL
-    return resp, 404
+    return resp
 
 
 def _should_update_danmu(sn):
@@ -971,7 +1278,7 @@ def _invalidate_settings_cache():
 def _get_current_settings():
     now = time.monotonic()
     cached = _settings_cache['settings']
-    # 不上鎖: greenlet 之間不會撕裂, 最壞只是兩個人同時去讀一次設定
+    # 不上鎖: 请求跑在各自的工作线程里, 最壞只是兩個人同時去讀一次設定
     if cached is None or now - _settings_cache['at'] > SETTINGS_TTL:
         cached = Config.read_settings()
         _settings_cache['settings'] = cached
@@ -991,7 +1298,7 @@ def _get_dashboard_flags(current_settings=None):
     }
 
 
-def _get_request_user(current_settings=None):
+def _get_request_user(request, current_settings=None):
     current_settings = current_settings or _get_current_settings()
     if not current_settings.get('dashboard', {}).get('user_control', {}).get('enabled'):
         return None
@@ -1007,9 +1314,9 @@ def _build_safe_user(user):
     }
 
 
-def _build_dashboard_bootstrap(extra=None, current_settings=None):
+def _build_dashboard_bootstrap(request, extra=None, current_settings=None):
     current_settings = current_settings or _get_current_settings()
-    user = _get_request_user(current_settings)
+    user = _get_request_user(request, current_settings)
     bootstrap = {
         'serverInfo': _get_dashboard_flags(current_settings),
         'loggedIn': bool(user),
@@ -1018,6 +1325,16 @@ def _build_dashboard_bootstrap(extra=None, current_settings=None):
     if extra:
         bootstrap.update(extra)
     return bootstrap
+
+
+def _render(request, name, context=None, status_code=200):
+    # 原 Flask 版 context_processor 给每个模板都塞 dashboard_bootstrap, 这里在
+    # 渲染点拼进去, 模板拿到的变量名不变.
+    merged = {'request': request,
+              'dashboard_bootstrap': _build_dashboard_bootstrap(request)}
+    if context:
+        merged.update(context)
+    return templates.TemplateResponse(request, name, merged, status_code=status_code)
 
 
 # ----------------------------------------------------------------- 邊看邊下載
@@ -1287,7 +1604,7 @@ def _hls_state(sn, current_settings):
     return state
 
 
-def _hls_bootstrap_entry(sn, current_settings):
+def _hls_bootstrap_entry(sn, current_settings, request):
     """給正在下載的集數捏一筆 video_list 形狀的資料.
 
     /watch 之所以能擺出播放器而不是「找不到這一集影片」, 就是因為 watch.js 拿到的
@@ -1299,7 +1616,7 @@ def _hls_bootstrap_entry(sn, current_settings):
 
     task = _hls_task(sn)
     pending = task is None
-    if pending and not request.args.get('streaming'):
+    if pending and not request.query_params.get('streaming'):
         # /manualTask 一送出就回, 真正建立進度紀錄是那條執行緒跑到 Anime.download()
         # 之後的事. streaming=1 就是「我剛按下去」的憑據, 讓播放頁自己去等
         return None
@@ -1408,8 +1725,8 @@ def _stream_dict(sn):
             raise
         except BaseException as error:
             # BaseException 不是手滑: Anime.__get_m3u8_dict() 碰到地區限制、帳號
-            # 問題或去廣告失敗是直接 sys.exit(1), 在 threadpool 裡那會變成
-            # SystemExit 掛在 future 上. 讓它飛出去這條請求就只會是一個沒說明的 500
+            # 問題或去廣告失敗是直接 sys.exit(1), 在工作线程裡那會變成
+            # SystemExit 掛在呼叫上. 讓它飛出去這條請求就只會是一個沒說明的 500
             err_print(sn_key, '線上畫質', '解析可用畫質失敗: %s' % error,
                       status=1, display=False)
             m3u8_dict = {}
@@ -1564,10 +1881,10 @@ def _stream_render(sn, res, parsed):
     return '\n'.join(lines) + '\n'
 
 
-def _build_watch_bootstrap(current_settings=None):
+def _build_watch_bootstrap(request, current_settings=None):
     current_settings = current_settings or _get_current_settings()
-    requested_sn = str(request.args.get('id') or '').strip()
-    requested_resolution = str(request.args.get('res') or '').strip()
+    requested_sn = str(request.query_params.get('id') or '').strip()
+    requested_resolution = str(request.query_params.get('res') or '').strip()
     bootstrap = {
         'requestedVideoId': requested_sn or None,
         'requestedResolution': requested_resolution or None,
@@ -1590,7 +1907,7 @@ def _build_watch_bootstrap(current_settings=None):
     if not initial_video:
         # 還在下載的集數當然不在 video_list.json 裡. 捏一筆同樣形狀的資料出去, 播放頁
         # 就能擺出播放器邊下邊播, 而不是丟一句「找不到這一集影片」把人擋在門外
-        initial_video = _hls_bootstrap_entry(requested_sn, current_settings)
+        initial_video = _hls_bootstrap_entry(requested_sn, current_settings, request)
         if initial_video is None:
             return bootstrap
 
@@ -1601,7 +1918,7 @@ def _build_watch_bootstrap(current_settings=None):
     bootstrap['streaming'] = bool(initial_video.get('streaming'))
     bootstrap['initialVideoSeries'] = [video for video in video_list if video.get('anime_name') == initial_video.get('anime_name')]
 
-    user = _get_request_user(current_settings)
+    user = _get_request_user(request, current_settings)
     if user:
         resume_state = user.get('videotimes', {}).get(requested_sn, {})
         if not resume_state.get('ended'):
@@ -1646,12 +1963,6 @@ with open(id_list_path, 'r', encoding='utf-8') as f:
     id_list = re.sub(r'(var id_list\s*=\s*|\s*\n?)', '', f.read()).replace('\'', '"')
     id_list = json.loads(id_list)
 
-@app.after_request
-def after_request(response):
-    response.headers.add('Accept-Ranges', 'bytes')
-    return response
-
-
 settings = _get_current_settings()
 plugin_manager = PluginManager(settings)
 plugin_manager_settings_signature = _settings_signature(settings)
@@ -1659,28 +1970,30 @@ plugin_manager_settings_object = settings
 plugin_manager_last_reload_at = time.monotonic()
 
 
-@app.context_processor
-def inject_dashboard_template_context():
-    return {
-        'dashboard_bootstrap': _build_dashboard_bootstrap(),
-    }
+@app.get('/control')
+def control(request: Request):
+    current_settings = _get_current_settings()
+    denied = _admin_page_guard(request, current_settings)
+    if denied is not None:
+        return denied
+    return _render(request, 'control.html')
 
 
-@app.route('/control')
-@admin_page_required
-def control():
-    return render_template('control.html')
+@app.get('/monitor')
+def monitor(request: Request):
+    current_settings = _get_current_settings()
+    denied = _admin_page_guard(request, current_settings)
+    if denied is not None:
+        return denied
+    return _render(request, 'monitor.html')
 
 
-@app.route('/monitor')
-@admin_page_required
-def monitor():
-    return render_template('monitor.html')
-
-
-@app.route('/data/config.json', methods=['GET'])
-@admin_api_required
-def config():
+@app.get('/data/config.json')
+def config(request: Request):
+    current_settings = _get_current_settings()
+    denied = _admin_api_guard(request, current_settings)
+    if denied is not None:
+        return denied
     settings = Config.read_settings()
     web_settings = {}
     for id in id_list:
@@ -1690,13 +2003,24 @@ def config():
         else:
             web_settings[id] = settings[id]  # 仅返回 web 需要的配置
 
-    return jsonify(web_settings)
+    return JSONResponse(web_settings)
 
 
-@app.route('/uploadConfig', methods=['POST'])
-@admin_api_required
-def recv_config():
-    data = json.loads(request.get_data(as_text=True))
+@app.post('/uploadConfig')
+async def recv_config(request: Request):
+    denied = await run_in_threadpool(_admin_api_preflight, request)
+    if denied is not None:
+        return denied
+    # Only body parsing stays on the event loop; config file I/O runs pooled.
+    data = await request.json()
+    return await run_in_threadpool(_recv_config_blocking, request, data)
+
+
+def _recv_config_blocking(request, data):
+    current_settings = _get_current_settings()
+    denied = _admin_api_guard(request, current_settings)
+    if denied is not None:
+        return denied
     new_settings = Config.read_settings()
     for id in id_list:
         if id == 'browser_fingerprint':
@@ -1710,13 +2034,23 @@ def recv_config():
     _invalidate_settings_cache()
     _sync_plugin_manager(force=True)
     err_print(0, 'Dashboard', '通過 Web 控制臺更新了 config.json', no_sn=True, status=2)
-    return '{"status":"200"}'
+    return _html_response('{"status":"200"}')
 
 
-@app.route('/manualTask', methods=['POST'])
-@admin_api_required
-def manual_task():
-    data = json.loads(request.get_data(as_text=True))
+@app.post('/manualTask')
+async def manual_task(request: Request):
+    denied = await run_in_threadpool(_admin_api_preflight, request)
+    if denied is not None:
+        return denied
+    data = await request.json()
+    return await run_in_threadpool(_manual_task_blocking, request, data)
+
+
+def _manual_task_blocking(request, data):
+    current_settings = _get_current_settings()
+    denied = _admin_api_guard(request, current_settings)
+    if denied is not None:
+        return denied
     settings = Config.read_settings()
 
     # 下载清晰度
@@ -1750,122 +2084,143 @@ def manual_task():
     server = threading.Thread(target=run_cui)
     err_print(0, 'Dashboard', '通過 Web 控制臺下達了手動任務', no_sn=True, status=2)
     server.start()  # 启动手动任务线程
-    return '{"status":"200"}'
+    return _html_response('{"status":"200"}')
 
 
-@app.route('/data/sn_list', methods=['GET'])
-@admin_api_required
-def show_sn_list():
-    return Config.get_sn_list_content()
+@app.get('/data/sn_list')
+def show_sn_list(request: Request):
+    current_settings = _get_current_settings()
+    denied = _admin_api_guard(request, current_settings)
+    if denied is not None:
+        return denied
+    return _html_response(Config.get_sn_list_content())
 
 
-@app.route('/data/get_token', methods=['GET'])
-@admin_api_required
-def get_token():
+@app.get('/data/get_token')
+def get_token(request: Request):
+    current_settings = _get_current_settings()
+    denied = _admin_api_guard(request, current_settings)
+    if denied is not None:
+        return denied
     global websocket_token
     # 生成 32 位随机字符串作为token
     websocket_token = ''.join(random.sample(string.ascii_letters + string.digits, 32))
-    return jsonify({'token': websocket_token, 'legacy': True})
+    return JSONResponse({'token': websocket_token, 'legacy': True})
 
 
-@app.route('/sn_list', methods=['POST'])
-@admin_api_required
-def set_sn_list():
-    data = request.get_data(as_text=True)
+@app.post('/sn_list')
+async def set_sn_list(request: Request):
+    denied = await run_in_threadpool(_admin_api_preflight, request)
+    if denied is not None:
+        return denied
+    data = (await request.body()).decode('utf-8')
+    return await run_in_threadpool(_set_sn_list_blocking, request, data)
+
+
+def _set_sn_list_blocking(request, data):
+    current_settings = _get_current_settings()
+    denied = _admin_api_guard(request, current_settings)
+    if denied is not None:
+        return denied
     Config.write_sn_list(data)
     err_print(0, 'Dashboard', '通過 Web 控制臺更新了 sn_list', no_sn=True, status=2)
-    return '{"status":"200"}'
+    return _html_response('{"status":"200"}')
 
 
-@app.route('/checknow')
-@admin_api_required
-def checknowctrl():
+@app.get('/checknow')
+def checknowctrl(request: Request):
+    current_settings = _get_current_settings()
+    denied = _admin_api_guard(request, current_settings)
+    if denied is not None:
+        return denied
     err_print(0, 'Dashboard', '通過 Web 控制臺發出了立即更新的請求', no_sn=True, status=2)
     checknow()
-    return '{"status":"200"}'
+    return _html_response('{"status":"200"}')
 
 
-@app.route('/console/command', methods=['POST'])
-@admin_api_required
-def web_console_command():
-    return _handle_web_console_command()
+@app.post('/console/command')
+async def web_console_command(request: Request):
+    denied = await run_in_threadpool(_admin_api_preflight, request)
+    if denied is not None:
+        return denied
+    try:
+        payload = await request.json()
+    except Exception:
+        payload = {}
+    return await run_in_threadpool(_web_console_command_blocking, request, payload)
 
 
-# todo: 修好websocket
-@app.route('/data/tasks_progress')
-def tasks_progress():
-    ws = request.environ.get('wsgi.websocket')
-    if ws is None:
-        return jsonify({'success': False, 'message': 'websocket required'}), 400
-    current_settings = Config.read_settings()
-    if current_settings['dashboard']['user_control']['enabled']:
-        user = find_user_by_token(request.cookies.get('token'))
-        if not user or user.get('role') != 'admin':
-            ws.close()
-            return
-
-    while True:
-        msg = json.dumps(Config.tasks_progress_rate)
-        try:
-            ws.send(msg)
-            time.sleep(1)
-        except (WebSocketError, ConnectionError, OSError):
-            ws.close()
-            break
-    return
-    # 鉴权
-    global websocket_token
-    token = request.args.get('token')
-    if token != websocket_token:
-        ws.send('Unauthorized')
-        ws.close()
-    else:
-        # 一次性 token
-        websocket_token = ''
-
-    # 推送任务进度数据
-    # https://blog.csdn.net/sinat_32651363/article/details/87912701
-    while True:
-        msg = json.dumps(Config.tasks_progress_rate)
-        try:
-            ws.send(msg)
-            time.sleep(1)
-        except WebSocketError:
-            # 连接中断
-            ws.close()
-            break
+def _web_console_command_blocking(request, payload):
+    current_settings = _get_current_settings()
+    denied = _admin_api_guard(request, current_settings)
+    if denied is not None:
+        return denied
+    if not isinstance(payload, dict):
+        payload = {}
+    raw_command = str(payload.get('command', '')).strip()
+    return _run_console_command_blocking(raw_command)
 
 
-@app.route('/')
-def home():
+@app.get('/data/tasks_progress')
+def tasks_progress_http():
+    # monitor.js 之前用 gevent 的 wsgi.websocket 走这条路; 现在进度走原生
+    # WebSocket (下条路由), 普通 HTTP GET 过来只能回 400, 跟原来一模一样.
+    return JSONResponse({'success': False, 'message': 'websocket required'}, status_code=400)
+
+
+@app.websocket('/data/tasks_progress')
+async def tasks_progress(websocket: WebSocket):
+    # 原生 FastAPI WebSocket, 取代 flask-sock/gevent-websocket 那一套. 認管理員
+    # cookie (瀏覽器開 WebSocket 會自動帶上), 載荷跟原來逐秒送的
+    # Config.tasks_progress_rate JSON 一字不差.
+    # 設定檔與 userdata 讀取是阻塞 I/O, 必须先丢进线程池, 不能占着事件循环.
+    await websocket.accept()
+    try:
+        current_settings = await run_in_threadpool(_get_current_settings)
+        if current_settings['dashboard']['user_control']['enabled']:
+            user = await run_in_threadpool(
+                find_user_by_token, websocket.cookies.get('token'))
+            if not user or user.get('role') != 'admin':
+                await websocket.close()
+                return
+
+        while True:
+            await websocket.send_text(json.dumps(Config.tasks_progress_rate))
+            await asyncio.sleep(1)
+    except (WebSocketDisconnect, RuntimeError, asyncio.CancelledError):
+        pass
+
+
+@app.get('/')
+def home(request: Request):
     current_settings = _get_current_settings()
     if current_settings["dashboard"]["online_watch"]:
         if current_settings["dashboard"]["user_control"]["enabled"]:
             logined, user_role = verify_user(request.cookies)
             if logined and user_role == 'user':
-                return redirect("./watch")
-        return render_template('index.html')
+                return _redirect("./watch")
+        return _render(request, 'index.html')
     else:
-        return redirect("./control")
+        return _redirect("./control")
 
 
-@app.route('/favicon.ico')
-def favicon():
-    return send_file(os.path.join(static_path, 'img', 'aniGamerPlus.ico'))
+@app.api_route('/favicon.ico', methods=['GET', 'HEAD'])
+def favicon(request: Request):
+    return FileResponse(os.path.join(static_path, 'img', 'aniGamerPlus.ico'))
 
 
 # A service worker may only control the paths below its own URL, so both it and
 # the manifest are mirrored at the site root instead of living under /static.
-@app.route('/manifest.webmanifest')
+@app.api_route('/manifest.webmanifest', methods=['GET', 'HEAD'])
 def webmanifest():
-    response = make_response(send_file(os.path.join(static_path, 'manifest.webmanifest')))
+    response = FileResponse(os.path.join(static_path, 'manifest.webmanifest'))
     response.headers['Content-Type'] = 'application/manifest+json; charset=utf-8'
     return response
 
 
-@app.route('/sw.js')
+@app.api_route('/sw.js', methods=['GET', 'HEAD'])
 def service_worker():
-    response = make_response(send_file(os.path.join(static_path, 'sw.js')))
+    response = FileResponse(os.path.join(static_path, 'sw.js'))
     response.headers['Content-Type'] = 'application/javascript; charset=utf-8'
     response.headers['Service-Worker-Allowed'] = '/'
     response.headers['Cache-Control'] = 'no-cache'
@@ -1874,621 +2229,790 @@ def service_worker():
 
 # iOS looks for these at the root when a page is added to the home screen from
 # a URL it has not parsed the <link> tags of (e.g. a shared link).
-@app.route('/apple-touch-icon.png')
-@app.route('/apple-touch-icon-precomposed.png')
-def apple_touch_icon():
-    return send_file(os.path.join(static_path, 'img', 'pwa', 'apple-touch-icon.png'))
+@app.api_route('/apple-touch-icon.png', methods=['GET', 'HEAD'])
+@app.api_route('/apple-touch-icon-precomposed.png', methods=['GET', 'HEAD'])
+def apple_touch_icon(request: Request):
+    return FileResponse(os.path.join(static_path, 'img', 'pwa', 'apple-touch-icon.png'))
 
 
-if settings["dashboard"]["online_watch"]:
-    @app.route('/watch')
-    def watch():
-        current_settings = _get_current_settings()
-        if current_settings['dashboard']['online_watch_requires_login']:
-            vaild_user, user_role = verify_user(request.cookies)
-            if not vaild_user:
-                return redirect("./login?error=2")
-        return render_template('watch.html', watch_bootstrap=_build_watch_bootstrap(current_settings))
+@app.get('/watch')
+def watch(request: Request):
+    current_settings = _get_current_settings()
+    gated = _online_watch_gate(current_settings)
+    if gated is not None:
+        return gated
+    if current_settings['dashboard']['online_watch_requires_login']:
+        vaild_user, user_role = verify_user(request.cookies)
+        if not vaild_user:
+            return _redirect("./login?error=2")
+    return _render(request, 'watch.html',
+                   {'watch_bootstrap': _build_watch_bootstrap(request, current_settings)})
 
 
-    @app.route('/anime_info')
-    def get_anime_info():
-        # 动画疯官方的单集资讯, 服务端代抓 (那个 api 不发 CORS 头)
-        current_settings = _sync_plugin_manager()
-        if current_settings['dashboard']['online_watch_requires_login']:
-            vaild_user, user_role = verify_user(request.cookies)
-            if not vaild_user:
-                return jsonify({"error": "login required"}), 403
+@app.get('/anime_info')
+def get_anime_info(request: Request):
+    # 动画疯官方的单集资讯, 服务端代抓 (那个 api 不发 CORS 头)
+    current_settings = _sync_plugin_manager()
+    gated = _online_watch_gate(current_settings)
+    if gated is not None:
+        return gated
+    if current_settings['dashboard']['online_watch_requires_login']:
+        vaild_user, user_role = verify_user(request.cookies)
+        if not vaild_user:
+            return JSONResponse({"error": "login required"}, status_code=403)
 
-        sn = request.args.get('id')
-        if not sn or not str(sn).isdigit():
-            return jsonify({"error": "invalid sn"}), 400
-        # 不在片库里的 sn 一律不转发, 免得这个路由变成打向巴哈的请求放大器
-        if _find_video_entry(sn) is None:
-            return jsonify({"error": "video not found"}), 404
+    sn = request.query_params.get('id')
+    if not sn or not str(sn).isdigit():
+        return JSONResponse({"error": "invalid sn"}, status_code=400)
+    # 不在片库里的 sn 一律不转发, 免得这个路由变成打向巴哈的请求放大器
+    if _find_video_entry(sn) is None:
+        return JSONResponse({"error": "video not found"}, status_code=404)
 
+    info = _get_anime_info(sn)
+    if not info:
+        return JSONResponse({"error": "anime info unavailable"}, status_code=404)
+    resp = JSONResponse(info)
+    resp.headers['Cache-Control'] = 'private, max-age=3600'
+    return resp
+
+
+@app.get('/watch/series.json')
+def watch_series(request: Request):
+    """播放頁要的作品資料: 官方封面、官方簡介, 跟整部作品的集數表.
+
+    跟 /catalog/anime.json 端的是同一份東西, 差別只在入口: 那邊給的是作品編號,
+    播放頁手上只有正在播的那一集. 沒有這條路由, 資訊卡就只能拿片庫裡那幾集
+    自己編一段介紹, 集數列也只擺得出下載過的集數 —— 邊看邊下載進來的人於是
+    看到「共 1 集」.
+    """
+    current_settings = _sync_plugin_manager()
+    gated = _online_watch_gate(current_settings)
+    if gated is not None:
+        return gated
+    if current_settings['dashboard']['online_watch_requires_login']:
+        vaild_user, user_role = verify_user(request.cookies)
+        if not vaild_user:
+            return JSONResponse({"error": "login required"}, status_code=403)
+
+    sn = request.query_params.get('id')
+    if not sn or not str(sn).isdigit():
+        return JSONResponse({"error": "invalid sn"}, status_code=400)
+    # 跟 /anime_info、/thumbnail.jpg 同一道門: 片庫裡有, 或者正在下載, 才代抓
+    if _find_video_entry(sn) is not None or _hls_task(sn) is not None:
         info = _get_anime_info(sn)
-        if not info:
-            return jsonify({"error": "anime info unavailable"}), 404
-        resp = jsonify(info)
-        resp.headers['Cache-Control'] = 'private, max-age=3600'
-        return resp
+    else:
+        # 剛按下邊看邊下載的那一集: 下載執行緒還沒登記它, 片庫也還沒有檔,
+        # 但它就列在剛剛那一部作品的集數表上。認那張表, 不另外去問巴哈 ——
+        # 這條路由依舊不會變成任人指定 sn 就替他打巴哈的請求放大器
+        owner = _episode_owners().get(str(sn))
+        info = _get_anime_info(owner) if owner else None
+    if not info:
+        return JSONResponse({"error": "video not found"}, status_code=404)
 
-    @app.route('/watch/series.json')
-    def watch_series():
-        """播放頁要的作品資料: 官方封面、官方簡介, 跟整部作品的集數表.
+    anime = info.get('anime') or {}
+    video = info.get('video') or {}
+    resp = JSONResponse({
+        'animeSn': str(anime.get('animeSn') or ''),
+        'videoSn': str(sn),
+        'title': Catalog.series_title(anime.get('title')),
+        # 作品封面是 3:4 的直式圖, 跟單集那張橫的截圖不是同一種東西
+        'cover': anime.get('cover') or video.get('cover') or '',
+        'content': Catalog.plain_text(anime.get('contentHtml') or anime.get('content')),
+        'tags': anime.get('tags') or [],
+        'director': anime.get('director') or '',
+        'publisher': anime.get('publisher') or '',
+        'score': anime.get('score') or 0,
+        'seasonStart': anime.get('seasonStart') or '',
+        'popular': Catalog.views(anime.get('popular')),
+        'totalEpisode': anime.get('totalEpisode') or '',
+        'groups': _catalog_episodes(info),
+    })
+    return _apply_cache_headers(resp, current_settings, 3600)
 
-        跟 /catalog/anime.json 端的是同一份東西, 差別只在入口: 那邊給的是作品編號,
-        播放頁手上只有正在播的那一集. 沒有這條路由, 資訊卡就只能拿片庫裡那幾集
-        自己編一段介紹, 集數列也只擺得出下載過的集數 —— 邊看邊下載進來的人於是
-        看到「共 1 集」.
-        """
-        current_settings = _sync_plugin_manager()
-        if current_settings['dashboard']['online_watch_requires_login']:
-            vaild_user, user_role = verify_user(request.cookies)
-            if not vaild_user:
-                return jsonify({"error": "login required"}), 403
 
-        sn = request.args.get('id')
-        if not sn or not str(sn).isdigit():
-            return jsonify({"error": "invalid sn"}), 400
-        # 跟 /anime_info、/thumbnail.jpg 同一道門: 片庫裡有, 或者正在下載, 才代抓
-        if _find_video_entry(sn) is not None or _hls_task(sn) is not None:
-            info = _get_anime_info(sn)
-        else:
-            # 剛按下邊看邊下載的那一集: 下載執行緒還沒登記它, 片庫也還沒有檔,
-            # 但它就列在剛剛那一部作品的集數表上。認那張表, 不另外去問巴哈 ——
-            # 這條路由依舊不會變成任人指定 sn 就替他打巴哈的請求放大器
-            owner = _episode_owners().get(str(sn))
-            info = _get_anime_info(owner) if owner else None
-        if not info:
-            return jsonify({"error": "video not found"}), 404
+@app.get('/catalog/index.json')
+def catalog_index(request: Request):
+    # 动画疯首页的几个分区. 片库里只有下过的那几部, 这里是站上全部
+    current_settings = _get_current_settings()
+    gated = _online_watch_gate(current_settings)
+    if gated is not None:
+        return gated
+    denied = _catalog_login_error(current_settings, request)
+    if denied is not None:
+        return denied
+    payload = _get_catalog_index()
+    if payload is None:
+        return JSONResponse({"error": "catalog unavailable"}, status_code=503)
+    return _apply_cache_headers(JSONResponse(payload), current_settings, 600)
 
-        anime = info.get('anime') or {}
-        video = info.get('video') or {}
-        resp = jsonify({
-            'animeSn': str(anime.get('animeSn') or ''),
-            'videoSn': str(sn),
-            'title': Catalog.series_title(anime.get('title')),
-            # 作品封面是 3:4 的直式圖, 跟單集那張橫的截圖不是同一種東西
-            'cover': anime.get('cover') or video.get('cover') or '',
-            'content': Catalog.plain_text(anime.get('contentHtml') or anime.get('content')),
-            'tags': anime.get('tags') or [],
-            'director': anime.get('director') or '',
-            'publisher': anime.get('publisher') or '',
-            'score': anime.get('score') or 0,
-            'seasonStart': anime.get('seasonStart') or '',
-            'popular': Catalog.views(anime.get('popular')),
-            'totalEpisode': anime.get('totalEpisode') or '',
-            'groups': _catalog_episodes(info),
-        })
-        return _apply_cache_headers(resp, current_settings, 3600)
 
-    @app.route('/catalog/index.json')
-    def catalog_index():
-        # 动画疯首页的几个分区. 片库里只有下过的那几部, 这里是站上全部
-        current_settings = _get_current_settings()
-        denied = _catalog_login_error(current_settings)
-        if denied is not None:
-            return denied
-        payload = _get_catalog_index()
-        if payload is None:
-            return jsonify({"error": "catalog unavailable"}), 503
-        return _apply_cache_headers(jsonify(payload), current_settings, 600)
+@app.get('/catalog/all.json')
+def catalog_all(request: Request):
+    current_settings = _get_current_settings()
+    gated = _online_watch_gate(current_settings)
+    if gated is not None:
+        return gated
+    denied = _catalog_login_error(current_settings, request)
+    if denied is not None:
+        return denied
 
-    @app.route('/catalog/all.json')
-    def catalog_all():
-        current_settings = _get_current_settings()
-        denied = _catalog_login_error(current_settings)
-        if denied is not None:
-            return denied
+    items = _get_catalog_all()
+    keyword = (request.query_params.get('q') or '').strip()
+    if keyword:
+        # 全站一千八百多部都已经在本地了, 搜个片名没必要再去问巴哈
+        keyword = keyword.lower()
+        items = [item for item in items if keyword in item['title'].lower()]
+    try:
+        page = max(1, int(request.query_params.get('page') or 1))
+    except BaseException:
+        page = 1
+    start = (page - 1) * CATALOG_PAGE_SIZE
+    resp = JSONResponse({
+        'items': items[start:start + CATALOG_PAGE_SIZE],
+        'page': page,
+        'pages': max(1, (len(items) + CATALOG_PAGE_SIZE - 1) // CATALOG_PAGE_SIZE),
+        'total': len(items),
+    })
+    return _apply_cache_headers(resp, current_settings, 600)
 
-        items = _get_catalog_all()
-        keyword = (request.args.get('q') or '').strip()
-        if keyword:
-            # 全站一千八百多部都已经在本地了, 搜个片名没必要再去问巴哈
-            keyword = keyword.lower()
-            items = [item for item in items if keyword in item['title'].lower()]
-        try:
-            page = max(1, int(request.args.get('page') or 1))
-        except BaseException:
-            page = 1
-        start = (page - 1) * CATALOG_PAGE_SIZE
-        resp = jsonify({
-            'items': items[start:start + CATALOG_PAGE_SIZE],
-            'page': page,
-            'pages': max(1, (len(items) + CATALOG_PAGE_SIZE - 1) // CATALOG_PAGE_SIZE),
-            'total': len(items),
-        })
-        return _apply_cache_headers(resp, current_settings, 600)
 
-    @app.route('/catalog/anime.json')
-    def catalog_anime():
-        # 详情页: 简介、集数表, 以及每一集在本地有没有
-        current_settings = _get_current_settings()
-        denied = _catalog_login_error(current_settings)
-        if denied is not None:
-            return denied
+@app.get('/catalog/anime.json')
+def catalog_anime(request: Request):
+    # 详情页: 简介、集数表, 以及每一集在本地有没有
+    current_settings = _get_current_settings()
+    gated = _online_watch_gate(current_settings)
+    if gated is not None:
+        return gated
+    denied = _catalog_login_error(current_settings, request)
+    if denied is not None:
+        return denied
 
-        anime_sn = request.args.get('sn')
-        if not anime_sn or not str(anime_sn).isdigit():
-            return jsonify({"error": "invalid sn"}), 400
-        if not _catalog_knows(anime_sn):
-            return jsonify({"error": "anime not found"}), 404
+    anime_sn = request.query_params.get('sn')
+    if not anime_sn or not str(anime_sn).isdigit():
+        return JSONResponse({"error": "invalid sn"}, status_code=400)
+    if not _catalog_knows(anime_sn):
+        return JSONResponse({"error": "anime not found"}, status_code=404)
 
-        video_sn = _resolve_video_sn(anime_sn)
-        if not video_sn:
-            return jsonify({"error": "anime unavailable"}), 404
-        info = _get_anime_info(video_sn)
-        if not info:
-            return jsonify({"error": "anime info unavailable"}), 404
+    video_sn = _resolve_video_sn(anime_sn)
+    if not video_sn:
+        return JSONResponse({"error": "anime unavailable"}, status_code=404)
+    info = _get_anime_info(video_sn)
+    if not info:
+        return JSONResponse({"error": "anime info unavailable"}, status_code=404)
 
-        anime = info.get('anime') or {}
-        resp = jsonify({
-            'animeSn': str(anime_sn),
-            'videoSn': video_sn,
-            'title': Catalog.series_title(anime.get('title')),
-            'cover': anime.get('cover') or '',
-            'content': Catalog.plain_text(anime.get('contentHtml') or anime.get('content')),
-            'tags': anime.get('tags') or [],
-            'director': anime.get('director') or '',
-            'publisher': anime.get('publisher') or '',
-            'score': anime.get('score') or 0,
-            'seasonStart': anime.get('seasonStart') or '',
-            'popular': Catalog.views(anime.get('popular')),
-            'totalEpisode': anime.get('totalEpisode') or '',
-            'groups': _catalog_episodes(info),
-        })
-        return _apply_cache_headers(resp, current_settings, 600)
+    anime = info.get('anime') or {}
+    resp = JSONResponse({
+        'animeSn': str(anime_sn),
+        'videoSn': video_sn,
+        'title': Catalog.series_title(anime.get('title')),
+        'cover': anime.get('cover') or '',
+        'content': Catalog.plain_text(anime.get('contentHtml') or anime.get('content')),
+        'tags': anime.get('tags') or [],
+        'director': anime.get('director') or '',
+        'publisher': anime.get('publisher') or '',
+        'score': anime.get('score') or 0,
+        'seasonStart': anime.get('seasonStart') or '',
+        'popular': Catalog.views(anime.get('popular')),
+        'totalEpisode': anime.get('totalEpisode') or '',
+        'groups': _catalog_episodes(info),
+    })
+    return _apply_cache_headers(resp, current_settings, 600)
 
-    @app.route('/thumbnail.jpg')
-    def get_thumbnail():
-        # 首页/播放页的封面: 官方封面抓不到才从影片里抽一帧, 抓过就落盘缓存
-        current_settings = _sync_plugin_manager()
-        if current_settings['dashboard']['online_watch_requires_login']:
-            vaild_user, user_role = verify_user(request.cookies)
-            if not vaild_user:
-                return jsonify({"error": "login required"}), 403
 
-        sn = request.args.get('id')
-        if not sn or not str(sn).isdigit():
-            return jsonify({"error": "invalid sn"}), 400
+@app.api_route('/thumbnail.jpg', methods=['GET', 'HEAD'])
+def get_thumbnail(request: Request):
+    # 首页/播放页的封面: 官方封面抓不到才从影片里抽一帧, 抓过就落盘缓存
+    current_settings = _sync_plugin_manager()
+    gated = _online_watch_gate(current_settings)
+    if gated is not None:
+        return gated
+    if current_settings['dashboard']['online_watch_requires_login']:
+        vaild_user, user_role = verify_user(request.cookies)
+        if not vaild_user:
+            return JSONResponse({"error": "login required"}, status_code=403)
 
-        cache_path = _thumbnail_cache_path(sn)
+    sn = request.query_params.get('id')
+    if not sn or not str(sn).isdigit():
+        return JSONResponse({"error": "invalid sn"}, status_code=400)
+
+    cache_path = _thumbnail_cache_path(sn)
+    if not os.path.exists(cache_path):
+        # 先确认 sn 真的在片库里再干活: 否则任何人都能拿这个路由去捶巴哈,
+        # 顺手把锁表和 anime_info/ 撑到没边
+        entry = _find_video_entry(sn)
+        if entry is None and _hls_task(sn) is not None:
+            # 還在下載的集數: 影片檔還沒有, 但官方封面抓得到. 有進度紀錄跟有片庫
+            # 條目一樣, 都足以證明這個 sn 是自己人, 擋人的那道保險還在
+            entry = {'source': BAHAMUT_SOURCE, 'path': ''}
+        if entry is None:
+            return JSONResponse({"error": "video not found"}, status_code=404)
+        if not _thumbnail_recently_failed(sn):
+            with _keyed_lock('thumb-' + str(sn)):
+                # 排队的这段时间里, 前面那个请求可能刚好失败. 拿到锁必须再看一眼
+                # 退避, 否则退避形同虚设, 一次失败会被并发放大成 N 次抓取
+                if not os.path.exists(cache_path) and not _thumbnail_recently_failed(sn):
+                    if _build_thumbnail(sn, cache_path, entry):
+                        _thumbnail_failures.pop(str(sn), None)
+                    else:
+                        _thumbnail_failures[str(sn)] = time.time()
         if not os.path.exists(cache_path):
-            # 先确认 sn 真的在片库里再干活: 否则任何人都能拿这个路由去捶巴哈,
-            # 顺手把锁表和 anime_info/ 撑到没边
-            entry = _find_video_entry(sn)
-            if entry is None and _hls_task(sn) is not None:
-                # 還在下載的集數: 影片檔還沒有, 但官方封面抓得到. 有進度紀錄跟有片庫
-                # 條目一樣, 都足以證明這個 sn 是自己人, 擋人的那道保險還在
-                entry = {'source': BAHAMUT_SOURCE, 'path': ''}
-            if entry is None:
-                return jsonify({"error": "video not found"}), 404
-            if not _thumbnail_recently_failed(sn):
-                with _keyed_lock('thumb-' + str(sn)):
-                    # 排队的这段时间里, 前面那个请求可能刚好失败. 拿到锁必须再看一眼
-                    # 退避, 否则退避形同虚设, 一次失败会被并发放大成 N 次抓取
-                    if not os.path.exists(cache_path) and not _thumbnail_recently_failed(sn):
-                        if _build_thumbnail(sn, cache_path, entry):
-                            _thumbnail_failures.pop(str(sn), None)
-                        else:
-                            _thumbnail_failures[str(sn)] = time.time()
-            if not os.path.exists(cache_path):
-                return _thumbnail_unavailable()
+            return _thumbnail_unavailable()
 
-        etag, last_modified, file_size = get_file_headers(cache_path)
-        if request.headers.get('If-None-Match') == etag:
-            resp = Response(status=304)
-        else:
-            resp = send_file(cache_path, mimetype='image/jpeg')
+    etag, last_modified, file_size = get_file_headers(cache_path)
+    if request.headers.get('If-None-Match') == etag:
+        resp = Response(status_code=304)
+    elif request.method == 'HEAD':
+        resp = Response(status_code=200)
+        resp.headers['Content-Type'] = 'image/jpeg'
+        resp.headers['Content-Length'] = str(file_size)
+    else:
+        resp = FileResponse(cache_path, media_type='image/jpeg')
+    resp.headers['ETag'] = etag
+    resp.headers['Last-Modified'] = last_modified
+    _apply_cache_headers(resp, current_settings, 86400)
+    return resp
+
+
+def _parse_video_range(range_header, file_size):
+    """Strictly parse a single ``bytes=`` range.
+
+    Returns ``(start, end)`` inclusive on success, or ``None`` when the
+    header is malformed, uses an unsupported form (e.g. multiple ranges),
+    is reversed (start > end), or is unsatisfiable (start >= size).
+    Callers map ``None`` to ``416`` with ``Content-Range: bytes */size``.
+    An end beyond the file is clamped to ``size - 1``.
+    """
+    try:
+        size = int(file_size)
+    except (TypeError, ValueError):
+        return None
+    if size <= 0:
+        return None
+    text = str(range_header or '').strip()
+    if not text.startswith('bytes='):
+        return None
+    spec = text[len('bytes='):].strip()
+    if not spec or ',' in spec:
+        return None
+    fixed = re.fullmatch(r'(\d+)-(\d+)', spec)
+    if fixed:
+        start, end = int(fixed.group(1)), int(fixed.group(2))
+        if start > end or start >= size:
+            return None
+        return start, min(end, size - 1)
+    open_ended = re.fullmatch(r'(\d+)-', spec)
+    if open_ended:
+        start = int(open_ended.group(1))
+        if start >= size:
+            return None
+        return start, size - 1
+    suffix = re.fullmatch(r'-(\d+)', spec)
+    if suffix:
+        length = int(suffix.group(1))
+        if length <= 0:
+            return None
+        if length >= size:
+            return 0, size - 1
+        return size - length, size - 1
+    return None
+
+
+def _video_range_not_satisfiable(current_settings, etag, last_modified,
+                                 file_size, content_disposition):
+    resp = Response(status_code=416)
+    resp.headers['Content-Range'] = 'bytes */%d' % file_size
+    resp.headers['Accept-Ranges'] = 'bytes'
+    resp.headers['ETag'] = etag
+    resp.headers['Last-Modified'] = last_modified
+    resp.headers['Content-Disposition'] = content_disposition
+    _apply_cache_headers(resp, current_settings, 3600)
+    return resp
+
+
+@app.api_route('/get_video.mp4', methods=['GET', 'HEAD'])
+def getvid(request: Request):
+    current_settings = _sync_plugin_manager()
+    gated = _online_watch_gate(current_settings)
+    if gated is not None:
+        return gated
+    if current_settings['dashboard']['online_watch_requires_login']:
+        valid_user, user_role = verify_user(request.cookies)
+        if not valid_user:
+            return JSONResponse({"error": "login required"}, status_code=403)
+
+    sn = request.query_params.get('id')
+    res = request.query_params.get('res')
+    playback_source = plugin_manager.resolve_playback_source({
+        'sn': str(sn),
+        'resolution': int(res) if res and str(res).isdigit() else 0,
+    })
+    if playback_source and playback_source.get('url'):
+        return _redirect(playback_source['url'])
+
+    path = _find_video_path(sn, res)
+    if not path or not os.path.exists(path):
+        return JSONResponse({"error": "video not found"}, status_code=404)
+    filename = os.path.basename(path)
+    ascii_filename = re.sub(r'[^a-zA-Z0-9._-]', '_', filename)
+    utf8_filename = urllib.parse.quote(filename)
+    content_disposition = (
+        f'inline; filename="{ascii_filename}"; filename*=UTF-8\'\'{utf8_filename}'
+    )
+
+    etag, last_modified, file_size = get_file_headers(path)
+
+    # --- 瀏覽器快取檢查 ---
+    if request.headers.get("If-None-Match") == etag or \
+    request.headers.get("If-Modified-Since") == last_modified:
+        resp = Response(status_code=304)  # Not Modified
         resp.headers['ETag'] = etag
         resp.headers['Last-Modified'] = last_modified
-        _apply_cache_headers(resp, current_settings, 86400)
+        _apply_cache_headers(resp, current_settings, 3600)
         return resp
 
+    # 檢查 Range header: 單一 bytes 範圍才回 206, 其它一律 416.
+    range_header = request.headers.get('Range', None)
 
-    @app.route('/get_video.mp4')
-    def getvid():
-        current_settings = _sync_plugin_manager()
-        if current_settings['dashboard']['online_watch_requires_login']:
-            valid_user, user_role = verify_user(request.cookies)
-            if not valid_user:
-                return jsonify({"error": "login required"}), 403
-
-        sn = request.args.get('id')
-        res = request.args.get('res')
-        playback_source = plugin_manager.resolve_playback_source({
-            'sn': str(sn),
-            'resolution': int(res) if res and str(res).isdigit() else 0,
-        })
-        if playback_source and playback_source.get('url'):
-            return redirect(playback_source['url'])
-
-        path = _find_video_path(sn, res)
-        if not path or not os.path.exists(path):
-            return jsonify({"error": "video not found"}), 404
-        filename = os.path.basename(path)
-        ascii_filename = re.sub(r'[^a-zA-Z0-9._-]', '_', filename)
-        utf8_filename = urllib.parse.quote(filename)
-        content_disposition = (
-            f'inline; filename="{ascii_filename}"; filename*=UTF-8\'\'{utf8_filename}'
-        )
-
-        etag, last_modified, file_size = get_file_headers(path)
-
-        # 我不知道 ChatGPT一直問我就一直回好啊
-        # 然後就變成這樣了 lol
-        # --- 瀏覽器快取檢查 ---
-        if request.headers.get("If-None-Match") == etag or \
-        request.headers.get("If-Modified-Since") == last_modified:
-            resp = Response(status=304)  # Not Modified
-            resp.headers['ETag'] = etag
-            resp.headers['Last-Modified'] = last_modified
-            _apply_cache_headers(resp, current_settings, 3600)
-            return resp
-
-        # 檢查 Range header
-        range_header = request.headers.get('Range', None)
-
-        # --- Case 1: 沒有 Range → 直接回傳整份檔案 ---
-        if not range_header:
-            resp = send_file(path, mimetype='video/mp4', as_attachment=True, download_name=filename)
-            _apply_cache_headers(resp, current_settings, 3600)
+    # --- Case 1: 沒有 Range → 直接回傳整份檔案 ---
+    if not range_header:
+        if request.method == 'HEAD':
+            # Flask 版 HEAD 自动回同样标头、不带 body, 这里显式做掉.
+            resp = Response(status_code=200)
+            resp.headers['Content-Type'] = 'video/mp4'
+            resp.headers['Content-Length'] = str(file_size)
             resp.headers['ETag'] = etag
             resp.headers['Last-Modified'] = last_modified
             resp.headers['Accept-Ranges'] = 'bytes'
             resp.headers['Content-Disposition'] = content_disposition
+            _apply_cache_headers(resp, current_settings, 3600)
             return resp
+        resp = FileResponse(path, media_type='video/mp4')
+        _apply_cache_headers(resp, current_settings, 3600)
+        resp.headers['ETag'] = etag
+        resp.headers['Last-Modified'] = last_modified
+        resp.headers['Accept-Ranges'] = 'bytes'
+        resp.headers['Content-Disposition'] = content_disposition
+        return resp
 
-        # --- Case 2: 有 Range → 部分內容串流回傳 ---
-        byte1, byte2 = 0, None
-        match = re.search(r'(\d+)-(\d*)', range_header)
-        groups = match.groups()
-        if groups[0]:
-            byte1 = int(groups[0])
-        if groups[1]:
-            byte2 = int(groups[1])
+    # --- Case 2: 有 Range → 嚴格解析單一範圍 ---
+    parsed = _parse_video_range(range_header, file_size)
+    if parsed is None:
+        return _video_range_not_satisfiable(
+            current_settings, etag, last_modified, file_size,
+            content_disposition)
 
-        if byte2 is not None:
-            length = byte2 + 1 - byte1
-        else:
-            length = file_size - byte1
+    byte1, byte2 = parsed
+    length = byte2 + 1 - byte1
 
-        resp = Response(
-            stream_with_context(generate_file(path, byte1, length)),
-            status=206,
-            mimetype='video/mp4',
-            direct_passthrough=True,
-        )
-
-        resp.headers.add('Content-Range', f'bytes {byte1}-{byte1 + length - 1}/{file_size}')
-        resp.headers.add('Accept-Ranges', 'bytes')
-        resp.headers.add('Content-Length', str(length))
+    if request.method == 'HEAD':
+        # HEAD 回同樣的狀態與標頭, 不帶 body.
+        resp = Response(status_code=206)
+        resp.headers['Content-Type'] = 'video/mp4'
+        resp.headers['Content-Range'] = f'bytes {byte1}-{byte2}/{file_size}'
+        resp.headers['Accept-Ranges'] = 'bytes'
+        resp.headers['Content-Length'] = str(length)
         _apply_cache_headers(resp, current_settings, 3600)
         resp.headers['ETag'] = etag
         resp.headers['Last-Modified'] = last_modified
         resp.headers['Content-Disposition'] = content_disposition
-
         return resp
 
+    resp = StreamingResponse(
+        generate_file(path, byte1, length),
+        status_code=206,
+        media_type='video/mp4',
+    )
 
-    # ------------------------------------------------------------- 邊看邊下載
-    # 下載中的集數在 temp 裡本來就是一份 HLS 串流, 這四條路由只是把它照原樣端出去:
-    # playlist 只列已經連續落地的前綴, 分片直接讀檔, 金鑰原封不動交給瀏覽器解.
-    # 全部都是本機磁碟, 不會為了播放再跟動畫瘋要任何東西.
+    resp.headers['Content-Range'] = f'bytes {byte1}-{byte2}/{file_size}'
+    resp.headers['Accept-Ranges'] = 'bytes'
+    resp.headers['Content-Length'] = str(length)
+    _apply_cache_headers(resp, current_settings, 3600)
+    resp.headers['ETag'] = etag
+    resp.headers['Last-Modified'] = last_modified
+    resp.headers['Content-Disposition'] = content_disposition
 
-    def _hls_request_state():
-        """四條路由共用的門口: 驗登入、驗 sn, 然後算出現在是什麼狀態."""
-        current_settings = _hls_settings()
-        denied = _catalog_login_error(current_settings)
-        if denied is not None:
-            return None, None, denied
-        sn = request.args.get('id')
-        if not sn or not str(sn).isdigit():
-            return None, None, (jsonify({"error": "invalid sn"}), 400)
-        return current_settings, _hls_state(sn, current_settings), None
+    return resp
 
-    @app.route('/hls/status.json')
-    def hls_status():
-        # 播放器每五秒問一次: 現在能不能播、下到幾 %、整集多長、下載完了沒.
-        # 只放會變的東西 —— 片名集數在開頁時就寫進 bootstrap 了, 不必每次重送,
-        # 更不該讓 _get_anime_info 進到這條輪詢裡
-        current_settings, state, denied = _hls_request_state()
+
+# ------------------------------------------------------------- 邊看邊下載
+# 下載中的集數在 temp 裡本來就是一份 HLS 串流, 這四條路由只是把它照原樣端出去:
+# playlist 只列已經連續落地的前綴, 分片直接讀檔, 金鑰原封不動交給瀏覽器解.
+# 全部都是本機磁碟, 不會為了播放再跟動畫瘋要任何東西.
+
+def _hls_request_state(request):
+    """四條路由共用的門口: 驗登入、驗 sn, 然後算出現在是什麼狀態."""
+    current_settings = _hls_settings()
+    gated = _online_watch_gate(current_settings)
+    if gated is not None:
+        return None, None, gated
+    denied = _catalog_login_error(current_settings, request)
+    if denied is not None:
+        return None, None, denied
+    sn = request.query_params.get('id')
+    if not sn or not str(sn).isdigit():
+        return None, None, (JSONResponse({"error": "invalid sn"}, status_code=400))
+    return current_settings, _hls_state(sn, current_settings), None
+
+
+@app.get('/hls/status.json')
+def hls_status(request: Request):
+    # 播放器每五秒問一次: 現在能不能播、下到幾 %、整集多長、下載完了沒.
+    # 只放會變的東西 —— 片名集數在開頁時就寫進 bootstrap 了, 不必每次重送,
+    # 更不該讓 _get_anime_info 進到這條輪詢裡
+    current_settings, state, denied = _hls_request_state(request)
+    if denied is not None:
+        return denied
+
+    payload = dict(state)
+    payload.pop('parsed', None)   # 內部用的解析結果, 不外流
+    payload.pop('temp_dir', None)  # 本機路徑不該出現在 API 回應裡
+    resp = JSONResponse(payload)
+    # 就算是 mode=none 也回 200: 前端要分得出「沒在下載」跟「伺服器壞了」
+    resp.headers['Cache-Control'] = 'no-store'
+    if current_settings['dashboard']['online_watch_requires_login']:
+        resp.headers['Vary'] = 'Cookie'
+    return resp
+
+
+@app.api_route('/hls/playlist.m3u8', methods=['GET', 'HEAD'])
+def hls_playlist(request: Request):
+    current_settings, state, denied = _hls_request_state(request)
+    if denied is not None:
+        return denied
+
+    if not current_settings.get('segment_download_mode'):
+        return JSONResponse({"error": "streaming unavailable"}, status_code=404)
+    if state['mode'] == 'file':
+        # 下載完了, 該去 /get_video.mp4, 不是繼續問這裡
+        return JSONResponse({"error": "download finished"}, status_code=404)
+    if state['mode'] == 'none':
+        return JSONResponse({"error": "not downloading"}, status_code=404)
+    if state['mode'] == 'parsing' or not state['parsed'] or state['ready'] <= 0:
+        # 寧可 404 也不要發一份零分片的 playlist: hls.js 會把空清單當
+        # LEVEL_EMPTY_ERROR 直接放棄, 而 404 是它願意重試的 LEVEL_LOAD_ERROR
+        return JSONResponse({"error": "not ready"}, status_code=404)
+
+    body = _hls_render(request.query_params.get('id'), state['parsed'],
+                       state['ready'], state['mode'] == 'finalising')
+    if request.method == 'HEAD':
+        resp = Response(status_code=200)
+        resp.headers['Content-Type'] = HLS_MIME
+        resp.headers['Content-Length'] = str(len(body.encode('utf-8')))
+    else:
+        resp = Response(content=body, media_type=HLS_MIME)
+    # 不能走 _apply_cache_headers: 它的 max-age 會把一份幾秒就變一次的 playlist
+    # 釘住, 而 get_file_headers 的 mtime+size ETag 對還在長大的東西是錯的
+    resp.headers['Cache-Control'] = 'no-store'
+    if current_settings['dashboard']['online_watch_requires_login']:
+        resp.headers['Vary'] = 'Cookie'
+    return resp
+
+
+@app.api_route('/hls/key.bin', methods=['GET', 'HEAD'])
+def hls_key(request: Request):
+    # AES-128 的金鑰原樣交給瀏覽器, 伺服器這邊不解密. 這不會多開一個曝險面:
+    # /get_video.mp4 早就用同一道門發完整的成品影片了, 金鑰能開的東西比那個少
+    current_settings, state, denied = _hls_request_state(request)
+    if denied is not None:
+        return denied
+    if state['mode'] not in ('parsing', 'streaming', 'finalising'):
+        return JSONResponse({"error": "not downloading"}, status_code=404)
+
+    try:
+        with open(os.path.join(state['temp_dir'], 'key.m3u8key'), 'rb') as f:
+            data = f.read()
+    except OSError:
+        return JSONResponse({"error": "key not ready"}, status_code=404)
+    if not data:
+        return JSONResponse({"error": "key not ready"}, status_code=404)
+
+    if request.method == 'HEAD':
+        resp = Response(status_code=200)
+        resp.headers['Content-Type'] = 'application/octet-stream'
+        resp.headers['Content-Length'] = str(len(data))
+    else:
+        resp = Response(content=data, media_type='application/octet-stream')
+    resp.headers['Cache-Control'] = 'no-store'
+    if current_settings['dashboard']['online_watch_requires_login']:
+        resp.headers['Vary'] = 'Cookie'
+    return resp
+
+
+@app.api_route('/hls/segment.ts', methods=['GET', 'HEAD'])
+def hls_segment(request: Request):
+    current_settings, state, denied = _hls_request_state(request)
+    if denied is not None:
+        return denied
+    if state['mode'] not in ('streaming', 'finalising') or not state['parsed']:
+        return JSONResponse({"error": "not downloading"}, status_code=404)
+
+    # 用序號定位而不是讓前端傳檔名: 這樣沒有任何一段客戶端字串會走到檔案系統,
+    # 目錄穿越不是被過濾掉, 是根本構造不出來
+    try:
+        index = int(request.query_params.get('n'))
+    except (TypeError, ValueError):
+        return JSONResponse({"error": "invalid segment"}, status_code=400)
+    if index < 0 or index >= len(state['parsed']['segments']):
+        return JSONResponse({"error": "invalid segment"}, status_code=404)
+    if index >= state['ready']:
+        # 要的比我們發出去的 playlist 還前面, 表示它拿的是舊清單
+        return JSONResponse({"error": "segment not ready"}, status_code=404)
+
+    path = os.path.join(state['temp_dir'], state['parsed']['segments'][index]['name'])
+    try:
+        # 整片讀進記憶體再回, 不用 FileResponse: 一片 1080p 大概 2~4 MB, 但檔案握把
+        # 只開幾微秒. 重試任務會把同一片重下一次, 而 Windows 上 os.replace 碰到
+        # 別人開著的目標檔會失敗 —— 握把開久一點, 觀眾就有機會弄垮下載.
+        # 順帶把「合併完成時 rmtree 把目錄抽走」這個競態也一起解決掉
+        with open(path, 'rb') as f:
+            data = f.read()
+    except OSError:
+        return JSONResponse({"error": "segment gone"}, status_code=404)
+    if not data:
+        return JSONResponse({"error": "segment gone"}, status_code=404)
+
+    if request.method == 'HEAD':
+        resp = Response(status_code=200)
+        resp.headers['Content-Type'] = 'video/mp2t'
+        resp.headers['Content-Length'] = str(len(data))
+    else:
+        resp = Response(content=data, media_type='video/mp2t')
+    # 分片一旦寫下就不會再變, 往回拖時間軸可以直接吃瀏覽器快取, 不必重讀磁碟
+    return _apply_cache_headers(resp, current_settings, 3600)
+
+
+# ----------------------------------------------------------- 線上切換畫質
+# 片庫裡一集只有一種畫質, 想換就只能回頭跟動畫瘋要. 這四條路由把 Bahamut 的
+# per-resolution HLS 代理出來: 清單改寫成指回自己, 金鑰跟分片轉手發出去.
+# 跟上面那組 /hls/* 的差別是那邊讀本機磁碟、清單還在長 (EVENT), 這邊是回源、
+# 整集一次給完 (VOD).
+
+def _stream_request_state(request):
+    """四條路由共用的門口: 驗登入、驗 sn、驗這個 sn 我們願不願意代抓."""
+    current_settings = _hls_settings()
+    gated = _online_watch_gate(current_settings)
+    if gated is not None:
+        return None, None, gated
+    denied = _catalog_login_error(current_settings, request)
+    if denied is not None:
+        return None, None, denied
+    sn = str(request.query_params.get('id') or '')
+    if not sn.isdigit():
+        return None, None, (JSONResponse({"error": "invalid sn"}, status_code=400))
+    if not _stream_allowed(sn):
+        return None, None, (JSONResponse({"error": "unknown sn"}, status_code=404))
+    return current_settings, sn, None
+
+
+def _stream_request_media(request):
+    """再多驗一個 res, 並且把那個畫質的分片表準備好."""
+    current_settings, sn, denied = _stream_request_state(request)
+    if denied is not None:
+        return None, None, None, None, denied
+    res = str(request.query_params.get('res') or '')
+    if not res.isdigit():
+        return None, None, None, None, (JSONResponse({"error": "invalid resolution"}, status_code=400))
+    media = _stream_media(sn, res)
+    if media is None:
+        return None, None, None, None, (JSONResponse({"error": "resolution unavailable"}, status_code=404))
+    return current_settings, sn, res, media, None
+
+
+@app.get('/stream/sources.json')
+def stream_sources(request: Request):
+    # 播放器開設定選單時問一次: 這一集在動畫瘋那邊還有哪些畫質可以挑
+    current_settings, sn, denied = _stream_request_state(request)
+    if denied is not None:
+        return denied
+    resolutions = sorted(
+        (int(key) for key in _stream_dict(sn) if str(key).isdigit()), reverse=True)
+    resp = JSONResponse({'sn': sn, 'resolutions': resolutions})
+    # 解析結果伺服器自己就快取 30 分鐘了, 這裡讓客戶端也留一下, 免得轉個螢幕
+    # 方向、重開一次選單就再問一遍. 一律 private —— 這是拿我們的帳號解析出來
+    # 的東西, 不該讓前面的共用快取原樣發給別人
+    resp.headers['Cache-Control'] = 'private, max-age=300'
+    if current_settings['dashboard']['online_watch_requires_login']:
+        resp.headers['Vary'] = 'Cookie'
+    return resp
+
+
+@app.api_route('/stream/playlist.m3u8', methods=['GET', 'HEAD'])
+def stream_playlist(request: Request):
+    current_settings, sn, res, media, denied = _stream_request_media(request)
+    if denied is not None:
+        return denied
+    body = _stream_render(sn, res, media['parsed'])
+    if request.method == 'HEAD':
+        resp = Response(status_code=200)
+        resp.headers['Content-Type'] = HLS_MIME
+        resp.headers['Content-Length'] = str(len(body.encode('utf-8')))
+    else:
+        resp = Response(content=body, media_type=HLS_MIME)
+    # chunklist 的網址是簽名過的, 過期就得重解析. 不能讓客戶端把這份清單釘住
+    resp.headers['Cache-Control'] = 'no-store'
+    if current_settings['dashboard']['online_watch_requires_login']:
+        resp.headers['Vary'] = 'Cookie'
+    return resp
+
+
+@app.api_route('/stream/key.bin', methods=['GET', 'HEAD'])
+def stream_key(request: Request):
+    # 跟 /hls/key.bin 一樣, 金鑰原樣交給播放器, 伺服器這邊不解密
+    current_settings, sn, res, media, denied = _stream_request_media(request)
+    if denied is not None:
+        return denied
+    data = _stream_key(sn, res, media)
+    if not data:
+        return JSONResponse({"error": "key unavailable"}, status_code=502)
+    if request.method == 'HEAD':
+        resp = Response(status_code=200)
+        resp.headers['Content-Type'] = 'application/octet-stream'
+        resp.headers['Content-Length'] = str(len(data))
+    else:
+        resp = Response(content=data, media_type='application/octet-stream')
+    resp.headers['Cache-Control'] = 'no-store'
+    if current_settings['dashboard']['online_watch_requires_login']:
+        resp.headers['Vary'] = 'Cookie'
+    return resp
+
+
+@app.api_route('/stream/segment.ts', methods=['GET', 'HEAD'])
+def stream_segment(request: Request):
+    current_settings, sn, res, media, denied = _stream_request_media(request)
+    if denied is not None:
+        return denied
+
+    # 用序號定位而不是讓客戶端傳 URI: 這樣沒有任何一段客戶端字串會變成回源網址,
+    # 也就沒有拿這台伺服器當跳板亂打別人的空間
+    try:
+        index = int(request.query_params.get('n'))
+    except (TypeError, ValueError):
+        return JSONResponse({"error": "invalid segment"}, status_code=400)
+    segments = media['parsed']['segments']
+    if index < 0 or index >= len(segments):
+        return JSONResponse({"error": "invalid segment"}, status_code=404)
+
+    url = _stream_absolute(media['base'], segments[index]['uri'])
+    try:
+        upstream = _bahamut_get(url, timeout=30, extra_headers=STREAM_ORIGIN_HEADER)
+    except KeyboardInterrupt:
+        raise
+    except BaseException as error:
+        err_print(sn, '線上畫質', '取得 %sP 第 %d 片失敗: %s' % (res, index, error),
+                  status=1, display=False)
+        return JSONResponse({"error": "segment unavailable"}, status_code=502)
+    if upstream.status_code != 200 or not upstream.content:
+        return JSONResponse({"error": "segment unavailable"}, status_code=502)
+
+    if request.method == 'HEAD':
+        resp = Response(status_code=200)
+        resp.headers['Content-Type'] = 'video/mp2t'
+        resp.headers['Content-Length'] = str(len(upstream.content))
+    else:
+        resp = Response(content=upstream.content, media_type='video/mp2t')
+    # 分片內容不會變, 往回拖時間軸就吃客戶端快取, 不必再回源一次
+    return _apply_cache_headers(resp, current_settings, 3600)
+
+
+@app.api_route('/get_danmu.ass', methods=['GET', 'HEAD'])
+def getsub(request: Request):
+    current_settings = _get_current_settings()
+    gated = _online_watch_gate(current_settings)
+    if gated is not None:
+        return gated
+    sn = request.query_params.get('id')
+    if current_settings['danmu']:
+        video = _find_video_entry(sn)
+        path = Config.getpath(sn, 'danmu')
+
+        # Trigger danmu update in background thread to avoid Cloudflare 524 timeout
+        if video and _should_update_danmu(sn):
+            video_path = video.get('path')
+            anime_name = video.get('anime_name')
+            if video_path and anime_name and os.path.exists(video_path):
+                def _bg_update_danmu(sn=sn, anime_name=anime_name, video_path=video_path):
+                    try:
+                        __get_danmu_only(sn, anime_name, video_path, False)
+                        updated_path = Config.getpath(sn, 'danmu')
+                        if updated_path and os.path.exists(updated_path):
+                            _mark_danmu_updated(sn)
+                    except BaseException as e:
+                        err_print(sn, '彈幕更新失敗', '線上觀看請求時自動更新失敗: ' + str(e), status=1, display=True)
+                threading.Thread(target=_bg_update_danmu, daemon=True).start()
+
+        if path and os.path.exists(path) and str(sn) not in danmu_update_timestamps:
+            _mark_danmu_updated(sn)
+
+        if not path or not os.path.exists(path):
+            return JSONResponse({"error": "danmu not found"}, status_code=404)
+        return FileResponse(path)
+    else:
+        return _html_response('Danmu is not enabled')
+
+
+@app.api_route('/video_list.json', methods=['GET', 'HEAD'])
+def videolist(request: Request):
+    current_settings = _get_current_settings()
+    gated = _online_watch_gate(current_settings)
+    if gated is not None:
+        return gated
+    if current_settings['dashboard']['online_watch_requires_login']:
+        vaild_user, user_role = verify_user(request.cookies)
+        if not vaild_user:
+            return JSONResponse({"error": "login required"}, status_code=403)
+
+    # 這一支是整個 app 開機時最重的一筆: 片庫大一點 (四千集就是 2.7 MB)
+    # 的話, 每次都把整份重新解析再重新序列化一遍, 實測要一秒多. 但磁碟上那個檔
+    # 本來就是要送出去的那份 JSON —— 直接發檔案, 中間那兩步都不必做.
+    #
+    # 再配一組 ETag: 沒有新下載的集數時客戶端只會收到一個 304, 連那 100 KB
+    # 都不必再傳.
+    video_list_path = os.path.join(Config.get_working_dir(), 'video_list.json')
+    if not os.path.exists(video_list_path):
+        # 還沒下載過任何一集
+        return JSONResponse({'videos': []})
+
+    etag, last_modified, file_size = get_file_headers(video_list_path)
+    if request.headers.get('If-None-Match') == etag or request.headers.get('If-Modified-Since') == last_modified:
+        resp = Response(status_code=304)
+    elif request.method == 'HEAD':
+        resp = Response(status_code=200)
+        resp.headers['Content-Type'] = 'application/json'
+        resp.headers['Content-Length'] = str(file_size)
+    else:
+        resp = FileResponse(video_list_path, media_type='application/json')
+    resp.headers['ETag'] = etag
+    resp.headers['Last-Modified'] = last_modified
+    # must-revalidate: 片庫隨時可能多一集, 客戶端每次都該問一下 —— 但問完
+    # 通常就是一個 304, 便宜得很
+    if current_settings['dashboard']['online_watch_requires_login']:
+        resp.headers['Cache-Control'] = 'private, no-cache, must-revalidate'
+        resp.headers['Vary'] = 'Cookie'
+    else:
+        resp.headers['Cache-Control'] = 'public, no-cache, must-revalidate'
+    return resp
+
+
+@app.api_route('/watch/time', methods=['GET', 'POST'])
+async def webtime(request: Request):
+    if request.method == 'POST':
+        denied = await run_in_threadpool(
+            _watch_time_preflight, request.cookies.get('token'))
         if denied is not None:
             return denied
-
-        payload = dict(state)
-        payload.pop('parsed', None)   # 內部用的解析結果, 不外流
-        payload.pop('temp_dir', None)  # 本機路徑不該出現在 API 回應裡
-        resp = jsonify(payload)
-        # 就算是 mode=none 也回 200: 前端要分得出「沒在下載」跟「伺服器壞了」
-        resp.headers['Cache-Control'] = 'no-store'
-        if current_settings['dashboard']['online_watch_requires_login']:
-            resp.headers['Vary'] = 'Cookie'
-        return resp
-
-    @app.route('/hls/playlist.m3u8')
-    def hls_playlist():
-        current_settings, state, denied = _hls_request_state()
-        if denied is not None:
-            return denied
-
-        if not current_settings.get('segment_download_mode'):
-            return jsonify({"error": "streaming unavailable"}), 404
-        if state['mode'] == 'file':
-            # 下載完了, 該去 /get_video.mp4, 不是繼續問這裡
-            return jsonify({"error": "download finished"}), 404
-        if state['mode'] == 'none':
-            return jsonify({"error": "not downloading"}), 404
-        if state['mode'] == 'parsing' or not state['parsed'] or state['ready'] <= 0:
-            # 寧可 404 也不要發一份零分片的 playlist: hls.js 會把空清單當
-            # LEVEL_EMPTY_ERROR 直接放棄, 而 404 是它願意重試的 LEVEL_LOAD_ERROR
-            return jsonify({"error": "not ready"}), 404
-
-        body = _hls_render(request.args.get('id'), state['parsed'],
-                           state['ready'], state['mode'] == 'finalising')
-        resp = Response(body, mimetype=HLS_MIME)
-        # 不能走 _apply_cache_headers: 它的 max-age 會把一份幾秒就變一次的 playlist
-        # 釘住, 而 get_file_headers 的 mtime+size ETag 對還在長大的東西是錯的
-        resp.headers['Cache-Control'] = 'no-store'
-        if current_settings['dashboard']['online_watch_requires_login']:
-            resp.headers['Vary'] = 'Cookie'
-        return resp
-
-    @app.route('/hls/key.bin')
-    def hls_key():
-        # AES-128 的金鑰原樣交給瀏覽器, 伺服器這邊不解密. 這不會多開一個曝險面:
-        # /get_video.mp4 早就用同一道門發完整的成品影片了, 金鑰能開的東西比那個少
-        current_settings, state, denied = _hls_request_state()
-        if denied is not None:
-            return denied
-        if state['mode'] not in ('parsing', 'streaming', 'finalising'):
-            return jsonify({"error": "not downloading"}), 404
-
-        try:
-            with open(os.path.join(state['temp_dir'], 'key.m3u8key'), 'rb') as f:
-                data = f.read()
-        except OSError:
-            return jsonify({"error": "key not ready"}), 404
-        if not data:
-            return jsonify({"error": "key not ready"}), 404
-
-        resp = Response(data, mimetype='application/octet-stream')
-        resp.headers['Cache-Control'] = 'no-store'
-        if current_settings['dashboard']['online_watch_requires_login']:
-            resp.headers['Vary'] = 'Cookie'
-        return resp
-
-    @app.route('/hls/segment.ts')
-    def hls_segment():
-        current_settings, state, denied = _hls_request_state()
-        if denied is not None:
-            return denied
-        if state['mode'] not in ('streaming', 'finalising') or not state['parsed']:
-            return jsonify({"error": "not downloading"}), 404
-
-        # 用序號定位而不是讓前端傳檔名: 這樣沒有任何一段客戶端字串會走到檔案系統,
-        # 目錄穿越不是被過濾掉, 是根本構造不出來
-        try:
-            index = int(request.args.get('n'))
-        except (TypeError, ValueError):
-            return jsonify({"error": "invalid segment"}), 400
-        if index < 0 or index >= len(state['parsed']['segments']):
-            return jsonify({"error": "invalid segment"}), 404
-        if index >= state['ready']:
-            # 要的比我們發出去的 playlist 還前面, 表示它拿的是舊清單
-            return jsonify({"error": "segment not ready"}), 404
-
-        path = os.path.join(state['temp_dir'], state['parsed']['segments'][index]['name'])
-        try:
-            # 整片讀進記憶體再回, 不用 send_file: 一片 1080p 大概 2~4 MB, 但檔案握把
-            # 只開幾微秒. 重試任務會把同一片重下一次, 而 Windows 上 os.replace 碰到
-            # 別人開著的目標檔會失敗 —— 握把開久一點, 觀眾就有機會弄垮下載.
-            # 順帶把「合併完成時 rmtree 把目錄抽走」這個競態也一起解決掉
-            with open(path, 'rb') as f:
-                data = f.read()
-        except OSError:
-            return jsonify({"error": "segment gone"}), 404
-        if not data:
-            return jsonify({"error": "segment gone"}), 404
-
-        resp = Response(data, mimetype='video/mp2t')
-        # 分片一旦寫下就不會再變, 往回拖時間軸可以直接吃瀏覽器快取, 不必重讀磁碟
-        return _apply_cache_headers(resp, current_settings, 3600)
+        reqdata = await _json_then_form(request)
+    else:
+        reqdata = dict(request.query_params)
+    token = request.cookies.get('token')
+    return await run_in_threadpool(_webtime_blocking, reqdata, token)
 
 
-    # ----------------------------------------------------------- 線上切換畫質
-    # 片庫裡一集只有一種畫質, 想換就只能回頭跟動畫瘋要. 這四條路由把 Bahamut 的
-    # per-resolution HLS 代理出來: 清單改寫成指回自己, 金鑰跟分片轉手發出去.
-    # 跟上面那組 /hls/* 的差別是那邊讀本機磁碟、清單還在長 (EVENT), 這邊是回源、
-    # 整集一次給完 (VOD).
-
-    def _stream_request_state():
-        """四條路由共用的門口: 驗登入、驗 sn、驗這個 sn 我們願不願意代抓."""
-        current_settings = _hls_settings()
-        denied = _catalog_login_error(current_settings)
-        if denied is not None:
-            return None, None, denied
-        sn = str(request.args.get('id') or '')
-        if not sn.isdigit():
-            return None, None, (jsonify({"error": "invalid sn"}), 400)
-        if not _stream_allowed(sn):
-            return None, None, (jsonify({"error": "unknown sn"}), 404)
-        return current_settings, sn, None
-
-    def _stream_request_media():
-        """再多驗一個 res, 並且把那個畫質的分片表準備好."""
-        current_settings, sn, denied = _stream_request_state()
-        if denied is not None:
-            return None, None, None, None, denied
-        res = str(request.args.get('res') or '')
-        if not res.isdigit():
-            return None, None, None, None, (jsonify({"error": "invalid resolution"}), 400)
-        media = _stream_media(sn, res)
-        if media is None:
-            return None, None, None, None, (jsonify({"error": "resolution unavailable"}), 404)
-        return current_settings, sn, res, media, None
-
-    @app.route('/stream/sources.json')
-    def stream_sources():
-        # 播放器開設定選單時問一次: 這一集在動畫瘋那邊還有哪些畫質可以挑
-        current_settings, sn, denied = _stream_request_state()
-        if denied is not None:
-            return denied
-        resolutions = sorted(
-            (int(key) for key in _stream_dict(sn) if str(key).isdigit()), reverse=True)
-        resp = jsonify({'sn': sn, 'resolutions': resolutions})
-        # 解析結果伺服器自己就快取 30 分鐘了, 這裡讓客戶端也留一下, 免得轉個螢幕
-        # 方向、重開一次選單就再問一遍. 一律 private —— 這是拿我們的帳號解析出來
-        # 的東西, 不該讓前面的共用快取原樣發給別人
-        resp.headers['Cache-Control'] = 'private, max-age=300'
-        if current_settings['dashboard']['online_watch_requires_login']:
-            resp.headers['Vary'] = 'Cookie'
-        return resp
-
-    @app.route('/stream/playlist.m3u8')
-    def stream_playlist():
-        current_settings, sn, res, media, denied = _stream_request_media()
-        if denied is not None:
-            return denied
-        resp = Response(_stream_render(sn, res, media['parsed']), mimetype=HLS_MIME)
-        # chunklist 的網址是簽名過的, 過期就得重解析. 不能讓客戶端把這份清單釘住
-        resp.headers['Cache-Control'] = 'no-store'
-        if current_settings['dashboard']['online_watch_requires_login']:
-            resp.headers['Vary'] = 'Cookie'
-        return resp
-
-    @app.route('/stream/key.bin')
-    def stream_key():
-        # 跟 /hls/key.bin 一樣, 金鑰原樣交給播放器, 伺服器這邊不解密
-        current_settings, sn, res, media, denied = _stream_request_media()
-        if denied is not None:
-            return denied
-        data = _stream_key(sn, res, media)
-        if not data:
-            return jsonify({"error": "key unavailable"}), 502
-        resp = Response(data, mimetype='application/octet-stream')
-        resp.headers['Cache-Control'] = 'no-store'
-        if current_settings['dashboard']['online_watch_requires_login']:
-            resp.headers['Vary'] = 'Cookie'
-        return resp
-
-    @app.route('/stream/segment.ts')
-    def stream_segment():
-        current_settings, sn, res, media, denied = _stream_request_media()
-        if denied is not None:
-            return denied
-
-        # 用序號定位而不是讓客戶端傳 URI: 這樣沒有任何一段客戶端字串會變成回源網址,
-        # 也就沒有拿這台伺服器當跳板亂打別人的空間
-        try:
-            index = int(request.args.get('n'))
-        except (TypeError, ValueError):
-            return jsonify({"error": "invalid segment"}), 400
-        segments = media['parsed']['segments']
-        if index < 0 or index >= len(segments):
-            return jsonify({"error": "invalid segment"}), 404
-
-        url = _stream_absolute(media['base'], segments[index]['uri'])
-        try:
-            upstream = _bahamut_get(url, timeout=30, extra_headers=STREAM_ORIGIN_HEADER)
-        except KeyboardInterrupt:
-            raise
-        except BaseException as error:
-            err_print(sn, '線上畫質', '取得 %sP 第 %d 片失敗: %s' % (res, index, error),
-                      status=1, display=False)
-            return jsonify({"error": "segment unavailable"}), 502
-        if upstream.status_code != 200 or not upstream.content:
-            return jsonify({"error": "segment unavailable"}), 502
-
-        resp = Response(upstream.content, mimetype='video/mp2t')
-        # 分片內容不會變, 往回拖時間軸就吃客戶端快取, 不必再回源一次
-        return _apply_cache_headers(resp, current_settings, 3600)
-
-
-    @app.route('/get_danmu.ass')
-    def getsub():
-        current_settings = _get_current_settings()
-        sn = request.args.get('id')
-        if current_settings['danmu']:
-            video = _find_video_entry(sn)
-            path = Config.getpath(sn, 'danmu')
-
-            # Trigger danmu update in background thread to avoid Cloudflare 524 timeout
-            if video and _should_update_danmu(sn):
-                video_path = video.get('path')
-                anime_name = video.get('anime_name')
-                if video_path and anime_name and os.path.exists(video_path):
-                    def _bg_update_danmu(sn=sn, anime_name=anime_name, video_path=video_path):
-                        try:
-                            __get_danmu_only(sn, anime_name, video_path, False)
-                            updated_path = Config.getpath(sn, 'danmu')
-                            if updated_path and os.path.exists(updated_path):
-                                _mark_danmu_updated(sn)
-                        except BaseException as e:
-                            err_print(sn, '彈幕更新失敗', '線上觀看請求時自動更新失敗: ' + str(e), status=1, display=True)
-                    threading.Thread(target=_bg_update_danmu, daemon=True).start()
-
-            if path and os.path.exists(path) and str(sn) not in danmu_update_timestamps:
-                _mark_danmu_updated(sn)
-
-            if not path or not os.path.exists(path):
-                return jsonify({"error": "danmu not found"}), 404
-            return send_file(path)
-        else:
-            return 'Danmu is not enabled'
-
-
-    @app.route('/video_list.json')
-    def videolist():
-        current_settings = _get_current_settings()
-        if current_settings['dashboard']['online_watch_requires_login']:
-            vaild_user, user_role = verify_user(request.cookies)
-            if not vaild_user:
-                return jsonify({"error": "login required"}), 403
-
-        # 這一支是整個 app 開機時最重的一筆: 片庫大一點 (四千集就是 2.7 MB)
-        # 的話, jsonify(_read_video_list_file()) 等於每次都把整份重新解析再
-        # 重新序列化一遍, 實測要一秒多. 但磁碟上那個檔本來就是要送出去的那份
-        # JSON —— 直接發檔案, 中間那兩步都不必做.
-        #
-        # 再配一組 ETag: 沒有新下載的集數時客戶端只會收到一個 304, 連那 100 KB
-        # 都不必再傳.
-        video_list_path = os.path.join(Config.get_working_dir(), 'video_list.json')
-        if not os.path.exists(video_list_path):
-            # 還沒下載過任何一集
-            return jsonify({'videos': []})
-
-        etag, last_modified, _ = get_file_headers(video_list_path)
-        if request.headers.get('If-None-Match') == etag or                 request.headers.get('If-Modified-Since') == last_modified:
-            resp = Response(status=304)
-        else:
-            resp = send_file(video_list_path, mimetype='application/json')
-        resp.headers['ETag'] = etag
-        resp.headers['Last-Modified'] = last_modified
-        # must-revalidate: 片庫隨時可能多一集, 客戶端每次都該問一下 —— 但問完
-        # 通常就是一個 304, 便宜得很
-        if current_settings['dashboard']['online_watch_requires_login']:
-            resp.headers['Cache-Control'] = 'private, no-cache, must-revalidate'
-            resp.headers['Vary'] = 'Cookie'
-        else:
-            resp.headers['Cache-Control'] = 'public, no-cache, must-revalidate'
-        return resp
-
-
-    @app.route('/watch/time', methods=['GET', 'POST'])
-    def webtime():
-        if request.method == 'POST':
-            reqdata = request.get_json() or request.form.copy()
-        else:
-            reqdata = request.args.copy()
-        gettype = reqdata.get('type')
-        sn = reqdata.get('sn')
-        ended = str(reqdata.get('ended', "false")).lower() == "true"
-        token = request.cookies.get('token')
-        userdata = load_user_data()
-        if gettype == 'set':
+def _webtime_blocking(reqdata, token):
+    gettype = reqdata.get('type')
+    sn = reqdata.get('sn')
+    ended = str(reqdata.get('ended', "false")).lower() == "true"
+    if gettype == 'set':
+        def _apply(userdata):
             for user in userdata['users']:
                 if user['token'] == token:
                     # 播放器偶尔会送回 Infinity 或空值 (直播源、moov 里没写时长),
@@ -2496,7 +3020,7 @@ if settings["dashboard"]["online_watch"]:
                     try:
                         entry = {"time": int(float(reqdata.get('time'))), "ended": ended, "timestamp": int(datetime.now().timestamp())}
                     except (TypeError, ValueError, OverflowError):
-                        return '{"status":"400", "msg":"Invalid time"}', 400
+                        return (_html_response('{"status":"400", "msg":"Invalid time"}', status_code=400), False)
                     # The player reports the media duration alongside the
                     # position so the library can draw a real progress bar
                     # instead of guessing against a nominal episode length.
@@ -2507,462 +3031,403 @@ if settings["dashboard"]["online_watch"]:
                     except (TypeError, ValueError, OverflowError):
                         pass
                     user['videotimes'][sn] = entry
-                    save_user_data(userdata)
-                    return '{"status":"200"}'
-        elif gettype == 'del':
-            # 觀看紀錄那一頁的刪除鈕. 沒有這筆就當作已經刪掉了 —— 連按兩下不該
-            # 是一次 200 一次 404
+                    return (_html_response('{"status":"200"}'), True)
+            return (_html_response('{"status":"403", "msg":"Invalid token"}'), False)
+        return update_user_data(_apply)
+    elif gettype == 'del':
+        # 觀看紀錄那一頁的刪除鈕. 沒有這筆就當作已經刪掉了 —— 連按兩下不該
+        # 是一次 200 一次 404
+        def _apply_del(userdata):
             for user in userdata['users']:
                 if user['token'] == token:
                     if not sn:
-                        return '{"status":"400", "msg":"Missing sn"}', 400
+                        return (_html_response('{"status":"400", "msg":"Missing sn"}', status_code=400), False)
                     if user['videotimes'].pop(sn, None) is not None:
-                        save_user_data(userdata)
-                    return '{"status":"200"}'
-        elif gettype == 'get':
-            for user in userdata['users']:
-                if user['token'] == token:
-                    if not sn:
-                        return jsonify(user['videotimes'])
-                    if user['videotimes'].get(sn):
-                        return jsonify(user['videotimes'][sn])
-                    else:
-                        return jsonify({"time": 0, "ended": False})
+                        return (_html_response('{"status":"200"}'), True)
+                    return (_html_response('{"status":"200"}'), False)
+            return (_html_response('{"status":"403", "msg":"Invalid token"}'), False)
+        return update_user_data(_apply_del)
+    elif gettype == 'get':
+        userdata = load_user_data()
         for user in userdata['users']:
             if user['token'] == token:
-                return '{"status":"404", "msg":"Invalid type"}'
-        return '{"status":"403", "msg":"Invalid token"}'
-    
+                if not sn:
+                    return JSONResponse(user['videotimes'])
+                if user['videotimes'].get(sn):
+                    return JSONResponse(user['videotimes'][sn])
+                else:
+                    return JSONResponse({"time": 0, "ended": False})
+    userdata = load_user_data()
+    for user in userdata['users']:
+        if user['token'] == token:
+            return _html_response('{"status":"404", "msg":"Invalid type"}')
+    return _html_response('{"status":"403", "msg":"Invalid token"}')
 
-@app.route('/get_server_info')
+
+@app.get('/get_server_info')
 def get_server_info():
-    return jsonify(_get_dashboard_flags())
-
-if settings['dashboard']['user_control']['enabled']:
-    load_user_data()
-
-    @app.route('/logout')
-    def logout():
-        response = make_response(redirect('./login'))
-        return _clear_login_cookies(response)
-
-    @app.route('/login', methods=['GET', 'POST'])
-    def login():
-        if request.method == 'GET':
-            return render_template('login.html')
-
-        reqdata = request.form.copy() if request.form else (request.get_json(silent=True) or {})
-        if not reqdata:
-            return '<script>alert("Empty request!");history.back();</script>'
-
-        username = _normalize_username(reqdata.get('username'))
-        password = reqdata.get('password')
-        userdata = load_user_data()
-        user = find_user_by_username(username, userdata)
-        if not user or not _verify_password(user, password):
-            return redirect('./login?error=1')
-
-        if user.get('password') is not None:
-            user['password_hash'] = _hash_password(password)
-            user.pop('password', None)
-            save_user_data(userdata)
-
-        destination = './watch' if Config.read_settings()['dashboard'].get('online_watch') else './control'
-        response = make_response(redirect(destination))
-        return _set_login_cookies(response, user['token'])
+    return JSONResponse(_get_dashboard_flags())
 
 
-    @app.route('/register', methods=['GET', 'POST'])
-    def register():
-        current_settings = Config.read_settings()
-        if not current_settings['dashboard']['user_control']['allow_register']:
-            return '<script>alert("註冊功能未啟用");history.back();</script>'
-        if request.method == 'GET':
-            return render_template('register.html')
+@app.get('/logout')
+def logout(request: Request):
+    current_settings = _get_current_settings()
+    gated = _user_control_gate(current_settings)
+    if gated is not None:
+        return gated
+    response = _redirect('./login')
+    return _clear_login_cookies(response)
 
-        reqdata = request.get_json(silent=True) or request.form.copy()
-        if not reqdata:
-            return '<script>alert("Empty request!");history.back();</script>'
-        if not reqdata.get('username') or not reqdata.get('pw1') or not reqdata.get('pw2'):
-            return redirect('./register?error=3')
-        if reqdata.get('pw1') != reqdata.get('pw2'):
-            return redirect('./register?error=2')
 
-        username = _normalize_username(reqdata.get('username'))
-        password = str(reqdata.get('pw1'))
-        if not re.match(r'^[a-zA-Z0-9_]{3,20}$', username):
-            return redirect('./register?error=4')
-        if not re.match(r'^[a-zA-Z0-9_]{6,64}$', password):
-            return redirect('./register?error=5')
+@app.api_route('/login', methods=['GET', 'POST'])
+async def login(request: Request):
+    if request.method == 'GET':
+        return await run_in_threadpool(_login_blocking, request, None)
+    denied = await run_in_threadpool(_login_preflight)
+    if denied is not None:
+        return denied
+    # Only form/JSON parsing stays on the event loop; PBKDF2/scrypt and
+    # userdata/config I/O run pooled so unauthenticated logins never block it.
+    reqdata = await _form_or_json(request)
+    return await run_in_threadpool(_login_blocking, request, reqdata)
 
-        userdata = load_user_data()
+
+def _login_blocking(request, reqdata):
+    current_settings = _get_current_settings()
+    gated = _user_control_gate(current_settings)
+    if gated is not None:
+        return gated
+    if request.method == 'GET':
+        return _render(request, 'login.html', {'error': request.query_params.get('error')})
+
+    if not reqdata:
+        return _html_response('<script>alert("Empty request!");history.back();</script>')
+
+    username = _normalize_username(reqdata.get('username'))
+    password = reqdata.get('password')
+    # Expensive PBKDF2/scrypt verification stays outside the userdata lock.
+    snapshot = load_user_data()
+    user = find_user_by_username(username, snapshot)
+    if not user or not _verify_password(user, password):
+        return _redirect('./login?error=1')
+
+    token = user.get('token')
+    if user.get('password') is not None:
+        # Legacy plaintext migration: hash outside, compare-and-update inside
+        # so a concurrent password change is never silently overwritten.
+        legacy_pw = user.get('password')
+        new_hash = _hash_password(password)
+
+        def _migrate(userdata):
+            fresh = find_user_by_username(username, userdata)
+            if fresh is None:
+                return (None, False)
+            if fresh.get('password') is None:
+                return (fresh.get('token'), False)
+            if legacy_pw is not None and fresh.get('password') != legacy_pw:
+                if not _verify_password(fresh, password):
+                    return (fresh.get('token'), False)
+            fresh['password_hash'] = new_hash
+            fresh.pop('password', None)
+            return (fresh.get('token'), True)
+
+        migrated_token = update_user_data(_migrate)
+        if migrated_token:
+            token = migrated_token
+
+    destination = './watch' if Config.read_settings()['dashboard'].get('online_watch') else './control'
+    response = _redirect(destination)
+    return _set_login_cookies(response, token)
+
+
+@app.api_route('/register', methods=['GET', 'POST'])
+async def register(request: Request):
+    if request.method == 'GET':
+        return await run_in_threadpool(_register_blocking, request, None)
+    denied = await run_in_threadpool(_register_preflight)
+    if denied is not None:
+        return denied
+    reqdata = await _json_then_form(request)
+    return await run_in_threadpool(_register_blocking, request, reqdata)
+
+
+def _register_blocking(request, reqdata):
+    current_settings = _get_current_settings()
+    gated = _user_control_gate(current_settings)
+    if gated is not None:
+        return gated
+    if not current_settings['dashboard']['user_control']['allow_register']:
+        return _html_response('<script>alert("註冊功能未啟用");history.back();</script>')
+    if request.method == 'GET':
+        return _render(request, 'register.html', {'error': request.query_params.get('error')})
+
+    if not reqdata:
+        return _html_response('<script>alert("Empty request!");history.back();</script>')
+    if not reqdata.get('username') or not reqdata.get('pw1') or not reqdata.get('pw2'):
+        return _redirect('./register?error=3')
+    if reqdata.get('pw1') != reqdata.get('pw2'):
+        return _redirect('./register?error=2')
+
+    username = _normalize_username(reqdata.get('username'))
+    password = str(reqdata.get('pw1'))
+    if not re.match(r'^[a-zA-Z0-9_]{3,20}$', username):
+        return _redirect('./register?error=4')
+    if not re.match(r'^[a-zA-Z0-9_]{6,64}$', password):
+        return _redirect('./register?error=5')
+
+    # Expensive hash + token generation stay outside the lock; uniqueness is
+    # revalidated inside the transaction.
+    new_hash = _hash_password(password)
+    new_token = _generate_token()
+
+    def _append(userdata):
         if find_user_by_username(username, userdata):
-            return redirect('./register?error=1')
-
+            return (_redirect('./register?error=1'), False)
         userdata['users'].append({
             'username': username,
-            'password_hash': _hash_password(password),
-            'token': _generate_token(),
+            'password_hash': new_hash,
+            'token': new_token,
             'videotimes': {},
             'role': 'user',
         })
-        save_user_data(userdata)
-        return redirect('./login?error=3')
+        return (_redirect('./login?error=3'), True)
 
-    @app.route('/usermanage', methods=['GET', 'POST'])
-    @admin_page_required
-    def usermanage_v2():
+    return update_user_data(_append)
+
+
+@app.api_route('/usermanage', methods=['GET', 'POST'])
+async def usermanage_v2(request: Request):
+    if request.method == 'GET':
+        return await run_in_threadpool(_usermanage_blocking, request, None)
+    denied = await run_in_threadpool(_admin_page_preflight, request)
+    if denied is not None:
+        return denied
+    reqdata = await _form_or_json(request)
+    return await run_in_threadpool(_usermanage_blocking, request, reqdata)
+
+
+def _usermanage_blocking(request, reqdata):
+    current_settings = _get_current_settings()
+    gated = _user_control_gate(current_settings)
+    if gated is not None:
+        return gated
+    denied = _admin_page_guard(request, current_settings)
+    if denied is not None:
+        return denied
+    if request.method == 'GET':
         userdata = load_user_data()
-        if request.method == 'GET':
-            users = []
-            for user in userdata['users']:
-                safe_user = user.copy()
-                safe_user.pop('password', None)
-                safe_user.pop('password_hash', None)
-                safe_user.pop('token', None)
-                users.append(safe_user)
-            # 手機 app 沒有辦法解析 usermanage.html, 拿同一份資料的 JSON 版
-            if request.args.get('format') == 'json':
-                return jsonify({'status': '200', 'users': [
-                    {
-                        'username': user.get('username', ''),
-                        'role': user.get('role', 'user'),
-                        'videotimes': len(user.get('videotimes') or {}),
-                    }
-                    for user in users
-                ]})
-            return render_template('usermanage.html', users=users)
-
-        reqdata = request.form.copy() if request.form else (request.get_json(silent=True) or {})
-        if not reqdata:
-            return jsonify({'status': '400', 'message': 'Empty request!'}), 400
-
-        action = reqdata.get('action')
-        username = _normalize_username(reqdata.get('username'))
-        target_user = find_user_by_username(username, userdata)
-
-        if action == 'delete':
-            if not target_user:
-                return jsonify({'status': '404', 'message': 'User not found'}), 404
-            if target_user['username'].lower() == g.current_user['username'].lower():
-                return jsonify({'status': '403', 'message': 'Cannot delete current user'}), 403
-            userdata['users'] = [user for user in userdata['users'] if user['username'].lower() != username.lower()]
-            save_user_data(userdata)
-            return jsonify({'status': '200', 'message': 'User deleted'})
-
-        if action == 'change':
-            if not target_user:
-                return jsonify({'status': '404', 'message': 'User not found'}), 404
-            new_password = reqdata.get('password')
-            if new_password:
-                target_user['password_hash'] = _hash_password(new_password)
-                target_user.pop('password', None)
-                target_user['token'] = _generate_token()
-            target_user['role'] = _normalize_role(reqdata.get('role', target_user.get('role')))
-            save_user_data(userdata)
-            return jsonify({'status': '200', 'message': 'User updated'})
-
-        if action == 'add':
-            if not username or not reqdata.get('password'):
-                return jsonify({'status': '400', 'message': 'Username and password are required'}), 400
-            if find_user_by_username(username, userdata):
-                return jsonify({'status': '409', 'message': 'User already exists'}), 409
-            userdata['users'].append({
-                'username': username,
-                'password_hash': _hash_password(reqdata.get('password')),
-                'token': _generate_token(),
-                'videotimes': {},
-                'role': _normalize_role(reqdata.get('role')),
-            })
-            save_user_data(userdata)
-            return jsonify({'status': '200', 'message': 'User created'})
-
-        return jsonify({'status': '400', 'message': 'Invalid action'}), 400
-
-    @app.route('/userinfo', methods=['GET', 'POST'])
-    @user_page_required
-    def userinfo_v2():
-        userdata = load_user_data()
-        user = find_user_by_token(request.cookies.get('token'), userdata)
-        if not user:
-            return redirect('/login')
-
-        if request.method == 'GET':
+        users = []
+        for user in userdata['users']:
             safe_user = user.copy()
             safe_user.pop('password', None)
             safe_user.pop('password_hash', None)
             safe_user.pop('token', None)
-            return render_template('userinfo.html', user=safe_user)
+            users.append(safe_user)
+        # 手機 app 沒有辦法解析 usermanage.html, 拿同一份資料的 JSON 版
+        if request.query_params.get('format') == 'json':
+            return JSONResponse({'status': '200', 'users': [
+                {
+                    'username': user.get('username', ''),
+                    'role': user.get('role', 'user'),
+                    'videotimes': len(user.get('videotimes') or {}),
+                }
+                for user in users
+            ]})
+        return _render(request, 'usermanage.html', {'users': users})
 
-        reqdata = request.form.copy() if request.form else (request.get_json(silent=True) or {})
-        if not reqdata:
-            return jsonify({'status': '400', 'message': 'Empty request!'}), 400
+    if not reqdata:
+        return JSONResponse({'status': '400', 'message': 'Empty request!'}, status_code=400)
 
-        action = reqdata.get('action')
-        if action == 'get':
-            ret_data = user.copy()
-            ret_data['status'] = '200'
-            ret_data.pop('token', None)
-            ret_data.pop('password', None)
-            ret_data.pop('password_hash', None)
-            return jsonify(ret_data)
+    action = reqdata.get('action')
+    username = _normalize_username(reqdata.get('username'))
+    actor_token = request.cookies.get('token')
+    actor_name = getattr(getattr(request, 'state', None), 'current_user', {}).get('username', '')
 
-        if action in ('changepassword', 'change'):
-            original_pw = reqdata.get('original_password', reqdata.get('old_password'))
-            new_pw1 = reqdata.get('new_password1')
-            new_pw2 = reqdata.get('new_password2')
-            if not _verify_password(user, original_pw):
-                return jsonify({"status": "403", "message": "錯誤的原密碼"}), 403
-            if not new_pw1 or new_pw1 != new_pw2:
-                return jsonify({"status": "403", "message": "新密碼不一致"}), 403
-            user['password_hash'] = _hash_password(new_pw1)
-            user.pop('password', None)
-            user['token'] = _generate_token()
-            save_user_data(userdata)
-            return jsonify({"status": "200", "message": "密碼修改成功!", "logout": True})
+    # Expensive hashing stays outside the lock; identity/state is revalidated
+    # inside each transaction below.
+    precomputed_hash = None
+    precomputed_token = None
+    if action == 'change' and reqdata.get('password'):
+        precomputed_hash = _hash_password(reqdata.get('password'))
+        precomputed_token = _generate_token()
+    if action == 'add' and username and reqdata.get('password'):
+        precomputed_hash = _hash_password(reqdata.get('password'))
+        precomputed_token = _generate_token()
 
-        return jsonify({'status': '400', 'message': 'Invalid action'}), 400
+    def _check_actor(userdata):
+        actor = find_user_by_token(actor_token, userdata)
+        if not actor or actor.get('role') != 'admin':
+            return None
+        return actor
 
+    if action == 'delete':
+        def _apply_delete(userdata):
+            if _check_actor(userdata) is None:
+                return (JSONResponse({'status': '403', 'message': 'admin required'}, status_code=403), False)
+            target_user = find_user_by_username(username, userdata)
+            if not target_user:
+                return (JSONResponse({'status': '404', 'message': 'User not found'}, status_code=404), False)
+            actor = find_user_by_token(actor_token, userdata)
+            if target_user['username'].lower() == (actor.get('username') or actor_name).lower():
+                return (JSONResponse({'status': '403', 'message': 'Cannot delete current user'}, status_code=403), False)
+            userdata['users'] = [user for user in userdata['users'] if user['username'].lower() != username.lower()]
+            return (JSONResponse({'status': '200', 'message': 'User deleted'}), True)
+        return update_user_data(_apply_delete)
 
-if False and settings['dashboard']['user_control']['enabled']:
-    # init user
-    settings = Config.read_settings()
-    if os.path.exists(os.path.join(Config.get_working_dir(), 'Dashboard', 'userdata.json')):
-        try:
-            userdata = json.load(open(os.path.join(Config.get_working_dir(), 'Dashboard', 'userdata.json'), 'r'))
-            for duser in settings['dashboard']['user_control']['default_user']:
-                t = False
-                for user in userdata['users']:
-                    if duser['username'] == user['username']:
-                        user['password'] = duser['password']
-                        user['role'] = duser['role']
-                        t = True
-                if not t:
-                    userdata['users'].append(duser)
-        except:
-            userdata = {"users": settings['dashboard']['user_control']['default_user'].copy()}
-            for u in userdata["users"]:
-                u["token"] = ''.join(random.sample(string.ascii_letters + string.digits, 32))
-                u["videotimes"] = {}
-    else:
-        userdata = {"users": settings['dashboard']['user_control']['default_user'].copy()}
-        for u in userdata["users"]:
-            u["token"] = ''.join(random.sample(string.ascii_letters + string.digits, 32))
-            u["videotimes"] = {}
-    with open(os.path.join(Config.get_working_dir(), 'Dashboard', 'userdata.json'), 'w', encoding='utf-8') as f:
-        json.dump(userdata, f, ensure_ascii=False, indent=4)
-
-    def verify_user(cookies):
-        if not cookies.get('logined') or cookies.get('logined') != 'true' or not cookies.get('token'):
-            return False, None
-        userdata = json.load(open(os.path.join(Config.get_working_dir(), 'Dashboard', 'userdata.json'), 'r'))
-        for user in userdata['users']:
-            if user['token'] == cookies.get('token'):
-                return True, user["role"]
-        return False, None
-
-    @app.route('/logout')
-    def logout():
-        return '<script>document.cookie = "token=expired";document.cookie = "logined=false";window.location.href = "./login"</script>'
-
-    @app.route('/login', methods=['GET', 'POST'])
-    def login():
-        if request.method == 'POST':
-            if request.form:
-                reqdata = request.form.copy()
+    if action == 'change':
+        def _apply_change(userdata):
+            if _check_actor(userdata) is None:
+                return (JSONResponse({'status': '403', 'message': 'admin required'}, status_code=403), False)
+            target_user = find_user_by_username(username, userdata)
+            if not target_user:
+                return (JSONResponse({'status': '404', 'message': 'User not found'}, status_code=404), False)
+            if reqdata.get('password'):
+                target_user['password_hash'] = precomputed_hash
+                target_user.pop('password', None)
+                target_user['token'] = precomputed_token
+            if reqdata.get('role') is not None:
+                target_user['role'] = _normalize_role(reqdata.get('role'))
             else:
-                reqdata = request.get_json()
-            if not reqdata:
-                return '<script>alert("Empty request!);history.back();</script>'
-            username = reqdata.get('username')
-            password = reqdata.get('password')
-            userdata = json.load(open(os.path.join(Config.get_working_dir(), 'Dashboard', 'userdata.json'), 'r'))
-            for user in userdata['users']:
-                if user['username'] == username and user['password'] == password:
-                    return f"<script>document.cookie = 'token={user['token']}; expires=Fri, 31 Dec 9999 23:59:59 GMT';document.cookie = 'logined=true; expires=Fri, 31 Dec 9999 23:59:59 GMT';window.location.href = './watch'</script>"
-                # test 假設password sha256
-                # if user['username'] == username:
-                #     hashes = [hashlib.sha256((user['password'].encode() + str(int(time.time()) + t)).encode()).hexdigest() for t in range(-5, 6)]
-                #     if password in hashes:
-                #         return f"<script>document.cookie = 'token={user['token']}; expires=Fri, 31 Dec 9999 23:59:59 GMT';document.cookie = 'logined=true; expires=Fri, 31 Dec 9999 23:59:59 GMT';window.location.href = './watch'</script>"
-            return '<script>window.location.href = "./login?error=1"</script>'
-        else:
-            return render_template('login.html')
+                target_user['role'] = _normalize_role(target_user.get('role'))
+            return (JSONResponse({'status': '200', 'message': 'User updated'}), True)
+
+        return update_user_data(_apply_change)
+
+    if action == 'add':
+        def _apply_add(userdata):
+            if _check_actor(userdata) is None:
+                return (JSONResponse({'status': '403', 'message': 'admin required'}, status_code=403), False)
+            if not username or not reqdata.get('password'):
+                return (JSONResponse({'status': '400', 'message': 'Username and password are required'}, status_code=400), False)
+            if find_user_by_username(username, userdata):
+                return (JSONResponse({'status': '409', 'message': 'User already exists'}, status_code=409), False)
+            userdata['users'].append({
+                'username': username,
+                'password_hash': precomputed_hash,
+                'token': precomputed_token,
+                'videotimes': {},
+                'role': _normalize_role(reqdata.get('role')),
+            })
+            return (JSONResponse({'status': '200', 'message': 'User created'}), True)
+        return update_user_data(_apply_add)
+
+    return JSONResponse({'status': '400', 'message': 'Invalid action'}, status_code=400)
 
 
-    @app.route('/register', methods=['GET', 'POST'])
-    def register():
-        settings = Config.read_settings()
-        if not settings['dashboard']['user_control']['allow_register']:
-            return '<script>alert("伺服器沒有啟用註冊!");history.back();</script>'
-        if request.method == 'POST':
-            reqdata = request.get_json() or request.form.copy()
-            # print("DEBUG:", reqdata)
-            if not reqdata:
-                return '<script>alert("Empty request!");history.back();</script>'
-            elif not reqdata.get('username') or not reqdata.get('pw1') or not reqdata.get('pw2'):
-                return redirect('./register?error=3')
-            if not reqdata.get('pw1') == reqdata.get('pw2'):
-                return redirect('./register?error=2')
-            username = reqdata.get('username')
-            # verify username
-            if not re.match(r'^[a-zA-Z0-9_]{3,20}$', username):
-                return redirect('./register?error=4')
-            if not re.match(r'^[a-zA-Z0-9_]{6,20}$', reqdata.get('pw1')):
-                return redirect('./register?error=5')
-            password = reqdata.get('pw1')
-            userdata = json.load(open(os.path.join(Config.get_working_dir(), 'Dashboard', 'userdata.json'), 'r'))
-            for user in userdata['users']:
-                if user['username'].lower() == username.lower():
-                    return redirect('./register?error=1')
-            newuser = {'username': username, 'password': password, 'token': ''.join(random.sample(string.ascii_letters + string.digits, 32)), 'videotimes': {}, 'role': 'user'}
-            userdata['users'].append(newuser)
-            with open(os.path.join(Config.get_working_dir(), 'Dashboard', 'userdata.json'), 'w', encoding='utf-8') as f:
-                json.dump(userdata, f, ensure_ascii=False, indent=4)
-            return redirect('./login?error=3')
-        else:
-            return render_template('register.html')
-        
-    @app.route('/usermanage', methods=['GET', 'POST'])
-    def usermanage():
-        logined, user_role = verify_user(request.cookies)
-        if not logined:
-            return redirect("./login?error=2")
-        if user_role != 'admin':
-            return '<script>alert("權限不足!");window.location.href = "./watch"</script>'
-        if request.method == 'POST':
-            if request.form:
-                reqdata = request.form.copy()
-            else:
-                reqdata = request.get_json()
-            if not reqdata:
-                return '<script>alert("Empty request!);history.back();</script>'
-            userdata = json.load(open(os.path.join(Config.get_working_dir(), 'Dashboard', 'userdata.json'), 'r'))
-            for user in userdata['users']:
-                if user['token'] == request.cookies.get('token'):
-                    if reqdata.get('action') == 'delete':
-                        userdata['users'].remove(user)
-                        with open(os.path.join(Config.get_working_dir(), 'Dashboard', 'userdata.json'), 'w', encoding='utf-8') as f:
-                            json.dump(userdata, f, ensure_ascii=False, indent=4)
-                        return '<script>alert("刪除成功!");window.location.href = "./user"</script>'
-                    elif reqdata.get('action') == 'change':
-                        for u in userdata['users']:
-                            if u['username'] == reqdata.get('username'):
-                                u['password'] = reqdata.get('password')
-                                u['role'] = reqdata.get('role')
-                        with open(os.path.join(Config.get_working_dir(), 'Dashboard', 'userdata.json'), 'w', encoding='utf-8') as f:
-                            json.dump(userdata, f, ensure_ascii=False, indent=4)
-                        return '<script>alert("修改成功!");window.location.href = "./user"</script>'
-                    elif reqdata.get('action') == 'add':
-                        for u in userdata['users']:
-                            if u['username'] == reqdata.get('username'):
-                                return '<script>alert("用戶名已存在!");window.location.href = "./user"</script>'
-                        newuser = {'name': reqdata.get('username'), 'password': reqdata.get('password'), 'token': ''.join(random.sample(string.ascii_letters + string.digits, 32)), 'videotimes': [], 'role': reqdata.get('role')}
-                        userdata['users'].append(newuser)
-                        with open(os.path.join(Config.get_working_dir(), 'Dashboard', 'userdata.json'), 'w', encoding='utf-8') as f:
-                            json.dump(userdata, f, ensure_ascii=False, indent=4)
-                        return '<script>alert("添加成功!");window.location.href = "./user"</script>'
-        else:
-            userdata = json.load(open(os.path.join(Config.get_working_dir(), 'Dashboard', 'userdata.json'), 'r'))
-            return render_template('usermanage.html', users=userdata['users'])
-        
-    @app.route('/userinfo', methods=['GET', 'POST'])
-    def userinfo():
-        userdata = json.load(open(os.path.join(Config.get_working_dir(), 'Dashboard', 'userdata.json'), 'r'))
-        if request.method == 'POST':
-            if request.form:
-                reqdata = request.form.copy()
-            else:
-                reqdata = request.get_json()
-            if not reqdata:
-                return '<script>alert("Empty request!);history.back();</script>'
-            for user in userdata['users']:
-                if user['token'] == request.cookies.get('token'):
-                    if reqdata.get('action') == 'get':
-                        retData = user.copy()
-                        retData['status'] = '200'
-                        retData.pop('token')
-                        retData.pop('password')
-                        return jsonify(retData)
-                    elif reqdata.get('action') == 'changepassword':
-                        original_pw = reqdata.get('original_password')
-                        if not original_pw == user['password']:
-                            return jsonify({"status": "403", "message": "舊密碼驗證失敗！"})
-                        pw1 = reqdata.get('new_password1')
-                        pw2 = reqdata.get('new_password2')
-                        if not pw1 == pw2:
-                            return jsonify({"status": "403", "message": "新密碼不一致！"})
-                        user['password'] = pw1
-                        user['token'] = ''.join(random.sample(string.ascii_letters + string.digits, 32))
-                        with open(os.path.join(Config.get_working_dir(), 'Dashboard', 'userdata.json'), 'w', encoding='utf-8') as f:
-                            json.dump(userdata, f, ensure_ascii=False, indent=4)
-                        return jsonify({"status": "200", "message": "修改成功!"})
-        else:
-            for user in userdata['users']:
-                if user['token'] == request.cookies.get('token'):
-                    return render_template('userinfo.html', user=user)
-        return '<script>alert("Token is invalid!");window.location.href = "/login"</script>'
+@app.api_route('/userinfo', methods=['GET', 'POST'])
+async def userinfo_v2(request: Request):
+    if request.method == 'GET':
+        return await run_in_threadpool(_userinfo_blocking, request, None)
+    denied = await run_in_threadpool(_user_page_preflight, request)
+    if denied is not None:
+        return denied
+    reqdata = await _form_or_json(request)
+    return await run_in_threadpool(_userinfo_blocking, request, reqdata)
+
+
+def _userinfo_blocking(request, reqdata):
+    current_settings = _get_current_settings()
+    gated = _user_control_gate(current_settings)
+    if gated is not None:
+        return gated
+    denied = _user_page_guard(request, current_settings)
+    if denied is not None:
+        return denied
+    token = request.cookies.get('token')
+    snapshot = load_user_data()
+    user = find_user_by_token(token, snapshot)
+    if not user:
+        return _redirect('/login')
+
+    if request.method == 'GET':
+        safe_user = user.copy()
+        safe_user.pop('password', None)
+        safe_user.pop('password_hash', None)
+        safe_user.pop('token', None)
+        return _render(request, 'userinfo.html', {'user': safe_user})
+
+    if not reqdata:
+        return JSONResponse({'status': '400', 'message': 'Empty request!'}, status_code=400)
+
+    action = reqdata.get('action')
+    if action == 'get':
+        fresh = load_user_data()
+        fresh_user = find_user_by_token(token, fresh)
+        if not fresh_user:
+            return _redirect('/login')
+        ret_data = fresh_user.copy()
+        ret_data['status'] = '200'
+        ret_data.pop('token', None)
+        ret_data.pop('password', None)
+        ret_data.pop('password_hash', None)
+        return JSONResponse(ret_data)
+
+    if action in ('changepassword', 'change'):
+        original_pw = reqdata.get('original_password', reqdata.get('old_password'))
+        new_pw1 = reqdata.get('new_password1')
+        new_pw2 = reqdata.get('new_password2')
+        # Expensive verification + hashing outside the lock.
+        if not _verify_password(user, original_pw):
+            return JSONResponse({"status": "403", "message": "錯誤的原密碼"}, status_code=403)
+        if not new_pw1 or new_pw1 != new_pw2:
+            return JSONResponse({"status": "403", "message": "新密碼不一致"}, status_code=403)
+        snap_hash = user.get('password_hash')
+        snap_legacy = user.get('password')
+        snap_name = user.get('username')
+        new_hash = _hash_password(new_pw1)
+        new_token = _generate_token()
+
+        def _apply_pw(userdata):
+            fresh_user = find_user_by_token(token, userdata)
+            if not fresh_user:
+                return (_redirect('/login'), False)
+            if fresh_user.get('password_hash') != snap_hash or fresh_user.get('password') != snap_legacy:
+                # State moved under us (concurrent password change); revalidate
+                # inside the transaction rather than overwriting blindly.
+                if not _verify_password(fresh_user, original_pw):
+                    return (JSONResponse({"status": "403", "message": "錯誤的原密碼"}, status_code=403), False)
+                if fresh_user.get('username') != snap_name:
+                    return (_redirect('/login'), False)
+            fresh_user['password_hash'] = new_hash
+            fresh_user.pop('password', None)
+            fresh_user['token'] = new_token
+            return (JSONResponse({"status": "200", "message": "密碼修改成功!", "logout": True}), True)
+
+        return update_user_data(_apply_pw)
+
+    return JSONResponse({'status': '400', 'message': 'Invalid action'}, status_code=400)
+
+
+if _get_current_settings()['dashboard']['user_control']['enabled']:
+    load_user_data()
 
 
 def run():
-    settings = Config.read_settings()  # 读取配置
+    current_settings = Config.read_settings()  # 读取配置
 
-    port = settings['dashboard']['port']
-    host = settings['dashboard']['host']
+    port = current_settings['dashboard']['port']
+    host = current_settings['dashboard']['host']
 
+    ssl_certfile = ssl_keyfile = None
     # check cert if enabled ssl
-    if settings['dashboard']['SSL']:
+    if current_settings['dashboard']['SSL']:
         ssl_path = os.path.join(Config.get_working_dir(), 'Dashboard', 'sslkey')
         ssl_crt = os.path.join(ssl_path, 'server.crt')
         ssl_key = os.path.join(ssl_path, 'server.key')
         if not os.path.exists(ssl_crt) or not os.path.exists(ssl_key):
             err_print(0, 'Dashboard', '啟用了SSL，但是證書檔案不存在! 強制禁用', no_sn=True, status=1)
-            settings['dashboard']['SSL'] = False
+            current_settings['dashboard']['SSL'] = False
+        else:
+            ssl_certfile, ssl_keyfile = ssl_crt, ssl_key
 
-    if settings['dashboard']['SSL']:
-        # SSL 配置
-        ssl_path = os.path.join(Config.get_working_dir(), 'Dashboard', 'sslkey')
-        ssl_crt = os.path.join(ssl_path, 'server.crt')
-        ssl_key = os.path.join(ssl_path, 'server.key')
-        ssl_keys = (ssl_crt, ssl_key)
-        # app.run(use_reloader=False, port=port, host=host, ssl_context=ssl_keys, threaded=True)
-        server = WSGIServer((host, port), app, handler_class=WebSocketHandler, certfile=ssl_crt, keyfile=ssl_key, environ={'wsgi.multithread': True,'wsgi.multiprocess': True,})
-
-        wrap_socket = server.wrap_socket
-        wrap_socket_and_handle = server.wrap_socket_and_handle
-
-        # 处理一些浏览器(比如Chrome)尝试 SSL v3 访问时报错
-        def my_wrap_socket(sock, **_kwargs):
-            try:
-                # print('my_wrap_socket')
-                return wrap_socket(sock, **_kwargs)
-            except ssl.SSLError:
-                # print('my_wrap_socket ssl.SSLError')
-                pass
-            except ssl.SSLEOFError:
-                pass
-
-        # 此方法依赖上面的返回值, 因此当尝试访问 SSL v3 时, 这个也会出错
-        def my_wrap_socket_and_handle(client_socket, address):
-            try:
-                # print('my_wrap_socket_and_handle')
-                return wrap_socket_and_handle(client_socket, address)
-            except AttributeError:
-                # print('my_wrap_socket_and_handle AttributeError')
-                pass
-            except TypeError:
-                pass
-            except ConnectionResetError:
-                pass
-
-        server.wrap_socket = my_wrap_socket
-        server.wrap_socket_and_handle = my_wrap_socket_and_handle
-
+    # uvicorn 是 ASGI server: 原来 gevent WSGIServer + WebSocketHandler 干的事
+    # (HTTP + WebSocket 同端口、TLS) 由它接手. aniGamerPlus 在 daemon 线程里调
+    # run(), uvicorn.run 会自己建事件循环, 在非主线程跑也没问题.
+    if current_settings['dashboard']['SSL']:
+        uvicorn.run(app, host=host, port=port,
+                    ssl_certfile=ssl_certfile, ssl_keyfile=ssl_keyfile)
     else:
-        # app.run(use_reloader=False, port=port, host=host, threaded=True)
-        server = WSGIServer((host, port), app, handler_class=WebSocketHandler, environ={'wsgi.multithread': True,'wsgi.multiprocess': True,})
-
-    server.serve_forever()
+        uvicorn.run(app, host=host, port=port)
 
 
 if __name__ == '__main__':

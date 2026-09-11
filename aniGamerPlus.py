@@ -6,11 +6,9 @@
 # @Software: PyCharm
 # @Forked  : AvianJay
 
-# 非阻塞 (Web)
-from gevent import monkey
-
-
-monkey.patch_all()
+# Dashboard 跑在 FastAPI/uvicorn (ASGI) 上, 不再需要 gevent monkey patch.
+# 阻塞式工作 (curl_cffi、ffmpeg、檔案 I/O) 由 Server 端的工作線程池承載,
+# 不會卡住事件循環.
 
 import os, sys, time, re, random, traceback, argparse
 import signal
@@ -1006,7 +1004,6 @@ def kill_gost():
 
 def user_exit(signum, frame):
     # 避免在信號處理器中使用可能阻塞的函數（如 subprocess、logging 等）
-    # 這在 gevent 環境中會導致 BlockingSwitchOutError
     try:
         print('\n\n你終止了程序!\n', flush=True)
     except:
@@ -1015,7 +1012,7 @@ def user_exit(signum, frame):
         kill_gost()  # 结束 gost
     except:
         pass
-    os._exit(255)  # 使用 os._exit 強制退出，避免 gevent 清理過程中的阻塞
+    os._exit(255)  # 使用 os._exit 強制退出，避免清理過程中的阻塞
 
 
 def check_new_version():
@@ -1458,5 +1455,5 @@ if __name__ == '__main__':
     update_thread.daemon = True
     update_thread.start()
 
-    # 主執行緒只負責讓 gevent 的 dashboard 跑，永遠阻塞在這裡
+    # 主執行緒只負責讓 dashboard (uvicorn, 跑在 daemon 線程裡) 活著，永遠阻塞在這裡
     update_thread.join()

@@ -16,6 +16,7 @@ import sys
 import os
 import pickle
 import re
+import shutil
 import Config
 
 
@@ -46,8 +47,21 @@ def get_driver(headless=False):
     __color_print(0, "登入狀態", detail='正在啟動瀏覽器', no_sn=True)
     settings = Config.read_settings()
     opt = webdriver.ChromeOptions()
+    chrome_binary = (os.environ.get('CHROME_BIN') or
+                     shutil.which('google-chrome') or
+                     shutil.which('chromium') or
+                     shutil.which('chromium-browser'))
+    if chrome_binary:
+        opt.binary_location = chrome_binary
     if headless:
         opt.add_argument('--headless=new')
+        # Disabling Chromium's sandbox weakens isolation substantially. Some
+        # containers cannot start it, but that must be an explicit operator
+        # choice rather than the default for every headless login.
+        if os.environ.get('AGP_CHROME_NO_SANDBOX') == '1':
+            opt.add_argument('--no-sandbox')
+        opt.add_argument('--disable-dev-shm-usage')
+        opt.add_argument('--disable-gpu')
     if settings['auto_login']['use_wdm']:
         return webdriver.Chrome(service=ChromeService(ChromeDriverManager().install()), options=opt)
     else:
