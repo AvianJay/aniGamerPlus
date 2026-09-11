@@ -46,8 +46,11 @@ class FavouritesTab extends StatelessWidget {
               children: [
                 PosterCard(
                   title: item.name,
-                  cover: head != null && !state.offline
-                      ? state.client.thumbnailUrl(head.sn).toString()
+                  thumbSn: head?.sn,
+                  thumbStore: state.thumbnails,
+                  coverFile: head == null ? null : state.thumbFile(head.sn),
+                  cover: head != null
+                      ? null
                       : (item.cover.isEmpty ? null : item.cover),
                   subtitle: latest != null
                       ? '共 ${episodes.length} 集 · 更新至 ${episodeLabel(latest.episode)}'

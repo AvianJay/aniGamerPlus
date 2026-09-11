@@ -14,6 +14,7 @@ import '../theme.dart';
 import '../util/format.dart';
 import '../widgets/cards.dart';
 import '../widgets/common.dart';
+import '../widgets/local_thumb.dart';
 import 'anime_sheet.dart';
 import 'home_tab.dart';
 import 'watch_page.dart';
@@ -126,9 +127,9 @@ class _AllTabState extends State<AllTab> {
               final episodes = state.episodesOf(video.animeName).length;
               return PosterCard(
                 title: video.displayName,
-                cover: state.offline
-                    ? null
-                    : state.client.thumbnailUrl(video.sn).toString(),
+                thumbSn: video.sn,
+                thumbStore: state.thumbnails,
+                coverFile: state.thumbFile(video.sn),
                 subtitle: '$episodes 集',
                 onTap: () => _openLibrary(video),
               );
@@ -240,13 +241,11 @@ class _AllTabState extends State<AllTab> {
                 contentPadding: EdgeInsets.zero,
                 leading: SizedBox(
                   width: 92,
-                  child: CoverImage(
+                  child: LocalThumb(
+                    store: state.thumbnails,
+                    sn: episode.sn,
                     name: episode.displayName,
-                    file: state.downloads.localThumb(episode.sn),
-                    url: state.offline
-                        ? null
-                        : state.client.thumbnailUrl(episode.sn).toString(),
-                    headers: state.client.authHeaders,
+                    offlineFile: state.thumbFile(episode.sn),
                   ),
                 ),
                 title: Text(episodeLabel(episode.episode)),

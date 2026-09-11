@@ -15,6 +15,7 @@ import 'package:path_provider/path_provider.dart';
 
 import '../api/client.dart';
 import '../api/models.dart';
+import 'thumbnail_store.dart';
 
 enum DownloadStatus { queued, running, paused, done, failed }
 
@@ -124,6 +125,9 @@ class DownloadStore extends ChangeNotifier {
 
   AgpClient _client;
   set client(AgpClient value) => _client = value;
+
+  /// 縮圖下載用的 http.Client. 平時是 null (用完即丟); 測試時可以塞一支假的.
+  http.Client? thumbClient;
 
   Directory? _dir;
   final Map<String, DownloadEntry> _entries = {};
@@ -492,14 +496,13 @@ class DownloadStore extends ChangeNotifier {
     entry.error = '';
     notifyListeners();
 
-    // 封面是配菜, 抓不到不該讓整集算失敗
+    // 封面是配菜, 抓不到不該讓整集算失敗. 直接跟巴哈要, 不走伺服器的
+    // /thumbnail.jpg —— 那條代理一出問題, 離線頁整面會沒圖.
     try {
-      final response = await http.get(
-        _client.thumbnailUrl(entry.sn),
-        headers: _client.authHeaders,
-      );
-      if (response.statusCode == 200 && response.bodyBytes.isNotEmpty) {
-        await thumbFile(entry.sn).writeAsBytes(response.bodyBytes);
+      final bytes =
+          await fetchBahamutThumbnailBytes(entry.sn, client: thumbClient);
+      if (bytes != null && bytes.isNotEmpty) {
+        await thumbFile(entry.sn).writeAsBytes(bytes);
         entry.hasThumb = true;
       }
     } catch (_) {

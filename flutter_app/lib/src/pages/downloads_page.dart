@@ -137,8 +137,8 @@ class _DownloadsPageState extends State<DownloadsPage> {
       title: '${entry.displayName} · ${episodeLabel(entry.episode)}',
       subtitle: label,
       coverFile: store.localThumb(entry.sn),
-      cover: state.offline ? null : state.client.thumbnailUrl(entry.sn).toString(),
-      headers: state.client.authHeaders,
+      thumbSn: entry.sn,
+      thumbStore: state.thumbnails,
       progress: entry.status == DownloadStatus.done ? null : entry.progress,
       onTap: entry.playable
           ? () => Navigator.of(context).push(MaterialPageRoute(

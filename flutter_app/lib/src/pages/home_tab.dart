@@ -343,7 +343,9 @@ class HomeTab extends StatelessWidget {
           final video = top[index].key;
           return PosterCard(
             title: video.displayName,
-            cover: state.offline ? null : state.client.thumbnailUrl(video.sn).toString(),
+            thumbSn: video.sn,
+            thumbStore: state.thumbnails,
+            coverFile: state.thumbFile(video.sn),
             subtitle: '${top[index].value} 集',
             rank: index + 1,
             onTap: () => showAnimeSheet(
