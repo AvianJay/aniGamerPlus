@@ -232,10 +232,10 @@ class _HistoryTabState extends State<HistoryTab> {
       title: name,
       subtitle: '${stamp.isEmpty ? '' : '$stamp '}$where',
       coverFile: state.downloads.localThumb(sn),
-      cover: local && !state.offline
-          ? state.client.thumbnailUrl(sn).toString()
-          : (remote?.cover.isNotEmpty == true ? remote!.cover : null),
-      headers: state.client.authHeaders,
+      thumbSn: local ? sn : null,
+      thumbStore: state.thumbnails,
+      cover:
+          local ? null : (remote?.cover.isNotEmpty == true ? remote!.cover : null),
       progress: ratio.toDouble(),
       onTap: () {
         if (local) {

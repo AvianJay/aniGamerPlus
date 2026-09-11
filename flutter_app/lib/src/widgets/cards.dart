@@ -1,6 +1,7 @@
 /// 片庫 / 片單的卡片.
 library;
 
+import 'dart:io';
 import 'dart:math' as math;
 
 import 'package:flutter/material.dart';
@@ -8,9 +9,11 @@ import 'package:flutter/material.dart';
 import '../api/models.dart';
 import '../state/app_state.dart';
 import '../state/downloads.dart';
+import '../state/thumbnail_store.dart';
 import '../theme.dart';
 import '../util/format.dart';
 import 'common.dart';
+import 'local_thumb.dart';
 
 /// 一格海報大概長這麼寬. 欄數是除出來的, 不是寫死的 —— 寫死 3 欄的話
 /// 平板上一張封面會撐到 200 多寬, 像被放大鏡照過.
@@ -43,6 +46,9 @@ class PosterCard extends StatelessWidget {
     super.key,
     required this.title,
     this.cover,
+    this.coverFile,
+    this.thumbSn,
+    this.thumbStore,
     this.subtitle,
     this.badge,
     this.rank,
@@ -52,6 +58,16 @@ class PosterCard extends StatelessWidget {
 
   final String title;
   final String? cover;
+
+  /// 已經在手機上的封面 (下載好的那一集附的). 有就先畫它.
+  final File? coverFile;
+
+  /// 片庫作品走手機端縮圖快取時設這兩個: 縮圖是手機自己跟巴哈要、
+  /// 存在手機上的, 不再走伺服器的 /thumbnail.jpg. 沒設就維持舊行為
+  /// (cover 直鏈, 片單那種).
+  final String? thumbSn;
+  final ThumbnailStore? thumbStore;
+
   final String? subtitle;
   final String? badge;
   final int? rank;
@@ -60,6 +76,10 @@ class PosterCard extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final thumbSn = this.thumbSn;
+    final thumbStore = this.thumbStore;
+    final useLocalThumb =
+        thumbStore != null && thumbSn != null && thumbSn.isNotEmpty;
     return InkWell(
       onTap: onTap,
       borderRadius: BorderRadius.circular(kRadiusSmall),
@@ -69,7 +89,20 @@ class PosterCard extends StatelessWidget {
         children: [
           Stack(
             children: [
-              CoverImage(name: title, url: cover, aspectRatio: aspectRatio),
+              if (useLocalThumb)
+                LocalThumb(
+                  store: thumbStore,
+                  sn: thumbSn,
+                  name: title,
+                  offlineFile: coverFile,
+                  aspectRatio: aspectRatio,
+                )
+              else
+                CoverImage(
+                    name: title,
+                    url: cover,
+                    file: coverFile,
+                    aspectRatio: aspectRatio),
               if (badge != null)
                 Positioned(right: 6, bottom: 6, child: Pill(label: badge!, dense: true)),
               if (rank != null)
@@ -154,13 +187,11 @@ class EpisodeCard extends StatelessWidget {
         children: [
           Stack(
             children: [
-              CoverImage(
+              LocalThumb(
+                store: state.thumbnails,
+                sn: video.sn,
                 name: video.displayName,
-                file: offlineFile,
-                url: offlineFile == null && !state.offline
-                    ? state.client.thumbnailUrl(video.sn).toString()
-                    : null,
-                headers: state.client.authHeaders,
+                offlineFile: offlineFile,
               ),
               if (video.resolution > 0)
                 Positioned(
@@ -241,6 +272,8 @@ class EpisodeRow extends StatelessWidget {
     this.cover,
     this.coverFile,
     this.headers,
+    this.thumbSn,
+    this.thumbStore,
     this.progress,
     this.trailing,
     this.onTap,
@@ -252,6 +285,11 @@ class EpisodeRow extends StatelessWidget {
   final String? cover;
   final dynamic coverFile;
   final Map<String, String>? headers;
+
+  /// 片庫集數走手機端縮圖快取時設這兩個 (見 PosterCard.thumbSn).
+  final String? thumbSn;
+  final ThumbnailStore? thumbStore;
+
   final double? progress;
   final Widget? trailing;
   final VoidCallback? onTap;
@@ -270,12 +308,22 @@ class EpisodeRow extends StatelessWidget {
               width: 124,
               child: Stack(
                 children: [
-                  CoverImage(
-                    name: title,
-                    url: cover,
-                    file: coverFile,
-                    headers: headers,
-                  ),
+                  if (thumbStore != null &&
+                      thumbSn != null &&
+                      thumbSn!.isNotEmpty)
+                    LocalThumb(
+                      store: thumbStore!,
+                      sn: thumbSn!,
+                      name: title,
+                      offlineFile: coverFile is File ? coverFile as File : null,
+                    )
+                  else
+                    CoverImage(
+                      name: title,
+                      url: cover,
+                      file: coverFile is File ? coverFile as File : null,
+                      headers: headers,
+                    ),
                   if (progress != null)
                     Positioned(
                       left: 0,

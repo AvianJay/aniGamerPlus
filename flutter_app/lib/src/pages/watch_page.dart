@@ -38,6 +38,7 @@ import '../state/prefs.dart';
 import '../theme.dart';
 import '../util/format.dart';
 import '../widgets/common.dart';
+import '../widgets/local_thumb.dart';
 
 // --------------------------------------------------------------- 常數
 // 全部照抄 static/js/watch.js, 改了就跟網頁版對不起來了
@@ -2154,13 +2155,11 @@ class _WatchPageState extends State<WatchPage>
       color: Colors.black,
       child: Opacity(
         opacity: 0.55,
-        child: CoverImage(
+        child: LocalThumb(
+          store: state.thumbnails,
+          sn: _sn,
           name: _seriesName,
-          file: thumb,
-          url: (thumb == null && !state.offline)
-              ? client.thumbnailUrl(_sn).toString()
-              : null,
-          headers: client.authHeaders,
+          offlineFile: thumb,
           aspectRatio: null,
           art: false,
           radius: 0,

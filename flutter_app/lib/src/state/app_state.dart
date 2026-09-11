@@ -15,6 +15,7 @@ import '../api/client.dart';
 import '../api/models.dart';
 import 'downloads.dart';
 import 'prefs.dart';
+import 'thumbnail_store.dart';
 import 'video_cache.dart';
 
 class AppState extends ChangeNotifier {
@@ -38,12 +39,39 @@ class AppState extends ChangeNotifier {
     final state = AppState._(prefs);
     _instance = state;
     await state.downloads.init(concurrency: prefs.downloadConcurrency);
+    // UI 開始建立 LocalThumb 前，先確保快取目錄可用。初始化失敗仍由
+    // ensureThumbnails 吞掉，畫面只會退回漸層，不會阻止 App 開機。
+    await state.ensureThumbnails();
     return state;
   }
 
   final Prefs prefs;
   final AgpClient client;
   late final DownloadStore downloads;
+
+  /// 片庫縮圖的手機端快取. 圖片是手機自己跟巴哈要、存在手機上的,
+  /// 不再走伺服器的 /thumbnail.jpg.
+  final ThumbnailStore thumbnails = ThumbnailStore();
+
+  /// 縮圖快取目錄建好 (或確認已經在了). 失敗就吞掉 —— 畫面退回漸層就好.
+  Future<void> ensureThumbnails() async {
+    try {
+      await thumbnails.init(await getApplicationSupportDirectory());
+    } catch (_) {
+      // 沒有目錄就沒有縮圖, 不影響其他功能
+    }
+  }
+
+  /// 這一集手上有沒有現成的封面檔 (下載附的優先, 再來是縮圖快取).
+  File? thumbFile(String sn) =>
+      downloads.localThumb(sn) ?? thumbnails.cachedFile(sn);
+
+  @override
+  void dispose() {
+    thumbnails.close();
+    client.close();
+    super.dispose();
+  }
 
   ServerInfo serverInfo = ServerInfo();
   CurrentUser? currentUser;
