@@ -427,7 +427,8 @@ void main() {
             body: LocalThumb(store: store, sn: '71', name: '測試作品'),
           ),
         ));
-        await tester.pumpAndSettle();
+        await tester.pump(const Duration(seconds: 1));
+        await tester.pump();
         // 零網路、有圖: 磁碟檔直接變成 Image, 也沒有例外
         expect(find.byType(Image), findsOneWidget);
         expect(tester.takeException(), isNull);
@@ -449,7 +450,8 @@ void main() {
             body: LocalThumb(store: store, sn: '72', name: '測試作品'),
           ),
         ));
-        await tester.pumpAndSettle();
+        await tester.pump(const Duration(seconds: 1));
+        await tester.pump();
         expect(find.byType(Image), findsOneWidget);
         expect(tester.takeException(), isNull);
         store.close();
@@ -470,7 +472,8 @@ void main() {
             body: LocalThumb(store: store, sn: '73', name: '測試作品'),
           ),
         ));
-        await tester.pumpAndSettle();
+        await tester.pump(const Duration(seconds: 1));
+        await tester.pump();
         // 抓不到: 沒有 Image, 只有底下的漸層, 而且沒有例外
         expect(find.byType(Image), findsNothing);
         expect(tester.takeException(), isNull);
@@ -500,7 +503,8 @@ void main() {
         await tester.pumpWidget(card('81'));
         await tester.pump(const Duration(milliseconds: 5));
         await tester.pumpWidget(card('82'));
-        await tester.pumpAndSettle();
+        await tester.pump(const Duration(seconds: 1));
+        await tester.pump();
 
         final image = tester.widget<Image>(find.byType(Image));
         final provider = image.image as FileImage;
