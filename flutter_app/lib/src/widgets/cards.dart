@@ -91,8 +91,8 @@ class PosterCard extends StatelessWidget {
             children: [
               if (useLocalThumb)
                 LocalThumb(
-                  store: thumbStore!,
-                  sn: thumbSn!,
+                  store: thumbStore,
+                  sn: thumbSn,
                   name: title,
                   offlineFile: coverFile,
                   aspectRatio: aspectRatio,

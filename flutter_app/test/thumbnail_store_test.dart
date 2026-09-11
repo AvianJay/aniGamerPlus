@@ -34,8 +34,8 @@ String metaJson(String cover) => jsonEncode({
       },
     });
 
-class _Captured {
-  _Captured(this.method, this.url, this.headers);
+class CapturedRequest {
+  CapturedRequest(this.method, this.url, this.headers);
 
   final String method;
   final Uri url;
@@ -60,7 +60,7 @@ class FakeBahamut extends http.BaseClient {
   String imageContentType;
   Duration delay;
 
-  final List<_Captured> requests = [];
+  final List<CapturedRequest> requests = [];
   int metaCalls = 0;
   int imageCalls = 0;
 
@@ -68,7 +68,7 @@ class FakeBahamut extends http.BaseClient {
   Future<http.StreamedResponse> send(http.BaseRequest request) async {
     final lower = <String, String>{};
     request.headers.forEach((key, value) => lower[key.toLowerCase()] = value);
-    requests.add(_Captured(request.method, request.url, lower));
+    requests.add(CapturedRequest(request.method, request.url, lower));
     if (delay != Duration.zero) {
       await Future<void>.delayed(delay);
     }
