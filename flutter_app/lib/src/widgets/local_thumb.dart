@@ -54,13 +54,12 @@ class LocalThumb extends StatefulWidget {
 
 class _LocalThumbState extends State<LocalThumb> {
   File? _file;
-  bool _waiting = false;
+  int _generation = 0;
 
   @override
   void initState() {
     super.initState();
-    _file = widget.offlineFile ?? widget.store.cachedFile(widget.sn);
-    if (_file == null) unawaited(_fetch());
+    _startLoad();
   }
 
   @override
@@ -69,22 +68,34 @@ class _LocalThumbState extends State<LocalThumb> {
     if (oldWidget.sn != widget.sn ||
         oldWidget.store != widget.store ||
         oldWidget.offlineFile?.path != widget.offlineFile?.path) {
-      _file = widget.offlineFile ?? widget.store.cachedFile(widget.sn);
-      if (_file == null) unawaited(_fetch());
+      _startLoad();
     }
   }
 
-  Future<void> _fetch() async {
-    if (_waiting) return;
-    _waiting = true;
+  void _startLoad() {
+    final generation = ++_generation;
+    final store = widget.store;
+    final sn = widget.sn;
+    _file = widget.offlineFile ?? store.cachedFile(sn);
+    if (_file == null) unawaited(_fetch(generation, store, sn));
+  }
+
+  Future<void> _fetch(
+      int generation, ThumbnailStore store, String sn) async {
     try {
-      final file = await widget.store.load(widget.sn);
-      // 回來時這張卡片可能已經滑掉 / 換成別集了
-      if (!mounted || file == null) return;
+      final file = await store.load(sn);
+      // 回來時這張卡片可能已經滑掉 / 換成別集了。
+      if (!mounted || generation != _generation) return;
       setState(() => _file = file);
-    } finally {
-      _waiting = false;
+    } catch (_) {
+      // 網路或圖片錯誤沿用原本的漸層 placeholder。
     }
+  }
+
+  @override
+  void dispose() {
+    _generation++;
+    super.dispose();
   }
 
   @override

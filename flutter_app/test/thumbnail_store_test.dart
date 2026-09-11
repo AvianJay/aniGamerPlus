@@ -354,10 +354,11 @@ void main() {
 
   group('DownloadStore no longer depends on the server proxy', () {
     test('no local-library UI goes through /thumbnail.jpg', () {
-      final script = File(Platform.script.toFilePath());
-      final lib = Directory(
-          '${script.parent.parent.path}/lib/src');
-      expect(lib.existsSync(), isTrue);
+      final roots = [
+        Directory('${Directory.current.path}/lib/src'),
+        Directory('${Directory.current.path}/flutter_app/lib/src'),
+      ];
+      final lib = roots.firstWhere((candidate) => candidate.existsSync());
       final offenders = <String>[];
       for (final item in lib.listSync(recursive: true)) {
         if (item is! File || !item.path.endsWith('.dart')) continue;

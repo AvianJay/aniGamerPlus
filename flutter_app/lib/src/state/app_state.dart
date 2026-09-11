@@ -39,8 +39,9 @@ class AppState extends ChangeNotifier {
     final state = AppState._(prefs);
     _instance = state;
     await state.downloads.init(concurrency: prefs.downloadConcurrency);
-    // 縮圖快取是配菜: 起不來 (沒有目錄權限之類) 也不該擋開機
-    unawaited(state.ensureThumbnails());
+    // UI 開始建立 LocalThumb 前，先確保快取目錄可用。初始化失敗仍由
+    // ensureThumbnails 吞掉，畫面只會退回漸層，不會阻止 App 開機。
+    await state.ensureThumbnails();
     return state;
   }
 
