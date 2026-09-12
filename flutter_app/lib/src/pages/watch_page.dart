@@ -209,13 +209,18 @@ class _PlayerSpinner extends StatelessWidget {
     return Column(
       mainAxisSize: MainAxisSize.min,
       children: [
-        SizedBox(
-          width: size,
-          height: size,
-          child: const CircularProgressIndicator(
-            strokeWidth: 2.6,
-            color: AgpColors.bahamut,
-            backgroundColor: Color(0x33FFFFFF),
+        // 這圈東西一秒轉六十次, 而且只在緩衝中出現 —— 也就是最沒有餘力的時候.
+        // 不隔一層的話它每動一格就把整個播放區 (控制列、彈幕、徽章) 一起
+        // 重新光柵化.
+        RepaintBoundary(
+          child: SizedBox(
+            width: size,
+            height: size,
+            child: const CircularProgressIndicator(
+              strokeWidth: 2.6,
+              color: AgpColors.bahamut,
+              backgroundColor: Color(0x33FFFFFF),
+            ),
           ),
         ),
         if (meter != null)
@@ -2088,23 +2093,22 @@ class _WatchPageState extends State<WatchPage>
                   if (ready) _fitted(controller) else _poster(),
                   if (_danmakuOn && _danmaku.isNotEmpty)
                     Positioned.fill(
-                      child: IgnorePointer(
-                        child: ValueListenableBuilder<double>(
-                          valueListenable: _clock,
-                          builder: (context, position, _) => DanmakuOverlay(
-                            comments: _danmaku,
-                            positionSeconds: position,
-                            playing: _playing &&
-                                !_scrubbing &&
-                                _pendingSeek == null &&
-                                !_buffering,
-                            enabled: _danmakuOn,
-                            opacity: _danmakuOpacity / 100,
-                            area: _danmakuArea,
-                            scale: _danmakuScale,
-                            speed: _danmakuSpeed,
-                          ),
-                        ),
+                      // 時鐘直接交給彈幕層, 不要在這裡包 ValueListenableBuilder
+                      // —— 那等於每一幀重建一次整個彈幕層
+                      child: DanmakuOverlay(
+                        comments: _danmaku,
+                        clock: _clock,
+                        playing: _playing &&
+                            !_scrubbing &&
+                            _pendingSeek == null &&
+                            !_buffering,
+                        buffering:
+                            _buffering && !_scrubbing && _pendingSeek == null,
+                        enabled: _danmakuOn,
+                        opacity: _danmakuOpacity / 100,
+                        area: _danmakuArea,
+                        scale: _danmakuScale,
+                        speed: _danmakuSpeed,
                       ),
                     ),
                   if ((_initialising || !ready) && _error.isEmpty)
