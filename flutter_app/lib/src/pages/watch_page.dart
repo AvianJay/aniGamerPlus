@@ -591,6 +591,14 @@ class _WatchPageState extends State<WatchPage>
     }
     if (fresh.timestamp <= 0 && fresh.time <= 0) return;
     if (!mounted) return;
+    // 本機還有一筆沒送出去的進度時, 伺服器手上那份才是舊的 —— 別拿它蓋回去,
+    // 不然離線看的那一段會在重新連線的那一刻消失
+    final mine = state.watchTimeOf(_sn);
+    if (state.isWatchTimePending(_sn) &&
+        mine != null &&
+        mine.timestamp >= fresh.timestamp) {
+      return;
+    }
     state.noteWatchTime(_sn, fresh);
 
     final target = _positionOf(fresh);
@@ -863,10 +871,14 @@ class _WatchPageState extends State<WatchPage>
     if ((text == null || text.isEmpty) && !state.offline) {
       try {
         text = await client.danmakuAss(_sn);
-        if (text.trim().isNotEmpty) {
+        // 伺服器把 danmu 關掉時回的是「Danmu is not enabled」這句 HTML, 而且
+        // 是 HTTP 200 —— 只看「不是空的」會把它當彈幕存起來, 之後就再也不會重抓
+        if (looksLikeAss(text)) {
           // 這一集有下載但還沒存到彈幕的話, 順手補一份給離線用
           unawaited(store.cacheDanmaku(_sn, text));
           unawaited(store.writeCachedDanmaku(_sn, text));
+        } else {
+          text = null;
         }
       } catch (_) {
         text = null;
@@ -1195,6 +1207,8 @@ class _WatchPageState extends State<WatchPage>
 
     final seconds = ended ? 0 : _clock.value.round();
     final duration = _duration.round();
+    // 離線就先記成「還欠伺服器」, 回到線上時 flushPendingWatchTimes() 會補送.
+    // 以前這裡是直接 return, 所以飛航模式下看的進度既沒落盤也沒上傳.
     state.noteWatchTime(
       _sn,
       WatchTime(
@@ -1203,13 +1217,25 @@ class _WatchPageState extends State<WatchPage>
         duration: duration,
         timestamp: now ~/ 1000,
       ),
+      pending: state.offline,
     );
+    if (force) {
+      // 切到背景 / 關掉播放器時走這條, 等不了那一秒的 debounce
+      await state.flushWatchTimesToDisk();
+    }
     if (state.offline) return;
     try {
       await client.setWatchTime(_sn, seconds,
           ended: ended, duration: duration > 0 ? duration : null);
+      // 這一筆通了, 順手把之前欠的也送掉
+      if (state.hasPendingWatchTimes) {
+        unawaited(state.flushPendingWatchTimes());
+      }
     } catch (_) {
-      // 沒登入 / 斷線時就只留在本機, 下次連上會被覆蓋回來
+      // 沒登入就沒有伺服器端進度可言; 是斷線的話這一筆要記著, 等下次連上補送
+      if (state.loggedIn || !state.serverInfo.userControl) {
+        state.markWatchTimePending(_sn);
+      }
     }
   }
 

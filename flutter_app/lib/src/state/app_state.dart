@@ -124,8 +124,19 @@ class AppState extends ChangeNotifier {
       library = _cachedLibrary();
       _indexLibrary();
     }
+    // 進度也一樣先從磁碟撿回來 —— 而且要在 _loadSession() 之前, 下面補送欠帳
+    // 的時候才知道欠了哪幾筆
+    await _loadCachedWatchTimes();
     notifyListeners();
     await _loadSession();
+    if (!offline) {
+      // 回到線上: 等伺服器抓的那幾集現在可能好了, 缺的彈幕也再問一次
+      unawaited(downloads.pollWaiting());
+      unawaited(downloads.retryMissingDanmaku());
+    }
+    // 離線時記的進度先補送出去, 下面 refreshWatchTimes() 的合併才會看到
+    // 伺服器補完之後的狀態, 不然剛送上去的那幾筆會被舊值蓋回來
+    await flushPendingWatchTimes();
     await Future.wait([
       refreshLibrary(),
       refreshCatalog(),
@@ -297,17 +308,150 @@ class AppState extends ChangeNotifier {
     catalog = CatalogIndex.fromJson(raw.cast<String, dynamic>());
   }
 
+  // ----------------------------------------------------------- 觀看進度
+  //
+  // 進度以前只活在記憶體裡: 飛航模式下看的那幾分鐘, app 一關就沒了, 而且伺服器
+  // 永遠不會知道 —— 因為離線那條路連送都沒送. 現在跟片庫一樣落盤 (watch-times
+  // .json), 另外記一組「還欠伺服器」的 sn, 回到線上再補送.
+
+  final Set<String> _pendingWatchTimes = <String>{};
+  bool _watchTimesLoaded = false;
+  Timer? _watchTimesWrite;
+
+  Future<File> _watchTimesFile() async =>
+      File('${(await _libraryDir()).path}/watch-times.json');
+
+  /// 磁碟那份併回記憶體. 整支 app 只做一次 (換帳號時重來).
+  Future<void> _loadCachedWatchTimes() async {
+    if (_watchTimesLoaded) return;
+    _watchTimesLoaded = true;
+    Map<String, dynamic> raw;
+    try {
+      final file = await _watchTimesFile();
+      if (!file.existsSync()) return;
+      final decoded = jsonDecode(await file.readAsString());
+      if (decoded is! Map) return;
+      raw = decoded.cast<String, dynamic>();
+    } catch (_) {
+      return; // 壞掉就當作沒有, 下一次寫入會蓋掉它
+    }
+    final merged = Map<String, WatchTime>.from(watchTimes);
+    raw.forEach((sn, value) {
+      if (value is! Map) return;
+      final json = value.cast<String, dynamic>();
+      if (json['dirty'] == true) _pendingWatchTimes.add(sn);
+      final entry = WatchTime.fromJson(json);
+      final mine = merged[sn];
+      // 這一輪已經在看的那一集比檔案新, 別把它蓋回去
+      if (mine == null || entry.timestamp >= mine.timestamp) merged[sn] = entry;
+    });
+    watchTimes = merged;
+  }
+
+  Future<void> _saveWatchTimes() async {
+    _watchTimesWrite?.cancel();
+    _watchTimesWrite = null;
+    try {
+      final payload = <String, dynamic>{};
+      watchTimes.forEach((sn, value) {
+        payload[sn] = {
+          ...value.toJson(),
+          if (_pendingWatchTimes.contains(sn)) 'dirty': true,
+        };
+      });
+      await (await _watchTimesFile()).writeAsString(jsonEncode(payload));
+    } catch (_) {
+      // 寫不進去就算了, 下一次進度更新會再試一遍
+    }
+  }
+
+  /// 進度每 10 秒就更新一次, 每次都寫檔太吵 —— 合併成一秒一次.
+  void _scheduleWatchTimesSave() {
+    _watchTimesWrite?.cancel();
+    _watchTimesWrite =
+        Timer(const Duration(seconds: 1), () => unawaited(_saveWatchTimes()));
+  }
+
+  /// 立刻落盤. 播放器被切到背景 / 關掉時走這條, 等不了 debounce.
+  Future<void> flushWatchTimesToDisk() => _saveWatchTimes();
+
+  bool isWatchTimePending(String sn) => _pendingWatchTimes.contains(sn);
+
+  bool get hasPendingWatchTimes => _pendingWatchTimes.isNotEmpty;
+
+  /// 送出去失敗了 —— 把這一筆標回欠帳, 不用重寫整個 entry.
+  void markWatchTimePending(String sn) {
+    if (!watchTimes.containsKey(sn)) return;
+    if (!_pendingWatchTimes.add(sn)) return;
+    _scheduleWatchTimesSave();
+  }
+
+  /// 把離線 (或送出去失敗) 時記下的進度補給伺服器.
+  Future<void> flushPendingWatchTimes() async {
+    if (_pendingWatchTimes.isEmpty || offline || !hasServer) return;
+    if (serverInfo.userControl && !loggedIn) return;
+    final sent = <String>[];
+    for (final sn in _pendingWatchTimes.toList()) {
+      final value = watchTimes[sn];
+      if (value == null) {
+        sent.add(sn); // 已經被刪掉了, 這筆欠帳跟著銷掉
+        continue;
+      }
+      try {
+        await client.setWatchTime(sn, value.time,
+            ended: value.ended,
+            duration: value.duration > 0 ? value.duration : null);
+        sent.add(sn);
+      } catch (_) {
+        // 這一筆還欠著, 下次再送 —— 但別因為一筆失敗就放掉後面的
+      }
+    }
+    if (sent.isEmpty) return;
+    _pendingWatchTimes.removeAll(sent);
+    await _saveWatchTimes();
+  }
+
+  /// 進度是跟著帳號走的, 換人 (或登出) 就整份丟掉.
+  Future<void> _clearWatchTimes() async {
+    _watchTimesWrite?.cancel();
+    _watchTimesWrite = null;
+    watchTimes = const {};
+    _pendingWatchTimes.clear();
+    _watchTimesLoaded = false;
+    try {
+      final file = await _watchTimesFile();
+      if (file.existsSync()) await file.delete();
+    } catch (_) {
+      // 刪不掉就算了, 下次登入時的合併頂多多幾筆別人的紀錄
+    }
+  }
+
   Future<void> refreshWatchTimes() async {
+    // 本機那份永遠先擺上去 —— 離線時它就是全部, 不能像以前那樣清成空的
+    await _loadCachedWatchTimes();
     if (offline || !hasServer || (serverInfo.userControl && !loggedIn)) {
-      watchTimes = const {};
       notifyListeners();
       return;
     }
+    Map<String, WatchTime> remote;
     try {
-      watchTimes = await client.allWatchTimes();
+      remote = await client.allWatchTimes();
     } catch (_) {
-      watchTimes = const {};
+      notifyListeners();
+      return; // 抓不到就繼續用本機那份
     }
+    final merged = Map<String, WatchTime>.from(watchTimes);
+    remote.forEach((sn, value) {
+      // 還欠伺服器的那幾筆一律以本機為準: 伺服器手上那份正是舊的
+      if (_pendingWatchTimes.contains(sn)) return;
+      final mine = merged[sn];
+      if (mine == null || value.timestamp >= mine.timestamp) merged[sn] = value;
+    });
+    // 伺服器沒有、本機也不欠它的, 是在別台裝置上刪掉的紀錄
+    merged.removeWhere(
+        (sn, _) => !remote.containsKey(sn) && !_pendingWatchTimes.contains(sn));
+    watchTimes = merged;
+    unawaited(_saveWatchTimes());
     notifyListeners();
   }
 
@@ -364,10 +508,20 @@ class AppState extends ChangeNotifier {
 
   WatchTime? watchTimeOf(String sn) => watchTimes[sn];
 
-  void noteWatchTime(String sn, WatchTime value) {
+  /// 記一筆進度.
+  ///
+  /// pending = 伺服器還沒收到這一筆 (離線, 或送出去失敗), 之後 flushPending
+  /// WatchTimes() 要補送.
+  void noteWatchTime(String sn, WatchTime value, {bool pending = false}) {
     final next = Map<String, WatchTime>.from(watchTimes);
     next[sn] = value;
     watchTimes = next;
+    if (pending) {
+      _pendingWatchTimes.add(sn);
+    } else {
+      _pendingWatchTimes.remove(sn);
+    }
+    _scheduleWatchTimesSave();
     notifyListeners();
   }
 
@@ -379,6 +533,8 @@ class AppState extends ChangeNotifier {
     }
     final next = Map<String, WatchTime>.from(watchTimes)..remove(sn);
     watchTimes = next;
+    _pendingWatchTimes.remove(sn);
+    unawaited(_saveWatchTimes());
     notifyListeners();
   }
 
@@ -387,6 +543,8 @@ class AppState extends ChangeNotifier {
   Future<void> login(String username, String password) async {
     final token = await client.login(username, password);
     await prefs.setToken(token);
+    // 進度是一個帳號一份, 換人登入別把上一個人的紀錄合併進來
+    await _clearWatchTimes();
     await refreshAll();
   }
 
@@ -394,7 +552,7 @@ class AppState extends ChangeNotifier {
     await client.logout();
     await prefs.clearToken();
     currentUser = null;
-    watchTimes = const {};
+    await _clearWatchTimes();
     await refreshAll();
   }
 

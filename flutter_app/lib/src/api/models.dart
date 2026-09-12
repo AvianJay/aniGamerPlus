@@ -407,6 +407,14 @@ class WatchTime {
         timestamp: _i(json['timestamp']),
       );
 
+  /// 落盤用 —— 進度得在飛航模式下活過一次重開機, 見 AppState 的 watch-times.json
+  Map<String, dynamic> toJson() => {
+        'time': time,
+        'ended': ended,
+        'duration': duration,
+        'timestamp': timestamp,
+      };
+
   /// home.js 的 progressOf(): 沒有 duration 就不畫進度條, 這是刻意的 ——
   /// 用名目長度去猜只會畫出一條假的.
   double? get progress {
