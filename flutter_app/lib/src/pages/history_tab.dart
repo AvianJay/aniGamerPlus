@@ -140,6 +140,15 @@ class _HistoryTabState extends State<HistoryTab> {
 
   @override
   Widget build(BuildContext context) {
+    final rows = _rows;
+
+    // 還在開機就先別下結論. 這個時候 serverInfo 已經回來了、session 還沒,
+    // 直接看 loggedIn 的話會先閃一下「觀看紀錄跟著帳號走」再自己換掉 ——
+    // 那句話在讀取中的時候是錯的.
+    if (state.booting && rows.isEmpty) {
+      return const Center(child: CircularProgressIndicator());
+    }
+
     if (state.serverInfo.userControl && !state.loggedIn) {
       return EmptyState(
         icon: Icons.person_outline,
@@ -152,7 +161,6 @@ class _HistoryTabState extends State<HistoryTab> {
       );
     }
 
-    final rows = _rows;
     if (rows.isEmpty) {
       return const EmptyState(
         icon: Icons.history_rounded,

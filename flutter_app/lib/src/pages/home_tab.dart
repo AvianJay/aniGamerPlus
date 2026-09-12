@@ -29,7 +29,8 @@ class HomeTab extends StatelessWidget {
     if (state.booting && state.library.isEmpty && state.catalog.isEmpty) {
       return const Center(child: CircularProgressIndicator());
     }
-    if (state.needsLogin && state.library.isEmpty) {
+    // 還在開機就別急著說「需要登入」—— session 還沒回來, 這句話這時候是錯的
+    if (!state.booting && state.needsLogin && state.library.isEmpty) {
       return EmptyState(
         icon: Icons.lock_outline,
         title: '需要登入',
