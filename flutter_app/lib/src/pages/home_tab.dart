@@ -6,6 +6,7 @@ import 'package:flutter/material.dart';
 
 import '../api/models.dart';
 import '../state/app_state.dart';
+import '../state/thumbnails.dart';
 import '../theme.dart';
 import '../util/format.dart';
 import '../widgets/cards.dart';
@@ -201,6 +202,7 @@ class HomeTab extends StatelessWidget {
             aspectRatio: 16 / 9,
             title: item.title,
             cover: item.cover.isEmpty ? null : item.cover,
+            cache: state.thumbnails,
             subtitle: item.info,
             badge: item.volume.isEmpty ? null : item.volume,
             onTap: () => _openAnime(context, item),
@@ -217,7 +219,11 @@ class HomeTab extends StatelessWidget {
     if (days.isEmpty) return const [];
     return [
       const SectionHeader(title: '更新時間表'),
-      _Schedule(days: days, onTap: (row) => _openSchedule(context, row)),
+      _Schedule(
+        days: days,
+        cache: state.thumbnails,
+        onTap: (row) => _openSchedule(context, row),
+      ),
     ];
   }
 
@@ -241,6 +247,7 @@ class HomeTab extends StatelessWidget {
           return PosterCard(
             title: item.title,
             cover: item.cover.isEmpty ? null : item.cover,
+            cache: state.thumbnails,
             subtitle: [
               if (item.info.isNotEmpty) item.info else item.volume,
               if (item.popular.isNotEmpty) item.popular,
@@ -343,7 +350,9 @@ class HomeTab extends StatelessWidget {
           final video = top[index].key;
           return PosterCard(
             title: video.displayName,
-            cover: state.offline ? null : state.client.thumbnailUrl(video.sn).toString(),
+            cache: state.thumbnails,
+            sn: video.sn,
+            headers: state.client.authHeaders,
             subtitle: '${top[index].value} 集',
             rank: index + 1,
             onTap: () => showAnimeSheet(
@@ -475,10 +484,11 @@ Future<void> showLibraryMenu(
 }
 
 class _Schedule extends StatefulWidget {
-  const _Schedule({required this.days, required this.onTap});
+  const _Schedule({required this.days, required this.onTap, this.cache});
 
   final List<ScheduleDay> days;
   final void Function(ScheduleRow row) onTap;
+  final ThumbnailStore? cache;
 
   @override
   State<_Schedule> createState() => _ScheduleState();
@@ -566,6 +576,7 @@ class _ScheduleState extends State<_Schedule> {
                       child: CoverImage(
                         name: row.title,
                         url: row.cover.isEmpty ? null : row.cover,
+                        cache: widget.cache,
                         aspectRatio: 3 / 4,
                       ),
                     ),

@@ -8,6 +8,7 @@ import 'package:flutter/material.dart';
 import '../api/models.dart';
 import '../state/app_state.dart';
 import '../state/downloads.dart';
+import '../state/thumbnails.dart';
 import '../theme.dart';
 import '../util/format.dart';
 import 'common.dart';
@@ -48,6 +49,9 @@ class PosterCard extends StatelessWidget {
     this.rank,
     this.onTap,
     this.aspectRatio = 3 / 4,
+    this.cache,
+    this.sn,
+    this.headers,
   });
 
   final String title;
@@ -57,6 +61,12 @@ class PosterCard extends StatelessWidget {
   final int? rank;
   final VoidCallback? onTap;
   final double aspectRatio;
+
+  /// 有 cache 才走落盤快取. 給了 sn 的話還會去封面清單查 3:4 主視覺 ——
+  /// 這一格是直式的, 塞一張 16:9 的劇照進來會裁掉大半.
+  final ThumbnailStore? cache;
+  final String? sn;
+  final Map<String, String>? headers;
 
   @override
   Widget build(BuildContext context) {
@@ -69,7 +79,15 @@ class PosterCard extends StatelessWidget {
         children: [
           Stack(
             children: [
-              CoverImage(name: title, url: cover, aspectRatio: aspectRatio),
+              CoverImage(
+                name: title,
+                url: cover,
+                cache: cache,
+                sn: sn,
+                poster: true,
+                headers: headers,
+                aspectRatio: aspectRatio,
+              ),
               if (badge != null)
                 Positioned(right: 6, bottom: 6, child: Pill(label: badge!, dense: true)),
               if (rank != null)
@@ -154,12 +172,13 @@ class EpisodeCard extends StatelessWidget {
         children: [
           Stack(
             children: [
+              // 沒有本機縮圖就交給封面快取: 離線時它至少還撈得到上次存的那張,
+              // 以前那條路是直接不給 url, 結果離線的片庫整片都是漸層
               CoverImage(
                 name: video.displayName,
                 file: offlineFile,
-                url: offlineFile == null && !state.offline
-                    ? state.client.thumbnailUrl(video.sn).toString()
-                    : null,
+                cache: offlineFile == null ? state.thumbnails : null,
+                sn: video.sn,
                 headers: state.client.authHeaders,
               ),
               if (video.resolution > 0)
@@ -241,6 +260,8 @@ class EpisodeRow extends StatelessWidget {
     this.cover,
     this.coverFile,
     this.headers,
+    this.cache,
+    this.sn,
     this.progress,
     this.trailing,
     this.onTap,
@@ -252,6 +273,8 @@ class EpisodeRow extends StatelessWidget {
   final String? cover;
   final dynamic coverFile;
   final Map<String, String>? headers;
+  final ThumbnailStore? cache;
+  final String? sn;
   final double? progress;
   final Widget? trailing;
   final VoidCallback? onTap;
@@ -275,6 +298,8 @@ class EpisodeRow extends StatelessWidget {
                     url: cover,
                     file: coverFile,
                     headers: headers,
+                    cache: cache,
+                    sn: sn,
                   ),
                   if (progress != null)
                     Positioned(

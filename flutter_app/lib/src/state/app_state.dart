@@ -15,6 +15,7 @@ import '../api/client.dart';
 import '../api/models.dart';
 import 'downloads.dart';
 import 'prefs.dart';
+import 'thumbnails.dart';
 import 'video_cache.dart';
 
 class AppState extends ChangeNotifier {
@@ -24,6 +25,7 @@ class AppState extends ChangeNotifier {
           token: prefs.token.isEmpty ? null : prefs.token,
         ) {
     downloads = DownloadStore(client);
+    thumbnails = ThumbnailStore(client);
   }
 
   static AppState? _instance;
@@ -44,6 +46,9 @@ class AppState extends ChangeNotifier {
   final Prefs prefs;
   final AgpClient client;
   late final DownloadStore downloads;
+
+  /// 封面/縮圖的來源表與落盤快取
+  late final ThumbnailStore thumbnails;
 
   ServerInfo serverInfo = ServerInfo();
   CurrentUser? currentUser;
@@ -118,6 +123,9 @@ class AppState extends ChangeNotifier {
   Future<void> refreshAll() async {
     booting = true;
     await _libraryDir();
+    // 封面清單也要在第一次 build 之前備好: cachedFile() 是同步的, 目錄還沒
+    // 準備好的話熱的封面會白白閃一格漸層
+    await thumbnails.init();
     // 上次的片庫跟片單先擺上去: 開機畫面後面已經有東西了, 網路回來再換掉
     seedCachedCatalog();
     if (library.isEmpty) {
@@ -141,6 +149,7 @@ class AppState extends ChangeNotifier {
       refreshLibrary(),
       refreshCatalog(),
       refreshWatchTimes(),
+      thumbnails.refresh(),
     ]);
     booting = false;
     notifyListeners();

@@ -2183,9 +2183,8 @@ class _WatchPageState extends State<WatchPage>
         child: CoverImage(
           name: _seriesName,
           file: thumb,
-          url: (thumb == null && !state.offline)
-              ? client.thumbnailUrl(_sn).toString()
-              : null,
+          cache: thumb == null ? state.thumbnails : null,
+          sn: _sn,
           headers: client.authHeaders,
           aspectRatio: null,
           art: false,

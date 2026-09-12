@@ -230,6 +230,30 @@ class AgpClient {
     );
   }
 
+  /// /thumbnails.json —— 整台伺服器的封面網址表, 客戶端拿了自己去 CDN 抓圖.
+  ///
+  /// 一樣走 ETag 條件請求. 舊版伺服器沒有這條路由, 那就是 404, 呼叫端該把它
+  /// 當成「沒有清單」退回 /thumbnail.jpg, 不是一個要顯示的錯誤.
+  Future<({String? body, String etag, bool notModified})> thumbnailManifest(
+      String? etag) async {
+    final response = await _http.get(
+      uri('/thumbnails.json'),
+      headers: {
+        ...authHeaders,
+        if (etag != null && etag.isNotEmpty) 'If-None-Match': etag,
+      },
+    );
+    if (response.statusCode == 304) {
+      return (body: null, etag: etag ?? '', notModified: true);
+    }
+    if (response.statusCode >= 400) _fail(response);
+    return (
+      body: utf8.decode(response.bodyBytes),
+      etag: response.headers['etag'] ?? '',
+      notModified: false,
+    );
+  }
+
   Future<SeriesInfo> series(String videoSn) async =>
       SeriesInfo.fromJson(await seriesJson(videoSn));
 

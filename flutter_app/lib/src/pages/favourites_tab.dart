@@ -46,9 +46,10 @@ class FavouritesTab extends StatelessWidget {
               children: [
                 PosterCard(
                   title: item.name,
-                  cover: head != null && !state.offline
-                      ? state.client.thumbnailUrl(head.sn).toString()
-                      : (item.cover.isEmpty ? null : item.cover),
+                  cover: item.cover.isEmpty ? null : item.cover,
+                  cache: state.thumbnails,
+                  sn: head?.sn,
+                  headers: state.client.authHeaders,
                   subtitle: latest != null
                       ? '共 ${episodes.length} 集 · 更新至 ${episodeLabel(latest.episode)}'
                       : '片庫沒有這部，點開看作品資訊',

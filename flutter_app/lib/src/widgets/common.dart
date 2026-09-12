@@ -1,24 +1,31 @@
 /// 到處都在用的小零件: 封面、區塊標題、空狀態、Toast.
 library;
 
+import 'dart:async';
 import 'dart:io';
-import 'dart:convert';
-import 'package:crypto/crypto.dart';
 
 import 'package:flutter/material.dart';
 import 'package:cached_network_image/cached_network_image.dart';
 
+import '../state/thumbnails.dart';
 import '../theme.dart';
 import '../util/format.dart';
 
 /// 封面. 抓不到圖就退回片名 hash 出來的漸層 —— 跟網頁版的 artFor() 同一組顏色.
-class CoverImage extends StatelessWidget {
+///
+/// 給了 [cache] 就交給 ThumbnailStore 去解析: 先看磁碟, 沒有再照清單去 CDN 抓,
+/// 都不行才退回伺服器的 /thumbnail.jpg. 這條路有排隊閘門, 所以一次捲進來
+/// 幾十張圖也不會同時打幾十筆請求出去. 沒給 [cache] 的話行為跟以前一模一樣.
+class CoverImage extends StatefulWidget {
   const CoverImage({
     super.key,
     required this.name,
     this.url,
     this.file,
     this.headers,
+    this.cache,
+    this.sn,
+    this.poster = false,
     this.aspectRatio = 16 / 9,
     this.radius = kRadiusSmall,
     this.fit = BoxFit.cover,
@@ -29,6 +36,15 @@ class CoverImage extends StatelessWidget {
   final String? url;
   final File? file;
   final Map<String, String>? headers;
+
+  /// 有它才走落盤快取那條路
+  final ThumbnailStore? cache;
+
+  /// 要查的 sn. 沒有的話就拿 [url] 當 key.
+  final String? sn;
+
+  /// true = 要 3:4 主視覺, false = 16:9 劇照
+  final bool poster;
 
   /// null = 填滿給的空間, 不自己決定比例. 播放器背後那張劇照就是這樣用的:
   /// 播放區不一定是 16:9, 硬套的話兩邊會露出底下那層漸層.
@@ -41,14 +57,76 @@ class CoverImage extends StatelessWidget {
   final bool art;
 
   @override
+  State<CoverImage> createState() => _CoverImageState();
+}
+
+class _CoverImageState extends State<CoverImage> {
+  File? _resolved;
+  bool _asked = false;
+
+  /// 交給 ThumbnailStore 管的那種. 這種情況下不再掛 CachedNetworkImage ——
+  /// 兩邊同時抓就等於繞過了閘門.
+  bool get _managed =>
+      widget.cache != null &&
+      ((widget.sn ?? '').isNotEmpty || (widget.url ?? '').isNotEmpty);
+
+  @override
+  void initState() {
+    super.initState();
+    _sync();
+  }
+
+  @override
+  void didUpdateWidget(covariant CoverImage oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.sn != widget.sn ||
+        oldWidget.url != widget.url ||
+        oldWidget.poster != widget.poster ||
+        oldWidget.cache != widget.cache) {
+      _resolved = null;
+      _asked = false;
+      _sync();
+    }
+  }
+
+  void _sync() {
+    final cache = widget.cache;
+    if (cache == null || !_managed) return;
+    // 已經下載到手機的那一集有自己的縮圖檔, 不必再去要
+    if (widget.file != null) return;
+    final sn = widget.sn ?? '';
+    final url = widget.url;
+    // 熱的封面同步就撈得到, 第一帧直接畫出來 —— 不要先閃一格漸層
+    final hit = sn.isNotEmpty
+        ? cache.cached(sn, poster: widget.poster, fallbackUrl: url)
+        : cache.cachedFile(url);
+    if (hit != null) {
+      _resolved = hit;
+      return;
+    }
+    if (_asked) return;
+    _asked = true;
+    final pending = sn.isNotEmpty
+        ? cache.resolve(sn, poster: widget.poster, fallbackUrl: url)
+        : cache.resolveUrl(url!, headers: widget.headers);
+    unawaited(pending.then((file) {
+      if (!mounted || file == null) return;
+      setState(() => _resolved = file);
+    }));
+  }
+
+  @override
   Widget build(BuildContext context) {
-    final ratio = aspectRatio;
+    final ratio = widget.aspectRatio;
+    final name = widget.name;
+    final local = widget.file ?? _resolved;
+    final url = widget.url;
     final content = ClipRRect(
-        borderRadius: BorderRadius.circular(radius),
+        borderRadius: BorderRadius.circular(widget.radius),
         child: Stack(
           fit: StackFit.expand,
           children: [
-            if (art) ...[
+            if (widget.art) ...[
               DecoratedBox(decoration: BoxDecoration(gradient: artFor(name))),
               Center(
                 child: Padding(
@@ -68,21 +146,16 @@ class CoverImage extends StatelessWidget {
               ),
             ] else
               const ColoredBox(color: Color(0xFF000000)),
-            if (file != null)
-              Image.file(file!, fit: fit, errorBuilder: _fallback)
-            else if (url != null && url!.isNotEmpty)
+            if (local != null)
+              Image.file(local, fit: widget.fit, errorBuilder: _fallback)
+            else if (!_managed && url != null && url.isNotEmpty)
               CachedNetworkImage(
-                imageUrl: url!,
-                cacheKey: sha256
-                    .convert(utf8.encode(jsonEncode([
-                      url,
-                      if (headers != null)
-                        for (final key in (headers!.keys.toList()..sort()))
-                          [key, headers![key]],
-                    ])))
-                    .toString(),
-                fit: fit,
-                httpHeaders: headers,
+                imageUrl: url,
+                // key 只算網址, 不把 auth header 摻進去 —— 摻了的話每次 token
+                // 變動整份磁碟快取就等於全毀, 全部要重抓一遍.
+                cacheKey: url,
+                fit: widget.fit,
+                httpHeaders: widget.headers,
                 placeholder: (_, __) => const SizedBox.shrink(),
                 errorWidget: (_, __, ___) => const SizedBox.shrink(),
                 fadeInDuration: const Duration(milliseconds: 180),

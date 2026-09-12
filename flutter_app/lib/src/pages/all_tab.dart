@@ -100,90 +100,115 @@ class _AllTabState extends State<AllTab> {
     final matches = _libraryMatches;
     final page = _page;
 
-    return ListView(
-      controller: _scroll,
-      padding: const EdgeInsets.only(bottom: 28),
-      children: [
-        SectionHeader(
-          title: query.isEmpty ? '片庫' : '片庫搜尋結果',
-          subtitle: matches.isEmpty ? null : '${matches.length} 部作品',
-        ),
-        if (matches.isEmpty)
-          Padding(
-            padding: const EdgeInsets.symmetric(horizontal: 16),
-            child: Text(
-              query.isEmpty
-                  ? '片庫還沒有任何影片，先到主控台下載幾集吧。'
-                  : '找不到符合「$query」的作品。',
-              style: const TextStyle(fontSize: 13, color: AgpColors.fgFaint),
+    // 兩個格線都改成 sliver: 以前是 ListView 裡塞兩個 shrinkWrap 的
+    // GridView.builder, 那等於一進來就把兩百多格全部 build 出來, 也就是
+    // 兩百多筆縮圖請求同時出去. 現在只有看得到的那幾格會 build.
+    return LayoutBuilder(
+      builder: (context, constraints) {
+        final delegate = posterGridDelegate(constraints.maxWidth);
+        return CustomScrollView(
+          controller: _scroll,
+          slivers: [
+            SliverToBoxAdapter(
+              child: SectionHeader(
+                title: query.isEmpty ? '片庫' : '片庫搜尋結果',
+                subtitle: matches.isEmpty ? null : '${matches.length} 部作品',
+              ),
             ),
-          )
-        else
-          _grid(
-            count: matches.length,
-            builder: (context, index) {
-              final video = matches[index];
-              final episodes = state.episodesOf(video.animeName).length;
-              return PosterCard(
-                title: video.displayName,
-                cover: state.offline
-                    ? null
-                    : state.client.thumbnailUrl(video.sn).toString(),
-                subtitle: '$episodes 集',
-                onTap: () => _openLibrary(video),
-              );
-            },
-          ),
-        SectionHeader(
-          title: query.isEmpty ? '所有動畫' : '搜尋結果',
-          subtitle: page == null || page.total == 0
-              ? null
-              : (query.isEmpty ? '共 ${page.total} 部作品' : '找到 ${page.total} 部作品'),
-        ),
-        if (_loading && page == null)
-          const Padding(
-            padding: EdgeInsets.symmetric(vertical: 34),
-            child: Center(child: CircularProgressIndicator()),
-          )
-        else if (page == null || page.items.isEmpty)
-          Padding(
-            padding: const EdgeInsets.symmetric(horizontal: 16),
-            child: Text(
-              query.isEmpty
-                  ? '目前拿不到動畫瘋的片單。'
-                  : '找不到符合「$query」的作品。',
-              style: const TextStyle(fontSize: 13, color: AgpColors.fgFaint),
-            ),
-          )
-        else ...[
-          Opacity(
-            opacity: _loading ? 0.45 : 1,
-            child: _grid(
-              count: page.items.length,
-              builder: (context, index) {
-                final item = page.items[index];
-                return PosterCard(
-                  title: item.title,
-                  cover: item.cover.isEmpty ? null : item.cover,
-                  subtitle: [
-                    if (item.info.isNotEmpty) item.info else item.volume,
-                    if (item.popular.isNotEmpty) item.popular,
-                  ].where((t) => t.isNotEmpty).join(' · '),
-                  onTap: () => showAnimeSheet(
-                    context,
-                    state,
-                    animeSn: item.animeSn,
-                    videoSn: item.videoSn,
-                    title: item.title,
-                    cover: item.cover,
+            if (matches.isEmpty)
+              SliverToBoxAdapter(
+                child: Padding(
+                  padding: const EdgeInsets.symmetric(horizontal: 16),
+                  child: Text(
+                    query.isEmpty
+                        ? '片庫還沒有任何影片，先到主控台下載幾集吧。'
+                        : '找不到符合「$query」的作品。',
+                    style: const TextStyle(fontSize: 13, color: AgpColors.fgFaint),
                   ),
-                );
-              },
+                ),
+              )
+            else
+              _grid(
+                delegate: delegate,
+                count: matches.length,
+                builder: (context, index) {
+                  final video = matches[index];
+                  final episodes = state.episodesOf(video.animeName).length;
+                  return PosterCard(
+                    title: video.displayName,
+                    cache: state.thumbnails,
+                    sn: video.sn,
+                    headers: state.client.authHeaders,
+                    subtitle: '$episodes 集',
+                    onTap: () => _openLibrary(video),
+                  );
+                },
+              ),
+            SliverToBoxAdapter(
+              child: SectionHeader(
+                title: query.isEmpty ? '所有動畫' : '搜尋結果',
+                subtitle: page == null || page.total == 0
+                    ? null
+                    : (query.isEmpty
+                        ? '共 ${page.total} 部作品'
+                        : '找到 ${page.total} 部作品'),
+              ),
             ),
-          ),
-          if (page.pages > 1) _pager(page),
-        ],
-      ],
+            if (_loading && page == null)
+              const SliverToBoxAdapter(
+                child: Padding(
+                  padding: EdgeInsets.symmetric(vertical: 34),
+                  child: Center(child: CircularProgressIndicator()),
+                ),
+              )
+            else if (page == null || page.items.isEmpty)
+              SliverToBoxAdapter(
+                child: Padding(
+                  padding: const EdgeInsets.symmetric(horizontal: 16),
+                  child: Text(
+                    query.isEmpty
+                        ? '目前拿不到動畫瘋的片單。'
+                        : '找不到符合「$query」的作品。',
+                    style: const TextStyle(fontSize: 13, color: AgpColors.fgFaint),
+                  ),
+                ),
+              )
+            else ...[
+              SliverOpacity(
+                opacity: _loading ? 0.45 : 1,
+                sliver: _grid(
+                  delegate: delegate,
+                  count: page.items.length,
+                  builder: (context, index) {
+                    final item = page.items[index];
+                    return PosterCard(
+                      title: item.title,
+                      // 片單卡片的 cover 本來就是動畫瘋 CDN 的網址, 不必繞
+                      // 伺服器, 但一樣交給快取去落盤
+                      cover: item.cover.isEmpty ? null : item.cover,
+                      cache: state.thumbnails,
+                      subtitle: [
+                        if (item.info.isNotEmpty) item.info else item.volume,
+                        if (item.popular.isNotEmpty) item.popular,
+                      ].where((t) => t.isNotEmpty).join(' · '),
+                      onTap: () => showAnimeSheet(
+                        context,
+                        state,
+                        animeSn: item.animeSn,
+                        videoSn: item.videoSn,
+                        title: item.title,
+                        cover: item.cover,
+                      ),
+                    );
+                  },
+                ),
+              ),
+              if (page.pages > 1) SliverToBoxAdapter(child: _pager(page)),
+            ],
+            const SliverToBoxAdapter(child: SizedBox(height: 28)),
+          ],
+        );
+      },
     );
   }
 
@@ -243,9 +268,10 @@ class _AllTabState extends State<AllTab> {
                   child: CoverImage(
                     name: episode.displayName,
                     file: state.downloads.localThumb(episode.sn),
-                    url: state.offline
-                        ? null
-                        : state.client.thumbnailUrl(episode.sn).toString(),
+                    cache: state.downloads.localThumb(episode.sn) == null
+                        ? state.thumbnails
+                        : null,
+                    sn: episode.sn,
                     headers: state.client.authHeaders,
                   ),
                 ),
@@ -275,20 +301,16 @@ class _AllTabState extends State<AllTab> {
   }
 
   Widget _grid({
+    required SliverGridDelegate delegate,
     required int count,
     required Widget Function(BuildContext context, int index) builder,
   }) {
-    return LayoutBuilder(
-      builder: (context, constraints) {
-        return GridView.builder(
-          padding: const EdgeInsets.symmetric(horizontal: kPosterGridPadding),
-          shrinkWrap: true,
-          physics: const NeverScrollableScrollPhysics(),
-          gridDelegate: posterGridDelegate(constraints.maxWidth),
-          itemCount: count,
-          itemBuilder: builder,
-        );
-      },
+    return SliverPadding(
+      padding: const EdgeInsets.symmetric(horizontal: kPosterGridPadding),
+      sliver: SliverGrid(
+        gridDelegate: delegate,
+        delegate: SliverChildBuilderDelegate(builder, childCount: count),
+      ),
     );
   }
 

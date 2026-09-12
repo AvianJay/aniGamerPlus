@@ -2473,6 +2473,108 @@ def get_thumbnail(request: Request):
     return resp
 
 
+# 整份封面對照表. 指紋跟 _episode_owners() 同一招: 檔名配 mtime, 新一集上架
+# 時 anime_info 是原檔覆寫, 只比檔名的話那一集永遠進不了表.
+_THUMBNAIL_MANIFEST = {'stamp': None, 'body': None, 'etag': None}
+_THUMBNAIL_MANIFEST_MAX = 30000
+
+
+def _read_anime_info_any_age(cache_path):
+    """不看 TTL 的 anime_info 讀法.
+
+    封面 URL 不會過期, 而這張表本來就只是「伺服器查過的作品」的集合 —— 為了
+    幾張圖把過期的快取重新抓一遍, 等於把想省掉的上游請求又叫回來一次.
+    """
+    try:
+        with open(cache_path, 'r', encoding='utf-8') as f:
+            return json.load(f)
+    except BaseException:
+        return None  # 壞掉的那份跳過就好, 不值得讓整張表開天窗
+
+
+def _thumbnail_manifest():
+    """videoSn -> 官方封面 URL, 全部從 anime_info/ 現有的快取拼出來.
+
+    手機那端本來是每一張卡片各打一次 /thumbnail.jpg, 一整頁片庫就是幾百個
+    請求同時壓在同一支路由上, 每一個都可能去抓巴哈再落盤. 把對照表一次發下去,
+    客戶端就能自己直接跟 CDN 要圖, 這邊一次上游請求都不用發.
+    """
+    cache_dir = os.path.join(Config.get_working_dir(), 'anime_info')
+    try:
+        names = sorted(name for name in os.listdir(cache_dir) if name.endswith('.json'))
+        stamp = tuple((name, os.path.getmtime(os.path.join(cache_dir, name)))
+                      for name in names)
+    except OSError:
+        names, stamp = [], ()
+    if _THUMBNAIL_MANIFEST['stamp'] == stamp and _THUMBNAIL_MANIFEST['body'] is not None:
+        return _THUMBNAIL_MANIFEST['body'], _THUMBNAIL_MANIFEST['etag']
+
+    anime_covers = {}
+    episodes = {}
+    for name in names:
+        if len(episodes) >= _THUMBNAIL_MANIFEST_MAX:
+            break
+        info = _read_anime_info_any_age(os.path.join(cache_dir, name))
+        anime = (info or {}).get('anime') or {}
+        anime_sn = str(anime.get('animeSn') or '')
+        cover = (anime.get('cover') or '').strip()
+        if anime_sn and cover:
+            anime_covers[anime_sn] = cover
+        for group in (anime.get('episodes') or {}).values():
+            for episode in group or []:
+                video_sn = str(episode.get('videoSn') or '')
+                if not video_sn or video_sn in episodes:
+                    continue
+                episodes[video_sn] = [anime_sn, (episode.get('cover') or '').strip()]
+                if len(episodes) >= _THUMBNAIL_MANIFEST_MAX:
+                    break
+        # 集數表裡那一格有時候是空的, 但這份快取本來就是拿 videoSn 去問來的,
+        # video.cover 一定是同一集的圖
+        video = (info or {}).get('video') or {}
+        own_sn = str(video.get('videoSn') or '')
+        own_cover = (video.get('cover') or '').strip()
+        if own_sn and own_cover:
+            current = episodes.get(own_sn)
+            if current is None or not current[1]:
+                episodes[own_sn] = [anime_sn, own_cover]
+
+    body = json.dumps({
+        'generatedAt': int(time.time()),
+        'anime': anime_covers,
+        'episodes': episodes,
+    }, ensure_ascii=False, separators=(',', ':'))
+    etag = '"%s"' % hashlib.sha1(body.encode('utf-8')).hexdigest()
+    _THUMBNAIL_MANIFEST['stamp'] = stamp
+    _THUMBNAIL_MANIFEST['body'] = body
+    _THUMBNAIL_MANIFEST['etag'] = etag
+    return body, etag
+
+
+@app.api_route('/thumbnails.json', methods=['GET', 'HEAD'])
+def get_thumbnail_manifest(request: Request):
+    # 跟 /thumbnail.jpg 同一道門: 它擋得住的, 這張表也不該漏出去
+    current_settings = _get_current_settings()
+    gated = _online_watch_gate(current_settings)
+    if gated is not None:
+        return gated
+    if current_settings['dashboard']['online_watch_requires_login']:
+        vaild_user, user_role = verify_user(request.cookies)
+        if not vaild_user:
+            return JSONResponse({"error": "login required"}, status_code=403)
+
+    body, etag = _thumbnail_manifest()
+    if request.headers.get('If-None-Match') == etag:
+        resp = Response(status_code=304)
+    elif request.method == 'HEAD':
+        resp = Response(status_code=200, media_type='application/json')
+        resp.headers['Content-Length'] = str(len(body.encode('utf-8')))
+    else:
+        resp = Response(content=body, media_type='application/json')
+    resp.headers['ETag'] = etag
+    # 一小時: 新集數上架才會變, 而客戶端手上有 ETag, 過期了也只是一個 304
+    return _apply_cache_headers(resp, current_settings, 3600)
+
+
 def _parse_video_range(range_header, file_size):
     """Strictly parse a single ``bytes=`` range.
 

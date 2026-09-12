@@ -295,6 +295,9 @@ class _AnimeSheetState extends State<_AnimeSheet> {
           child: CoverImage(
             name: title,
             url: cover.isNotEmpty ? cover : null,
+            cache: state.thumbnails,
+            sn: detail.animeSn.isNotEmpty ? detail.animeSn : null,
+            poster: true,
             aspectRatio: 3 / 4,
           ),
         ),
