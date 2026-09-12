@@ -16,17 +16,44 @@ import 'package:path_provider/path_provider.dart';
 import '../api/client.dart';
 import '../api/models.dart';
 
-enum DownloadStatus { queued, running, paused, done, failed }
+/// waiting: 伺服器上還沒有這一集, 已經幫它排了一個任務, 檔案出現才開始抓.
+enum DownloadStatus { waiting, queued, running, paused, done, failed }
 
 /// 下載完之後隔多久回頭問一次彈幕. 伺服器是收到請求才開始生 .ass, 生完
-/// 之前一律 404, 所以第一次一定撲空 —— 加起來大概等半分鐘.
+/// 之前一律 404 —— 所以第一次一定撲空.
+///
+/// 這串以前只排到 34 秒就永遠放棄, 但伺服器生一集彈幕常常要更久 (它得先去
+/// 巴哈把整份留言撈回來再轉檔), 於是「下載好的集數離線沒彈幕」就成了常態.
+/// 現在退避拉到八分鐘, 而且過程記在 entry 上, 這一輪用完還有 retryMissingDanmaku().
 const List<Duration> kDanmakuRetryWaits = [
   Duration.zero,
   Duration(seconds: 3),
   Duration(seconds: 6),
   Duration(seconds: 10),
   Duration(seconds: 15),
+  Duration(seconds: 30),
+  Duration(seconds: 60),
+  Duration(seconds: 120),
+  Duration(seconds: 240),
 ];
+
+/// 這段文字真的是一份 ASS 字幕嗎.
+///
+/// 非得檢查不可: 伺服器把 danmu 關掉的時候, /get_danmu.ass 回的是
+/// 「Danmu is not enabled」這句 HTML, 而且是 HTTP 200. 只看「回來的東西
+/// 不是空的」就存檔的話, 那句話會被當成彈幕檔寫進 <sn>.ass, 之後永遠
+/// 解析不出一條彈幕, 也不會有人再去重抓.
+bool looksLikeAss(String text) {
+  if (text.length < 16) return false;
+  return text.contains('[Script Info]') || text.contains('Dialogue:');
+}
+
+/// 同一集最快隔多久才願意再去問一次彈幕 (retryMissingDanmaku 用)
+const Duration kDanmakuRetryCooldown = Duration(minutes: 10);
+
+/// 等伺服器下載完的輪詢間隔. 只是一個 HEAD, 但沒必要問太勤 ——
+/// 伺服器抓一集本來就是好幾分鐘的事.
+const Duration kWaitingPollInterval = Duration(seconds: 45);
 
 class DownloadEntry {
   final String sn;
@@ -47,6 +74,11 @@ class DownloadEntry {
   bool hasDanmaku;
   bool hasThumb;
 
+  /// 已經為彈幕試過幾次, 上次是什麼時候. 落盤留著 —— app 被關掉重開之後
+  /// 才知道這一集是「剛下載完還在等」還是「試了很久都沒有」.
+  int danmakuTries;
+  int danmakuLastTry;
+
   DownloadEntry({
     required this.sn,
     this.animeName = '',
@@ -61,6 +93,8 @@ class DownloadEntry {
     this.wantDanmaku = true,
     this.hasDanmaku = false,
     this.hasThumb = false,
+    this.danmakuTries = 0,
+    this.danmakuLastTry = 0,
   }) : addedAt = addedAt ?? DateTime.now().millisecondsSinceEpoch;
 
   double get progress {
@@ -89,6 +123,8 @@ class DownloadEntry {
         'wantDanmaku': wantDanmaku,
         'hasDanmaku': hasDanmaku,
         'hasThumb': hasThumb,
+        'danmakuTries': danmakuTries,
+        'danmakuLastTry': danmakuLastTry,
       };
 
   factory DownloadEntry.fromJson(Map<String, dynamic> json) {
@@ -112,11 +148,19 @@ class DownloadEntry {
       wantDanmaku: json['wantDanmaku'] != false,
       hasDanmaku: json['hasDanmaku'] == true,
       hasThumb: json['hasThumb'] == true,
+      danmakuTries: int.tryParse('${json['danmakuTries']}') ?? 0,
+      danmakuLastTry: int.tryParse('${json['danmakuLastTry']}') ?? 0,
     );
   }
 
   /// 這一集是不是可以離線播
   bool get playable => status == DownloadStatus.done;
+
+  /// 在等伺服器把這一集抓下來
+  bool get waitingForServer => status == DownloadStatus.waiting;
+
+  /// 還缺彈幕, 而且使用者是要的
+  bool get danmakuPending => playable && wantDanmaku && !hasDanmaku;
 }
 
 class DownloadStore extends ChangeNotifier {
@@ -146,12 +190,21 @@ class DownloadStore extends ChangeNotifier {
       .where((e) =>
           e.status == DownloadStatus.running ||
           e.status == DownloadStatus.queued ||
+          e.status == DownloadStatus.waiting ||
           e.status == DownloadStatus.paused ||
           e.status == DownloadStatus.failed)
       .toList();
 
   int get runningCount =>
       _entries.values.where((e) => e.status == DownloadStatus.running).length;
+
+  /// 有沒有集數在等伺服器
+  bool get hasWaiting =>
+      _entries.values.any((e) => e.status == DownloadStatus.waiting);
+
+  /// 下載好了但還沒拿到彈幕的集數
+  List<DownloadEntry> get danmakuPending =>
+      entries.where((e) => e.danmakuPending).toList();
 
   DownloadEntry? entryFor(String sn) => _entries[sn];
 
@@ -188,6 +241,10 @@ class DownloadStore extends ChangeNotifier {
     _ready = true;
     notifyListeners();
     unawaited(_pump());
+    // 上次關掉時還在等伺服器 / 還缺彈幕的, 開機就接手
+    _syncWaitingTimer();
+    unawaited(pollWaiting());
+    unawaited(retryMissingDanmaku());
   }
 
   /// 檔案被系統清掉 / 使用者從檔案 app 刪掉的話, 索引要跟上
@@ -267,6 +324,23 @@ class DownloadStore extends ChangeNotifier {
   Future<DownloadEntry> enqueue(
     VideoItem video, {
     bool withDanmaku = true,
+  }) =>
+      _put(video, withDanmaku: withDanmaku, status: DownloadStatus.queued);
+
+  /// 伺服器上還沒有這一集: 先在清單裡佔位, 檔案出現了 pollWaiting() 會接手.
+  ///
+  /// 沒辦法直接開始抓 —— /get_video.mp4 是照片庫的清單找檔案的, 找不到就 404,
+  /// 所以在伺服器抓完之前這裡除了等沒有別的事可做.
+  Future<DownloadEntry> enqueueWaiting(
+    VideoItem video, {
+    bool withDanmaku = true,
+  }) =>
+      _put(video, withDanmaku: withDanmaku, status: DownloadStatus.waiting);
+
+  Future<DownloadEntry> _put(
+    VideoItem video, {
+    required bool withDanmaku,
+    required DownloadStatus status,
   }) async {
     final existing = _entries[video.sn];
     if (existing != null && existing.playable) return existing;
@@ -283,18 +357,23 @@ class DownloadStore extends ChangeNotifier {
     entry.episode = video.episode.isNotEmpty ? video.episode : entry.episode;
     entry.title = video.title.isNotEmpty ? video.title : entry.title;
     if (video.resolution > 0) entry.resolution = video.resolution;
-    entry.status = DownloadStatus.queued;
+    entry.status = status;
     entry.error = '';
     // video.danmu 是「伺服器現在手上有沒有這一集的彈幕」, 拿它當條件的話,
     // 伺服器還沒生檔的集數就永遠不會去抓. 想不想要是使用者決定的, 有沒有
     // 抓到等 _fetchDanmaku 回報.
     entry.wantDanmaku = withDanmaku;
-    entry.hasDanmaku = entry.hasDanmaku && danmakuFile(entry.sn).existsSync();
+    // 之前抓過的那一份還在就算有, 不必再跑一輪
+    entry.hasDanmaku = danmakuFile(entry.sn).existsSync();
     _entries[entry.sn] = entry;
 
     await _save();
     notifyListeners();
-    unawaited(_pump());
+    if (status == DownloadStatus.waiting) {
+      _syncWaitingTimer();
+    } else {
+      unawaited(_pump());
+    }
     return entry;
   }
 
@@ -303,11 +382,13 @@ class DownloadStore extends ChangeNotifier {
     if (entry == null) return;
     _jobs.remove(sn)?.cancel();
     if (entry.status == DownloadStatus.running ||
-        entry.status == DownloadStatus.queued) {
+        entry.status == DownloadStatus.queued ||
+        entry.status == DownloadStatus.waiting) {
       entry.status = DownloadStatus.paused;
     }
     await _save();
     notifyListeners();
+    _syncWaitingTimer();
     unawaited(_pump());
   }
 
@@ -340,19 +421,22 @@ class DownloadStore extends ChangeNotifier {
     }
     await _save();
     notifyListeners();
+    _syncWaitingTimer();
     unawaited(_pump());
   }
 
   Future<void> pauseAll() async {
     for (final entry in _entries.values) {
       if (entry.status == DownloadStatus.running ||
-          entry.status == DownloadStatus.queued) {
+          entry.status == DownloadStatus.queued ||
+          entry.status == DownloadStatus.waiting) {
         _jobs.remove(entry.sn)?.cancel();
         entry.status = DownloadStatus.paused;
       }
     }
     await _save();
     notifyListeners();
+    _syncWaitingTimer();
   }
 
   Future<void> resumeAll() async {
@@ -366,6 +450,84 @@ class DownloadStore extends ChangeNotifier {
     await _save();
     notifyListeners();
     unawaited(_pump());
+  }
+
+  // ------------------------------------------------------- 等伺服器下載完成
+  //
+  // 「下載單集到手機」對還沒進片庫的集數是分兩段的: 先請伺服器抓, 伺服器抓完
+  // 才輪到手機. 中間這段沒有人會通知我們 —— /manualTask 送出去就沒下文了,
+  // 任務監控的 WebSocket 又只有管理員連得上. 所以就照著問: 一個 HEAD 打在
+  // /get_video.mp4 上, 有檔案了才轉成 queued.
+
+  Timer? _waitingTimer;
+  bool _polling = false;
+
+  void _syncWaitingTimer() {
+    if (hasWaiting) {
+      _waitingTimer ??= Timer.periodic(
+        kWaitingPollInterval,
+        (_) => unawaited(pollWaiting()),
+      );
+    } else {
+      _waitingTimer?.cancel();
+      _waitingTimer = null;
+    }
+  }
+
+  /// 問一輪伺服器: 等著的那幾集有沒有檔案了. 回線上時也叫這支.
+  Future<void> pollWaiting() async {
+    if (_polling || !_client.hasServer) return;
+    final pending = _entries.values
+        .where((e) => e.status == DownloadStatus.waiting)
+        .toList();
+    if (pending.isEmpty) {
+      _syncWaitingTimer();
+      return;
+    }
+    _polling = true;
+    var promoted = false;
+    try {
+      for (final entry in pending) {
+        // 一集一集問, 不要為了幾個 HEAD 同時開一堆連線
+        if (!_entries.containsKey(entry.sn)) continue;
+        if (entry.status != DownloadStatus.waiting) continue;
+        if (!await _serverHasVideo(entry)) continue;
+        entry.status = DownloadStatus.queued;
+        entry.error = '';
+        promoted = true;
+      }
+    } finally {
+      _polling = false;
+    }
+    if (promoted) {
+      await _save();
+      notifyListeners();
+      unawaited(_pump());
+    }
+    _syncWaitingTimer();
+  }
+
+  Future<bool> _serverHasVideo(DownloadEntry entry) async {
+    try {
+      final response = await http.head(
+        _client.videoUrl(
+          entry.sn,
+          resolution: entry.resolution > 0 ? entry.resolution : null,
+        ),
+        headers: _client.authHeaders,
+      );
+      return response.statusCode >= 200 && response.statusCode < 300;
+    } catch (_) {
+      // 連不上就當作還沒好, 下一輪再問
+      return false;
+    }
+  }
+
+  @override
+  void dispose() {
+    _waitingTimer?.cancel();
+    _waitingTimer = null;
+    super.dispose();
   }
 
   Future<void> _pump() async {
@@ -412,6 +574,16 @@ class DownloadStore extends ChangeNotifier {
         // 已經抓完了, 只是上次沒改名
         await part.rename(target.path);
         await _finish(job, entry);
+        return;
+      }
+      if (response.statusCode == 404) {
+        // 伺服器手上沒有這一集 —— 排隊中的伺服器任務還沒跑到, 或者檔案被清了.
+        // 這不是失敗, 是還沒輪到: 退回去等, pollWaiting() 會盯著.
+        entry.status = DownloadStatus.waiting;
+        entry.error = '';
+        await _save();
+        notifyListeners();
+        _syncWaitingTimer();
         return;
       }
       if (response.statusCode >= 400) {
@@ -509,7 +681,8 @@ class DownloadStore extends ChangeNotifier {
     await _save();
     notifyListeners();
 
-    // 彈幕另外跑, 不佔佇列: 見 _fetchDanmaku, 最久要等半分鐘
+    // 彈幕另外跑, 不佔佇列: 見 _fetchDanmaku, 這一輪最久撐八分鐘,
+    // 還是沒有的話留給 retryMissingDanmaku()
     if (entry.wantDanmaku) unawaited(_fetchDanmaku(entry));
   }
 
@@ -521,18 +694,7 @@ class DownloadStore extends ChangeNotifier {
       if (wait > Duration.zero) await Future<void>.delayed(wait);
       // 等待途中被刪掉了就別再寫檔
       if (!_entries.containsKey(entry.sn)) return;
-      try {
-        final ass = await _client.danmakuAss(entry.sn);
-        if (ass.trim().isNotEmpty) {
-          await danmakuFile(entry.sn).writeAsString(ass);
-          entry.hasDanmaku = true;
-          await _save();
-          notifyListeners();
-          return;
-        }
-      } catch (_) {
-        // 網路斷了就算了, 彈幕是配菜
-      }
+      if (await _tryDanmakuOnce(entry)) return;
     }
     if (entry.hasDanmaku && !danmakuFile(entry.sn).existsSync()) {
       entry.hasDanmaku = false;
@@ -540,6 +702,62 @@ class DownloadStore extends ChangeNotifier {
       notifyListeners();
     }
   }
+
+  /// 問一次. 拿到真的字幕就落盤並回 true.
+  Future<bool> _tryDanmakuOnce(DownloadEntry entry) async {
+    entry.danmakuTries += 1;
+    try {
+      final ass = await _client.danmakuAss(entry.sn);
+      // 只有真的問到伺服器才算一次「試過」. 連線失敗不記 —— 不然離線開機時
+      // 白跑的那一輪會把冷卻時間吃掉, 等真的有網路了反而被自己擋住.
+      entry.danmakuLastTry = DateTime.now().millisecondsSinceEpoch;
+      if (looksLikeAss(ass)) {
+        await danmakuFile(entry.sn).writeAsString(ass);
+        entry.hasDanmaku = true;
+        await _save();
+        notifyListeners();
+        return true;
+      }
+    } catch (_) {
+      // 網路斷了就算了, 彈幕是配菜
+    }
+    return false;
+  }
+
+  /// 把還缺彈幕的集數再撈一遍.
+  ///
+  /// _fetchDanmaku 那一輪最多撐八分鐘, 但伺服器可能更慢 (或者當時根本沒網路).
+  /// 開機、回到線上、使用者在下載頁按「補抓彈幕」都會走到這裡, 所以「當時沒抓到」
+  /// 不再等於「永遠沒有」.
+  Future<void> retryMissingDanmaku({bool force = false}) async {
+    if (_dir == null || !_client.hasServer) return;
+    if (_retryingDanmaku) return;
+    _retryingDanmaku = true;
+    try {
+      final now = DateTime.now().millisecondsSinceEpoch;
+      for (final entry in _entries.values.toList()) {
+        if (!entry.danmakuPending) continue;
+        // 手上已經有檔案的話只是狀態沒對上, 補一下就好
+        if (danmakuFile(entry.sn).existsSync()) {
+          entry.hasDanmaku = true;
+          await _save();
+          notifyListeners();
+          continue;
+        }
+        if (!force &&
+            entry.danmakuLastTry > 0 &&
+            now - entry.danmakuLastTry < kDanmakuRetryCooldown.inMilliseconds) {
+          continue;
+        }
+        // 一集一集來: 伺服器收到請求是要現生檔的, 一次灌一堆只是讓每一個都更慢
+        await _tryDanmakuOnce(entry);
+      }
+    } finally {
+      _retryingDanmaku = false;
+    }
+  }
+
+  bool _retryingDanmaku = false;
 
   // --------------------------------------------------------- 線上彈幕快取
   //
@@ -564,7 +782,7 @@ class DownloadStore extends ChangeNotifier {
       final age = DateTime.now().difference(await file.lastModified());
       if (age > _danmakuCacheTtl) return null;
       final text = await file.readAsString();
-      return text.trim().isEmpty ? null : text;
+      return looksLikeAss(text) ? text : null;
     } catch (_) {
       return null;
     }
@@ -572,7 +790,7 @@ class DownloadStore extends ChangeNotifier {
 
   Future<void> writeCachedDanmaku(String sn, String ass) async {
     final file = _danmakuCacheFile(sn);
-    if (file == null || ass.trim().isEmpty) return;
+    if (file == null || !looksLikeAss(ass)) return;
     try {
       final dir = _danmakuCache!;
       if (!await dir.exists()) await dir.create(recursive: true);
@@ -610,10 +828,13 @@ class DownloadStore extends ChangeNotifier {
 
   /// 播放頁從網路抓到彈幕時順手存一份: 這一集已經下載好的話, 下次沒網路
   /// 也有彈幕. 修好之前下載的那些集數靠的就是這裡.
+  ///
+  /// 不要求 playable —— 邊看邊下載那條路是「一邊抓一邊看」, 播放頁這時候拿到的
+  /// 彈幕正好可以先擺著, 等影片抓完就是一組完整的離線檔.
   Future<void> cacheDanmaku(String sn, String ass) async {
     final entry = _entries[sn];
-    if (entry == null || !entry.playable || !entry.wantDanmaku) return;
-    if (ass.trim().isEmpty || entry.hasDanmaku) return;
+    if (entry == null || !entry.wantDanmaku) return;
+    if (!looksLikeAss(ass) || entry.hasDanmaku) return;
     try {
       await danmakuFile(sn).writeAsString(ass);
     } catch (_) {

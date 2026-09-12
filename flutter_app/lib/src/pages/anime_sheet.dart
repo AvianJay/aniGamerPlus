@@ -10,6 +10,7 @@ import 'package:url_launcher/url_launcher.dart';
 import '../api/client.dart';
 import '../api/models.dart';
 import '../state/app_state.dart';
+import '../state/downloads.dart';
 import '../state/prefs.dart';
 import '../theme.dart';
 import '../util/format.dart';
@@ -164,18 +165,60 @@ class _AnimeSheetState extends State<_AnimeSheet> {
   }
 
   Future<void> _saveToPhone(SeriesEpisode episode, SeriesInfo detail) async {
-    final video = state.videoOf(episode.videoSn) ??
-        VideoItem(
-          sn: episode.videoSn,
-          animeName: detail.title,
-          episode: episode.episode,
-          title: detail.title,
-          resolution: episode.resolution,
-          danmu: true,
-        );
-    await state.downloads.enqueue(video, withDanmaku: state.prefs.downloadDanmaku);
+    await state.downloads.enqueue(
+      _videoFor(episode, detail),
+      withDanmaku: state.prefs.downloadDanmaku,
+    );
     if (!mounted) return;
     toast(context, '已加入手機下載佇列。');
+  }
+
+  /// 伺服器上還沒有這一集 —— /get_video.mp4 找不到檔案就是 404, 手機這邊
+  /// 沒有別的來源. 所以先請伺服器抓, 這集在手機的清單裡先掛著「等伺服器」,
+  /// DownloadStore.pollWaiting() 看到檔案出現才真的開始下載.
+  Future<void> _saveToPhoneViaServer(
+    SeriesEpisode episode,
+    SeriesInfo detail,
+  ) async {
+    if (!await _queue(episode.videoSn, 'single')) return;
+    await state.downloads.enqueueWaiting(
+      _videoFor(episode, detail),
+      withDanmaku: state.prefs.downloadDanmaku,
+    );
+    if (!mounted) return;
+    toast(context, '伺服器下載完成後會自動存到手機。');
+  }
+
+  VideoItem _videoFor(SeriesEpisode episode, SeriesInfo detail) =>
+      state.videoOf(episode.videoSn) ??
+      VideoItem(
+        sn: episode.videoSn,
+        animeName: detail.title,
+        episode: episode.episode,
+        title: detail.title,
+        resolution: episode.resolution > 0
+            ? episode.resolution
+            : int.tryParse(_resolution) ?? 0,
+        danmu: true,
+      );
+
+  Future<void> _openPicker(SeriesInfo detail) async {
+    await showModalBottomSheet<void>(
+      context: context,
+      isScrollControlled: true,
+      useSafeArea: true,
+      builder: (_) => FractionallySizedBox(
+        heightFactor: 0.9,
+        child: _EpisodePickerSheet(
+          state: state,
+          detail: detail,
+          resolution: _resolution,
+        ),
+      ),
+    );
+    if (!mounted) return;
+    // 選集時可能順手排了伺服器任務, 集數格子的顏色要跟上
+    setState(() {});
   }
 
   Future<void> _openOnBahamut(String videoSn) async {
@@ -342,6 +385,13 @@ class _AnimeSheetState extends State<_AnimeSheet> {
         onPressed: () => _saveToPhone(local, detail),
         icon: const Icon(Icons.smartphone_rounded, size: 18),
         label: const Text('下載到手機'),
+      ));
+    }
+    if (detail.allEpisodes.isNotEmpty) {
+      buttons.add(OutlinedButton.icon(
+        onPressed: () => _openPicker(detail),
+        icon: const Icon(Icons.checklist_rounded, size: 18),
+        label: const Text('選集下載到手機'),
       ));
     }
     if (currentSn.isNotEmpty) {
@@ -514,6 +564,13 @@ class _AnimeSheetState extends State<_AnimeSheet> {
   }
 
   Future<void> _episodeMenu(SeriesInfo detail, SeriesEpisode episode) async {
+    final onPhone = state.downloads.isDownloaded(episode.videoSn);
+    final waiting =
+        state.downloads.entryFor(episode.videoSn)?.waitingForServer ?? false;
+    // 伺服器上沒有的集數也給得出這個選項, 只是要先請伺服器抓 —— 但那需要
+    // 管理員權限, 沒有的話就把它擺出來標成不能按, 而不是整個藏起來
+    final phoneBlocked = !episode.local && !state.canManage;
+
     await showModalBottomSheet<void>(
       context: context,
       builder: (sheetContext) => SafeArea(
@@ -536,18 +593,28 @@ class _AnimeSheetState extends State<_AnimeSheet> {
                   _openWatch(episode.videoSn);
                 },
               ),
-            if (episode.local)
-              ListTile(
-                leading: const Icon(Icons.smartphone_rounded),
-                title: Text(state.downloads.isDownloaded(episode.videoSn)
-                    ? '已下載到手機'
-                    : '下載到手機'),
-                enabled: !state.downloads.isDownloaded(episode.videoSn),
-                onTap: () {
-                  Navigator.of(sheetContext).pop();
+            ListTile(
+              leading: const Icon(Icons.smartphone_rounded),
+              title: Text(onPhone
+                  ? '已下載到手機'
+                  : waiting
+                      ? '等待伺服器下載完成'
+                      : '下載單集到手機'),
+              subtitle: phoneBlocked
+                  ? const Text('伺服器上還沒有這一集，需要管理員權限')
+                  : (!episode.local && !onPhone && !waiting)
+                      ? const Text('伺服器上還沒有這一集，抓完會自動存到手機')
+                      : null,
+              enabled: !onPhone && !waiting && !phoneBlocked,
+              onTap: () {
+                Navigator.of(sheetContext).pop();
+                if (episode.local) {
                   _saveToPhone(episode, detail);
-                },
-              ),
+                } else {
+                  _saveToPhoneViaServer(episode, detail);
+                }
+              },
+            ),
             if (!episode.local && state.canManage)
               ListTile(
                 leading: const Icon(Icons.playlist_add_rounded),
@@ -583,6 +650,345 @@ class _AnimeSheetState extends State<_AnimeSheet> {
                   builder: (_) => DownloadsPage(state: state),
                 ));
               },
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+/// 選集下載到手機.
+///
+/// 一次挑好幾集是這支 app 才有的需求 (網頁版沒有離線), 所以介面自己長一套:
+/// 每一組集數一排方格, 按下去就是勾選, 底下顯示挑了幾集. 伺服器上還沒有的
+/// 集數也挑得起來 —— 確認之後會先幫它們各排一個伺服器任務.
+class _EpisodePickerSheet extends StatefulWidget {
+  const _EpisodePickerSheet({
+    required this.state,
+    required this.detail,
+    required this.resolution,
+  });
+
+  final AppState state;
+  final SeriesInfo detail;
+  final String resolution;
+
+  @override
+  State<_EpisodePickerSheet> createState() => _EpisodePickerSheetState();
+}
+
+class _EpisodePickerSheetState extends State<_EpisodePickerSheet> {
+  final Set<String> _picked = {};
+  late String _resolution = widget.resolution;
+  late bool _danmaku = widget.state.prefs.downloadDanmaku;
+  bool _working = false;
+  String _progress = '';
+
+  AppState get state => widget.state;
+  SeriesInfo get detail => widget.detail;
+
+  /// 已經在手機上 (或正在抓) 的集數不列入可挑範圍
+  bool _taken(SeriesEpisode episode) {
+    final entry = state.downloads.entryFor(episode.videoSn);
+    return entry != null && entry.status != DownloadStatus.failed;
+  }
+
+  Iterable<SeriesEpisode> get _selectable =>
+      detail.allEpisodes.where((e) => !_taken(e));
+
+  void _selectAll({bool onlyLocal = false}) {
+    setState(() {
+      _picked
+        ..clear()
+        ..addAll(_selectable
+            .where((e) => !onlyLocal || e.local)
+            .map((e) => e.videoSn));
+    });
+  }
+
+  Future<void> _confirm() async {
+    final picks = detail.allEpisodes
+        .where((e) => _picked.contains(e.videoSn))
+        .toList();
+    if (picks.isEmpty) return;
+
+    final needServer = picks.where((e) => !e.local).toList();
+    if (needServer.isNotEmpty && !state.canManage) {
+      toast(context, '其中有伺服器上還沒有的集數，需要管理員權限。');
+      return;
+    }
+
+    setState(() => _working = true);
+    var queued = 0;
+    var failed = 0;
+
+    for (final episode in picks) {
+      if (!mounted) return;
+      setState(() => _progress = '${queued + failed + 1}/${picks.length}');
+      final video = state.videoOf(episode.videoSn) ??
+          VideoItem(
+            sn: episode.videoSn,
+            animeName: detail.title,
+            episode: episode.episode,
+            title: detail.title,
+            resolution: episode.resolution > 0
+                ? episode.resolution
+                : int.tryParse(_resolution) ?? 0,
+            danmu: true,
+          );
+
+      if (episode.local) {
+        await state.downloads.enqueue(video, withDanmaku: _danmaku);
+        queued += 1;
+        continue;
+      }
+
+      // 一集一個 POST, 而且中間留一點空隙: /manualTask 每一筆都要現去巴哈
+      // 解析一次, 一口氣灌幾十筆只是讓伺服器排隊排更久
+      try {
+        await state.startServerDownload(
+          episode.videoSn,
+          resolution: _resolution,
+          mode: 'single',
+        );
+        state.queued.add(episode.videoSn);
+        await state.downloads.enqueueWaiting(video, withDanmaku: _danmaku);
+        queued += 1;
+      } catch (_) {
+        failed += 1;
+      }
+      await Future<void>.delayed(const Duration(milliseconds: 150));
+    }
+
+    if (!mounted) return;
+    Navigator.of(context).pop();
+    toast(
+      context,
+      failed == 0
+          ? '已加入 $queued 集到手機下載佇列。'
+          : '已加入 $queued 集，$failed 集排不進伺服器佇列。',
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final selectable = _selectable.length;
+
+    return Column(
+      children: [
+        Padding(
+          padding: const EdgeInsets.fromLTRB(18, 12, 18, 0),
+          child: Row(
+            children: [
+              const Expanded(
+                child: Text(
+                  '選集下載到手機',
+                  style: TextStyle(fontSize: 16.5, fontWeight: FontWeight.w800),
+                ),
+              ),
+              IconButton(
+                onPressed: () => Navigator.of(context).pop(),
+                icon: const Icon(Icons.close_rounded),
+              ),
+            ],
+          ),
+        ),
+        Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 18),
+          child: Wrap(
+            spacing: 8,
+            children: [
+              TextButton(
+                onPressed: selectable == 0 ? null : () => _selectAll(),
+                child: const Text('全選'),
+              ),
+              TextButton(
+                onPressed: _picked.isEmpty
+                    ? null
+                    : () => setState(() => _picked.clear()),
+                child: const Text('全不選'),
+              ),
+              TextButton(
+                onPressed: selectable == 0
+                    ? null
+                    : () => _selectAll(onlyLocal: true),
+                child: const Text('只選伺服器上有的'),
+              ),
+            ],
+          ),
+        ),
+        Expanded(
+          child: ListenableBuilder(
+            listenable: state.downloads,
+            builder: (context, _) => ListView(
+              padding: const EdgeInsets.fromLTRB(18, 4, 18, 18),
+              children: [
+                for (final group in detail.groups) ...[
+                  Padding(
+                    padding: const EdgeInsets.only(top: 14, bottom: 10),
+                    child: Text(
+                      '${group.name}  ·  ${group.episodes.length} 集',
+                      style: const TextStyle(
+                          fontSize: 14.5, fontWeight: FontWeight.w700),
+                    ),
+                  ),
+                  Wrap(
+                    spacing: 8,
+                    runSpacing: 8,
+                    children: [
+                      for (final episode in group.episodes) _pickChip(episode),
+                    ],
+                  ),
+                ],
+                if (detail.groups.isEmpty)
+                  const Padding(
+                    padding: EdgeInsets.only(top: 20),
+                    child: Text('這部作品沒有集數資訊。',
+                        style: TextStyle(color: AgpColors.fgFaint)),
+                  ),
+              ],
+            ),
+          ),
+        ),
+        _footer(),
+      ],
+    );
+  }
+
+  Widget _pickChip(SeriesEpisode episode) {
+    final taken = _taken(episode);
+    final on = _picked.contains(episode.videoSn);
+    final label = episode.episode.isNotEmpty ? episode.episode : '?';
+
+    Color background;
+    Color foreground;
+    if (taken) {
+      background = Colors.white10;
+      foreground = AgpColors.fgFaint;
+    } else if (on) {
+      background = AgpColors.accentSoft;
+      foreground = AgpColors.fg;
+    } else {
+      background = Colors.white10;
+      foreground = episode.local ? AgpColors.fg : AgpColors.fgDim;
+    }
+
+    return InkWell(
+      borderRadius: BorderRadius.circular(kRadiusSmall),
+      onTap: taken || _working
+          ? null
+          : () => setState(() {
+                if (!_picked.add(episode.videoSn)) {
+                  _picked.remove(episode.videoSn);
+                }
+              }),
+      child: Container(
+        constraints: const BoxConstraints(minWidth: 56),
+        padding: const EdgeInsets.symmetric(horizontal: 11, vertical: 9),
+        decoration: BoxDecoration(
+          color: background,
+          borderRadius: BorderRadius.circular(kRadiusSmall),
+          border: Border.all(
+            color: on ? AgpColors.accent.withValues(alpha: 0.6) : AgpColors.line,
+          ),
+        ),
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Icon(
+              taken
+                  ? Icons.smartphone_rounded
+                  : on
+                      ? Icons.check_box_rounded
+                      : Icons.check_box_outline_blank_rounded,
+              size: 14,
+              color: foreground,
+            ),
+            const SizedBox(width: 5),
+            Text(
+              label,
+              style: TextStyle(
+                  fontSize: 13, fontWeight: FontWeight.w600, color: foreground),
+            ),
+            // 伺服器上還沒有的集數要標出來: 挑了它就是連伺服器任務一起排
+            if (!taken && !episode.local) ...[
+              const SizedBox(width: 4),
+              Icon(Icons.cloud_download_outlined, size: 12, color: foreground),
+            ],
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _footer() {
+    final serverCount = detail.allEpisodes
+        .where((e) => _picked.contains(e.videoSn) && !e.local)
+        .length;
+
+    return Container(
+      padding: const EdgeInsets.fromLTRB(18, 12, 18, 16),
+      decoration: const BoxDecoration(
+        border: Border(top: BorderSide(color: AgpColors.line)),
+      ),
+      child: SafeArea(
+        top: false,
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Row(
+              children: [
+                const Text('下載畫質',
+                    style: TextStyle(fontSize: 13, color: AgpColors.fgDim)),
+                const SizedBox(width: 8),
+                DropdownButton<String>(
+                  value: kResolutions.contains(_resolution) ? _resolution : '1080',
+                  underline: const SizedBox.shrink(),
+                  borderRadius: BorderRadius.circular(kRadiusSmall),
+                  items: [
+                    for (final value in kResolutions)
+                      DropdownMenuItem(value: value, child: Text('${value}P')),
+                  ],
+                  onChanged: _working
+                      ? null
+                      : (value) {
+                          if (value == null) return;
+                          setState(() => _resolution = value);
+                          state.prefs.setDownloadResolution(value);
+                        },
+                ),
+                const Spacer(),
+                const Text('一起抓彈幕',
+                    style: TextStyle(fontSize: 13, color: AgpColors.fgDim)),
+                Switch(
+                  value: _danmaku,
+                  onChanged: _working
+                      ? null
+                      : (value) => setState(() => _danmaku = value),
+                ),
+              ],
+            ),
+            const SizedBox(height: 8),
+            if (serverCount > 0)
+              Padding(
+                padding: const EdgeInsets.only(bottom: 8),
+                child: Text(
+                  '其中 $serverCount 集伺服器上還沒有，會先請伺服器下載，抓完自動存到手機。',
+                  style: const TextStyle(
+                      fontSize: 12, height: 1.5, color: AgpColors.fgFaint),
+                ),
+              ),
+            SizedBox(
+              width: double.infinity,
+              child: FilledButton(
+                onPressed: _picked.isEmpty || _working ? null : _confirm,
+                child: Text(_working
+                    ? '加入中… $_progress'
+                    : _picked.isEmpty
+                        ? '選一些集數'
+                        : '下載 ${_picked.length} 集到手機'),
+              ),
             ),
           ],
         ),

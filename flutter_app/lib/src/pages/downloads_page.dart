@@ -41,6 +41,26 @@ class _DownloadsPageState extends State<DownloadsPage> {
     setState(() => _bytes = bytes);
   }
 
+  /// 手動再問一次伺服器要彈幕.
+  ///
+  /// 自動那條路有冷卻時間 (免得每次開 app 都把伺服器問一遍), 使用者自己按的
+  /// 時候就不必等 —— force 直接跳過冷卻.
+  Future<void> _retryDanmaku() async {
+    final before = store.danmakuPending.length;
+    toast(context, '正在向伺服器要 $before 集的彈幕…');
+    await store.retryMissingDanmaku(force: true);
+    if (!mounted) return;
+    final after = store.danmakuPending.length;
+    toast(
+      context,
+      after == 0
+          ? '彈幕都補齊了。'
+          : before == after
+              ? '伺服器還沒生出這些彈幕，等一下再試。'
+              : '補到 ${before - after} 集，還有 $after 集要等。',
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     return ListenableBuilder(
@@ -49,12 +69,21 @@ class _DownloadsPageState extends State<DownloadsPage> {
         final active = store.active;
         final finished = store.finished;
         final busy = active.any((e) =>
-            e.status == DownloadStatus.running || e.status == DownloadStatus.queued);
+            e.status == DownloadStatus.running ||
+            e.status == DownloadStatus.queued ||
+            e.status == DownloadStatus.waiting);
+        final missingDanmaku = store.danmakuPending.length;
 
         return Scaffold(
           appBar: AppBar(
             title: const Text('下載管理'),
             actions: [
+              if (missingDanmaku > 0 && !state.offline)
+                IconButton(
+                  tooltip: '補抓彈幕 ($missingDanmaku 集)',
+                  icon: const Icon(Icons.comment_outlined),
+                  onPressed: _retryDanmaku,
+                ),
               if (active.isNotEmpty)
                 IconButton(
                   tooltip: busy ? '全部暫停' : '全部繼續',
@@ -74,7 +103,7 @@ class _DownloadsPageState extends State<DownloadsPage> {
               ? const EmptyState(
                   icon: Icons.download_outlined,
                   title: '還沒有下載到這支手機的集數',
-                  message: '在作品資訊或片庫卡片長按，選「下載到手機」就會排進來。離線時照樣看得到。',
+                  message: '在作品資訊長按集數，選「下載單集到手機」就會排進來。離線時照樣看得到。',
                 )
               : ListView(
                   padding: const EdgeInsets.only(bottom: 28),
@@ -150,7 +179,12 @@ class _DownloadsPageState extends State<DownloadsPage> {
           : ClipRRect(
               borderRadius: BorderRadius.circular(999),
               child: LinearProgressIndicator(
-                value: entry.total > 0 ? entry.progress : null,
+                // 等伺服器的那段沒有進度可言, 給一條不動的底線比跑馬燈誠實
+                value: entry.status == DownloadStatus.waiting
+                    ? 0
+                    : entry.total > 0
+                        ? entry.progress
+                        : null,
                 minHeight: 4,
                 backgroundColor: const Color(0x1FFFFFFF),
               ),
@@ -159,9 +193,10 @@ class _DownloadsPageState extends State<DownloadsPage> {
         mainAxisSize: MainAxisSize.min,
         children: [
           if (entry.status == DownloadStatus.running ||
-              entry.status == DownloadStatus.queued)
+              entry.status == DownloadStatus.queued ||
+              entry.status == DownloadStatus.waiting)
             IconButton(
-              tooltip: '暫停',
+              tooltip: entry.status == DownloadStatus.waiting ? '取消等待' : '暫停',
               icon: const Icon(Icons.pause_rounded, size: 20),
               onPressed: () => store.pause(entry.sn),
             )
@@ -194,11 +229,18 @@ class _DownloadsPageState extends State<DownloadsPage> {
     final res = entry.resolution > 0 ? '${entry.resolution}P · ' : '';
     switch (entry.status) {
       case DownloadStatus.done:
-        return '$res已下載 · ${formatBytes(entry.total)}${entry.hasDanmaku ? ' · 含彈幕' : ''}';
+        final danmaku = entry.hasDanmaku
+            ? ' · 含彈幕'
+            : entry.wantDanmaku
+                ? ' · 彈幕等待中'
+                : '';
+        return '$res已下載 · ${formatBytes(entry.total)}$danmaku';
       case DownloadStatus.running:
         return '$res下載中 ${(entry.progress * 100).round()}% · $size';
       case DownloadStatus.queued:
         return '$res排隊中';
+      case DownloadStatus.waiting:
+        return '$res等待伺服器下載完成';
       case DownloadStatus.paused:
         return '$res已暫停 · $size';
       case DownloadStatus.failed:
