@@ -718,6 +718,9 @@ class DownloadStore extends ChangeNotifier {
         notifyListeners();
         return true;
       }
+      // 沒抓到也要落盤. 冷卻是記在索引裡的, 不寫回去的話重開 app 就等於
+      // 從來沒試過, 每次開機都會把所有缺彈幕的集數再打一輪.
+      await _save();
     } catch (_) {
       // 網路斷了就算了, 彈幕是配菜
     }
