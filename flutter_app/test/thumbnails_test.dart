@@ -168,6 +168,8 @@ void main() {
 
   // TODO(probe): 暫時的, 拿到 CI 的輸出就刪掉
   test('PROBE', () async {
+    kThumbTrace = true;
+    addTearDown(() => kThumbTrace = false);
     final log = StringBuffer();
     final sw = Stopwatch()..start();
     Future<void> step(String what, Future<void> Function() body) async {
@@ -200,6 +202,11 @@ void main() {
       await File('${dir.path}/probe4.img').writeAsBytes(fakeJpeg(4), flush: true);
     });
     await step('refresh', () => store.refresh());
+    // cacheBytes() 在 _coverDir 還是 null 的時候一律回 0, 手寫的 probe4.img 有
+    // 512 bytes —— 所以這個數字直接告訴我們 init() 到底有沒有把目錄準備好
+    await step('cacheBytes', () async {
+      log.write('[bytes=${await store.cacheBytes()}] ');
+    });
     final fromManifest = store.stillFor('v1') ?? '';
     log.write('[url==${fromManifest == '${cdn.url}/still-v1.jpg'}] ');
     await step('get-manifest-url', () async {
