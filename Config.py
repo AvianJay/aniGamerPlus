@@ -7,6 +7,7 @@
 # @Forked  : AvianJay
 
 import os, json, re, sys, requests, time, random, codecs, chardet
+import tempfile
 import sqlite3
 import socket
 import warnings
@@ -593,29 +594,46 @@ def __update_database(old_version):
     __color_print(0, msg, status=2, no_sn=True)
 
 
+def __read_config_text(attempts=25, delay=0.02):
+    """读 config.json 的内容, 暂时读不到就退让几次再试.
+
+    设定档是用「写临时档再改名」换上去的, 而 Windows 在改名的那一瞬间会让
+    open() 拿到 EACCES. 那是一个瞬间的状态, 不是「设定坏了」—— 防毒软体扫档、
+    档案描述子用完也一样.
+
+    读不到就丢出去, 不要走重置那条路: 重置会 os.remove(config_path) 再写一份
+    出厂设定, 使用者的整份设定就这样没了, 连带把控制台的帐号系统关掉.
+    """
+    last_error = None
+    for attempt in range(attempts):
+        try:
+            with open(config_path, 'r', encoding='utf-8') as f:
+                return f.read()
+        except OSError as e:
+            last_error = e
+            if attempt < attempts - 1:
+                time.sleep(delay)
+    raise last_error
+
+
 def __read_settings_file() -> dict:
+    # 只有「内容真的不是合法 JSON」才重置. 读不出来是另一回事, 让它丢出去.
+    text = __read_config_text()
     try:
-        with open(config_path, 'r', encoding='utf-8') as f:
-            # 转义win路径
-            return json.loads(re.sub(r'\\', '\\\\\\\\', f.read()))
+        # 转义win路径
+        return json.loads(re.sub(r'\\', '\\\\\\\\', text))
     except json.JSONDecodeError:
         # 如果带有 BOM 头, 则去除
         try:
             # del_bom(config_path)
             check_encoding(config_path)
             # 重新读取
-            with open(config_path, 'r', encoding='utf-8') as f:
-                return json.loads(re.sub(r'\\', '\\\\\\\\', f.read()))
-        except BaseException as e:
+            return json.loads(re.sub(r'\\', '\\\\\\\\', __read_config_text()))
+        except json.JSONDecodeError as e:
             __color_print(0, '讀取配置發生異常, 將重置配置! ' + str(e), status=1, no_sn=True)
             __init_settings()
             with open(config_path, 'r', encoding='utf-8') as f:
                 return json.load(f)
-    except BaseException as e:
-        __color_print(0, '讀取配置發生異常, 將重置配置! ' + str(e), status=1, no_sn=True)
-        __init_settings()
-        with open(config_path, 'r', encoding='utf-8') as f:
-            return json.load(f)
 
 
 def del_bom(path, display=True):
@@ -1104,13 +1122,55 @@ def write_settings(web_config):
     del web_config['use_gost']
 
     # 配置写入磁盘
-    with open(config_path, 'w', encoding='utf-8') as f:
-        json.dump(web_config, f, ensure_ascii=False, indent=4)
+    __atomic_write(config_path,
+                   json.dumps(web_config, ensure_ascii=False, indent=4))
 
 
 def write_sn_list(sn_list_content):
-    with open(sn_list_path, 'w', encoding='utf-8') as f:
-        f.write(sn_list_content)
+    __atomic_write(sn_list_path, sn_list_content)
+
+
+def __atomic_write(path, text):
+    """先写同目录的临时档, fsync 之后再改名顶上去.
+
+    原本是直接 open(path, 'w') —— 那一瞬间档案是空的. 读的那一端 (控制台每
+    个请求都会 read_settings() 一次) 只要刚好落在这个空窗里, 拿到的就是半份
+    或者完全空的 JSON, 于是 __read_settings_file() 一路掉到
+    「讀取配置發生異常, 將重置配置!」, 而那条路会 os.remove(config_path) 再
+    写一份出厂设定回去 —— 使用者的整份设定就这样没了, 包括把控制台的帐号系统
+    一起关掉.
+
+    行程被砍掉、磁碟满了也是同一回事: 写到一半的档案会留在磁碟上.
+
+    Windows 上 os.replace() 只要目的地还有别的 handle 开着就会丢
+    PermissionError, 所以退让几次再放弃 (跟 Dashboard/Server.py 的
+    _replace_with_retry 同一个理由).
+    """
+    directory = os.path.dirname(os.path.abspath(path)) or '.'
+    fd, tmp_name = tempfile.mkstemp(
+        prefix='.' + os.path.basename(path) + '-', suffix='.tmp', dir=directory)
+    try:
+        with os.fdopen(fd, 'w', encoding='utf-8') as f:
+            f.write(text)
+            f.flush()
+            try:
+                os.fsync(f.fileno())
+            except OSError:
+                pass
+        for attempt in range(25):
+            try:
+                os.replace(tmp_name, path)
+                return
+            except PermissionError:
+                if attempt == 24:
+                    raise
+                time.sleep(0.02)
+    except BaseException:
+        try:
+            os.unlink(tmp_name)
+        except OSError:
+            pass
+        raise
 
 
 def get_local_ip():
