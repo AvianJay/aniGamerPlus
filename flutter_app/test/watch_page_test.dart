@@ -12,6 +12,8 @@ import 'package:wakelock_plus_platform_interface/wakelock_plus_platform_interfac
 import 'package:agp_mobile/src/pages/watch_page.dart';
 import 'package:agp_mobile/src/state/app_state.dart';
 
+import 'support/temp_dir.dart';
+
 class Paths extends PathProviderPlatform {
   Paths(this.path);
   final String path;
@@ -190,7 +192,7 @@ void main() {
     // 那是正式行為, 但測試結束時不接受還有 Timer 掛著.
     disposeWarmPlayer();
     await player.closeStreams();
-    await temp.delete(recursive: true);
+    await deleteTempDir(temp);
   });
   Future<void> open(WidgetTester tester) async {
     levels.install(tester);

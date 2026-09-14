@@ -15,6 +15,8 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:path_provider_platform_interface/path_provider_platform_interface.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
+import 'support/temp_dir.dart';
+
 class Paths extends PathProviderPlatform {
   Paths(this.path);
   final String path;
@@ -126,7 +128,7 @@ void main() {
 
   tearDown(() async {
     await fake.stop();
-    await temp.delete(recursive: true);
+    await deleteTempDir(temp);
   });
 
   /// 開一台指向假伺服器的 app. offline = true 就完全不碰網路.

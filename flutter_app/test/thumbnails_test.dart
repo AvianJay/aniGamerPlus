@@ -14,6 +14,8 @@ import 'package:agp_mobile/src/state/thumbnails.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:path_provider_platform_interface/path_provider_platform_interface.dart';
 
+import 'support/temp_dir.dart';
+
 class Paths extends PathProviderPlatform {
   Paths(this.path);
   final String path;
@@ -150,7 +152,7 @@ void main() {
     client.close();
     await agp.stop();
     await cdn.stop();
-    await temp.delete(recursive: true);
+    await deleteTempDir(temp);
   });
 
   /// 等到條件成立為止 —— _trim() 是 unawaited 的, 沒別的辦法等它

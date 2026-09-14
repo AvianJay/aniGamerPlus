@@ -14,6 +14,8 @@ import 'package:agp_mobile/src/state/downloads.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:path_provider_platform_interface/path_provider_platform_interface.dart';
 
+import 'support/temp_dir.dart';
+
 class Paths extends PathProviderPlatform {
   Paths(this.path);
   final String path;
@@ -155,7 +157,7 @@ void main() {
       store.dispose();
       client.close();
       await fake.stop();
-      await temp.delete(recursive: true);
+      await deleteTempDir(temp);
     });
 
     test('伺服器還沒抓完的集數先掛著, 檔案出現了才轉成排隊', () async {
