@@ -446,6 +446,32 @@ void main() {
     expect(x('畫面比例'), greaterThan(x('設定')));
     await tester.pumpWidget(const SizedBox());
   });
+  testWidgets('在已下載的邊緣卡住不算整集看完', (tester) async {
+    await open(tester);
+
+    // 走到片尾再卡住. ExoPlayer 重新緩衝時 isPlaying 會變 false, 位置又停在
+    // duration 上 —— 跟「播完了」長得一模一樣. 邊看邊下載的 playlist 沒有
+    // ENDLIST, duration 只算到目前產出的那一段, 所以網路一慢, 看到一半就會
+    // 被判定成整集看完: 進度歸零, 而且自動跳下一集.
+    player.actual = const Duration(seconds: 600);
+    player.events.add(VideoEvent(eventType: VideoEventType.bufferingStart));
+    player.events.add(VideoEvent(
+        eventType: VideoEventType.isPlayingStateUpdate, isPlaying: false));
+    await tester.pump(const Duration(milliseconds: 300));
+    await tester.pump(const Duration(milliseconds: 300));
+    expect(state.watchTimeOf('1')?.ended, isNot(true),
+        reason: '還在緩衝就被當成看完了');
+
+    // 但真的播完了還是要認得出來
+    player.events.add(VideoEvent(eventType: VideoEventType.bufferingEnd));
+    await tester.pump(const Duration(milliseconds: 300));
+    await tester.pump(const Duration(milliseconds: 300));
+    expect(state.watchTimeOf('1')?.ended, isTrue,
+        reason: '緩衝完了, 位置也在片尾 —— 這次是真的看完了');
+
+    await tester.pumpWidget(const SizedBox());
+    await tester.pump(const Duration(seconds: 1));
+  });
   testWidgets('開始播之後再緩衝就只留速度, 不再把轉圈壓在畫面中央',
       (tester) async {
     levels.install(tester);

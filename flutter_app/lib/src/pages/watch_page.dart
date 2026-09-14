@@ -1180,12 +1180,22 @@ class _WatchPageState extends State<WatchPage>
       _noteStall();
     }
 
+    // 「播完了」跟「在已下載的邊緣卡住了」長得一模一樣: 兩邊 isPlaying 都是
+    // false, 位置也都停在 duration 上. 邊看邊下載的 playlist 是
+    // EXT-X-PLAYLIST-TYPE:EVENT 而且沒有 ENDLIST, duration 只算到「目前產出的
+    // 那一段」—— 所以網路一慢, 看到第 3 分鐘就會被判定成整集看完: 進度歸零
+    // (ended: true) 而且 8 秒後自動跳下一集.
+    //
+    // 兩道閘: 還在緩衝就不算數 (上面那幾行自己就認得這個狀態), 而且要用整集
+    // 的長度, 不是目前下載到哪裡.
+    final total = _playableDuration;
     if (_pendingSeek == null &&
         !_scrubbing &&
         !_ended &&
-        duration > 1 &&
+        !value.isBuffering &&
+        total > 1 &&
         !value.isPlaying &&
-        position >= duration - 0.4) {
+        position >= total - 0.4) {
       _onEnded();
     }
 
