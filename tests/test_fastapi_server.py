@@ -1175,3 +1175,23 @@ def test_warns_when_the_dashboard_is_open_to_the_network(settings, monkeypatch):
     settings['dashboard']['user_control']['enabled'] = True
     server._warn_if_open_to_the_network(settings, '0.0.0.0', 5000)
     assert said == [], 'with accounts on there is nothing to warn about'
+
+
+def test_watch_time_rejections_carry_a_real_status_code(client, autouse_settings,
+                                                        settings, userdata):
+    """_html_response defaults to 200, so every /watch/time rejection used to
+    ship as an HTTP 200 whose body said "403". A client that checks the status
+    code -- which is every client -- read that as a successful write, and a GET
+    as "this account has no watch history at all"."""
+    settings['dashboard']['user_control']['enabled'] = True
+    client.cookies.clear()
+
+    post = client.post('/watch/time', json={'type': 'set', 'sn': '1', 'time': 5})
+    assert post.status_code == 403, post.text
+
+    get = client.get('/watch/time?type=get')
+    assert get.status_code == 403, get.text
+
+    auth_client(client, 'usertoken456')
+    bad_type = client.get('/watch/time?type=nonsense')
+    assert bad_type.status_code == 404, bad_type.text

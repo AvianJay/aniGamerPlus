@@ -162,7 +162,9 @@ def test_sn_list_authenticates_before_reading_raw_body(
 @pytest.mark.parametrize('path, parser_name, expected_status', [
     ('/usermanage', '_form_or_json', 302),
     ('/userinfo', '_form_or_json', 302),
-    ('/watch/time', '_json_then_form', 200),
+    # 403, not 200: the rejection used to be an HTTP 200 whose *body* said
+    # "403", which no client could tell apart from a successful write.
+    ('/watch/time', '_json_then_form', 403),
 ])
 def test_user_routes_authenticate_before_parsing_body(
         path, parser_name, expected_status, client, autouse_settings, settings,

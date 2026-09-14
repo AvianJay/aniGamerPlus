@@ -655,7 +655,7 @@ def _register_preflight():
 def _watch_time_preflight(token):
     if find_user_by_token(token):
         return None
-    return _html_response('{"status":"403", "msg":"Invalid token"}')
+    return _html_response('{"status":"403", "msg":"Invalid token"}', status_code=403)
 
 
 async def _form_or_json(request):
@@ -3213,7 +3213,7 @@ def _webtime_blocking(reqdata, token):
                         pass
                     user['videotimes'][sn] = entry
                     return (_html_response('{"status":"200"}'), True)
-            return (_html_response('{"status":"403", "msg":"Invalid token"}'), False)
+            return (_html_response('{"status":"403", "msg":"Invalid token"}', status_code=403), False)
         return update_user_data(_apply)
     elif gettype == 'del':
         # 觀看紀錄那一頁的刪除鈕. 沒有這筆就當作已經刪掉了 —— 連按兩下不該
@@ -3226,7 +3226,7 @@ def _webtime_blocking(reqdata, token):
                     if user['videotimes'].pop(sn, None) is not None:
                         return (_html_response('{"status":"200"}'), True)
                     return (_html_response('{"status":"200"}'), False)
-            return (_html_response('{"status":"403", "msg":"Invalid token"}'), False)
+            return (_html_response('{"status":"403", "msg":"Invalid token"}', status_code=403), False)
         return update_user_data(_apply_del)
     elif gettype == 'get':
         userdata = load_user_data()
@@ -3241,8 +3241,8 @@ def _webtime_blocking(reqdata, token):
     userdata = load_user_data()
     for user in userdata['users']:
         if user['token'] == token:
-            return _html_response('{"status":"404", "msg":"Invalid type"}')
-    return _html_response('{"status":"403", "msg":"Invalid token"}')
+            return _html_response('{"status":"404", "msg":"Invalid type"}', status_code=404)
+    return _html_response('{"status":"403", "msg":"Invalid token"}', status_code=403)
 
 
 @app.get('/get_server_info')
