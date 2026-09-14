@@ -443,6 +443,9 @@ class _WatchPageState extends State<WatchPage>
     _clock.dispose();
     _netSpeed.dispose();
     _qualities.dispose();
+    // 離開播放頁就把進度落盤, 不要留著那一秒的 debounce 在後面等 —— 使用者
+    // 退出去之後馬上把 app 滑掉的話, 那一秒就是進度不見的那一秒.
+    unawaited(state.flushWatchTimesToDisk());
     unawaited(WakelockPlus.disable());
     unawaited(_releaseBrightness());
     if (_fullscreen) {

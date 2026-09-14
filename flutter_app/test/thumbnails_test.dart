@@ -108,6 +108,10 @@ List<int> fakeJpeg([int seed = 0]) =>
 
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
+  // binding 會裝一個假的 HttpOverrides, 把每一筆 dart:io 請求都變成 400 ——
+  // 那是為了擋住 widget test 裡偷偷去抓圖的程式. 這裡的假伺服器是真的開在
+  // loopback 上, 所以要把它拿掉 (video_cache_test 是靠不初始化 binding 躲開的)
+  HttpOverrides.global = null;
 
   late Directory temp;
   late FakeHost agp;

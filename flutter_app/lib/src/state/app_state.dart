@@ -382,7 +382,14 @@ class AppState extends ChangeNotifier {
   }
 
   /// 立刻落盤. 播放器被切到背景 / 關掉時走這條, 等不了 debounce.
-  Future<void> flushWatchTimesToDisk() => _saveWatchTimes();
+  ///
+  /// 排在後面那一次要取消掉: 內容都已經寫過了, 留著只是多寫一次, 而且
+  /// 播放器關掉之後那個 timer 還醒著 —— widget test 會直接判它失敗.
+  Future<void> flushWatchTimesToDisk() {
+    _watchTimesWrite?.cancel();
+    _watchTimesWrite = null;
+    return _saveWatchTimes();
+  }
 
   bool isWatchTimePending(String sn) => _pendingWatchTimes.contains(sn);
 

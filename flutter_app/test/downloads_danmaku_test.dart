@@ -107,6 +107,9 @@ Future<DownloadEntry> settled(DownloadStore store, String sn) async {
 
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
+  // binding 會裝一個假的 HttpOverrides, 把每一筆 dart:io 請求都變成 400.
+  // 假伺服器是真的開在 loopback 上的, 要把它拿掉才問得到.
+  HttpOverrides.global = null;
 
   group('looksLikeAss', () {
     test('伺服器關掉彈幕時那句話不是字幕', () {
