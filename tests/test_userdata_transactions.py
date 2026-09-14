@@ -18,6 +18,7 @@ import copy
 import json
 import os
 import stat
+import sys
 import threading
 import time
 
@@ -191,7 +192,15 @@ def test_readers_never_see_empty_or_corrupt_during_writes(real_userdata_env):
                 if u['username'] == 'alice':
                     u['videotimes']['SN-R'] = {'time': i, 'ended': False,
                                               'timestamp': 1}
-            server.save_user_data(data)
+            # A save that collides with a reader must still land. On Windows
+            # os.replace() raises PermissionError while any other handle is
+            # open on the destination, and the writer used to die here -- only
+            # ever surfacing as an unhandled-thread-exception warning.
+            try:
+                server.save_user_data(data)
+            except Exception as exc:  # noqa: BLE001 - the point is to report it
+                errors.append('write failed during concurrent reads: %r' % (exc,))
+                return
 
     def reader():
         start.wait(timeout=10)
@@ -275,7 +284,13 @@ def test_atomic_replace_is_followed_by_directory_fsync(real_userdata_env, monkey
     server.save_user_data({'users': [{'username': 'durable'}]})
 
     assert events.index('file_fsync') < events.index('replace')
-    assert events.index('replace') < events.index('directory_fsync')
+    if sys.platform == 'win32':
+        # Windows has no directory handle to fsync -- os.open() on a directory
+        # raises PermissionError, which _save_userdata_locked swallows on
+        # purpose. The rename is durable there by other means.
+        assert 'directory_fsync' not in events
+    else:
+        assert events.index('replace') < events.index('directory_fsync')
     assert _read_raw(path)['users'][0]['username'] == 'durable'
 
 

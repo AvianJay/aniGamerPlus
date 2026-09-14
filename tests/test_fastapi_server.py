@@ -777,6 +777,79 @@ def test_danmu_serves_existing_file(client, autouse_settings, settings, monkeypa
     assert client.get('/get_danmu.ass?id=1').status_code == 200
 
 
+def test_danmu_requires_login_when_configured(client, autouse_settings, settings,
+                                              userdata, monkeypatch, tmp_path):
+    """Every other media route pairs _online_watch_gate with this check; this
+    one did not, so danmaku for any sn was readable without logging in -- and
+    each such request could kick off an outbound Bahamut fetch."""
+    settings['danmu'] = True
+    settings['dashboard']['online_watch_requires_login'] = True
+    ass = tmp_path / 'ep.ass'
+    ass.write_text('[Events]', encoding='utf-8')
+    monkeypatch.setattr(server, '_find_video_entry', lambda sn: None)
+    monkeypatch.setattr(server.Config, 'getpath', lambda sn, kind: str(ass))
+
+    assert client.get('/get_danmu.ass?id=1').status_code == 403
+    assert client.get('/get_danmu.ass?id=1', cookies={'token': 'nope'}).status_code == 403
+    assert client.get('/get_danmu.ass?id=1',
+                      cookies={'token': 'usertoken456'}).status_code == 200
+
+
+def test_danmu_update_is_debounced_even_when_the_fetch_fails(
+        client, autouse_settings, settings, monkeypatch, tmp_path):
+    """The cooldown used to be recorded only on success, so an episode whose
+    danmaku could not be fetched span a fresh outbound thread on *every*
+    request, for ever."""
+    settings['danmu'] = True
+    video = tmp_path / 'ep.mp4'
+    video.write_bytes(b'0')
+    monkeypatch.setattr(server, '_find_video_entry',
+                        lambda sn: {'path': str(video), 'anime_name': 'x'})
+    # Nothing on disk, and the fetch fails -- the worst case.
+    monkeypatch.setattr(server.Config, 'getpath', lambda sn, kind: '')
+    calls = []
+
+    def boom(*a, **k):
+        calls.append(a)
+        raise RuntimeError('bahamut said no')
+
+    monkeypatch.setattr(server, '__get_danmu_only', boom, raising=False)
+    monkeypatch.setattr(server, 'threading', _InlineThreading(server.threading))
+    server.danmu_update_timestamps.clear()
+
+    for _ in range(5):
+        client.get('/get_danmu.ass?id=77')
+    assert len(calls) == 1, 'one outbound fetch per cooldown window, not per request'
+
+    # A failure gets a short cooldown, not the full six hours: a network blip
+    # must not take the episode out for the rest of the day.
+    stamp = server.danmu_update_timestamps['77']
+    waited = int(time.time()) - stamp
+    assert server.DANMU_UPDATE_INTERVAL_SECONDS - waited <= \
+        server.DANMU_RETRY_COOLDOWN_SECONDS + 5
+
+
+class _InlineThreading:
+    """Run Thread(target=...).start() synchronously so the test can assert on
+    what the background work did without sleeping."""
+
+    def __init__(self, real):
+        self._real = real
+
+    def __getattr__(self, name):
+        return getattr(self._real, name)
+
+    def Thread(self, target=None, daemon=None, **kwargs):  # noqa: N802
+        class _Now:
+            def start(self_inner):
+                if target is not None:
+                    target()
+
+            def join(self_inner, timeout=None):
+                pass
+        return _Now()
+
+
 def test_watch_time_round_trip(client, autouse_settings, userdata):
     assert client.post('/watch/time', json={
         'type': 'set', 'sn': '123', 'time': 42, 'duration': 1400,
@@ -1011,6 +1084,31 @@ def test_tasks_progress_streams_json_over_websocket(client, autouse_settings):
         server.Config.tasks_progress_rate.clear()
 
 
+def test_tasks_progress_websocket_refuses_a_foreign_origin(client, autouse_settings):
+    """Browsers do not apply CORS to WebSockets and send cookies on the
+    handshake, so without an Origin check any page the operator visits can open
+    this socket against their dashboard and read what is downloading."""
+    server.Config.tasks_progress_rate.clear()
+    server.Config.tasks_progress_rate[7] = {'rate': 1.0}
+    try:
+        with pytest.raises(Exception):
+            with client.websocket_connect(
+                    '/data/tasks_progress',
+                    headers={'Origin': 'https://evil.example'}) as websocket:
+                websocket.receive_text()
+
+        # The dashboard's own page still works, and so does a non-browser
+        # client (the phone app, curl) that sends no Origin at all.
+        with client.websocket_connect(
+                '/data/tasks_progress',
+                headers={'Origin': 'http://testserver'}) as websocket:
+            assert json.loads(websocket.receive_text())['7']['rate'] == 1.0
+        with client.websocket_connect('/data/tasks_progress') as websocket:
+            assert json.loads(websocket.receive_text())['7']['rate'] == 1.0
+    finally:
+        server.Config.tasks_progress_rate.clear()
+
+
 def test_tasks_progress_websocket_checks_admin_cookie(client, autouse_settings, settings, userdata):
     from starlette.websockets import WebSocketDisconnect
     settings['dashboard']['user_control']['enabled'] = True
@@ -1054,3 +1152,46 @@ def test_run_disables_ssl_when_certs_are_missing(monkeypatch, tmp_path):
     server.run()
     assert settings['dashboard']['SSL'] is False
     assert 'ssl_certfile' not in calls['args'][1]
+
+
+# ------------------------------------------------- startup warnings
+
+def test_warns_when_the_dashboard_is_open_to_the_network(settings, monkeypatch):
+    """user_control off is the shipped default and both admin guards return
+    "allowed" in that state. That is fine on loopback and is a wide-open
+    remote admin API on 0.0.0.0 -- say so."""
+    said = []
+    monkeypatch.setattr(server, 'err_print',
+                        lambda *a, **k: said.append(' '.join(str(x) for x in a)))
+
+    settings['dashboard']['user_control']['enabled'] = False
+    server._warn_if_open_to_the_network(settings, '127.0.0.1', 5000)
+    assert said == [], 'loopback needs no warning'
+
+    server._warn_if_open_to_the_network(settings, '0.0.0.0', 5000)
+    assert len(said) == 1 and 'user_control' in said[0]
+
+    said.clear()
+    settings['dashboard']['user_control']['enabled'] = True
+    server._warn_if_open_to_the_network(settings, '0.0.0.0', 5000)
+    assert said == [], 'with accounts on there is nothing to warn about'
+
+
+def test_watch_time_rejections_carry_a_real_status_code(client, autouse_settings,
+                                                        settings, userdata):
+    """_html_response defaults to 200, so every /watch/time rejection used to
+    ship as an HTTP 200 whose body said "403". A client that checks the status
+    code -- which is every client -- read that as a successful write, and a GET
+    as "this account has no watch history at all"."""
+    settings['dashboard']['user_control']['enabled'] = True
+    client.cookies.clear()
+
+    post = client.post('/watch/time', json={'type': 'set', 'sn': '1', 'time': 5})
+    assert post.status_code == 403, post.text
+
+    get = client.get('/watch/time?type=get')
+    assert get.status_code == 403, get.text
+
+    auth_client(client, 'usertoken456')
+    bad_type = client.get('/watch/time?type=nonsense')
+    assert bad_type.status_code == 404, bad_type.text

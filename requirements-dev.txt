@@ -1,0 +1,17 @@
+# Only needed to run tests/ -- not by aniGamerPlus itself.
+#
+#   pip install -r requirements.txt -r requirements-dev.txt
+#   python -m playwright install chromium
+#   python -m pytest tests/ -q
+#
+# The HLS fixtures additionally want ffmpeg on PATH; without it those tests
+# skip themselves rather than fail.
+pytest
+playwright
+# starlette.testclient imports httpx2 and falls back to httpx; neither is
+# pulled in by requirements.txt, so TestClient cannot even be imported without
+# this line.
+httpx
+pycryptodome
+# test_apple_touch_icon_is_180_square reads the icon size with Pillow.
+pillow

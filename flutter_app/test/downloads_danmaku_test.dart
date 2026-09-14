@@ -14,6 +14,8 @@ import 'package:agp_mobile/src/state/downloads.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:path_provider_platform_interface/path_provider_platform_interface.dart';
 
+import 'support/temp_dir.dart';
+
 class Paths extends PathProviderPlatform {
   Paths(this.path);
   final String path;
@@ -52,6 +54,19 @@ class FakeServer {
 
   final List<String> hits = <String>[];
 
+  /// 影片的位元組. 非空的時候 /get_video.mp4 走「真的搬位元組」那條路,
+  /// 而且認得 Range —— 續傳要驗的就是它.
+  List<int> video = const [];
+
+  /// 非 null 的時候, 影片送到一半會停在這裡, 讓測試有機會插手
+  Completer<void>? hold;
+
+  /// 停下來之前先送幾個位元組
+  int holdAfter = 128 * 1024;
+
+  /// /get_video.mp4 每一次進來時的 Range 標頭 (沒有就是空字串)
+  final List<String> videoRanges = <String>[];
+
   static Future<FakeServer> start() async {
     final server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
     final fake = FakeServer._(server);
@@ -73,10 +88,13 @@ class FakeServer {
       var body = '';
       switch (request.uri.path) {
         case '/get_video.mp4':
-          if (have.contains(sn)) {
+          if (!have.contains(sn)) {
+            response.statusCode = HttpStatus.notFound;
+          } else if (video.isEmpty) {
             body = 'fake mp4 bytes';
           } else {
-            response.statusCode = HttpStatus.notFound;
+            await _serveVideo(request, response);
+            continue;
           }
         case '/get_danmu.ass':
           body = danmaku;
@@ -90,6 +108,36 @@ class FakeServer {
       } catch (_) {
         // 測試結束時把伺服器強制關掉, 手上這筆寫不完是正常的
       }
+    }
+  }
+
+  /// 真的搬位元組的那條路: 認 Range, 而且可以停在半路.
+  Future<void> _serveVideo(HttpRequest request, HttpResponse response) async {
+    final range = request.headers.value('range') ?? '';
+    videoRanges.add(range);
+    var start = 0;
+    final match = RegExp(r'bytes=(\d+)-').firstMatch(range);
+    if (match != null) {
+      start = int.parse(match.group(1)!);
+      response.statusCode = HttpStatus.partialContent;
+      response.headers.set('Content-Range',
+          'bytes $start-${video.length - 1}/${video.length}');
+    }
+    final payload = video.sublist(start.clamp(0, video.length));
+    response.headers.contentLength = payload.length;
+    try {
+      final pause = hold;
+      if (pause != null && payload.length > holdAfter) {
+        response.add(payload.sublist(0, holdAfter));
+        await response.flush();
+        await pause.future;
+        response.add(payload.sublist(holdAfter));
+      } else {
+        response.add(payload);
+      }
+      await response.close();
+    } catch (_) {
+      // 被取消的那一筆連線會在這裡斷掉, 那正是測試要的
     }
   }
 }
@@ -155,7 +203,7 @@ void main() {
       store.dispose();
       client.close();
       await fake.stop();
-      await temp.delete(recursive: true);
+      await deleteTempDir(temp);
     });
 
     test('伺服器還沒抓完的集數先掛著, 檔案出現了才轉成排隊', () async {
@@ -245,6 +293,80 @@ void main() {
       expect(reloaded.danmakuTries, entry.danmakuTries);
       expect(reloaded.danmakuLastTry, entry.danmakuLastTry);
       expect(reloaded.danmakuPending, isTrue);
+    });
+
+    /// 等到條件成立為止. 下載是 unawaited 的, 沒別的辦法等它.
+    Future<void> waitFor(bool Function() done, {String reason = ''}) async {
+      for (var i = 0; i < 300; i++) {
+        if (done()) return;
+        await Future<void>.delayed(const Duration(milliseconds: 20));
+      }
+      fail('等不到: $reason');
+    }
+
+    test('暫停之後馬上繼續, 同一集不該同時跑兩個 job', () async {
+      // 暫停只是把 cancelled 立起來, job 還要再跑好幾個 await 才收得完.
+      // 以前 pause() 會立刻把它從 _jobs 拿掉, 於是那段空窗裡 _pump() 會替
+      // 同一個 sn 再開一個 job: 兩個對著同一個 .part 寫, 新的那個量到的長度
+      // 是舊的還沒 flush 出去的舊值, 而舊的那個收尾時還會把新的從 _jobs 裡
+      // 移掉、順手把狀態從 running 改回 paused.
+      store.concurrency = 1;
+      fake.have.add('900');
+      fake.video = List<int>.generate(512 * 1024, (i) => i % 256);
+      fake.hold = Completer<void>();
+
+      // 彈幕關掉: 抓彈幕是 done 之後才跑的背景工作, 帶著重試backoff,
+      // 會一路活到 tearDown 之後
+      await store.enqueue(
+        VideoItem(sn: '900', animeName: '測試動畫', episode: '1', resolution: 1080),
+        withDanmaku: false,
+      );
+      await waitFor(() => store.entryFor('900')!.received >= fake.holdAfter,
+          reason: '第一筆沒開始搬');
+
+      await store.pause('900');
+      // 舊的那個還在收尾就再排一次 —— 這裡是那扇窗
+      await store.resume('900');
+      await store.resume('900');
+
+      fake.hold!.complete();
+      fake.hold = null;
+
+      await waitFor(() => store.entryFor('900')!.status == DownloadStatus.done,
+          reason: '沒有收完');
+
+      // done 之後 _finish() 還會去抓封面; 等它安靜下來再讓 tearDown 收場
+      await Future<void>.delayed(const Duration(milliseconds: 400));
+
+      final entry = store.entryFor('900')!;
+      expect(store.videoFile(entry).lengthSync(), 512 * 1024,
+          reason: '兩個 job 對著同一個 .part 寫的話這裡會多出一截');
+      expect(store.partFile(entry).existsSync(), isFalse);
+      expect(fake.videoRanges.where((r) => r.isNotEmpty), isNotEmpty,
+          reason: '續傳那一筆要帶 Range, 不然就是整支重抓');
+    });
+
+    test('暫停的時候 job 還在, 不會被第二個 job 頂掉', () async {
+      store.concurrency = 1;
+      fake.have.add('901');
+      fake.video = List<int>.generate(512 * 1024, (i) => i % 256);
+      fake.hold = Completer<void>();
+
+      await store.enqueue(
+        VideoItem(sn: '901', animeName: '測試動畫', episode: '1', resolution: 1080),
+        withDanmaku: false,
+      );
+      await waitFor(() => store.entryFor('901')!.received >= fake.holdAfter);
+
+      await store.pause('901');
+      expect(store.entryFor('901')!.status, DownloadStatus.paused);
+
+      fake.hold!.complete();
+      fake.hold = null;
+      // 收完之後狀態要停在 paused, 不能自己又跑起來
+      await Future<void>.delayed(const Duration(milliseconds: 400));
+      expect(store.entryFor('901')!.status, DownloadStatus.paused);
+      expect(store.videoFile(store.entryFor('901')!).existsSync(), isFalse);
     });
   });
 }

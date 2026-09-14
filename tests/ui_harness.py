@@ -9,6 +9,7 @@ real server (see ``_build_dashboard_bootstrap`` / ``_build_watch_bootstrap`` and
 the ``/watch/time`` route in ``Dashboard/Server.py``).
 """
 
+import copy
 import json
 import os
 import re
@@ -28,6 +29,12 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 TEMPLATE_PATH = os.path.join(ROOT, 'Dashboard', 'templates')
 STATIC_PATH = os.path.join(ROOT, 'Dashboard', 'static')
 FIXTURES = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'fixtures')
+
+# The settings page is driven entirely by data/config.json, so the shipped
+# sample is the right seed: a test that starts anywhere else is not testing
+# what a new install does.
+with open(os.path.join(ROOT, 'config-sample.json'), encoding='utf-8') as _handle:
+    CONFIG_SAMPLE = json.load(_handle)
 
 ANIMES = [
     ('葬送的芙莉蓮', 4),
@@ -481,7 +488,7 @@ WATCH_SERIES_TOTAL = sum(len(g['episodes']) for g in WATCH_SERIES[WATCH_SERIES_L
 MANUAL_TASKS = []
 
 
-def create_app(logged_in=True, catalog=True, hls=True):
+def create_app(logged_in=True, catalog=True, hls=True, proxy=None):
     app = FastAPI(docs_url=None, redoc_url=None, openapi_url=None)
     app.mount('/static', StaticFiles(directory=STATIC_PATH), name='static')
     templates = Jinja2Templates(directory=TEMPLATE_PATH)
@@ -557,10 +564,38 @@ def create_app(logged_in=True, catalog=True, hls=True):
     def watch(request: Request):
         return render(request, 'watch.html', {'watch_bootstrap': watch_bootstrap(request)})
 
+    # The real settings page, backed by a config the test can seed and read
+    # back. ``control.html`` is plain HTML -- no Jinja -- so the template
+    # renderer hands it over untouched and the browser runs the same
+    # aniGamerPlus.js a user would.
+    settings_state = {'config': copy.deepcopy(CONFIG_SAMPLE), 'sn_list': '',
+                      'uploads': []}
+    if proxy is not None:
+        settings_state['config']['proxy'] = proxy
+
     @app.get('/control')
-    def control():
-        return Response('<!doctype html><title>control</title><p>control stub</p>',
-                        media_type='text/html')
+    def control(request: Request):
+        return render(request, 'control.html')
+
+    @app.get('/data/config.json')
+    def control_config():
+        return JSONResponse(settings_state['config'])
+
+    @app.get('/data/sn_list')
+    def control_sn_list():
+        return Response(settings_state['sn_list'], media_type='text/plain')
+
+    @app.post('/uploadConfig')
+    async def control_upload(request: Request):
+        body = await request.json()
+        settings_state['uploads'].append(body)
+        # The real route writes it to disk; reloadSetting() then reads it back,
+        # so the harness has to persist it or the round trip is not the one
+        # users get.
+        settings_state['config'] = body
+        return JSONResponse({'status': 'ok'})
+
+    app.state.settings = settings_state
 
     @app.get('/video_list.json')
     def video_list():
@@ -771,10 +806,14 @@ def _free_port():
 class HarnessServer(object):
     """Runs the harness on a background thread and exposes its base URL."""
 
-    def __init__(self, logged_in=True, catalog=True, hls=True):
+    def __init__(self, logged_in=True, catalog=True, hls=True, proxy=None):
         self.port = _free_port()
-        config = uvicorn.Config(create_app(logged_in, catalog, hls),
-                                host='127.0.0.1', port=self.port, log_level='error')
+        self.app = create_app(logged_in, catalog, hls, proxy)
+        # What the settings page has been given and what it posted back; the
+        # harness runs in this process, so a test can read it directly.
+        self.settings = self.app.state.settings
+        config = uvicorn.Config(self.app, host='127.0.0.1', port=self.port,
+                                log_level='error')
         self.server = uvicorn.Server(config)
         self.thread = threading.Thread(target=self.server.run, daemon=True)
 

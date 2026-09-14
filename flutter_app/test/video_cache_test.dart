@@ -8,6 +8,8 @@ import 'dart:io';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:agp_mobile/src/state/video_cache.dart';
 
+import 'support/temp_dir.dart';
+
 /// 一支假的 mp4: 每個 byte 都是它自己位移的低八位, 所以任何一段都驗得出來
 List<int> body(int total) =>
     List<int>.generate(total, (index) => index % 251);
@@ -147,7 +149,7 @@ void main() {
     await cache.close();
     await upstream.stop();
     try {
-      await temp.delete(recursive: true);
+      await deleteTempDir(temp);
     } catch (_) {
       // 收尾刪暫存目錄失敗不該讓測試變紅 (Windows 上背景還在掃的時候會這樣)
     }

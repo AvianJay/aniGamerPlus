@@ -86,6 +86,20 @@ class AppState extends ChangeNotifier {
   bool get needsLogin =>
       serverInfo.userControl && serverInfo.onlineWatchRequiresLogin && !loggedIn;
 
+  /// 這台伺服器到底有沒有在替我們存進度.
+  ///
+  /// 伺服器上的觀看進度是掛在「使用者」底下的 (userdata.json 的
+  /// users[].videotimes), 所以 user_control 關掉的時候根本沒有這回事:
+  /// /watch/time 的每一條路都走到最後那個「找不到這個 token 的使用者」分支.
+  /// 而那個分支回的是 HTTP 200, 裡面才寫著 403 —— 客戶端看狀態碼是看不出來的.
+  ///
+  /// config-sample.json 裡 user_control.enabled 是 false, 也就是出廠預設.
+  bool get watchTimesAreServerBacked => serverInfo.userControl;
+
+  /// 現在可以跟伺服器對進度嗎
+  bool get canSyncWatchTimes =>
+      hasServer && !offline && watchTimesAreServerBacked && loggedIn;
+
   // --------------------------------------------------------------- 伺服器設定
 
   Future<void> setServer(String url) async {
@@ -404,8 +418,7 @@ class AppState extends ChangeNotifier {
 
   /// 把離線 (或送出去失敗) 時記下的進度補給伺服器.
   Future<void> flushPendingWatchTimes() async {
-    if (_pendingWatchTimes.isEmpty || offline || !hasServer) return;
-    if (serverInfo.userControl && !loggedIn) return;
+    if (_pendingWatchTimes.isEmpty || !canSyncWatchTimes) return;
     final sent = <String>[];
     for (final sn in _pendingWatchTimes.toList()) {
       final value = watchTimes[sn];
@@ -445,7 +458,10 @@ class AppState extends ChangeNotifier {
   Future<void> refreshWatchTimes() async {
     // 本機那份永遠先擺上去 —— 離線時它就是全部, 不能像以前那樣清成空的
     await _loadCachedWatchTimes();
-    if (offline || !hasServer || (serverInfo.userControl && !loggedIn)) {
+    // 伺服器沒在替我們存進度的話, 本機這份就是唯一的一份: 底下那段合併會把
+    // 「伺服器上沒有」讀成「在別台裝置上刪掉了」, 而 user_control 關掉的伺服器
+    // 對每一筆查詢都回空的 —— 於是每次重整都把整份進度清光.
+    if (!canSyncWatchTimes) {
       notifyListeners();
       return;
     }

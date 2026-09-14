@@ -20,6 +20,8 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:path_provider_platform_interface/path_provider_platform_interface.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
+import 'support/temp_dir.dart';
+
 class Paths extends PathProviderPlatform {
   Paths(this.path);
   final String path;
@@ -74,7 +76,7 @@ void main() {
 
   tearDown(() async {
     state.downloads.dispose();
-    await temp.delete(recursive: true);
+    await deleteTempDir(temp);
   });
 
   /// 真的寫檔跟 widget test 的 fake async 是兩個世界: I/O 本身要讓真的

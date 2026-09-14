@@ -8,6 +8,20 @@ layui.use('element', function () {
         return `${protocol}//${window.location.host}/data/tasks_progress`;
     }
 
+    // 任務名稱是動畫瘋來的作品標題, 不是我們自己寫的字串.
+    //
+    // Anime.py 在「正在解析」那一段就先把原始標題放進 tasks_progress_rate 了,
+    // 要等解析完才會換成 legalize_filename() 洗過的檔名 —— 而洗檔名只處理
+    // < > 這類路徑非法字元, 不是為了 HTML 準備的. 所以這裡一律自己逃脫.
+    function escapeHtml(value) {
+        return String(value === undefined || value === null ? '' : value)
+            .replace(/&/g, '&amp;')
+            .replace(/</g, '&lt;')
+            .replace(/>/g, '&gt;')
+            .replace(/"/g, '&quot;')
+            .replace(/'/g, '&#39;');
+    }
+
     function renderTasks(data) {
         const taskIds = new Set(Object.keys(data || {}));
 
@@ -27,19 +41,21 @@ layui.use('element', function () {
         for (const sn in data) {
             const task = data[sn];
             if ($('#' + sn).length > 0) {
-                $('#status' + sn).html(task.status);
-                $('#header' + sn).html(task.filename);
+                // .text() 而不是 .html(): 標題裡的 < 就是一個 <
+                $('#status' + sn).text(task.status === undefined ? '' : task.status);
+                $('#header' + sn).text(task.filename === undefined ? '' : task.filename);
                 element.progress(sn, Math.round(task.rate) + '%');
                 continue;
             }
 
+            const safeSn = escapeHtml(sn);
             const taskItemTemplate = `
-                <div class="layui-col-xs12 layui-card" id="${sn}">
-                    <div class="layui-card-header" style="height:auto !important;" id="header${sn}">${task.filename}</div>
+                <div class="layui-col-xs12 layui-card" id="${safeSn}">
+                    <div class="layui-card-header" style="height:auto !important;" id="header${safeSn}">${escapeHtml(task.filename)}</div>
                     <div class="layui-card-body layui-row">
-                        <div class="layui-col-xs3" style="text-align: center;" id="status${sn}">${task.status}</div>
+                        <div class="layui-col-xs3" style="text-align: center;" id="status${safeSn}">${escapeHtml(task.status)}</div>
                         <div class="layui-col-xs9" style="padding: 3px;">
-                            <div class="layui-progress layui-progress-big" lay-showpercent="true" lay-filter="${sn}">
+                            <div class="layui-progress layui-progress-big" lay-showpercent="true" lay-filter="${safeSn}">
                                 <div class="layui-progress-bar" lay-percent="0%">
                                     <span class="layui-progress-text">0%</span>
                                 </div>

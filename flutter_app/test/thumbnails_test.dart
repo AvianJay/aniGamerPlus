@@ -14,6 +14,8 @@ import 'package:agp_mobile/src/state/thumbnails.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:path_provider_platform_interface/path_provider_platform_interface.dart';
 
+import 'support/temp_dir.dart';
+
 class Paths extends PathProviderPlatform {
   Paths(this.path);
   final String path;
@@ -150,7 +152,7 @@ void main() {
     client.close();
     await agp.stop();
     await cdn.stop();
-    await temp.delete(recursive: true);
+    await deleteTempDir(temp);
   });
 
   /// 等到條件成立為止 —— _trim() 是 unawaited 的, 沒別的辦法等它
@@ -232,6 +234,37 @@ void main() {
     expect(files.first, isNotNull);
     expect(files.last!.path, files.first!.path);
     expect(cdn.hitsOn('/still-v1.jpg'), 1, reason: '被合併掉的那一筆不該再打一次');
+  });
+
+  test('同一部作品的兩集同時要主視覺, 不會互相把圖抓壞', () async {
+    await store.refresh();
+    cdn.reset();
+
+    // v2 沒有自己的劇照, 所以它退回 a1 的主視覺 —— 跟 poster(v1) 是同一個
+    // 網址. 但 resolve() 的合併鍵是 sn ('v1:p' / 'v2:s'), 兩把不同的鍵,
+    // 所以這兩筆會各自開一次下載, 而它們算出來的快取檔名是同一個.
+    expect(store.posterFor('v1'), store.stillFor('v2'));
+
+    cdn.hold = Completer<void>();
+    final first = store.resolve('v1', poster: true);
+    final second = store.resolve('v2');
+    await waitFor(() => cdn.hitsOn('/poster-a1.jpg') >= 1, reason: '第一筆沒出去');
+    await Future<void>.delayed(const Duration(milliseconds: 120));
+    cdn.hold!.complete();
+    cdn.hold = null;
+
+    final files =
+        await Future.wait([first, second]).timeout(const Duration(seconds: 5));
+    // 以前輸的那一筆 rename 會丟例外, 回 null, 而且把網址記進黑名單 ——
+    // 整部作品的封面這一輪就全沒了
+    expect(files.first, isNotNull, reason: 'v1 的主視覺不見了');
+    expect(files.last, isNotNull, reason: 'v2 的主視覺不見了');
+    expect(files.last!.path, files.first!.path);
+    expect(files.first!.lengthSync(), 512);
+    expect(cdn.hitsOn('/poster-a1.jpg'), 1, reason: '同一張圖不該抓兩次');
+
+    // 黑名單也不該被弄髒: 再要一次還是拿得到
+    expect(await store.resolve('v2'), isNotNull);
   });
 
   test('清單上沒有的集數才退回伺服器的 /thumbnail.jpg', () async {

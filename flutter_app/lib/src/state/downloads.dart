@@ -380,7 +380,10 @@ class DownloadStore extends ChangeNotifier {
   Future<void> pause(String sn) async {
     final entry = _entries[sn];
     if (entry == null) return;
-    _jobs.remove(sn)?.cancel();
+    // cancel 但不從 _jobs 拿掉: 在那個 job 真的收完之前, _jobs 是唯一擋住
+    // 「同一個 sn 又被 _pump() 開一個」的東西. 讓出那一格是 _run() 的 finally
+    // 的事, 而且只有在那一格還是它自己的時候.
+    _jobs[sn]?.cancel();
     if (entry.status == DownloadStatus.running ||
         entry.status == DownloadStatus.queued ||
         entry.status == DownloadStatus.waiting) {
@@ -403,7 +406,14 @@ class DownloadStore extends ChangeNotifier {
   }
 
   Future<void> remove(String sn, {bool deleteFiles = true}) async {
-    _jobs.remove(sn)?.cancel();
+    final job = _jobs[sn];
+    if (job != null) {
+      job.cancel();
+      // 等它真的收完再刪檔: 還開著 sink 的時候把 .part 刪掉, 在 Windows 上是
+      // 一個例外, 在別的平台上是刪完又被寫回來
+      await job.done.future.timeout(const Duration(seconds: 10),
+          onTimeout: () {});
+    }
     final entry = _entries.remove(sn);
     if (entry != null && deleteFiles) {
       for (final file in [
@@ -535,7 +545,15 @@ class DownloadStore extends ChangeNotifier {
     while (runningCount < concurrency) {
       DownloadEntry? next;
       for (final entry in entries.reversed) {
-        if (entry.status == DownloadStatus.queued) {
+        // 同一個 sn 已經有 job 在跑就跳過 —— 就算它已經被 cancel 了.
+        //
+        // 暫停只是把 cancelled 立起來, job 還要再跑好幾個 await 才收得完
+        // (flush、close、量 .part 的長度、_save). 在那之前就讓第二個 job 進場
+        // 的話: 兩個 job 對著同一個 .part 寫, 新的那個量到的長度是舊的還沒
+        // flush 出去的舊值, 而且舊的那個收尾時會把新的那個從 _jobs 裡移掉、
+        // 順手把它的狀態從 running 改成 paused.
+        if (entry.status == DownloadStatus.queued &&
+            !_jobs.containsKey(entry.sn)) {
           next = entry;
           break;
         }
@@ -622,7 +640,9 @@ class DownloadStore extends ChangeNotifier {
 
       if (job.cancelled) {
         entry.received = await part.length();
-        if (entry.status == DownloadStatus.running) {
+        // 只有這一格還是自己的時候才動它的狀態
+        if (identical(_jobs[entry.sn], job) &&
+            entry.status == DownloadStatus.running) {
           entry.status = DownloadStatus.paused;
         }
         await _save();
@@ -654,7 +674,10 @@ class DownloadStore extends ChangeNotifier {
       }
     } finally {
       job.client.close();
-      _jobs.remove(entry.sn);
+      // 只讓出自己那一格. 無條件 remove 的話, 被取消的舊 job 收尾時會把接手的
+      // 新 job 從表上抹掉 —— 之後 pause() 找不到它, _pump() 又會再開一個.
+      if (identical(_jobs[entry.sn], job)) _jobs.remove(entry.sn);
+      job.finish();
       unawaited(_pump());
     }
   }
@@ -869,6 +892,12 @@ class _Job {
   final http.Client client = http.Client();
   bool cancelled = false;
 
+  /// _run() 整條跑完 (含 flush / close / 改名) 才會 complete.
+  ///
+  /// cancel() 只是叫它停, 停不是立刻的: 跳出 `await for` 之後還有好幾個
+  /// await. 在那段時間裡這個 sn 還是它的 —— 想接手的人要等這個.
+  final Completer<void> done = Completer<void>();
+
   void cancel() {
     cancelled = true;
     try {
@@ -876,5 +905,9 @@ class _Job {
     } catch (_) {
       // 已經關掉了
     }
+  }
+
+  void finish() {
+    if (!done.isCompleted) done.complete();
   }
 }

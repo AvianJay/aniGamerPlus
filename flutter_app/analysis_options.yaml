@@ -12,3 +12,5 @@ analyzer:
     # 這些在 CI 上不該把整份 build 擋掉
     deprecated_member_use: ignore
     deprecated_member_use_from_same_package: ignore
+  exclude:
+    - build/**

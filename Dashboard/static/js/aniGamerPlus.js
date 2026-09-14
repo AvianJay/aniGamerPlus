@@ -23,28 +23,77 @@ $.ajax({
 
 showSnList();
 
+// scheme://[使用者[:密碼]@]主機[:埠] —— 每一段都可能不在.
+//
+// 這支函式是在讀 config.json 的 callback 裡跑的, 所以它一旦丟出例外,
+// renderJson() 就永遠不會執行: 整張設定表單會停在 HTML 的預設值上, 而使用者
+// 按下保存時 readSettings() 讀到的就是那些預設值, 一次點擊把 config.json 蓋掉.
+// 舊版直接對 regex 的結果取 [0], 少一段 (例如 "http://:" 這種沒有埠號的) 就是
+// 一個 TypeError, 所以這裡改成純字串切割, 任何輸入都要有辦法收場.
 function parseProxy(proxy) {
-	proxy_protocol = proxy.replace(/:\/\/.*/i, '').toUpperCase();
-	if (/.*@.*/.test(proxy)) {
-		proxy_user = /:\/\/.*?:/g.exec(proxy)[0].replace(/:(\/\/)?/g, '');
-		proxy_passwd = /:.*@/.exec(proxy)[0].replace(proxy_user, '')
-			.replace(/(:\/\/:)?@?/g, '');
-		proxy = proxy.replace(proxy_user + ':' + proxy_passwd + '@', '');
+	var rest = (typeof proxy === 'string' ? proxy : '').trim();
+	var protocol = '';
+	var schemeEnd = rest.indexOf('://');
+	if (schemeEnd >= 0) {
+		protocol = rest.slice(0, schemeEnd);
+		rest = rest.slice(schemeEnd + 3);
 	}
-	var tmp = proxy.replace(/.*:\/\//i, '');
-	if (proxy.length > 0) {
-		proxy_ip = /:.*:/.exec(proxy)[0].replace(/:(\/\/)?/g, '');
-		proxy_port = /:\d+/.exec(proxy)[0].replace(/:/, '');
+
+	var user = '';
+	var passwd = '';
+	// 密碼本身可能含有 '@', 所以要切最後一個, 不是第一個
+	var at = rest.lastIndexOf('@');
+	if (at >= 0) {
+		var credentials = rest.slice(0, at);
+		rest = rest.slice(at + 1);
+		var sep = credentials.indexOf(':');
+		if (sep >= 0) {
+			user = credentials.slice(0, sep);
+			passwd = credentials.slice(sep + 1);
+		} else {
+			user = credentials;
+		}
+	}
+
+	var host = rest;
+	var port = '';
+	var colon = rest.lastIndexOf(':');
+	// 尾巴不是純數字就不是埠號 (IPv6 的 "[::1]" 會走到這裡)
+	if (colon >= 0 && /^\d+$/.test(rest.slice(colon + 1))) {
+		host = rest.slice(0, colon);
+		port = rest.slice(colon + 1);
 	} else {
-		proxy_ip = '';
-		proxy_port = '';
+		// 沒有埠號時把結尾的冒號吃掉, 順便把以前存壞的 "http://:" 收回成「沒有代理」
+		host = host.replace(/:+$/, '');
 	}
-	
+
+	proxy_protocol = protocol.toUpperCase();
+	proxy_user = user;
+	proxy_passwd = passwd;
+	proxy_ip = host;
+	proxy_port = port;
+
 	dataArrays.proxy_protocol = proxy_protocol;
 	dataArrays.proxy_ip = proxy_ip;
 	dataArrays.proxy_port = proxy_port;
 	dataArrays.proxy_user = proxy_user;
 	dataArrays.proxy_passwd = proxy_passwd;
+}
+
+// 把拆開的五個欄位組回一條代理字串.
+//
+// 沒有主機就是「不使用代理」, 回空字串 —— 舊版無條件拼 protocol + ip + ':' +
+// port, 使用者把代理欄位清空再保存就會寫進一條 "http://:", 下次開設定頁時
+// parseProxy() 解析不出埠號, 整張表單就毀了.
+function buildProxy() {
+	var host = (dataArrays['proxy_ip'] || '').toString().trim();
+	if (!host) return '';
+	var protocol = (dataArrays['proxy_protocol'] || 'http').toString().toLowerCase();
+	var port = (dataArrays['proxy_port'] || '').toString().trim();
+	var user = (dataArrays['proxy_user'] || '').toString();
+	var passwd = (dataArrays['proxy_passwd'] || '').toString();
+	var credentials = (user.length && passwd.length) ? (user + ':' + passwd + '@') : '';
+	return protocol + '://' + credentials + host + (port ? ':' + port : '');
 }
 
 function reloadSetting() {
@@ -63,7 +112,10 @@ function renderJson() {
 	for (var id of id_list) {
 		if (id == 'proxy') continue; //代理设置已被分解
 		if (id == 'browser_fingerprint') continue; //指纹设置已被分解
-		var idType = document.getElementById(id).type;
+		var element = document.getElementById(id);
+		// 模板裡沒有這個欄位就跳過: 少一個 input 不該讓後面的欄位全部不 render
+		if (!element) continue;
+		var idType = element.type;
 		switch (idType) {
 			case 'text':
 			case 'number':
@@ -77,7 +129,16 @@ function renderJson() {
 				break;
 			case 'select-one':
 				if (id == 'proxy_protocol') {
-					$("#" + id).selectpicker('val', dataArrays[id].toUpperCase());
+					var wanted = (dataArrays[id] || '').toString().toUpperCase();
+					var known = $("#" + id).find('option').filter(function () {
+						return $(this).text().trim().toUpperCase() === wanted
+							|| (this.value || '').toUpperCase() === wanted;
+					}).length > 0;
+					// 對不上任何 option 的話 bootstrap-select 會把 selectedIndex
+					// 設成 -1, 之後 .val() 回的是 null —— readSettings() 就再也
+					// 跑不完, 保存鈕按下去連失敗提示都沒有. 沒設代理時退回 HTTP,
+					// 反正 buildProxy() 看的是主機有沒有填.
+					$("#" + id).selectpicker('val', known ? wanted : 'HTTP');
 				} else {
 					$("#" + id).find("option:contains('" + dataArrays[id] + "')")
 						.prop("selected", true);
@@ -98,10 +159,19 @@ function readSettings() {
 		if (id == 'proxy') continue; //代理设置已被分解
 		if (id == 'browser_fingerprint') continue; //指纹设置已被分解
 
-		var idType = document.getElementById(id).type;
+		var element = document.getElementById(id);
+		// 模板裡沒有這個欄位就跳過, 別把手上那份設定寫成 undefined
+		if (!element) continue;
+		var idType = element.type;
 		switch (idType) {
 			case 'number':
-				dataArrays[id] = Number($("#" + id).val());
+				// 空白欄位的 Number('') 是 0. check_frequency / multi-thread 這些
+				// 設定在 Config.py 只有上限沒有下限, 存進一個 0 就會讓主迴圈完全
+				// 不等待地一直去打動畫瘋. 讀不出數字就沿用原本的值.
+				var raw = $("#" + id).val();
+				if (raw !== null && raw !== '' && isFinite(Number(raw))) {
+					dataArrays[id] = Number(raw);
+				}
 				break;
 			case 'text':
 			case 'password':
@@ -111,32 +181,20 @@ function readSettings() {
 				dataArrays[id] = $("#" + id).is(":checked");
 				break;
 			case 'select-one':
+				// 沒有選中的選項時 .val() 是 null —— 直接 .toLowerCase() 會把整個
+				// 保存流程打斷在送出請求之前, 使用者只會看到按鈕沒反應
 				if (id == 'proxy_protocol') {
-					dataArrays[id] = $("#proxy_protocol").val().toLowerCase();
+					dataArrays[id] = ($("#proxy_protocol").val() || '').toLowerCase();
 				} else if (id == 'download_resolution') {
-					dataArrays[id] = $("#download_resolution").val().replace('P', '');
+					dataArrays[id] = ($("#download_resolution").val() || '').replace('P', '');
 				} else {
 					dataArrays[id] = $("#" + id).val();
 				}
 				break;
 		}
-
-		// 合并代理配置
-		var a = ['proxy_protocol', 'proxy_ip', 'proxy_port', 'proxy_user', 'proxy_passwd'];
-		for (var i in a) {
-			var ip_port = dataArrays["proxy_ip"] + ':' + dataArrays["proxy_port"];
-			var protocol = dataArrays["proxy_protocol"] + '://';
-			if (dataArrays["proxy_user"]?.length * dataArrays["proxy_passwd"]?.length == 0) {
-				// 如果没有用户密码
-				dataArrays["proxy"] = protocol + ip_port;
-			} else {
-				// 如果有用户密码
-				var user_pw = dataArrays["proxy_user"] + ':' + dataArrays["proxy_passwd"] + '@';
-				dataArrays["proxy"] = protocol + user_pw + ip_port;
-			}
-
-		}
 	}
+	// 合并代理配置 (整輪讀完才拼一次, 舊版寫在迴圈裡, 每個欄位都重算五遍)
+	dataArrays["proxy"] = buildProxy();
 	// 合并浏览器指纹配置
 	dataArrays["browser_fingerprint"] = {
 		"ja3": $("#browser_fingerprint_ja3").val(),

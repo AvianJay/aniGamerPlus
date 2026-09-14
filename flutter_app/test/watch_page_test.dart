@@ -12,6 +12,8 @@ import 'package:wakelock_plus_platform_interface/wakelock_plus_platform_interfac
 import 'package:agp_mobile/src/pages/watch_page.dart';
 import 'package:agp_mobile/src/state/app_state.dart';
 
+import 'support/temp_dir.dart';
+
 class Paths extends PathProviderPlatform {
   Paths(this.path);
   final String path;
@@ -190,7 +192,7 @@ void main() {
     // 那是正式行為, 但測試結束時不接受還有 Timer 掛著.
     disposeWarmPlayer();
     await player.closeStreams();
-    await temp.delete(recursive: true);
+    await deleteTempDir(temp);
   });
   Future<void> open(WidgetTester tester) async {
     levels.install(tester);
@@ -443,5 +445,60 @@ void main() {
     expect(x('離開全螢幕'), greaterThan(x('畫面比例')));
     expect(x('畫面比例'), greaterThan(x('設定')));
     await tester.pumpWidget(const SizedBox());
+  });
+  testWidgets('在已下載的邊緣卡住不算整集看完', (tester) async {
+    await open(tester);
+
+    // 走到片尾再卡住. ExoPlayer 重新緩衝時 isPlaying 會變 false, 位置又停在
+    // duration 上 —— 跟「播完了」長得一模一樣. 邊看邊下載的 playlist 沒有
+    // ENDLIST, duration 只算到目前產出的那一段, 所以網路一慢, 看到一半就會
+    // 被判定成整集看完: 進度歸零, 而且自動跳下一集.
+    player.actual = const Duration(seconds: 600);
+    player.events.add(VideoEvent(eventType: VideoEventType.bufferingStart));
+    player.events.add(VideoEvent(
+        eventType: VideoEventType.isPlayingStateUpdate, isPlaying: false));
+    await tester.pump(const Duration(milliseconds: 300));
+    await tester.pump(const Duration(milliseconds: 300));
+    expect(state.watchTimeOf('1')?.ended, isNot(true),
+        reason: '還在緩衝就被當成看完了');
+
+    // 但真的播完了還是要認得出來
+    player.events.add(VideoEvent(eventType: VideoEventType.bufferingEnd));
+    await tester.pump(const Duration(milliseconds: 300));
+    await tester.pump(const Duration(milliseconds: 300));
+    expect(state.watchTimeOf('1')?.ended, isTrue,
+        reason: '緩衝完了, 位置也在片尾 —— 這次是真的看完了');
+
+    await tester.pumpWidget(const SizedBox());
+    await tester.pump(const Duration(seconds: 1));
+  });
+  testWidgets('開始播之後再緩衝就只留速度, 不再把轉圈壓在畫面中央',
+      (tester) async {
+    levels.install(tester);
+    addTearDown(() => levels.remove(tester));
+    await tester.binding.setSurfaceSize(const Size(1000, 800));
+    await tester.pumpWidget(MaterialApp(
+        debugShowCheckedModeBanner: false,
+        theme: ThemeData(fontFamily: 'Roboto'),
+        home: WatchPage(state: state, sn: '1')));
+
+    for (var i = 0; i < 8; i++) {
+      await tester.pump(const Duration(milliseconds: 100));
+    }
+    expect(player.playing, true, reason: '這個測試的前提是它已經播出畫面了');
+
+    // 播到一半又卡住: 使用者眼前已經有一張停住的畫面, 別再擋掉它
+    player.events.add(VideoEvent(eventType: VideoEventType.bufferingStart));
+    await tester.pump(const Duration(milliseconds: 150));
+    expect(find.text('緩衝中…'), findsOneWidget);
+    expect(find.byType(CircularProgressIndicator), findsNothing);
+
+    // 緩衝完就整個收掉
+    player.events.add(VideoEvent(eventType: VideoEventType.bufferingEnd));
+    await tester.pump(const Duration(milliseconds: 150));
+    expect(find.text('緩衝中…'), findsNothing);
+
+    await tester.pumpWidget(const SizedBox());
+    await tester.pump(const Duration(seconds: 1));
   });
 }
