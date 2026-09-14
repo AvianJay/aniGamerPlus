@@ -41,7 +41,7 @@ const List<Duration> kDanmakuRetryWaits = [
 ///
 /// 非得檢查不可: 伺服器把 danmu 關掉的時候, /get_danmu.ass 回的是
 /// 「Danmu is not enabled」這句 HTML, 而且是 HTTP 200. 只看「回來的東西
-/// 不是空的」就存檔的話, 那句話會被當成彈幕檔寫進 <sn>.ass, 之後永遠
+/// 不是空的」就存檔的話, 那句話會被當成彈幕檔寫進 `<sn>.ass`, 之後永遠
 /// 解析不出一條彈幕, 也不會有人再去重抓.
 bool looksLikeAss(String text) {
   if (text.length < 16) return false;

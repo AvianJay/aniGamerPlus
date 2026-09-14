@@ -6,7 +6,7 @@
 ///
 /// 現在改成: 開機時抓一份 /thumbnails.json (伺服器只是把自己 anime_info 快取裡
 /// 的 cover 網址整理出來, 不會對外連線), 之後客戶端直接去 CDN 抓圖, 自己存在
-/// <support>/covers/ 下面. 伺服器那條路只留給清單裡沒有的 sn.
+/// `<support>/covers/` 下面. 伺服器那條路只留給清單裡沒有的 sn.
 ///
 /// 快取的檔名只用「網址」算 sha1 —— 不要把 auth header 摻進去. CachedNetwork
 /// Image 那邊原本的 cacheKey 就是連 header 一起 hash 的, 結果每次 token 變動

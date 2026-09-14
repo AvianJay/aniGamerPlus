@@ -17,6 +17,8 @@
 /// * 同時在畫面上的條數有上限, 而且真的完全沒動的那一幀不會發出重畫通知.
 library;
 
+// ValueListenable 不在 material 的 re-export 名單裡, 時鐘那個欄位要用它
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/scheduler.dart';
 
