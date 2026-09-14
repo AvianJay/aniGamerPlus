@@ -63,7 +63,10 @@ jobs:
       - name: Analyze
         run: flutter analyze --no-fatal-infos
 
-      - name: Player regression tests
+      # Player regressions, offline watch times, the danmaku retry ledger, the
+      # thumbnail cache and the episode picker. No device and no server needed:
+      # the HTTP fakes are real HttpServers on loopback.
+      - name: Unit and widget tests
         run: flutter test
 
   android:
