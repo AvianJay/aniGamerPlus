@@ -1084,6 +1084,31 @@ def test_tasks_progress_streams_json_over_websocket(client, autouse_settings):
         server.Config.tasks_progress_rate.clear()
 
 
+def test_tasks_progress_websocket_refuses_a_foreign_origin(client, autouse_settings):
+    """Browsers do not apply CORS to WebSockets and send cookies on the
+    handshake, so without an Origin check any page the operator visits can open
+    this socket against their dashboard and read what is downloading."""
+    server.Config.tasks_progress_rate.clear()
+    server.Config.tasks_progress_rate[7] = {'rate': 1.0}
+    try:
+        with pytest.raises(Exception):
+            with client.websocket_connect(
+                    '/data/tasks_progress',
+                    headers={'Origin': 'https://evil.example'}) as websocket:
+                websocket.receive_text()
+
+        # The dashboard's own page still works, and so does a non-browser
+        # client (the phone app, curl) that sends no Origin at all.
+        with client.websocket_connect(
+                '/data/tasks_progress',
+                headers={'Origin': 'http://testserver'}) as websocket:
+            assert json.loads(websocket.receive_text())['7']['rate'] == 1.0
+        with client.websocket_connect('/data/tasks_progress') as websocket:
+            assert json.loads(websocket.receive_text())['7']['rate'] == 1.0
+    finally:
+        server.Config.tasks_progress_rate.clear()
+
+
 def test_tasks_progress_websocket_checks_admin_cookie(client, autouse_settings, settings, userdata):
     from starlette.websockets import WebSocketDisconnect
     settings['dashboard']['user_control']['enabled'] = True

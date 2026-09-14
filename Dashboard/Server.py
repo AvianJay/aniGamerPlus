@@ -2203,12 +2203,35 @@ def tasks_progress_http():
     return JSONResponse({'success': False, 'message': 'websocket required'}, status_code=400)
 
 
+def _websocket_origin_allowed(websocket):
+    """瀏覽器對 WebSocket 不套 CORS —— 任何網頁都能對別人的 ws:// 開連線, 而且
+    瀏覽器會自動把 cookie 帶上去 (cross-site WebSocket hijacking).
+
+    所以要自己比對 Origin: 同一台才放行. 沒有 Origin 的一律放行 —— 那是
+    手機 app、curl 這種非瀏覽器的客戶端, 它們本來就不會被 CSRF 利用.
+    """
+    origin = websocket.headers.get('origin')
+    if not origin:
+        return True
+    host = websocket.headers.get('host')
+    if not host:
+        return False
+    try:
+        from urllib.parse import urlparse
+        return urlparse(origin).netloc.lower() == host.lower()
+    except BaseException:
+        return False
+
+
 @app.websocket('/data/tasks_progress')
 async def tasks_progress(websocket: WebSocket):
     # 原生 FastAPI WebSocket, 取代 flask-sock/gevent-websocket 那一套. 認管理員
     # cookie (瀏覽器開 WebSocket 會自動帶上), 載荷跟原來逐秒送的
     # Config.tasks_progress_rate JSON 一字不差.
     # 設定檔與 userdata 讀取是阻塞 I/O, 必须先丢进线程池, 不能占着事件循环.
+    if not _websocket_origin_allowed(websocket):
+        await websocket.close(code=1008)
+        return
     await websocket.accept()
     try:
         current_settings = await run_in_threadpool(_get_current_settings)
