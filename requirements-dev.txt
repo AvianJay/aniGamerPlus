@@ -13,3 +13,5 @@ playwright
 # this line.
 httpx
 pycryptodome
+# test_apple_touch_icon_is_180_square reads the icon size with Pillow.
+pillow
