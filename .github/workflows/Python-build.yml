@@ -26,11 +26,15 @@ jobs:
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install -r requirements.txt
-          pip install pytest playwright
+          pip install -r requirements.txt -r requirements-dev.txt
 
       - name: Install browser
         run: python -m playwright install --with-deps chromium
+
+      # The HLS fixtures are built with ffmpeg; without it they skip instead of
+      # covering the /stream/* routes.
+      - name: Install ffmpeg
+        run: sudo apt-get update && sudo apt-get install -y ffmpeg
 
       - name: Run tests
         run: python -m pytest tests/ -q
