@@ -357,6 +357,27 @@ def _build_default_user(default_user):
     return normalized
 
 
+def _replace_with_retry(src, dst, attempts=25, delay=0.02):
+    """os.replace(), but tolerant of a reader holding the destination open.
+
+    POSIX renames over an open file happily. Windows raises PermissionError
+    (WinError 5) for as long as any other handle is open on the destination,
+    and the dashboard reads userdata.json on nearly every request -- so a save
+    that happened to collide with a read used to fail outright and lose the
+    write. Retrying for half a second covers the window a reader's ``with
+    open(...)`` is actually open for.
+    """
+    for attempt in range(attempts):
+        try:
+            os.replace(src, dst)
+            return
+        except PermissionError:
+            # 最後一次還是不行就讓它炸出去: 呼叫端會把暫存檔清掉, 目的地不動
+            if attempt == attempts - 1:
+                raise
+            time.sleep(delay)
+
+
 def _save_userdata_locked(userdata):
     """Atomic filesystem write. Caller must hold userdata_lock.
 
@@ -378,7 +399,7 @@ def _save_userdata_locked(userdata):
                 os.fsync(f.fileno())
             except OSError:
                 pass
-        os.replace(tmp_name, userdata_path)
+        _replace_with_retry(tmp_name, userdata_path)
         try:
             dir_fd = os.open(directory, os.O_RDONLY | getattr(os, 'O_DIRECTORY', 0))
         except OSError:
