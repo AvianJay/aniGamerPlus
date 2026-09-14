@@ -3583,11 +3583,37 @@ if _get_current_settings()['dashboard']['user_control']['enabled']:
     load_user_data()
 
 
+def _warn_if_open_to_the_network(current_settings, host, port):
+    """沒有登入機制又綁在對外位址上時, 講清楚.
+
+    config-sample.json 出廠就是 user_control.enabled: false, 而兩道管理員
+    閘門 (_admin_page_guard / _admin_api_guard) 在那個情況下是直接放行的 ——
+    這是刻意的, 讓只在自己電腦上跑的人不必先建帳號. 但一旦 host 改成 0.0.0.0
+    或某個區網位址, 同一份設定的意思就變成「誰連得到這個埠, 誰就是管理員」:
+    可以改設定、改 sn_list、下指令.
+
+    config.json 裡還留著一個 dashboard.BasicAuth —— 那是舊版的東西, 早在
+    d3fe260「棄用basicauth」就沒有任何程式讀它了. 留著只會讓人以為有一層保護.
+    """
+    if current_settings['dashboard']['user_control']['enabled']:
+        return
+    local_only = str(host) in ('127.0.0.1', 'localhost', '::1', '')
+    if local_only:
+        return
+    err_print(0, 'Dashboard',
+              '控制臺綁在 %s:%s 但沒有開啟帳號系統 —— 連得到這個埠的人都是'
+              '管理員 (可以改設定、改 sn_list、下指令). 要限制的話請開啟 '
+              'dashboard.user_control.enabled.' % (host, port),
+              no_sn=True, status=1)
+
+
 def run():
     current_settings = Config.read_settings()  # 读取配置
 
     port = current_settings['dashboard']['port']
     host = current_settings['dashboard']['host']
+
+    _warn_if_open_to_the_network(current_settings, host, port)
 
     ssl_certfile = ssl_keyfile = None
     # check cert if enabled ssl

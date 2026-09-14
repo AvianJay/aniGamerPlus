@@ -239,12 +239,14 @@ docker run -td --name anigamerplus \
         "host": "127.0.0.1",  // 監聽地址, 如果需要允許外部訪問, 請填寫 "0.0.0.0"
         "port": 5000,  // 監聽端口
         "SSL": false,  // 是否開啓SSL, 證書保存在 Dashboard\sslkey, 如果有需要可以自行替換證書
-        "BasicAuth": false,  // 是否使用 BasicAuth 進行認證, 注意, 用戶密碼是明文傳輸的, 如有需要建議同時啓用 SSL
-        "username": "admin",  // BasicAuth 用戶名
-        "password": "admin",  // BasicAuth 密碼
+        "BasicAuth": false,  // 已停用: 這三項現在不會被讀取, 認證請改用下面的 user_control
+        "username": "admin",  // 已停用, 同上
+        "password": "admin",  // 已停用, 同上
         "online_watch": false,  // 線上觀看開關
         "online_watch_requires_login": false,  // 線上觀看是否要求登入 (需開啟 user_control)
         "user_control": {  // 帳號系統
+            // 關閉時控制臺完全不認人: 連得到這個埠的人都是管理員 (可以改設定、
+            // 改 sn_list、下指令). host 只要不是 127.0.0.1 就務必開啟.
             "enabled": false,  // 開啟後才有登入/註冊/用戶管理
             "allow_register": false,  // 是否開放註冊
             "default_user": [  // 初始用戶

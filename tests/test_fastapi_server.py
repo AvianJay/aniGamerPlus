@@ -1152,3 +1152,26 @@ def test_run_disables_ssl_when_certs_are_missing(monkeypatch, tmp_path):
     server.run()
     assert settings['dashboard']['SSL'] is False
     assert 'ssl_certfile' not in calls['args'][1]
+
+
+# ------------------------------------------------- startup warnings
+
+def test_warns_when_the_dashboard_is_open_to_the_network(settings, monkeypatch):
+    """user_control off is the shipped default and both admin guards return
+    "allowed" in that state. That is fine on loopback and is a wide-open
+    remote admin API on 0.0.0.0 -- say so."""
+    said = []
+    monkeypatch.setattr(server, 'err_print',
+                        lambda *a, **k: said.append(' '.join(str(x) for x in a)))
+
+    settings['dashboard']['user_control']['enabled'] = False
+    server._warn_if_open_to_the_network(settings, '127.0.0.1', 5000)
+    assert said == [], 'loopback needs no warning'
+
+    server._warn_if_open_to_the_network(settings, '0.0.0.0', 5000)
+    assert len(said) == 1 and 'user_control' in said[0]
+
+    said.clear()
+    settings['dashboard']['user_control']['enabled'] = True
+    server._warn_if_open_to_the_network(settings, '0.0.0.0', 5000)
+    assert said == [], 'with accounts on there is nothing to warn about'
