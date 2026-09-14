@@ -446,4 +446,33 @@ void main() {
     expect(x('畫面比例'), greaterThan(x('設定')));
     await tester.pumpWidget(const SizedBox());
   });
+  testWidgets('開始播之後再緩衝就只留速度, 不再把轉圈壓在畫面中央',
+      (tester) async {
+    levels.install(tester);
+    addTearDown(() => levels.remove(tester));
+    await tester.binding.setSurfaceSize(const Size(1000, 800));
+    await tester.pumpWidget(MaterialApp(
+        debugShowCheckedModeBanner: false,
+        theme: ThemeData(fontFamily: 'Roboto'),
+        home: WatchPage(state: state, sn: '1')));
+
+    for (var i = 0; i < 8; i++) {
+      await tester.pump(const Duration(milliseconds: 100));
+    }
+    expect(player.playing, true, reason: '這個測試的前提是它已經播出畫面了');
+
+    // 播到一半又卡住: 使用者眼前已經有一張停住的畫面, 別再擋掉它
+    player.events.add(VideoEvent(eventType: VideoEventType.bufferingStart));
+    await tester.pump(const Duration(milliseconds: 150));
+    expect(find.text('緩衝中…'), findsOneWidget);
+    expect(find.byType(CircularProgressIndicator), findsNothing);
+
+    // 緩衝完就整個收掉
+    player.events.add(VideoEvent(eventType: VideoEventType.bufferingEnd));
+    await tester.pump(const Duration(milliseconds: 150));
+    expect(find.text('緩衝中…'), findsNothing);
+
+    await tester.pumpWidget(const SizedBox());
+    await tester.pump(const Duration(seconds: 1));
+  });
 }

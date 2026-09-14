@@ -293,6 +293,13 @@ class _WatchPageState extends State<WatchPage>
   bool _buffering = false;
   bool _ended = false;
 
+  /// 這一集真的放出過畫面了沒有.
+  ///
+  /// 還沒開始播的時候畫面上什麼都沒有, 轉圈是唯一在說「還活著」的東西; 但開始
+  /// 播之後再中途緩衝, 使用者眼前已經有一張停住的畫面了, 正中央再壓一個轉圈
+  /// 只是把畫面擋住. 那之後只留速度, 而且移到上方.
+  bool _hasPlayed = false;
+
   /// 剛剛按下去要的是播還是停. 原生播放器要等它自己緩衝完才會回報狀態, 網路
   /// 慢的時候那是好幾秒 —— 按鈕在那段時間裡不能還畫著按之前的樣子, 不然看
   /// 起來就是沒反應. 等實際狀態追上來再把這個清掉.
@@ -515,6 +522,7 @@ class _WatchPageState extends State<WatchPage>
       _initialising = true;
       _error = '';
       _ended = false;
+      _hasPlayed = false;
       _nextOffer = null;
       // 換一集就重來: 上一集挑的畫質不該讓這一集直接放棄手機裡那份離線檔
       _qualityPicked = false;
@@ -1184,14 +1192,19 @@ class _WatchPageState extends State<WatchPage>
     // 實際狀態追上剛剛按的那一下了, 樂觀顯示就功成身退
     final intentSettled = _playIntent != null && value.isPlaying == _playIntent;
 
+    // 真的在推進畫面了才算「開始播」—— isPlaying 在還在緩衝的時候就會是 true
+    final started = value.isPlaying && !value.isBuffering;
+
     if (value.isPlaying != _playing ||
         value.isBuffering != _buffering ||
+        (started && !_hasPlayed) ||
         intentSettled ||
         (duration > 0 && (duration - _duration).abs() > 0.5)) {
       if (!mounted) return;
       setState(() {
         _playing = value.isPlaying;
         _buffering = value.isBuffering;
+        if (started) _hasPlayed = true;
         if (intentSettled) _playIntent = null;
         if (duration > 0) {
           _duration = math.max(duration, _streaming ? _streamTotal : 0);
@@ -2118,7 +2131,12 @@ class _WatchPageState extends State<WatchPage>
                     Center(child: _PlayerSpinner(size: 36, speed: _netSpeed)),
                   if (_error.isNotEmpty) _errorOverlay(),
                   if (ready && (_buffering || _pendingSeek != null))
-                    Center(child: _PlayerSpinner(size: 32, speed: _netSpeed)),
+                    // 開始播之後就不要再把轉圈壓在畫面正中央 —— 底下那一幀
+                    // 還在, 使用者要的只是「還在跑嗎、跑多快」
+                    if (_hasPlayed)
+                      _bufferSpeedBadge()
+                    else
+                      Center(child: _PlayerSpinner(size: 32, speed: _netSpeed)),
                   if (_downloading.isNotEmpty) _downloadBadge(),
                   AnimatedOpacity(
                     opacity: _controlsVisible ? 1 : 0,
@@ -2251,6 +2269,47 @@ class _WatchPageState extends State<WatchPage>
               style: const TextStyle(fontSize: 11.5, color: Colors.white),
             ),
           ],
+        ),
+      ),
+    );
+  }
+
+  /// 已經開始播之後才中途緩衝時, 掛在畫面上方的速度.
+  ///
+  /// 這裡刻意沒有轉圈: 底下已經有一幀停住的畫面, 正中央再壓一個轉圈只是把它
+  /// 擋掉. 量不到速度的時候 (離線檔、或剛卡住還沒收到位元組) 至少要說一句話,
+  /// 畫面停住又什麼提示都沒有的話看起來就是當掉了.
+  Widget _bufferSpeedBadge() {
+    return Positioned(
+      top: 62,
+      left: 0,
+      right: 0,
+      child: IgnorePointer(
+        child: Center(
+          // 這個數字一秒跳好幾次, 不隔一層就會把整個播放區一起重新光柵化
+          child: RepaintBoundary(
+            child: ValueListenableBuilder<double>(
+              valueListenable: _netSpeed,
+              builder: (context, value, _) => Container(
+                padding:
+                    const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+                decoration: BoxDecoration(
+                  color: Colors.black.withValues(alpha: 0.62),
+                  borderRadius: BorderRadius.circular(999),
+                ),
+                child: Text(
+                  value > 0 ? '${formatBytes(value.round())}/s' : '緩衝中…',
+                  style: const TextStyle(
+                    fontSize: 12,
+                    height: 1.2,
+                    color: Colors.white,
+                    fontWeight: FontWeight.w600,
+                    fontFeatures: [FontFeature.tabularFigures()],
+                  ),
+                ),
+              ),
+            ),
+          ),
         ),
       ),
     );
