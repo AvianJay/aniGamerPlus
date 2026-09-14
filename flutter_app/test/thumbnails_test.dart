@@ -119,6 +119,7 @@ void main() {
   late FakeHost cdn;
   late AgpClient client;
   late ThumbnailStore store;
+  late http.Client setUpClient;
 
   String manifestJson() => jsonEncode({
         'generatedAt': 1757000000,
@@ -144,10 +145,12 @@ void main() {
     cdn.files['/still-v1.jpg'] = fakeJpeg(2);
     client = AgpClient(baseUrl: agp.url);
     store = ThumbnailStore(client);
+    setUpClient = http.Client();
   });
 
   tearDown(() async {
     store.dispose();
+    setUpClient.close();
     client.close();
     await agp.stop();
     await cdn.stop();
@@ -197,6 +200,25 @@ void main() {
       await File('${dir.path}/probe4.img').writeAsBytes(fakeJpeg(4), flush: true);
     });
     await step('refresh', () => store.refresh());
+    final fromManifest = store.stillFor('v1') ?? '';
+    log.write('[url==${fromManifest == '${cdn.url}/still-v1.jpg'}] ');
+    await step('get-manifest-url', () async {
+      final response = await probe.get(Uri.parse(fromManifest));
+      log.write('[${response.statusCode}/${response.bodyBytes.length}] ');
+    });
+    await step('setup-client-get', () async {
+      final response = await setUpClient.get(Uri.parse(fromManifest));
+      log.write('[${response.statusCode}/${response.bodyBytes.length}] ');
+    });
+    await step('resolveUrl', () async {
+      log.write('[${(await store.resolveUrl(fromManifest))?.path}] ');
+    });
+    final born = ThumbnailStore(client);
+    addTearDown(born.dispose);
+    await step('born-init', () => born.init());
+    await step('born-resolveUrl', () async {
+      log.write('[${(await born.resolveUrl(fromManifest))?.path}] ');
+    });
     await step('resolve', () async {
       log.write('[${(await store.resolve('v1'))?.path}] ');
     });
