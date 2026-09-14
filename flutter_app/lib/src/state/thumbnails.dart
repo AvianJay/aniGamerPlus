@@ -37,15 +37,6 @@ const int kCoverFetchConcurrency = 6;
 /// 同時去伺服器要幾張. 每一筆都可能在伺服器上開一支 ffmpeg, 所以壓得很低.
 const int kServerThumbConcurrency = 2;
 
-// TODO(probe): 暫時的, 找出 CI 上卡在哪一步就刪掉
-bool kThumbTrace = false;
-void _trace(String message) {
-  if (kThumbTrace) {
-    // ignore: avoid_print
-    print('[thumb ${DateTime.now().millisecondsSinceEpoch % 100000}] $message');
-  }
-}
-
 /// 一次非同步排隊的名額. 交棒時直接把名額傳給下一個等待者 —— 先減再加的話
 /// 中間那一瞬間會被新來的插隊, 實際在飛的數量就超收了.
 class _Gate {
@@ -56,7 +47,6 @@ class _Gate {
   final Queue<Completer<void>> _waiting = Queue<Completer<void>>();
 
   Future<T> run<T>(Future<T> Function() body) async {
-    _trace('gate enter active=$_active limit=$_limit waiting=${_waiting.length}');
     if (_active >= _limit) {
       final waiter = Completer<void>();
       _waiting.add(waiter);
@@ -64,11 +54,9 @@ class _Gate {
     } else {
       _active++;
     }
-    _trace('gate admitted');
     try {
       return await body();
     } finally {
-      _trace('gate leaving');
       if (_waiting.isEmpty) {
         _active--;
       } else {
@@ -108,12 +96,8 @@ class ThumbnailStore extends ChangeNotifier {
 
   // ------------------------------------------------------------------ 清單
 
-  Future<Directory> _supportDir() async {
-    _trace('supportDir: cached=${_dir?.path}');
-    final dir = _dir ??= await getApplicationSupportDirectory();
-    _trace('supportDir: ${dir.path}');
-    return dir;
-  }
+  Future<Directory> _supportDir() async =>
+      _dir ??= await getApplicationSupportDirectory();
 
   Future<File> _manifestFile() async =>
       File('${(await _supportDir()).path}/thumbnails.json');
@@ -124,11 +108,8 @@ class ThumbnailStore extends ChangeNotifier {
   Future<Directory> _covers() async {
     final cached = _coverDir;
     if (cached != null) return cached;
-    _trace('covers: asking for support dir');
     final dir = Directory('${(await _supportDir()).path}/covers');
-    _trace('covers: got ${dir.path}');
     if (!dir.existsSync()) await dir.create(recursive: true);
-    _trace('covers: ready');
     return _coverDir = dir;
   }
 
@@ -166,8 +147,10 @@ class ThumbnailStore extends ChangeNotifier {
       if (body == null) return;
       _apply(jsonDecode(body));
       _etag = fresh.etag;
-      unawaited(_saveManifest(body, fresh.etag));
       notifyListeners();
+      // 先讓畫面拿到新清單, 再把它存下來. 存這一步要等 —— unawaited 的話
+      // 「下次開機還在」就變成跟關 app 的時間點賽跑.
+      await _saveManifest(body, fresh.etag);
     } catch (_) {
       // 沒清單就沒清單
     }
@@ -197,13 +180,9 @@ class ThumbnailStore extends ChangeNotifier {
 
   Future<void> _saveManifest(String body, String etag) async {
     try {
-      _trace('saveManifest: start');
       await (await _manifestFile()).writeAsString(body);
-      _trace('saveManifest: body done');
       await (await _etagFile()).writeAsString(etag);
-      _trace('saveManifest: etag done');
-    } catch (error) {
-      _trace('saveManifest: BOOM $error');
+    } catch (_) {
       // 存不下就算了
     }
   }
@@ -287,7 +266,12 @@ class ThumbnailStore extends ChangeNotifier {
   Future<File?> _dedupe(String key, Future<File?> Function() body) {
     final running = _inFlight[key];
     if (running != null) return running;
-    final task = body().whenComplete(() => _inFlight.remove(key));
+    // 收尾一定要寫成大括號: `() => _inFlight.remove(key)` 回的是被移掉的那個
+    // future, 也就是 task 自己 —— whenComplete 收到 Future 就會等它, task 等
+    // 到的是 task, 整條直接鎖死, 圖永遠抓不完.
+    final task = body().whenComplete(() {
+      _inFlight.remove(key);
+    });
     _inFlight[key] = task;
     return task;
   }
@@ -321,18 +305,14 @@ class ThumbnailStore extends ChangeNotifier {
 
   Future<File?> _resolve(String sn,
       {required bool poster, String? fallbackUrl}) async {
-    _trace('resolve $sn coverDir=${_coverDir?.path}');
     for (final url in [urlFor(sn, poster: poster), fallbackUrl]) {
       if (url == null || url.isEmpty || _failed.contains(url)) continue;
       final hit = cachedFile(url);
-      _trace('resolve $sn url=$url cached=${hit?.path}');
       if (hit != null) return hit;
       final file = await _cdnGate.run(() => _download(url, _key(url)));
-      _trace('resolve $sn cdn gave ${file?.path}');
       if (file != null) return file;
       _failed.add(url);
     }
-    _trace('resolve $sn falling back to the server');
     final serverKey = 'thumb:$sn';
     if (_failed.contains(serverKey)) return null;
     final hit = cachedServerThumb(sn);
@@ -350,11 +330,9 @@ class ThumbnailStore extends ChangeNotifier {
   Future<File?> _download(String url, String key,
       {Map<String, String>? headers}) async {
     try {
-      _trace('download start $url');
       final response = await _http
           .get(Uri.parse(url), headers: headers)
           .timeout(const Duration(seconds: 20));
-      _trace('download got ${response.statusCode}');
       if (response.statusCode >= 400) return null;
       final bytes = response.bodyBytes;
       // 太小的一定不是圖 (伺服器那條路在出錯時會回一小段文字)
@@ -364,15 +342,11 @@ class ThumbnailStore extends ChangeNotifier {
       // 先寫暫存檔再改名: 半張圖被別人同步讀到的話會變成一個壞掉的 Image.file
       final temp = File('${file.path}.part');
       await temp.writeAsBytes(bytes, flush: true);
-      _trace('download wrote part');
       if (file.existsSync()) await file.delete();
       await temp.rename(file.path);
-      _trace('download renamed, trimming');
       unawaited(_trim());
-      _trace('download done $key');
       return file;
-    } catch (error) {
-      _trace('download BOOM $error');
+    } catch (_) {
       return null;
     }
   }

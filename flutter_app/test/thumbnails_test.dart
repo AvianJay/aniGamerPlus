@@ -12,7 +12,6 @@ import 'dart:io';
 import 'package:agp_mobile/src/api/client.dart';
 import 'package:agp_mobile/src/state/thumbnails.dart';
 import 'package:flutter_test/flutter_test.dart';
-import 'package:http/http.dart' as http;
 import 'package:path_provider_platform_interface/path_provider_platform_interface.dart';
 
 class Paths extends PathProviderPlatform {
@@ -119,7 +118,6 @@ void main() {
   late FakeHost cdn;
   late AgpClient client;
   late ThumbnailStore store;
-  late http.Client setUpClient;
 
   String manifestJson() => jsonEncode({
         'generatedAt': 1757000000,
@@ -145,12 +143,10 @@ void main() {
     cdn.files['/still-v1.jpg'] = fakeJpeg(2);
     client = AgpClient(baseUrl: agp.url);
     store = ThumbnailStore(client);
-    setUpClient = http.Client();
   });
 
   tearDown(() async {
     store.dispose();
-    setUpClient.close();
     client.close();
     await agp.stop();
     await cdn.stop();
@@ -165,72 +161,6 @@ void main() {
     }
     fail('等不到: $reason');
   }
-
-  // TODO(probe): 暫時的, 拿到 CI 的輸出就刪掉
-  test('PROBE', () async {
-    kThumbTrace = true;
-    addTearDown(() => kThumbTrace = false);
-    final log = StringBuffer();
-    final sw = Stopwatch()..start();
-    Future<void> step(String what, Future<void> Function() body) async {
-      try {
-        await body().timeout(const Duration(seconds: 6));
-        log.write('$what=${sw.elapsedMilliseconds}ms ');
-      } catch (error) {
-        log.write('$what=BOOM(${error.runtimeType}) ');
-      }
-    }
-
-    await step('write1', () async {
-      await File('${temp.path}/probe1.bin').writeAsBytes(fakeJpeg(1), flush: true);
-    });
-    final probe = http.Client();
-    addTearDown(probe.close);
-    await step('get', () async {
-      final response = await probe.get(Uri.parse('${cdn.url}/still-v1.jpg'));
-      log.write('[${response.statusCode}/${response.bodyBytes.length}] ');
-    });
-    await step('write2', () async {
-      await File('${temp.path}/probe2.bin').writeAsBytes(fakeJpeg(2), flush: true);
-    });
-    await step('write3-noflush', () async {
-      await File('${temp.path}/probe3.bin').writeAsBytes(fakeJpeg(3));
-    });
-    await step('covers', () async {
-      final dir = Directory('${temp.path}/covers');
-      if (!dir.existsSync()) await dir.create(recursive: true);
-      await File('${dir.path}/probe4.img').writeAsBytes(fakeJpeg(4), flush: true);
-    });
-    await step('refresh', () => store.refresh());
-    // cacheBytes() 在 _coverDir 還是 null 的時候一律回 0, 手寫的 probe4.img 有
-    // 512 bytes —— 所以這個數字直接告訴我們 init() 到底有沒有把目錄準備好
-    await step('cacheBytes', () async {
-      log.write('[bytes=${await store.cacheBytes()}] ');
-    });
-    final fromManifest = store.stillFor('v1') ?? '';
-    log.write('[url==${fromManifest == '${cdn.url}/still-v1.jpg'}] ');
-    await step('get-manifest-url', () async {
-      final response = await probe.get(Uri.parse(fromManifest));
-      log.write('[${response.statusCode}/${response.bodyBytes.length}] ');
-    });
-    await step('setup-client-get', () async {
-      final response = await setUpClient.get(Uri.parse(fromManifest));
-      log.write('[${response.statusCode}/${response.bodyBytes.length}] ');
-    });
-    await step('resolveUrl', () async {
-      log.write('[${(await store.resolveUrl(fromManifest))?.path}] ');
-    });
-    final born = ThumbnailStore(client);
-    addTearDown(born.dispose);
-    await step('born-init', () => born.init());
-    await step('born-resolveUrl', () async {
-      log.write('[${(await born.resolveUrl(fromManifest))?.path}] ');
-    });
-    await step('resolve', () async {
-      log.write('[${(await store.resolve('v1'))?.path}] ');
-    });
-    fail('PROBE $log');
-  });
 
   test('清單解析: 劇照優先, 沒有就退回主視覺', () async {
     await store.refresh();
@@ -281,6 +211,27 @@ void main() {
     expect(second!.path, file.path);
     expect(cdn.hitsOn('/still-v1.jpg'), 1);
     expect(store.cached('v1'), isNotNull);
+  });
+
+  test('同一張圖同時要兩次只走一次網路, 而且兩邊都等得到結果', () async {
+    await store.refresh();
+    final url = '${cdn.url}/still-v1.jpg';
+
+    // 先把伺服器卡住, 第二筆進來的時候第一筆還在飛 —— 這樣才走得到合併那條路
+    cdn.hold = Completer<void>();
+    final first = store.resolveUrl(url);
+    final second = store.resolveUrl(url);
+    await waitFor(() => cdn.hitsOn('/still-v1.jpg') >= 1, reason: '第一筆沒出去');
+    cdn.hold!.complete();
+    cdn.hold = null;
+
+    // 這裡的 timeout 是在守一個真的踩過的坑: 合併用的 whenComplete 如果回傳了
+    // 被移掉的那個 future, 它等的就是自己, 兩邊都永遠醒不過來.
+    final files =
+        await Future.wait([first, second]).timeout(const Duration(seconds: 5));
+    expect(files.first, isNotNull);
+    expect(files.last!.path, files.first!.path);
+    expect(cdn.hitsOn('/still-v1.jpg'), 1, reason: '被合併掉的那一筆不該再打一次');
   });
 
   test('清單上沒有的集數才退回伺服器的 /thumbnail.jpg', () async {
