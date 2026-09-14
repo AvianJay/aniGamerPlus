@@ -9,6 +9,7 @@ import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 
+import 'package:agp_mobile/src/api/client.dart';
 import 'package:agp_mobile/src/api/models.dart';
 import 'package:agp_mobile/src/state/app_state.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -40,6 +41,16 @@ class WatchServer {
   /// true = 寫入一律 500, 用來驗「送不出去就繼續欠著」
   bool refuse = false;
 
+  /// false = 這台伺服器沒開帳號系統 (config-sample.json 的出廠預設).
+  ///
+  /// 真的伺服器上進度是掛在 userdata.json 的 users[].videotimes 底下, 所以
+  /// user_control 關掉時 /watch/time 的每一條路都走到最後那個「找不到這個
+  /// token 的使用者」分支 —— 而那個分支回的是 **HTTP 200**, 內文才寫著
+  /// {"status":"403"}. 客戶端看狀態碼是看不出來的.
+  bool userControl = true;
+
+  static const rejection = '{"status":"403", "msg":"Invalid token"}';
+
   static Future<WatchServer> start() async {
     final server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
     final fake = WatchServer._(server);
@@ -58,6 +69,12 @@ class WatchServer {
       try {
         if (request.uri.path != '/watch/time') {
           response.statusCode = HttpStatus.notFound;
+        } else if (!userControl) {
+          // 200 包著一個 403, 一字不差照著真的伺服器
+          if (request.method == 'POST') {
+            await utf8.decoder.bind(request).join();
+          }
+          body = rejection;
         } else if (request.method == 'POST') {
           final raw = await utf8.decoder.bind(request).join();
           final json = (jsonDecode(raw) as Map).cast<String, dynamic>();
@@ -132,10 +149,18 @@ void main() {
   });
 
   /// 開一台指向假伺服器的 app. offline = true 就完全不碰網路.
-  Future<AppState> boot({bool offline = false}) async {
+  ///
+  /// 伺服器端的進度是跟著帳號走的, 所以「有東西可以對」的前提是開了帳號系統
+  /// 而且登入了 —— AppState.boot() 在這裡不會真的去問 /get_server_info, 這兩
+  /// 件事要自己擺上去.
+  Future<AppState> boot({bool offline = false, bool loggedIn = true}) async {
     final state = await AppState.boot();
     state.offline = offline;
     state.client.baseUrl = offline ? '' : fake.url;
+    state.serverInfo = ServerInfo(userControl: fake.userControl);
+    if (loggedIn && fake.userControl) {
+      state.currentUser = CurrentUser(username: 'tester', role: 'admin');
+    }
     return state;
   }
 
@@ -226,6 +251,47 @@ void main() {
     await state.refreshWatchTimes();
 
     expect(state.watchTimeOf('555')?.time, 90);
+  });
+
+  test('沒開帳號系統的伺服器不該把本機那份進度清光', () async {
+    // 出廠設定就是 user_control: false. 這種伺服器對每一筆 /watch/time 都回
+    // 200 包著的 403, 以前客戶端把那份內文讀成「一筆進度都沒有」, 再照著
+    // 「伺服器沒有 = 別台裝置刪掉了」把本機那份整個刪乾淨 —— 每重整一次,
+    // 或每開一次 app, 所有看到哪裡的紀錄就全部消失.
+    fake.userControl = false;
+    await seedOnDisk(temp, {
+      '777': row(600, timestamp: 1700000000),
+      '888': row(60, timestamp: 1700000001),
+    });
+
+    final state = await boot();
+    await state.refreshWatchTimes();
+    expect(state.watchTimeOf('777')?.time, 600);
+    expect(state.watchTimeOf('888')?.time, 60);
+
+    // 重整第二次、第三次也一樣
+    await state.refreshWatchTimes();
+    await state.refreshWatchTimes();
+    expect(state.watchTimeOf('777')?.time, 600);
+
+    // 而且新看的那一集也留得住
+    state.noteWatchTime('999', WatchTime(time: 30, timestamp: 1700000002));
+    await state.flushWatchTimesToDisk();
+    await state.refreshWatchTimes();
+    expect(state.watchTimeOf('999')?.time, 30);
+
+    final raw = jsonDecode(
+        await File('${temp.path}/watch-times.json').readAsString()) as Map;
+    expect(raw.keys.toSet(), {'777', '888', '999'}, reason: '磁碟上那份也不該被清掉');
+  });
+
+  test('200 包著的 403 不能被當成一份空的進度表', () async {
+    // 上一個測試是從 AppState 那一層看; 這個是直接釘住 client 的行為, 免得
+    // 之後有人把閘門拿掉時沒有東西擋著.
+    fake.userControl = false;
+    final state = await boot();
+    await expectLater(
+        state.client.allWatchTimes(), throwsA(isA<ApiException>()));
   });
 
   test('忘掉一集之後磁碟上也不該再有它', () async {

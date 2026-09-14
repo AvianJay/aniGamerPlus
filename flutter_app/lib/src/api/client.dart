@@ -316,9 +316,28 @@ class AgpClient {
 
   // -------------------------------------------------------------- 觀看進度
 
+  /// /watch/time 拒絕一筆請求時回的是 **HTTP 200**, 內文才寫著
+  /// `{"status":"403", "msg":"Invalid token"}`. 那是合法的 JSON 物件, 所以
+  /// 「是不是 Map」擋不住它: 當成進度表去讀的話, 每個值都不是 Map, 結果就是一份
+  /// 空的進度 —— 上層再把那份空的讀成「這些紀錄在別台裝置上被刪掉了」.
+  ///
+  /// 認出這個信封就丟例外, 讓呼叫端走「抓不到」那條路, 保住本機那份.
+  void _rejectIfErrorEnvelope(Map<dynamic, dynamic> data) {
+    final status = data['status'];
+    final message = data['msg'];
+    // sn 都是數字字串, 不可能同時長出 status 跟 msg 這兩把 key
+    if (status == null || message == null) return;
+    final code = int.tryParse(status.toString()) ?? 200;
+    if (code >= 200 && code < 300) return;
+    throw ApiException(code, message.toString());
+  }
+
   Future<Map<String, WatchTime>> allWatchTimes() async {
     final data = await _json('/watch/time', {'type': 'get'});
-    if (data is! Map) return {};
+    if (data is! Map) {
+      throw ApiException(200, '伺服器沒有回傳觀看進度');
+    }
+    _rejectIfErrorEnvelope(data);
     final result = <String, WatchTime>{};
     data.forEach((key, value) {
       if (value is Map) {
@@ -331,22 +350,27 @@ class AgpClient {
   Future<WatchTime> watchTime(String sn) async {
     final data = await _json('/watch/time', {'type': 'get', 'sn': sn});
     if (data is! Map) return WatchTime();
+    _rejectIfErrorEnvelope(data);
     return WatchTime.fromJson(data.cast<String, dynamic>());
   }
 
   Future<void> setWatchTime(String sn, int seconds,
       {bool ended = false, int? duration}) async {
-    await _postJson('/watch/time', {
+    final data = await _postJson('/watch/time', {
       'type': 'set',
       'sn': sn,
       'time': seconds,
       'ended': ended,
       if (duration != null && duration > 0) 'duration': duration,
     });
+    // 被擋掉的 POST 也是 200. 不認出來的話這一筆就當作送成功了, 欠帳被銷掉,
+    // 進度其實從來沒離開過這支手機
+    if (data is Map) _rejectIfErrorEnvelope(data);
   }
 
   Future<void> deleteWatchTime(String sn) async {
-    await _postJson('/watch/time', {'type': 'del', 'sn': sn});
+    final data = await _postJson('/watch/time', {'type': 'del', 'sn': sn});
+    if (data is Map) _rejectIfErrorEnvelope(data);
   }
 
   // ----------------------------------------------------------------- 邊看邊下

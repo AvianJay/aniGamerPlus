@@ -1238,13 +1238,16 @@ class _WatchPageState extends State<WatchPage>
         duration: duration,
         timestamp: now ~/ 1000,
       ),
-      pending: state.offline,
+      // 只有真的欠著伺服器才記欠帳. 伺服器根本沒在存進度的話這筆債永遠還不掉,
+      // 只會一直堆在磁碟上
+      pending: state.offline && state.watchTimesAreServerBacked,
     );
     if (force) {
       // 切到背景 / 關掉播放器時走這條, 等不了那一秒的 debounce
       await state.flushWatchTimesToDisk();
     }
-    if (state.offline) return;
+    // 沒登入 / 伺服器沒開帳號系統的話, 本機那份就是唯一的一份, 不必再送出去
+    if (!state.canSyncWatchTimes) return;
     try {
       await client.setWatchTime(_sn, seconds,
           ended: ended, duration: duration > 0 ? duration : null);
@@ -1253,10 +1256,8 @@ class _WatchPageState extends State<WatchPage>
         unawaited(state.flushPendingWatchTimes());
       }
     } catch (_) {
-      // 沒登入就沒有伺服器端進度可言; 是斷線的話這一筆要記著, 等下次連上補送
-      if (state.loggedIn || !state.serverInfo.userControl) {
-        state.markWatchTimePending(_sn);
-      }
+      // 斷線了, 這一筆要記著, 等下次連上補送
+      state.markWatchTimePending(_sn);
     }
   }
 
