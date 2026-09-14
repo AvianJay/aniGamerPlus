@@ -9,6 +9,34 @@ on:
       - master
 
 jobs:
+  # tests/ was never run by CI, so it rotted: a whole block still pointed at an
+  # ios/ directory deleted months earlier, and nobody saw the 1 failed +
+  # 3 errors. Run it.
+  test:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install pytest playwright
+
+      - name: Install browser
+        run: python -m playwright install --with-deps chromium
+
+      - name: Run tests
+        run: python -m pytest tests/ -q
+        env:
+          PYTHONIOENCODING: utf-8
+
   build:
     strategy:
       matrix:
