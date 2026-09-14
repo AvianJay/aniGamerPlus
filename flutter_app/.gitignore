@@ -9,7 +9,8 @@
 .flutter-plugins
 .flutter-plugins-dependencies
 build/
-pubspec.lock
+# pubspec.lock 要進版控: 這是一支 app, 不是套件. 不鎖的話 CI 每次都重新解析
+# 相依, 上游隨便發一版就可能讓 build 變紅, 而本機完全複製不出來.
 .pub-cache/
 .pub/
 
