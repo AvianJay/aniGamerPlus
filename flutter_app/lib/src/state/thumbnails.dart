@@ -306,25 +306,30 @@ class ThumbnailStore extends ChangeNotifier {
   Future<File?> _resolve(String sn,
       {required bool poster, String? fallbackUrl}) async {
     for (final url in [urlFor(sn, poster: poster), fallbackUrl]) {
-      if (url == null || url.isEmpty || _failed.contains(url)) continue;
-      final hit = cachedFile(url);
-      if (hit != null) return hit;
-      final file = await _cdnGate.run(() => _download(url, _key(url)));
+      if (url == null || url.isEmpty) continue;
+      // 走 resolveUrl 而不是自己開一筆 _download: 同一部作品的每一集共用同一
+      // 張主視覺, 而 resolve() 的合併鍵是 sn (v1:p / v2:p 是兩把不同的鍵),
+      // 所以自己抓的話同一個網址會被同時抓好幾次 —— 它們算出來的快取檔名是
+      // 一樣的, 於是好幾筆一起寫同一個 .part, 先改名的那個贏, 其他人的 rename
+      // 失敗回 null, 然後那個網址被記進黑名單, 整部作品的封面這一輪就沒了.
+      final file = await resolveUrl(url);
       if (file != null) return file;
-      _failed.add(url);
     }
     final serverKey = 'thumb:$sn';
     if (_failed.contains(serverKey)) return null;
     final hit = cachedServerThumb(sn);
     if (hit != null) return hit;
     if (!_client.hasServer) return null;
-    final file = await _serverGate.run(() => _download(
-          _client.thumbnailUrl(sn).toString(),
-          _key(serverKey),
-          headers: _client.authHeaders,
-        ));
-    if (file == null) _failed.add(serverKey);
-    return file;
+    // 同一個 sn 的 poster 跟 still 兩條路會落在同一個檔名上, 也要合併
+    return _dedupe(serverKey, () async {
+      final file = await _serverGate.run(() => _download(
+            _client.thumbnailUrl(sn).toString(),
+            _key(serverKey),
+            headers: _client.authHeaders,
+          ));
+      if (file == null) _failed.add(serverKey);
+      return file;
+    });
   }
 
   Future<File?> _download(String url, String key,
@@ -339,17 +344,31 @@ class ThumbnailStore extends ChangeNotifier {
       if (bytes.length < 256) return null;
       final dir = await _covers();
       final file = File('${dir.path}/$key.img');
-      // 先寫暫存檔再改名: 半張圖被別人同步讀到的話會變成一個壞掉的 Image.file
-      final temp = File('${file.path}.part');
-      await temp.writeAsBytes(bytes, flush: true);
-      if (file.existsSync()) await file.delete();
-      await temp.rename(file.path);
+      // 先寫暫存檔再改名: 半張圖被別人同步讀到的話會變成一個壞掉的 Image.file.
+      // 暫存檔名要帶一個流水號 —— 只用快取鍵的話, 兩筆同時抓同一張圖的請求會
+      // 寫同一個 .part, 先改名的那個把檔案搬走, 另一個的 rename 直接丟例外.
+      final temp = File('${file.path}.${_tempSeq++}.part');
+      try {
+        await temp.writeAsBytes(bytes, flush: true);
+        if (file.existsSync()) await file.delete();
+        await temp.rename(file.path);
+      } catch (_) {
+        try {
+          if (temp.existsSync()) await temp.delete();
+        } catch (_) {
+          // 清不掉就留給 _trim()
+        }
+        rethrow;
+      }
       unawaited(_trim());
       return file;
     } catch (_) {
       return null;
     }
   }
+
+  /// 暫存檔的流水號. 只要在同一個行程裡不重複就夠了.
+  int _tempSeq = 0;
 
   bool _trimming = false;
 
