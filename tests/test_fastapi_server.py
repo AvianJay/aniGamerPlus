@@ -398,6 +398,158 @@ def test_thumbnail_404_for_unknown_sn(client, autouse_settings, monkeypatch, tmp
     assert client.get('/thumbnail.jpg?id=x').status_code == 400
 
 
+@pytest.fixture
+def anime_info_cache(monkeypatch, tmp_path):
+    """A throwaway ``anime_info/`` directory, plus a cleared manifest memo.
+
+    ``_thumbnail_manifest()`` memoises its body in a module global keyed on
+    ``(filename, mtime)``; clearing it through ``monkeypatch`` keeps one test
+    from being served the previous one's answer, and restores it afterwards.
+
+    Returns ``write(sn, payload, age=0)`` -- ``age`` seconds backdates the
+    file's mtime, which is how the "stale cache is still good enough" case is
+    set up: cover URLs do not expire, so the manifest ignores the TTL that
+    ``_read_anime_info_cache()`` enforces.
+    """
+    cache_dir = tmp_path / 'anime_info'
+    cache_dir.mkdir()
+    monkeypatch.setattr(server.Config, 'get_working_dir', lambda: str(tmp_path))
+    for key in ('stamp', 'body', 'etag'):
+        monkeypatch.setitem(server._THUMBNAIL_MANIFEST, key, None)
+
+    def write(sn, payload, age=0):
+        path = cache_dir / ('%s.json' % sn)
+        path.write_text(json.dumps(payload), encoding='utf-8')
+        if age:
+            stamp = time.time() - age
+            os.utime(path, (stamp, stamp))
+        return path
+
+    return write
+
+
+def anime_info(anime_sn, cover, episodes, video=None):
+    """The slice of an ``anime_info`` cache file the manifest reads."""
+    payload = {'anime': {'animeSn': anime_sn, 'cover': cover,
+                         'episodes': {'0': episodes}}}
+    if video is not None:
+        payload['video'] = video
+    return payload
+
+
+def test_thumbnail_manifest_lists_every_cached_episode(client, autouse_settings,
+                                                       anime_info_cache):
+    anime_info_cache('37000', anime_info(
+        '37000', 'https://cdn.example/poster-37000.jpg',
+        [{'videoSn': '37001', 'cover': 'https://cdn.example/still-37001.jpg'},
+         # The episode table sometimes has no still for the newest episode...
+         {'videoSn': '37002', 'cover': ''}],
+        # ...but this cache file was fetched by asking about 37002, so its
+        # own ``video.cover`` is that episode's image.
+        video={'videoSn': '37002', 'cover': 'https://cdn.example/still-37002.jpg'}))
+
+    response = client.get('/thumbnails.json')
+    assert response.status_code == 200
+    assert response.headers['Content-Type'].startswith('application/json')
+    body = response.json()
+    assert body['generatedAt'] > 0
+    assert body['anime'] == {'37000': 'https://cdn.example/poster-37000.jpg'}
+    assert body['episodes']['37001'] == ['37000', 'https://cdn.example/still-37001.jpg']
+    assert body['episodes']['37002'] == ['37000', 'https://cdn.example/still-37002.jpg']
+
+
+def test_thumbnail_manifest_ignores_the_anime_info_ttl(client, autouse_settings,
+                                                       anime_info_cache):
+    # Rebuilding an expired cache entry would mean calling Bahamut again --
+    # exactly the traffic this endpoint exists to avoid.
+    anime_info_cache('37010', anime_info(
+        '37010', 'https://cdn.example/poster-37010.jpg',
+        [{'videoSn': '37011', 'cover': 'https://cdn.example/still-37011.jpg'}]),
+        age=server.ANIME_INFO_TTL * 10)
+
+    body = client.get('/thumbnails.json').json()
+    assert body['anime']['37010'] == 'https://cdn.example/poster-37010.jpg'
+    assert body['episodes']['37011'] == ['37010', 'https://cdn.example/still-37011.jpg']
+
+
+def test_thumbnail_manifest_etag_round_trip(client, autouse_settings, anime_info_cache):
+    anime_info_cache('37020', anime_info(
+        '37020', 'https://cdn.example/poster-37020.jpg',
+        [{'videoSn': '37021', 'cover': 'https://cdn.example/still-37021.jpg'}]))
+
+    first = client.get('/thumbnails.json')
+    assert first.status_code == 200
+    assert first.headers['ETag']
+    assert 'max-age' in first.headers.get('Cache-Control', '')
+
+    again = client.get('/thumbnails.json', headers={'If-None-Match': first.headers['ETag']})
+    assert again.status_code == 304
+
+    head = client.head('/thumbnails.json')
+    assert head.status_code == 200
+    assert head.headers['Content-Length'] == str(len(first.content))
+    assert head.headers['ETag'] == first.headers['ETag']
+
+
+def test_thumbnail_manifest_picks_up_a_newly_cached_episode(client, autouse_settings,
+                                                            anime_info_cache):
+    # A new episode rewrites the same file in place, so a filename-only
+    # fingerprint would leave it out of the manifest forever.
+    anime_info_cache('37030', anime_info(
+        '37030', 'https://cdn.example/poster-37030.jpg',
+        [{'videoSn': '37031', 'cover': 'https://cdn.example/still-37031.jpg'}]), age=60)
+    first = client.get('/thumbnails.json')
+    assert '37032' not in first.json()['episodes']
+
+    anime_info_cache('37030', anime_info(
+        '37030', 'https://cdn.example/poster-37030.jpg',
+        [{'videoSn': '37031', 'cover': 'https://cdn.example/still-37031.jpg'},
+         {'videoSn': '37032', 'cover': 'https://cdn.example/still-37032.jpg'}]))
+
+    second = client.get('/thumbnails.json')
+    assert second.json()['episodes']['37032'] == ['37030',
+                                                  'https://cdn.example/still-37032.jpg']
+    assert second.headers['ETag'] != first.headers['ETag']
+
+
+def test_thumbnail_manifest_survives_a_corrupt_cache_file(client, autouse_settings,
+                                                          anime_info_cache, tmp_path):
+    (tmp_path / 'anime_info' / '37040.json').write_text('{not json', encoding='utf-8')
+    anime_info_cache('37050', anime_info(
+        '37050', 'https://cdn.example/poster-37050.jpg',
+        [{'videoSn': '37051', 'cover': 'https://cdn.example/still-37051.jpg'}]))
+
+    body = client.get('/thumbnails.json').json()
+    assert body['episodes']['37051'] == ['37050', 'https://cdn.example/still-37051.jpg']
+
+
+def test_thumbnail_manifest_is_empty_without_a_cache_dir(client, autouse_settings,
+                                                         monkeypatch, tmp_path):
+    monkeypatch.setattr(server.Config, 'get_working_dir', lambda: str(tmp_path / 'nope'))
+    for key in ('stamp', 'body', 'etag'):
+        monkeypatch.setitem(server._THUMBNAIL_MANIFEST, key, None)
+    body = client.get('/thumbnails.json').json()
+    assert body['anime'] == {}
+    assert body['episodes'] == {}
+
+
+def test_thumbnail_manifest_sits_behind_the_same_door_as_thumbnails(
+        client, autouse_settings, settings, userdata, anime_info_cache):
+    anime_info_cache('37060', anime_info(
+        '37060', 'https://cdn.example/poster-37060.jpg',
+        [{'videoSn': '37061', 'cover': 'https://cdn.example/still-37061.jpg'}]))
+
+    settings['dashboard']['online_watch_requires_login'] = True
+    assert client.get('/thumbnails.json').status_code == 403
+    assert client.get('/thumbnails.json', cookies={'token': 'nope'}).status_code == 403
+    assert client.get('/thumbnails.json',
+                      cookies={'token': 'usertoken456'}).status_code == 200
+
+    settings['dashboard']['online_watch'] = False
+    assert client.get('/thumbnails.json',
+                      cookies={'token': 'usertoken456'}).status_code == 404
+
+
 # ------------------------------------------------- watch page + series
 
 def test_watch_page_renders_with_bootstrap(client, autouse_settings):
