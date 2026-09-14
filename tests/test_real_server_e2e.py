@@ -32,6 +32,7 @@ set ``AGP_HEADLESS=1`` for an unattended run.
 """
 
 import os
+import sys
 import re
 import time
 
@@ -59,12 +60,25 @@ IOS_UA = ('Mozilla/5.0 (iPhone; CPU iPhone OS 17_5 like Mac OS X) '
 # --------------------------------------------------------------------- setup
 
 @pytest.fixture(scope='session')
-def browser(chromium_launcher):
-    headless = os.environ.get('AGP_HEADLESS') == '1'
+def browser(live_server, chromium_launcher):
+    """Headed by default -- this suite is meant to be watched against a real
+    server. ``AGP_HEADLESS=1`` (or any machine with no display) gets headless.
+
+    It depends on ``live_server`` so the skip happens *before* a browser is
+    launched: on a headless CI runner the launch itself dies with "Missing X
+    server or $DISPLAY", which is an error, not a skip.
+    """
+    headless = os.environ.get('AGP_HEADLESS') == '1' or not _has_display()
     slow_mo = int(os.environ.get('AGP_SLOWMO') or (0 if headless else 120))
     instance = chromium_launcher(headless=headless, slow_mo=slow_mo)
     yield instance
     instance.close()
+
+
+def _has_display():
+    if sys.platform in ('win32', 'darwin'):
+        return True
+    return bool(os.environ.get('DISPLAY') or os.environ.get('WAYLAND_DISPLAY'))
 
 
 @pytest.fixture(scope='session')
