@@ -12,6 +12,7 @@ import 'dart:io';
 import 'package:agp_mobile/src/api/client.dart';
 import 'package:agp_mobile/src/state/thumbnails.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:http/http.dart' as http;
 import 'package:path_provider_platform_interface/path_provider_platform_interface.dart';
 
 class Paths extends PathProviderPlatform {
@@ -161,6 +162,46 @@ void main() {
     }
     fail('等不到: $reason');
   }
+
+  // TODO(probe): 暫時的, 拿到 CI 的輸出就刪掉
+  test('PROBE', () async {
+    final log = StringBuffer();
+    final sw = Stopwatch()..start();
+    Future<void> step(String what, Future<void> Function() body) async {
+      try {
+        await body().timeout(const Duration(seconds: 6));
+        log.write('$what=${sw.elapsedMilliseconds}ms ');
+      } catch (error) {
+        log.write('$what=BOOM(${error.runtimeType}) ');
+      }
+    }
+
+    await step('write1', () async {
+      await File('${temp.path}/probe1.bin').writeAsBytes(fakeJpeg(1), flush: true);
+    });
+    final probe = http.Client();
+    addTearDown(probe.close);
+    await step('get', () async {
+      final response = await probe.get(Uri.parse('${cdn.url}/still-v1.jpg'));
+      log.write('[${response.statusCode}/${response.bodyBytes.length}] ');
+    });
+    await step('write2', () async {
+      await File('${temp.path}/probe2.bin').writeAsBytes(fakeJpeg(2), flush: true);
+    });
+    await step('write3-noflush', () async {
+      await File('${temp.path}/probe3.bin').writeAsBytes(fakeJpeg(3));
+    });
+    await step('covers', () async {
+      final dir = Directory('${temp.path}/covers');
+      if (!dir.existsSync()) await dir.create(recursive: true);
+      await File('${dir.path}/probe4.img').writeAsBytes(fakeJpeg(4), flush: true);
+    });
+    await step('refresh', () => store.refresh());
+    await step('resolve', () async {
+      log.write('[${(await store.resolve('v1'))?.path}] ');
+    });
+    fail('PROBE $log');
+  });
 
   test('清單解析: 劇照優先, 沒有就退回主視覺', () async {
     await store.refresh();
