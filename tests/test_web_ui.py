@@ -1521,6 +1521,111 @@ def test_no_stale_framework_assets_are_referenced():
     assert missing == [], missing
 
 
+# ----------------------------------------------------------------- 控制中心
+
+# The settings page reads config.json into module-level globals, splits the
+# proxy string into five form fields and joins them back on save. Every one of
+# these tests is a round trip, because the bug that motivated them only shows
+# up on the *second* visit: a value the page writes but cannot read back.
+
+def open_control(page, server):
+    page.goto(server.url + '/control', wait_until='networkidle')
+    page.wait_for_function("() => typeof dataArrays !== 'undefined' && dataArrays")
+    page.wait_for_timeout(250)
+    return page
+
+
+def save_settings(page):
+    page.evaluate("() => document.querySelector('button[onclick=\"readSettings()\"]').click()")
+    page.wait_for_timeout(600)
+
+
+def test_settings_page_round_trips_a_proxy_with_credentials(page):
+    with HarnessServer(proxy='http://user:passwd@example.com:1000') as server:
+        open_control(page, server)
+        assert page.locator('#proxy_ip').input_value() == 'example.com'
+        assert page.locator('#proxy_port').input_value() == '1000'
+        assert page.locator('#proxy_user').input_value() == 'user'
+        save_settings(page)
+        assert page.errors == []
+        assert server.settings['uploads'], '保存沒有送出任何請求'
+        assert server.settings['config']['proxy'] == 'http://user:passwd@example.com:1000'
+
+
+def test_a_password_containing_an_at_sign_survives_a_save(page):
+    """The credentials are split on the *last* ``@``; splitting on the first one
+    silently rewrote the password every time the page was opened."""
+    with HarnessServer(proxy='socks5://user:p@ss@127.0.0.1:1080') as server:
+        open_control(page, server)
+        assert page.locator('#proxy_passwd').input_value() == 'p@ss'
+        assert page.locator('#proxy_ip').input_value() == '127.0.0.1'
+        save_settings(page)
+        assert page.errors == []
+        assert server.settings['config']['proxy'] == 'socks5://user:p@ss@127.0.0.1:1080'
+
+
+def test_settings_can_be_saved_on_a_server_with_no_proxy(page):
+    """``proxy: ""`` is how a config says "no proxy", and it is what the page
+    itself writes when the fields are empty. It used to leave the protocol
+    picker on no selection at all, so ``.val()`` was null and the save handler
+    threw before it sent anything -- a save button that did nothing, with no
+    error either."""
+    with HarnessServer(proxy='') as server:
+        open_control(page, server)
+        save_settings(page)
+        assert page.errors == []
+        assert server.settings['uploads'], '保存沒有送出任何請求'
+        assert server.settings['config']['proxy'] == ''
+
+
+def test_clearing_the_proxy_fields_leaves_a_config_the_page_can_reopen(page):
+    """Clearing the fields used to save ``http://:``. Reopening the page then
+    threw while parsing it, so the form stayed on its HTML defaults -- and the
+    next save wrote those defaults over the whole config."""
+    with HarnessServer(proxy='http://user:passwd@example.com:1000') as server:
+        open_control(page, server)
+        for field in ['proxy_ip', 'proxy_port', 'proxy_user', 'proxy_passwd']:
+            page.fill('#' + field, '')
+        save_settings(page)
+        assert page.errors == []
+        assert server.settings['config']['proxy'] == ''
+
+        before = dict(server.settings['config'])
+        open_control(page, server)
+        assert page.errors == [], '重開設定頁時炸了, 表單會停在 HTML 預設值上'
+        # The form is populated from the config, not from the markup.
+        assert page.locator('#ua').input_value() == before['ua']
+        save_settings(page)
+        assert page.errors == []
+        after = server.settings['config']
+        changed = {k for k in set(before) | set(after) if before.get(k) != after.get(k)}
+        assert changed == set(), '什麼都沒改卻被改掉的設定: %s' % sorted(changed)
+
+
+def test_a_legacy_broken_proxy_string_still_renders_the_form(page):
+    """Configs written by the old page are already out there."""
+    with HarnessServer(proxy='http://:') as server:
+        open_control(page, server)
+        assert page.errors == []
+        assert page.locator('#ua').input_value() == server.settings['config']['ua']
+        save_settings(page)
+        assert page.errors == []
+        assert server.settings['config']['proxy'] == '', '壞掉的代理字串該被收乾淨'
+
+
+def test_a_blank_number_field_keeps_the_configured_value(page):
+    """``Number('')`` is 0, and Config.py clamps these only from above. A saved
+    ``check_frequency: 0`` makes the update loop stop waiting between rounds."""
+    with HarnessServer() as server:
+        original = server.settings['config']['check_frequency']
+        assert original > 0
+        open_control(page, server)
+        page.fill('#check_frequency', '')
+        save_settings(page)
+        assert page.errors == []
+        assert server.settings['config']['check_frequency'] == original
+
+
 # ------------------------------------------------------------- native (iOS) shell
 
 IOS_DIR = os.path.join(ROOT, 'ios')
