@@ -777,6 +777,79 @@ def test_danmu_serves_existing_file(client, autouse_settings, settings, monkeypa
     assert client.get('/get_danmu.ass?id=1').status_code == 200
 
 
+def test_danmu_requires_login_when_configured(client, autouse_settings, settings,
+                                              userdata, monkeypatch, tmp_path):
+    """Every other media route pairs _online_watch_gate with this check; this
+    one did not, so danmaku for any sn was readable without logging in -- and
+    each such request could kick off an outbound Bahamut fetch."""
+    settings['danmu'] = True
+    settings['dashboard']['online_watch_requires_login'] = True
+    ass = tmp_path / 'ep.ass'
+    ass.write_text('[Events]', encoding='utf-8')
+    monkeypatch.setattr(server, '_find_video_entry', lambda sn: None)
+    monkeypatch.setattr(server.Config, 'getpath', lambda sn, kind: str(ass))
+
+    assert client.get('/get_danmu.ass?id=1').status_code == 403
+    assert client.get('/get_danmu.ass?id=1', cookies={'token': 'nope'}).status_code == 403
+    assert client.get('/get_danmu.ass?id=1',
+                      cookies={'token': 'usertoken456'}).status_code == 200
+
+
+def test_danmu_update_is_debounced_even_when_the_fetch_fails(
+        client, autouse_settings, settings, monkeypatch, tmp_path):
+    """The cooldown used to be recorded only on success, so an episode whose
+    danmaku could not be fetched span a fresh outbound thread on *every*
+    request, for ever."""
+    settings['danmu'] = True
+    video = tmp_path / 'ep.mp4'
+    video.write_bytes(b'0')
+    monkeypatch.setattr(server, '_find_video_entry',
+                        lambda sn: {'path': str(video), 'anime_name': 'x'})
+    # Nothing on disk, and the fetch fails -- the worst case.
+    monkeypatch.setattr(server.Config, 'getpath', lambda sn, kind: '')
+    calls = []
+
+    def boom(*a, **k):
+        calls.append(a)
+        raise RuntimeError('bahamut said no')
+
+    monkeypatch.setattr(server, '__get_danmu_only', boom, raising=False)
+    monkeypatch.setattr(server, 'threading', _InlineThreading(server.threading))
+    server.danmu_update_timestamps.clear()
+
+    for _ in range(5):
+        client.get('/get_danmu.ass?id=77')
+    assert len(calls) == 1, 'one outbound fetch per cooldown window, not per request'
+
+    # A failure gets a short cooldown, not the full six hours: a network blip
+    # must not take the episode out for the rest of the day.
+    stamp = server.danmu_update_timestamps['77']
+    waited = int(time.time()) - stamp
+    assert server.DANMU_UPDATE_INTERVAL_SECONDS - waited <= \
+        server.DANMU_RETRY_COOLDOWN_SECONDS + 5
+
+
+class _InlineThreading:
+    """Run Thread(target=...).start() synchronously so the test can assert on
+    what the background work did without sleeping."""
+
+    def __init__(self, real):
+        self._real = real
+
+    def __getattr__(self, name):
+        return getattr(self._real, name)
+
+    def Thread(self, target=None, daemon=None, **kwargs):  # noqa: N802
+        class _Now:
+            def start(self_inner):
+                if target is not None:
+                    target()
+
+            def join(self_inner, timeout=None):
+                pass
+        return _Now()
+
+
 def test_watch_time_round_trip(client, autouse_settings, userdata):
     assert client.post('/watch/time', json={
         'type': 'set', 'sn': '123', 'time': 42, 'duration': 1400,

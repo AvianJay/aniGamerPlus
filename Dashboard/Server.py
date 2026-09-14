@@ -1268,8 +1268,22 @@ def _should_update_danmu(sn):
     return now - last_updated >= DANMU_UPDATE_INTERVAL_SECONDS
 
 
-def _mark_danmu_updated(sn):
-    danmu_update_timestamps[str(sn)] = int(datetime.now().timestamp())
+def _mark_danmu_updated(sn, cooldown=None):
+    """記下這一集下一次可以再問的基準時間.
+
+    cooldown 是想等多久 (秒); 不給就是完整的 DANMU_UPDATE_INTERVAL_SECONDS.
+    抓失敗時用一個短的 —— 網路抖一下不該罰滿六小時, 但也不能完全不罰.
+    """
+    now = int(datetime.now().timestamp())
+    if cooldown is None:
+        danmu_update_timestamps[str(sn)] = now
+    else:
+        danmu_update_timestamps[str(sn)] = (
+            now - DANMU_UPDATE_INTERVAL_SECONDS + max(0, int(cooldown)))
+
+
+# 抓失敗之後多久可以再試一次
+DANMU_RETRY_COOLDOWN_SECONDS = 10 * 60
 
 
 def cache(id, time=600, set=None):
@@ -3043,6 +3057,13 @@ def getsub(request: Request):
     gated = _online_watch_gate(current_settings)
     if gated is not None:
         return gated
+    # 每一支放影音出去的路由都有這一段, 只有這裡漏掉 —— 開了
+    # online_watch_requires_login 的伺服器上, 任何人都能不登入就把任一集的彈幕
+    # 拉走, 而且順手觸發下面那條對外連線
+    if current_settings['dashboard']['online_watch_requires_login']:
+        vaild_user, user_role = verify_user(request.cookies)
+        if not vaild_user:
+            return JSONResponse({"error": "login required"}, status_code=403)
     sn = request.query_params.get('id')
     if current_settings['danmu']:
         video = _find_video_entry(sn)
@@ -3053,13 +3074,27 @@ def getsub(request: Request):
             video_path = video.get('path')
             anime_name = video.get('anime_name')
             if video_path and anime_name and os.path.exists(video_path):
+                # 先佔住冷卻再開執行緒, 不是等它成功才記.
+                #
+                # 以前只有下載成功才 _mark_danmu_updated(), 所以一集只要抓不到
+                # 彈幕 (動畫瘋根本沒有、被擋、網路不通), 冷卻就永遠不會生效:
+                # 之後每一個請求都再開一條新的對外連線, 沒有上限. 手機端的
+                # 「補抓彈幕」正是反覆去問這些集數, 等於自己對自己打.
+                _mark_danmu_updated(sn)
+
                 def _bg_update_danmu(sn=sn, anime_name=anime_name, video_path=video_path):
                     try:
                         __get_danmu_only(sn, anime_name, video_path, False)
                         updated_path = Config.getpath(sn, 'danmu')
                         if updated_path and os.path.exists(updated_path):
+                            # 成功了, 冷卻從現在重新算
                             _mark_danmu_updated(sn)
+                        else:
+                            _mark_danmu_updated(
+                                sn, cooldown=DANMU_RETRY_COOLDOWN_SECONDS)
                     except BaseException as e:
+                        _mark_danmu_updated(
+                            sn, cooldown=DANMU_RETRY_COOLDOWN_SECONDS)
                         err_print(sn, '彈幕更新失敗', '線上觀看請求時自動更新失敗: ' + str(e), status=1, display=True)
                 threading.Thread(target=_bg_update_danmu, daemon=True).start()
 
