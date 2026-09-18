@@ -745,14 +745,11 @@ def __cui(sn, cui_resolution, cui_download_mode, cui_thread_limit, ep_range,
     global danmu
     danmu = cui_danmu
 
-    # 原本這裡直接把全域 thread_limiter 換成 Semaphore(cui_thread_limit):
-    # 網頁手動任務表單預設 thread=1, 送一次任務, 整個程序(包括背景追番)的
-    # 下載併發就永久掉到 1, 之後每個任務都卡在 acquire() 排隊.
-    # 從 Dashboard 進來時(__name__ 不是 __main__)改用「不動全域」—— 手動任務
-    # 直接跟背景追番共用全域 limiter(multi-thread 設定值), 各自排隊互不干擾;
-    # 直接跑 CLI 時行為不變, 還是用命令列指定的執行緒數.
+    # Dashboard 會把 aniGamerPlus 再 import 一次；限制器放在共用的 Config
+    # 模組，手動任務與背景追番才會真的共用同一個全域上限。
+    # CLI 模式仍採用命令列傳入的限制。
     if __name__ == '__main__':
-        globals()['thread_limiter'] = threading.Semaphore(cui_thread_limit)
+        Config.set_download_concurrency_limit(cui_thread_limit)
 
     if realtime_show:
         if cui_thread_limit == 1 or cui_download_mode in ('single', 'latest', 'largest-sn'):
@@ -1210,7 +1207,7 @@ plugin_manager = PluginManager(settings)
 db_path = os.path.join(working_dir, 'aniGamer.db')
 queue = {}  # 储存 sn 相关信息, {'tag': TAG, 'rename': RENAME}, rename,
 processing_queue = []
-thread_limiter = threading.Semaphore(settings['multi-thread'])  # 下载并发限制器
+thread_limiter = Config.get_download_limiter(settings['multi-thread'])  # 全程序共用下载并发限制器
 upload_limiter = threading.Semaphore(settings['multi_upload'])  # 并发上传限制器
 db_locker = threading.Semaphore(1)
 thread_tasks = []
@@ -1242,6 +1239,7 @@ def auto_update_loop():
             sn_dict = Config.read_sn_list()
         if settings['read_config_when_checking_update']:
             settings = Config.read_settings()
+            Config.set_download_concurrency_limit(settings['multi-thread'])
             plugin_manager.reload(settings)
         danmu = settings['danmu']  # 避免手動加入工作時，global 覆寫掉 config 的 danmu 設定
         check_tasks()  # 检查更新，生成任务列队
@@ -1415,7 +1413,7 @@ if __name__ == '__main__':
         if arg.information_only:
             # 为避免排版混乱, 仅显示信息时强制为单线程
             thread_limit = 1
-            thread_limiter = threading.Semaphore(thread_limit)
+            Config.set_download_concurrency_limit(thread_limit)
         else:
             if arg.thread_limit:
                 # 用戶設定并發數

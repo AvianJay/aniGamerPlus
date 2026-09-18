@@ -680,7 +680,11 @@ class AppState extends ChangeNotifier {
     return rows.map((e) => e.key).toList();
   }
 
-  /// 送出一個手動任務 (加入下載 / 邊看邊下載)
+  Future<void> addSeriesToSnList(String sn) async {
+    await client.addSnToList(sn, mode: 'all');
+  }
+
+  /// 送出一個立即執行的手動任務 (單集下載 / 邊看邊下載)
   Future<void> startServerDownload(
     String sn, {
     String resolution = '1080',

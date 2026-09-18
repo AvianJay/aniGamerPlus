@@ -37,12 +37,14 @@ class _Memo<T> {
 }
 
 class AgpClient {
-  AgpClient({required String baseUrl, this.token}) : _base = _normalize(baseUrl);
+  AgpClient({required String baseUrl, this.token, http.Client? httpClient})
+      : _base = _normalize(baseUrl),
+        _http = httpClient ?? http.Client();
 
   String _base;
   String? token;
 
-  final http.Client _http = http.Client();
+  final http.Client _http;
 
   /// 劇集表跟可選畫質在一次觀看裡會被問很多次: 開播放頁一次, 換一集再一次,
   /// 觀看紀錄那一頁又一次. 內容幾乎不會在這段時間裡變, 伺服器端也已經在快取,
@@ -147,8 +149,12 @@ class AgpClient {
     var message = '伺服器回應 ${response.statusCode}';
     try {
       final body = jsonDecode(response.body);
-      if (body is Map && body['error'] != null) message = body['error'].toString();
-      if (body is Map && body['message'] != null) message = body['message'].toString();
+      if (body is Map && body['error'] != null) {
+        message = body['error'].toString();
+      }
+      if (body is Map && body['message'] != null) {
+        message = body['message'].toString();
+      }
     } catch (_) {
       // 不是 JSON, 用預設訊息就好
     }
@@ -599,6 +605,13 @@ class AgpClient {
       body: utf8.encode(text),
     );
     if (response.statusCode >= 400) _fail(response);
+  }
+
+  Future<void> addSnToList(String sn, {String mode = 'all'}) async {
+    await _postJson('/sn_list/add', {
+      'sn': sn,
+      'mode': mode,
+    });
   }
 
   /// 手動任務. 首頁的「邊看邊下載」也是打這一支, 只是 mode 固定 single.

@@ -124,6 +124,7 @@ def test_request_body_larger_than_global_limit_is_rejected(client):
 @pytest.mark.parametrize('path', [
     '/uploadConfig',
     '/manualTask',
+    '/sn_list/add',
     '/console/command',
 ])
 def test_admin_json_routes_authenticate_before_parsing_body(
@@ -470,6 +471,29 @@ def test_sn_list_off_event_loop(client, autouse_settings, settings,
     r = client.post('/sn_list', content='111 all',
                     cookies={'token': 'admintoken123'})
     assert r.text == '{"status":"200"}'
+    assert record.get('calls', 0) >= 1
+    assert record.get('has_loop') is False
+
+
+def test_sn_list_add_off_event_loop(client, autouse_settings, settings,
+                                    userdata, monkeypatch):
+    settings['dashboard']['user_control']['enabled'] = True
+    record = {}
+
+    def wrapped(*args, **kwargs):
+        try:
+            asyncio.get_running_loop()
+            record['has_loop'] = True
+        except RuntimeError:
+            record['has_loop'] = False
+        record['calls'] = record.get('calls', 0) + 1
+        return {'added': True, 'updated': False}
+
+    monkeypatch.setattr(server.Config, 'add_sn_to_list', wrapped)
+    monkeypatch.setattr(server, 'checknow', lambda: None)
+    r = client.post('/sn_list/add', json={'sn': '222', 'mode': 'all'},
+                    cookies={'token': 'admintoken123'})
+    assert r.status_code == 200
     assert record.get('calls', 0) >= 1
     assert record.get('has_loop') is False
 

@@ -42,6 +42,92 @@ def test_sn_list_write_is_atomic(config_paths):
     assert sn_list.read_text(encoding='utf-8') == '67890 latest\n'
 
 
+def test_add_sn_to_list_is_idempotent_and_preserves_metadata(config_paths):
+    _, sn_list = config_paths
+    Config.write_sn_list(
+        '@season\n'
+        '12345 latest <自訂名稱> # keep this\n'
+        '# Ended: 67890 all\n'
+    )
+
+    assert Config.add_sn_to_list('12345', 'all') == {
+        'added': False, 'updated': True}
+    assert Config.add_sn_to_list('12345', 'all') == {
+        'added': False, 'updated': False}
+    assert Config.add_sn_to_list('67890', 'all') == {
+        'added': True, 'updated': False}
+    assert sn_list.read_text(encoding='utf-8') == (
+        '@season\n'
+        '12345 all <自訂名稱> # keep this\n'
+        '# Ended: 67890 all\n'
+        '@\n'
+        '67890 all\n'
+    )
+
+
+def test_concurrent_sn_list_additions_do_not_overwrite_each_other(config_paths):
+    _, sn_list = config_paths
+    threads = [
+        threading.Thread(target=Config.add_sn_to_list, args=(str(10000 + i),))
+        for i in range(20)
+    ]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join(timeout=10)
+
+    assert sorted(sn_list.read_text(encoding='utf-8').splitlines()) == [
+        str(10000 + i) + ' all' for i in range(20)
+    ]
+
+
+def test_download_limiter_can_grow_and_shrink_without_losing_permits():
+    limiter = Config._ResizableSemaphore(2)
+    limiter.acquire()
+    limiter.acquire()
+
+    grew = threading.Event()
+
+    def enter_after_grow():
+        limiter.acquire()
+        grew.set()
+        limiter.release()
+
+    grow_waiter = threading.Thread(target=enter_after_grow)
+    grow_waiter.start()
+    assert not grew.wait(0.05)
+    limiter.set_limit(3)
+    assert grew.wait(1)
+    grow_waiter.join(timeout=1)
+
+    limiter.set_limit(1)
+    shrank = threading.Event()
+
+    def enter_after_shrink():
+        limiter.acquire()
+        shrank.set()
+        limiter.release()
+
+    shrink_waiter = threading.Thread(target=enter_after_shrink)
+    shrink_waiter.start()
+    limiter.release()
+    assert not shrank.wait(0.05)
+    limiter.release()
+    assert shrank.wait(1)
+    shrink_waiter.join(timeout=1)
+
+
+def test_download_limiter_is_shared_and_runtime_setting_updates_it(monkeypatch):
+    monkeypatch.setattr(Config, '_download_limiter', None)
+    from_main = Config.get_download_limiter(3)
+    from_dashboard_import = Config.get_download_limiter(1)
+
+    assert from_dashboard_import is from_main
+    assert from_main.limit == 3
+    assert Config.set_download_concurrency_limit(1) == 1
+    assert from_dashboard_import.limit == 1
+
+
 def test_no_temp_files_are_left_behind(config_paths, tmp_path):
     _, sn_list = config_paths
     Config.write_sn_list('12345 all\n')

@@ -40,9 +40,8 @@
         return document.getElementById(id);
     }
 
-    /* Downloads go through /manualTask, which is admin-only whenever the user
-       system is on. Offering a button the server will refuse is worse than
-       offering none. */
+    /* Download and sn_list writes are admin-only whenever the user system is
+       on. Offering a button the server will refuse is worse than offering none. */
     function canDownload() {
         var info = dashboardApi.getServerInfoSnapshot ? dashboardApi.getServerInfoSnapshot() : null;
         if (!info || !info.user_control) { return true; }
@@ -484,7 +483,27 @@
 
     var toast = AGP.toast;
 
+    async function addSeriesToSnList(videoSn) {
+        try {
+            var response = await fetch('./sn_list/add', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json;charset=utf-8' },
+                body: JSON.stringify({ sn: videoSn, mode: 'all' })
+            });
+            if (!response.ok) { throw response.status; }
+        } catch (status) {
+            toast(status === 401 || status === 403
+                ? '需要管理員權限才能更新 sn_list。' : '加入 sn_list 失敗。');
+            return false;
+        }
+        toast('已加入 sn_list，會依最大併發數排程下載。');
+        return true;
+    }
+
     async function queueDownload(videoSn, mode) {
+        if (mode === 'all') {
+            return addSeriesToSnList(videoSn);
+        }
         var picker = el('catalogResolution');
         var payload = {
             sn: videoSn,
@@ -506,7 +525,7 @@
             return false;
         }
         state.queued[videoSn] = true;
-        toast(mode === 'all' ? '已加入下載佇列，整部作品開始排隊。' : '已加入下載佇列。');
+        toast('已加入下載佇列。');
         renderSheet();
         return true;
     }

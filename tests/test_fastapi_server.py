@@ -1036,6 +1036,29 @@ def test_upload_config_and_sn_list(client, autouse_settings, settings, userdata,
     assert sn_written['c'] == '111 all'
     assert client.get('/data/sn_list', cookies={'token': 'admintoken123'}).status_code == 200
 
+    added = {}
+    triggered = []
+
+    def fake_add_sn(sn, mode):
+        if not str(sn).isdigit():
+            raise ValueError('sn must be a positive integer')
+        added.update(sn=sn, mode=mode)
+        return {'added': True, 'updated': False}
+
+    monkeypatch.setattr(server.Config, 'add_sn_to_list', fake_add_sn)
+    monkeypatch.setattr(server, 'checknow', lambda: triggered.append(True))
+    response = client.post(
+        '/sn_list/add',
+        json={'sn': '222', 'mode': 'all'},
+        cookies={'token': 'admintoken123'})
+    assert response.json() == {'status': 200, 'added': True, 'updated': False}
+    assert added == {'sn': '222', 'mode': 'all'}
+    assert triggered == [True]
+    assert client.post(
+        '/sn_list/add',
+        json={'sn': '../bad', 'mode': 'all'},
+        cookies={'token': 'admintoken123'}).status_code == 400
+
 
 def test_checknow_and_console_command(client, autouse_settings, settings, userdata, monkeypatch):
     settings['dashboard']['user_control']['enabled'] = True

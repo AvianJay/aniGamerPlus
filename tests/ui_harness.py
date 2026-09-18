@@ -486,6 +486,7 @@ WATCH_SERIES_TOTAL = sum(len(g['episodes']) for g in WATCH_SERIES[WATCH_SERIES_L
 # Every task the page queues is kept so a test can assert on the payload rather
 # than on a toast that only says something happened.
 MANUAL_TASKS = []
+SN_LIST_ADDITIONS = []
 
 
 def create_app(logged_in=True, catalog=True, hls=True, proxy=None):
@@ -695,6 +696,20 @@ def create_app(logged_in=True, catalog=True, hls=True, proxy=None):
             body = {}
         MANUAL_TASKS.append(body if isinstance(body, dict) else {})
         return Response('{"status":"200"}', media_type='text/html')
+
+    @app.post('/sn_list/add')
+    async def sn_list_add(request: Request):
+        try:
+            body = await request.json()
+        except Exception:
+            body = {}
+        entry = body if isinstance(body, dict) else {}
+        SN_LIST_ADDITIONS.append(entry)
+        settings_state['sn_list'] += (
+            ('\n' if settings_state['sn_list'] and
+             not settings_state['sn_list'].endswith('\n') else '') +
+            str(entry.get('sn', '')) + ' ' + str(entry.get('mode', 'all')) + '\n')
+        return JSONResponse({'status': 200, 'added': True, 'updated': False})
 
     @app.get('/manualTask/_seen')
     def manual_tasks_seen():

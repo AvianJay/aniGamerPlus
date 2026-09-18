@@ -124,6 +124,24 @@ class _AnimeSheetState extends State<_AnimeSheet> {
 
   // ------------------------------------------------------------------ 下載
 
+  Future<void> _addToSnList(String videoSn) async {
+    if (!state.canManage) {
+      toast(context, '需要管理員權限才能更新 sn_list。');
+      return;
+    }
+    try {
+      await state.addSeriesToSnList(videoSn);
+    } on ApiException catch (error) {
+      toast(context, error.needsLogin ? '需要管理員權限才能更新 sn_list。' : '加入 sn_list 失敗。');
+      return;
+    } catch (_) {
+      toast(context, '加入 sn_list 失敗。');
+      return;
+    }
+    if (!mounted) return;
+    toast(context, '已加入 sn_list，會依最大併發數排程下載。');
+  }
+
   Future<bool> _queue(String videoSn, String mode) async {
     if (!state.canManage) {
       toast(context, '需要管理員權限才能下載。');
@@ -378,7 +396,7 @@ class _AnimeSheetState extends State<_AnimeSheet> {
         ));
       }
       buttons.add(OutlinedButton.icon(
-        onPressed: currentSn.isEmpty ? null : () => _queue(currentSn, 'all'),
+        onPressed: currentSn.isEmpty ? null : () => _addToSnList(currentSn),
         icon: const Icon(Icons.playlist_add_rounded, size: 19),
         label: const Text('加入下載'),
       ));

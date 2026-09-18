@@ -6,7 +6,7 @@
 # @Software: PyCharm
 # @Forked  : AvianJay
 
-import os, json, re, sys, requests, time, random, codecs, chardet
+import os, json, re, sys, requests, time, random, codecs, chardet, threading
 import tempfile
 import sqlite3
 import socket
@@ -62,6 +62,70 @@ max_multi_thread = 5
 max_multi_downloading_segment = 5
 current_sn_list_all = {}
 tasks_progress_rate = {}  # 储存任务进度, 供面板使用,
+_sn_list_lock = threading.RLock()
+
+
+class _ResizableSemaphore:
+    """A process-wide download gate whose limit can change at runtime.
+
+    ``threading.Semaphore`` cannot be resized safely. The dashboard can update
+    config.json while the process is running, and aniGamerPlus is also imported
+    once more by Dashboard.Server when the main file was launched as
+    ``__main__``. Keeping this gate in Config makes both module instances share
+    one real concurrency limit.
+    """
+
+    def __init__(self, limit):
+        self._condition = threading.Condition()
+        self._limit = max(1, int(limit))
+        self._active = 0
+
+    def acquire(self):
+        with self._condition:
+            while self._active >= self._limit:
+                self._condition.wait()
+            self._active += 1
+            return True
+
+    def release(self):
+        with self._condition:
+            if self._active <= 0:
+                raise ValueError('download limiter released too many times')
+            self._active -= 1
+            self._condition.notify_all()
+
+    def set_limit(self, limit):
+        with self._condition:
+            self._limit = max(1, int(limit))
+            self._condition.notify_all()
+
+    @property
+    def limit(self):
+        with self._condition:
+            return self._limit
+
+    @property
+    def active(self):
+        with self._condition:
+            return self._active
+
+
+_download_limiter_lock = threading.Lock()
+_download_limiter = None
+
+
+def get_download_limiter(initial_limit=1):
+    global _download_limiter
+    with _download_limiter_lock:
+        if _download_limiter is None:
+            _download_limiter = _ResizableSemaphore(initial_limit)
+        return _download_limiter
+
+
+def set_download_concurrency_limit(limit):
+    limiter = get_download_limiter(limit)
+    limiter.set_limit(limit)
+    return limiter.limit
 
 
 # 格式: {sn: {'rate': 任务进度百分比(float), 'status': 任务状态, 'filename': 文件名} }
@@ -105,10 +169,11 @@ def get_config_path():
 
 def get_sn_list_content():
     # 返回 sn_list 所有内容, 包括注释, 提供给 Web 控制台
-    if not os.path.exists(sn_list_path):
-        return ""
-    with open(sn_list_path, 'r', encoding='utf-8') as f:
-        return f.read()
+    with _sn_list_lock:
+        if not os.path.exists(sn_list_path):
+            return ""
+        with open(sn_list_path, 'r', encoding='utf-8') as f:
+            return f.read()
 
 
 def __init_settings():
@@ -1127,7 +1192,69 @@ def write_settings(web_config):
 
 
 def write_sn_list(sn_list_content):
-    __atomic_write(sn_list_path, sn_list_content)
+    with _sn_list_lock:
+        __atomic_write(sn_list_path, sn_list_content)
+
+
+def add_sn_to_list(sn, mode='all'):
+    """Add or update one active entry without a read/modify/write race.
+
+    The detail pages use ``all`` so the series remains tracked for future
+    episodes. Existing comments, category markers and custom names are kept;
+    an existing entry is upgraded in place instead of being duplicated.
+    """
+    sn = str(sn).strip()
+    if not re.fullmatch(r'\d+', sn) or int(sn) <= 0:
+        raise ValueError('sn must be a positive integer')
+    if mode not in ('all', 'latest', 'largest-sn'):
+        raise ValueError('unsupported sn_list mode')
+
+    with _sn_list_lock:
+        content = get_sn_list_content()
+        had_final_newline = content.endswith(('\n', '\r'))
+        newline = '\r\n' if '\r\n' in content else '\n'
+        lines = content.splitlines()
+        changed = False
+        added = False
+
+        for index, line in enumerate(lines):
+            match = re.match(r'^(\s*)(\d+)(?=\s|$)(.*)$', line)
+            if not match or match.group(2) != sn:
+                continue
+
+            prefix, rest = match.group(1), match.group(3)
+            mode_match = re.match(
+                r'^(\s+)(all|latest|largest-sn)(?=\s|$)(.*)$', rest)
+            if mode_match:
+                replacement = mode_match.group(1) + mode + mode_match.group(3)
+            else:
+                replacement = ' ' + mode + rest
+            updated = prefix + sn + replacement
+            if updated != line:
+                lines[index] = updated
+                changed = True
+            break
+        else:
+            # @分類會一路影響後續行；詳情頁沒有讓使用者挑分類，因此先明確
+            # 回到未分類，避免新作品意外繼承檔案最後一段的標籤。
+            active_tag = False
+            for line in lines:
+                if re.match(r'^@.+', line):
+                    active_tag = True
+                elif re.match(r'^@\s*$', line):
+                    active_tag = False
+            if active_tag:
+                lines.append('@')
+            lines.append(sn + ' ' + mode)
+            changed = True
+            added = True
+
+        if changed:
+            updated_content = newline.join(lines)
+            if lines and (had_final_newline or added):
+                updated_content += newline
+            __atomic_write(sn_list_path, updated_content)
+        return {'added': added, 'updated': changed and not added}
 
 
 def __atomic_write(path, text):

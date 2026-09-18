@@ -33,6 +33,7 @@ from ui_harness import (  # noqa: E402
     HLS_STATE,
     HLS_STATE_DEFAULT,
     MANUAL_TASKS,
+    SN_LIST_ADDITIONS,
     NO_SERIES_INFO_ANIME,
     WATCH_TIMES,
     WATCH_SERIES_STREAMING,
@@ -487,38 +488,33 @@ def test_catalog_sheet_shows_the_rest_of_a_long_series_on_request(page, server):
     assert page.errors == []
 
 
-def test_catalog_queues_a_download_with_everything_the_server_needs(page, server):
+def test_catalog_tracks_series_but_keeps_single_episode_download_manual(page, server):
     del MANUAL_TASKS[:]
+    del SN_LIST_ADDITIONS[:]
     sheet = open_sheet(page, server, CATALOG_ALL[3]['animeSn'])
 
     sheet.locator('.agp-select').select_option('720')
     sheet.locator('button[data-download]').click()
-    expect(page.locator('#agpToast.is-on')).to_contain_text('已加入下載佇列')
+    expect(page.locator('#agpToast.is-on')).to_contain_text('已加入 sn_list')
 
-    # /manualTask reads all six keys straight out of the body and KeyErrors on
-    # any one that is missing, so the payload shape is the contract.
-    assert len(MANUAL_TASKS) == 1
-    whole = MANUAL_TASKS[0]
-    assert sorted(whole) == ['classify', 'danmu', 'mode', 'resolution', 'sn', 'thread']
-    assert whole['sn'] == CATALOG_ALL[3]['videoSn']
-    assert whole['resolution'] == '720'
-    assert whole['mode'] == 'all'
+    assert MANUAL_TASKS == []
+    assert SN_LIST_ADDITIONS == [{
+        'sn': CATALOG_ALL[3]['videoSn'],
+        'mode': 'all',
+    }]
 
-    # Tapping one episode queues that episode alone -- and then becomes the way
+    # Tapping one episode still queues that episode alone -- and then becomes the way
     # in to watch it, because the moment it is queued there is something to play.
-    # Episode 1 carries the series' own sn, so the 整部下載 above already turned
-    # it into a link; the first episode still rendered as a button is the one
-    # nobody has queued yet.
     episode = sheet.locator('.agp-ep[data-episode]').first
     tapped = episode.get_attribute('data-episode')
     episode.click()
     expect(sheet.locator('.agp-ep.is-queued[href*="id=%s"]' % tapped)).to_have_attribute(
         'href', re.compile(r'watch\?id=\d+&streaming=1'))
-    assert len(MANUAL_TASKS) == 2
-    assert MANUAL_TASKS[1]['mode'] == 'single'
+    assert len(MANUAL_TASKS) == 1
+    assert MANUAL_TASKS[0]['mode'] == 'single'
     # The episode that was tapped, not merely "some episode": queueing the wrong
     # one still leaves a task in the list and still lights up a chip.
-    assert MANUAL_TASKS[1]['sn'] == tapped
+    assert MANUAL_TASKS[0]['sn'] == tapped
     assert page.errors == []
 
 

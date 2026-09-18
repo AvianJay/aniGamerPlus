@@ -2066,6 +2066,10 @@ def _recv_config_blocking(request, data):
         else:
             new_settings[id] = data[id]  # 更新配置
     Config.write_settings(new_settings)  # 保存配置
+    # Semaphore 在程序啟動時建立的舊作法不會跟著 config.json 改變。這個 gate
+    # 由 Config 共用，背景追番與 Web 手動任務會立即看到相同的新上限。
+    Config.set_download_concurrency_limit(
+        Config.read_settings()['multi-thread'])
     _invalidate_settings_cache()
     _sync_plugin_manager(force=True)
     err_print(0, 'Dashboard', '通過 Web 控制臺更新了 config.json', no_sn=True, status=2)
@@ -2160,6 +2164,36 @@ def _set_sn_list_blocking(request, data):
     Config.write_sn_list(data)
     err_print(0, 'Dashboard', '通過 Web 控制臺更新了 sn_list', no_sn=True, status=2)
     return _html_response('{"status":"200"}')
+
+
+@app.post('/sn_list/add')
+async def add_sn_list_entry(request: Request):
+    denied = await run_in_threadpool(_admin_api_preflight, request)
+    if denied is not None:
+        return denied
+    try:
+        data = await request.json()
+    except Exception:
+        return JSONResponse({'detail': 'Invalid JSON body'}, status_code=400)
+    return await run_in_threadpool(_add_sn_list_entry_blocking, request, data)
+
+
+def _add_sn_list_entry_blocking(request, data):
+    current_settings = _get_current_settings()
+    denied = _admin_api_guard(request, current_settings)
+    if denied is not None:
+        return denied
+    try:
+        result = Config.add_sn_to_list(data.get('sn', ''), data.get('mode', 'all'))
+    except (AttributeError, TypeError, ValueError) as error:
+        return JSONResponse({'detail': str(error)}, status_code=400)
+    err_print(
+        0, 'Dashboard',
+        '通過 Web／App 將 sn=' + str(data.get('sn')) + ' 加入 sn_list',
+        no_sn=True, status=2)
+    # 預設設定會在這一輪重新讀 sn_list，毋須等完整的檢查週期。
+    checknow()
+    return JSONResponse({'status': 200, **result})
 
 
 @app.get('/checknow')

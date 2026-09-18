@@ -9,14 +9,18 @@
 /// 伺服器, 留下來的 timeout Timer 還會把測試弄壞.
 library;
 
+import 'dart:convert';
 import 'dart:io';
 
+import 'package:agp_mobile/src/api/client.dart';
 import 'package:agp_mobile/src/api/models.dart';
 import 'package:agp_mobile/src/pages/anime_sheet.dart';
 import 'package:agp_mobile/src/state/app_state.dart';
 import 'package:agp_mobile/src/state/downloads.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:http/http.dart' as http;
+import 'package:http/testing.dart';
 import 'package:path_provider_platform_interface/path_provider_platform_interface.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
@@ -123,6 +127,27 @@ void main() {
   ListTile tileOf(WidgetTester tester, String title) => tester.widget<ListTile>(
         find.ancestor(of: find.text(title), matching: find.byType(ListTile)),
       );
+
+  test('作品詳情加入下載只新增 all 模式到 sn_list', () async {
+    http.Request? sent;
+    final client = AgpClient(
+      baseUrl: 'http://example.test',
+      httpClient: MockClient((request) async {
+        sent = request;
+        return http.Response(
+          '{"status":200,"added":true,"updated":false}',
+          HttpStatus.ok,
+          headers: {'content-type': 'application/json'},
+        );
+      }),
+    );
+
+    await client.addSnToList('12345', mode: 'all');
+
+    expect(sent?.method, 'POST');
+    expect(sent?.url.path, '/sn_list/add');
+    expect(jsonDecode(sent!.body), {'sn': '12345', 'mode': 'all'});
+  });
 
   testWidgets('伺服器上還沒有的集數, 長按照樣給得出「下載單集到手機」', (tester) async {
     await open(tester, 'sheet-a', [
