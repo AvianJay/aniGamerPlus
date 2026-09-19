@@ -79,55 +79,55 @@ def build_anime(sn):
 
 
 def read_db_all():
+    # db_locker 是全程序唯一的 Semaphore(1). 原本只在 IndexError 的路徑上 release,
+    # 任何其它例外(資料庫鎖住、欄位是 NULL、磁碟滿…)都會把它永久吃掉, 之後每一個
+    # 讀寫資料庫的動作都會卡在 acquire() 上 —— 看起來就是「下載完全停住」.
+    # 一律 try/finally, 連 connect() 失敗都要還鎖.
     db_locker.acquire()
-    conn = sqlite3.connect(db_path)
-    cursor = conn.cursor()
-
-    cursor.execute("select * FROM anime")
-
+    conn = None
+    cursor = None
     try:
+        conn = sqlite3.connect(db_path)
+        cursor = conn.cursor()
+
+        cursor.execute("select * FROM anime")
         values = cursor.fetchall()
-    except IndexError as e:
-        cursor.close()
-        conn.close()
+
+        anime_db = [0] * len(values)
+        for i in range(len(values)):
+            anime_db[i] = {'sn': values[i][0],
+                           'title': values[i][1],
+                           'anime_name': values[i][2],
+                           'episode': values[i][3],
+                           'status': values[i][4],
+                           'remote_status': values[i][5],
+                           'resolution': values[i][6],
+                           'file_size': values[i][7],
+                           'local_file_path': values[i][8],
+                           'timestamp': int(datetime.strptime(values[i][9], "%Y-%m-%d %H:%M:%S").timestamp())}
+        return anime_db
+    finally:
+        if cursor is not None:
+            cursor.close()
+        if conn is not None:
+            conn.close()
         db_locker.release()
-        raise e
-
-    anime_db = [0] * len(values)
-    for i in range(len(values)):
-        anime_db[i] = {'sn': values[i][0],
-                       'title': values[i][1],
-                       'anime_name': values[i][2],
-                       'episode': values[i][3],
-                       'status': values[i][4],
-                       'remote_status': values[i][5],
-                       'resolution': values[i][6],
-                       'file_size': values[i][7],
-                       'local_file_path': values[i][8],
-                       'timestamp': int(datetime.strptime(values[i][9], "%Y-%m-%d %H:%M:%S").timestamp())}
-
-    cursor.close()
-    conn.close()
-    db_locker.release()
-    return anime_db
 
 
 def read_db(sn):
-    db_locker.acquire()
     # 传入sn(int)，读取该 sn 资料，返回 dict
-    conn = sqlite3.connect(db_path)
-    cursor = conn.cursor()
-
-    cursor.execute("select * FROM anime WHERE sn=:sn", {'sn': sn})
-
+    # 查無此筆仍然照舊丟 IndexError, 呼叫端(check_tasks)靠它判斷「資料庫還沒有這筆」.
+    db_locker.acquire()
+    conn = None
+    cursor = None
     try:
+        conn = sqlite3.connect(db_path)
+        cursor = conn.cursor()
+
+        cursor.execute("select * FROM anime WHERE sn=:sn", {'sn': sn})
+
         values = cursor.fetchall()[0]
-    except IndexError as e:
-        cursor.close()
-        conn.close()
-        db_locker.release()
-        raise e
-    anime_db = {'sn': values[0],
+        return {'sn': values[0],
                 'title': values[1],
                 'anime_name': values[2],
                 'episode': values[3],
@@ -137,63 +137,81 @@ def read_db(sn):
                 'file_size': values[7],
                 'local_file_path': values[8],
                 'timestamp': int(datetime.strptime(values[9], "%Y-%m-%d %H:%M:%S").timestamp())}
-
-    cursor.close()
-    conn.close()
-    db_locker.release()
-    return anime_db
+    finally:
+        if cursor is not None:
+            cursor.close()
+        if conn is not None:
+            conn.close()
+        db_locker.release()
 
 
 def insert_db(anime):
+    # try 必須緊貼著 acquire(), 連組 anime_dict 都要包進去 —— 那幾個 getter 也是會丟例外的
     db_locker.acquire()
-    # 向数据库插入新资料
-    anime_dict = {'sn': str(anime.get_sn()),
-                  'title': anime.get_title(),
-                  'anime_name': anime.get_bangumi_name(),
-                  'episode': anime.get_episode()}
-
-    conn = sqlite3.connect(db_path)
-    cursor = conn.cursor()
-
+    conn = None
+    cursor = None
     try:
-        cursor.execute("INSERT INTO anime (sn, title, anime_name, episode) VALUES (:sn, :title, :anime_name, :episode)",
-                       anime_dict)
-    except sqlite3.IntegrityError as e:
-        err_print(anime_dict['sn'], 'ＤＢ错误', 'title=' + anime_dict['title'] + ' 数据已存在！' + str(e), status=1)
+        # 向数据库插入新资料
+        anime_dict = {'sn': str(anime.get_sn()),
+                      'title': anime.get_title(),
+                      'anime_name': anime.get_bangumi_name(),
+                      'episode': anime.get_episode()}
 
-    cursor.close()
-    conn.commit()
-    conn.close()
-    db_locker.release()
+        conn = sqlite3.connect(db_path)
+        cursor = conn.cursor()
+
+        try:
+            cursor.execute(
+                "INSERT INTO anime (sn, title, anime_name, episode) VALUES (:sn, :title, :anime_name, :episode)",
+                anime_dict)
+        except sqlite3.IntegrityError as e:
+            err_print(anime_dict['sn'], 'ＤＢ错误', 'title=' + anime_dict['title'] + ' 数据已存在！' + str(e), status=1)
+    finally:
+        if cursor is not None:
+            cursor.close()
+        if conn is not None:
+            conn.commit()
+            conn.close()
+        db_locker.release()
 
 
 def update_db(anime):
+    # try 必須緊貼著 acquire(): 組 anime_dict 的那幾行(get_sn()、None > 5 …)一樣會丟例外,
+    # 在鎖裡面炸掉就等於把全程序唯一的 db_locker 永久吃掉, 之後每個讀寫資料庫的動作
+    # 都會卡在 acquire() 上 —— 表面上看起來就是「下載整個停住」.
     db_locker.acquire()
-    # 更新数据库 status, resolution, file_size 资料
-    anime_dict = {}
-    if anime.video_size > 5:
-        anime_dict['status'] = 1
-    else:
-        # 下载失败
-        anime_dict['status'] = 0
-
-    if anime.upload_succeed_flag:
-        anime_dict['remote_status'] = 1
-    else:
-        anime_dict['remote_status'] = 0
-
-    anime_dict['sn'] = anime.get_sn()
-    anime_dict['title'] = anime.get_title()
-    anime_dict['anime_name'] = anime.get_bangumi_name()
-    anime_dict['episode'] = anime.get_episode()
-    anime_dict['file_size'] = anime.video_size
-    anime_dict['resolution'] = anime.video_resolution
-    anime_dict['local_file_path'] = anime.local_video_path
-
-    conn = sqlite3.connect(db_path)
-    cursor = conn.cursor()
-
+    conn = None
+    cursor = None
     try:
+        # 更新数据库 status, resolution, file_size 资料
+        anime_dict = {}
+        try:
+            # 僅上傳模式下 video_size 是從資料庫塞回來的, 有可能是 None
+            video_size = float(anime.video_size or 0)
+        except (TypeError, ValueError):
+            video_size = 0
+        if video_size > 5:
+            anime_dict['status'] = 1
+        else:
+            # 下载失败
+            anime_dict['status'] = 0
+
+        if anime.upload_succeed_flag:
+            anime_dict['remote_status'] = 1
+        else:
+            anime_dict['remote_status'] = 0
+
+        anime_dict['sn'] = anime.get_sn()
+        anime_dict['title'] = anime.get_title()
+        anime_dict['anime_name'] = anime.get_bangumi_name()
+        anime_dict['episode'] = anime.get_episode()
+        anime_dict['file_size'] = anime.video_size
+        anime_dict['resolution'] = anime.video_resolution
+        anime_dict['local_file_path'] = anime.local_video_path
+
+        conn = sqlite3.connect(db_path)
+        cursor = conn.cursor()
+
         cursor.execute(
             "UPDATE anime SET status=:status,"
             "remote_status=:remote_status,"
@@ -201,17 +219,13 @@ def update_db(anime):
             "file_size=:file_size,"
             "local_file_path=:local_file_path WHERE sn=:sn",
             anime_dict)
-    except IndexError as e:
-        cursor.close()
-        conn.commit()
-        conn.close()
+    finally:
+        if cursor is not None:
+            cursor.close()
+        if conn is not None:
+            conn.commit()
+            conn.close()
         db_locker.release()
-        raise e
-
-    cursor.close()
-    conn.commit()
-    conn.close()
-    db_locker.release()
 
 
 def upload_video(anime, bangumi_tag=''):
@@ -387,114 +401,187 @@ def execute_control_command(raw_command, show_detail=True):
     return {'success': False, 'message': '未知指令，輸入 help 查看可用指令'}
 
 
+def worker_thread(sn, sn_info, realtime_show_file_size=False):
+    # worker() 不管是正常結束、sys.exit() 還是半路丟出沒人接的例外, 這個 sn 都一定要
+    # 離開 queue / processing_queue. 留在裡面的話 auto_update_loop 會永遠認為它「還在跑」
+    # 而不再重新派工 —— 這一集從此不會再被下載, 也不會有任何錯誤訊息.
+    try:
+        worker(sn, sn_info, realtime_show_file_size)
+    except SystemExit:
+        pass  # worker 內部用 sys.exit() 當正常出口
+    except BaseException as e:
+        err_print(sn, '任务失敗', '工作執行緒異常結束, 從任務列隊中移除, 等待下次更新重試: ' + str(e), status=1)
+        err_print(sn, '任务失敗', '異常詳情:\n' + traceback.format_exc(), status=1, display=False)
+    finally:
+        queue.pop(sn, None)
+        if sn in processing_queue:
+            processing_queue.remove(sn)
+
+
 def worker(sn, sn_info, realtime_show_file_size=False):
     bangumi_tag = sn_info['tag']
     rename = sn_info['rename']
 
+    def dequeue():
+        # queue / processing_queue 沒清乾淨的話, 這個 sn 會永遠被 auto_update_loop
+        # 當成「還在跑」而不再重試. 清不掉也不能往上丟例外.
+        try:
+            queue.pop(sn, None)
+        except BaseException:
+            pass
+        try:
+            if sn in processing_queue:
+                processing_queue.remove(sn)
+        except BaseException:
+            pass
+
+    # 兩個併發限制器都用「持有旗標 + 冪等 release」包起來. 上傳插件(OneDrive 配額爆掉、
+    # Graph 回 5xx…)或 update_db 中途丟例外時, 舊寫法會直接把名額漏掉; 漏滿 multi_upload
+    # 個之後所有 worker 都卡在 upload_limiter.acquire(), 追番就再也不會往下跑.
+    limiter_held = {'thread': False, 'upload': False}
+
+    def acquire_upload_limiter():
+        upload_limiter.acquire()
+        limiter_held['upload'] = True
+
+    def release_upload_limiter():
+        if limiter_held['upload']:
+            limiter_held['upload'] = False
+            upload_limiter.release()
+
+    def acquire_thread_limiter():
+        thread_limiter.acquire()
+        limiter_held['thread'] = True
+
+    def release_thread_limiter():
+        if limiter_held['thread']:
+            limiter_held['thread'] = False
+            thread_limiter.release()
+
     def upload_quit():
-        queue.pop(sn)
-        processing_queue.remove(sn)
-        upload_limiter.release()  # 并发上传限制器
+        dequeue()
         sys.exit(0)
 
-    anime_in_db = read_db(sn)
+    try:
+        anime_in_db = read_db(sn)
+    except BaseException as e:
+        # 讀不到就地退出, 但一定要把自己從列隊移除, 否則這個 sn 直接永久卡死
+        dequeue()
+        err_print(sn, '任务失敗', 'ＤＢ讀取失敗, 從任務列隊中移除, 等待下次更新重試: ' + str(e), status=1)
+        err_print(sn, '任务失敗', '異常詳情:\n' + traceback.format_exc(), status=1, display=False)
+        sys.exit(1)
+
     # 如果用户设定要上传且已经下载好了但还没有上传成功, 那么仅上传
     if settings['upload_to_server'] and anime_in_db['status'] == 1 and anime_in_db['remote_status'] == 0:
-        upload_limiter.acquire()  # 并发上传限制器
-        anime = build_anime(sn)
-        if anime['failed']:
-            err_print(sn, '任务失敗', '從任務列隊中移除, 等待下次更新重試.', status=1)
-            upload_quit()
-
-        # 视频信息抓取成功
-        anime = anime['anime']
-        if not os.path.exists(anime_in_db['local_file_path']):
-            # 如果数据库中记录的文件路径已失效
-            update_db(anime)
-            err_msg_detail = 'title=\"' + anime.get_title() + '\" 本地文件丢失, 從任務列隊中移除, 等待下次更新重試.'
-            err_print(sn, '上传失敗', err_msg_detail, status=1)
-            upload_quit()
-
-        anime.local_video_path = anime_in_db['local_file_path']  # 告知文件位置
-        anime.video_size = anime_in_db['file_size']  # 通過 update_db() 下载状态检查
-        anime.video_resolution = anime_in_db['resolution']  # 避免更新时把分辨率变成0
-
+        acquire_upload_limiter()  # 并发上传限制器
         try:
-            if not upload_video(anime, bangumi_tag):  # 如果上传失败
-                err_msg_detail = 'title=\"' + anime.get_title() + '\" 從任務列隊中移除, 等待下次更新重試.'
-                err_print(sn, '上传失敗', err_msg_detail, 1)
-            else:
+            anime = build_anime(sn)
+            if anime['failed']:
+                err_print(sn, '任务失敗', '從任務列隊中移除, 等待下次更新重試.', status=1)
+                upload_quit()
+
+            # 视频信息抓取成功
+            anime = anime['anime']
+            local_file_path = anime_in_db['local_file_path']
+            # local_file_path 可能是 NULL, os.path.exists(None) 會丟 TypeError
+            if not local_file_path or not os.path.exists(local_file_path):
+                # 如果数据库中记录的文件路径已失效
                 update_db(anime)
-                err_print(sn, '任務完成', status=2)
-        except BaseException as e:
-            err_msg_detail = 'title=\"' + anime.get_title() + '\" 發生未知錯誤, 等待下次更新重試: ' + str(e)
-            err_print(sn, '上傳失敗', '異常詳情:\n' + traceback.format_exc(), status=1, display=False)
-            err_print(sn, '上傳失敗', err_msg_detail, 1)
+                err_msg_detail = 'title=\"' + anime.get_title() + '\" 本地文件丢失, 從任務列隊中移除, 等待下次更新重試.'
+                err_print(sn, '上传失敗', err_msg_detail, status=1)
+                upload_quit()
+
+            anime.local_video_path = local_file_path  # 告知文件位置
+            anime.video_size = anime_in_db['file_size']  # 通過 update_db() 下载状态检查
+            anime.video_resolution = anime_in_db['resolution']  # 避免更新时把分辨率变成0
+
+            try:
+                if not upload_video(anime, bangumi_tag):  # 如果上传失败
+                    err_msg_detail = 'title=\"' + anime.get_title() + '\" 從任務列隊中移除, 等待下次更新重試.'
+                    err_print(sn, '上传失敗', err_msg_detail, 1)
+                else:
+                    update_db(anime)
+                    err_print(sn, '任務完成', status=2)
+            except BaseException as e:
+                err_msg_detail = 'title=\"' + anime.get_title() + '\" 發生未知錯誤, 等待下次更新重試: ' + str(e)
+                err_print(sn, '上傳失敗', '異常詳情:\n' + traceback.format_exc(), status=1, display=False)
+                err_print(sn, '上傳失敗', err_msg_detail, 1)
+        finally:
+            release_upload_limiter()
 
         upload_quit()
 
     # =====下载模块 =====
-    thread_limiter.acquire()  # 并发下载限制器
-    anime = build_anime(sn)
-
-    if anime['failed']:
-        queue.pop(sn)
-        processing_queue.remove(sn)
-        thread_limiter.release()
-        err_print(sn, '任务失敗', '從任務列隊中移除, 等待下次更新重試.', status=1)
-        sys.exit(1)
-
-    anime = anime['anime']
-
+    acquire_thread_limiter()  # 并发下载限制器
+    download_cd = None
     try:
-        anime.download(settings['download_resolution'], bangumi_tag=bangumi_tag, rename=rename,
-                       realtime_show_file_size=realtime_show_file_size, classify=settings['classify_bangumi'])
-    except BaseException as e:
-        # 兜一下各种奇奇怪怪的错误
-        err_print(sn, '下載異常', '發生未知錯誤: ' + str(e), status=1)
-        err_print(sn, '下載異常', '異常詳情:\n' + traceback.format_exc(), status=1, display=False)
-        anime.video_size = 0
+        anime = build_anime(sn)
 
-    if anime.video_size < 5:
-        # 下载失败
-        queue.pop(sn)
-        processing_queue.remove(sn)
-        thread_limiter.release()
-        err_msg_detail = 'title=\"' + anime.get_title() + '\" 從任務列隊中移除, 等待下次更新重試.'
-        err_print(sn, '任务失敗', err_msg_detail, status=1)
-        if int(sn) in Config.tasks_progress_rate.keys():
-            del Config.tasks_progress_rate[int(sn)]  # 任务失败, 不在监控此任务进度
-        sys.exit(1)
+        if anime['failed']:
+            dequeue()
+            err_print(sn, '任务失敗', '從任務列隊中移除, 等待下次更新重試.', status=1)
+            sys.exit(1)
 
-    update_db(anime)  # 下载完成后, 更新数据库
-    download_cd = threading.Thread(target=download_cd_counter)
-    download_cd.start()
+        anime = anime['anime']
+
+        try:
+            anime.download(settings['download_resolution'], bangumi_tag=bangumi_tag, rename=rename,
+                           realtime_show_file_size=realtime_show_file_size, classify=settings['classify_bangumi'])
+        except BaseException as e:
+            # 兜一下各种奇奇怪怪的错误
+            err_print(sn, '下載異常', '發生未知錯誤: ' + str(e), status=1)
+            err_print(sn, '下載異常', '異常詳情:\n' + traceback.format_exc(), status=1, display=False)
+            anime.video_size = 0
+
+        if anime.video_size < 5:
+            # 下载失败
+            dequeue()
+            err_msg_detail = 'title=\"' + anime.get_title() + '\" 從任務列隊中移除, 等待下次更新重試.'
+            err_print(sn, '任务失敗', err_msg_detail, status=1)
+            if int(sn) in Config.tasks_progress_rate.keys():
+                del Config.tasks_progress_rate[int(sn)]  # 任务失败, 不在监控此任务进度
+            sys.exit(1)
+
+        update_db(anime)  # 下载完成后, 更新数据库
+        download_cd = threading.Thread(target=download_cd_counter)
+        download_cd.start()
+        # 交棒給冷卻執行緒, 之後由它 release, 這裡不能再放
+        limiter_held['thread'] = False
+    finally:
+        # 只有還沒交棒出去(build_anime/download/update_db 半路掛掉)才由這裡還名額
+        release_thread_limiter()
     # =====下载模块结束 =====
 
     # =====上传模块=====
     if settings['upload_to_server']:
-        upload_limiter.acquire()  # 并发上传限制器
+        acquire_upload_limiter()  # 并发上传限制器
 
         try:
             upload_video(anime, bangumi_tag)  # 上传至服务器
+            update_db(anime)  # 上传完成后, 更新数据库
         except BaseException as e:
             # 兜一下各种奇奇怪怪的错误
             err_print(sn, '上傳異常', '發生未知錯誤, 從任務列隊中移除, 等待下次更新重試: ' + str(e), status=1)
             err_print(sn, '上傳異常', '異常詳情:\n' + traceback.format_exc(), status=1, display=False)
             upload_quit()
-
-        update_db(anime)  # 上传完成后, 更新数据库
-        upload_limiter.release()  # 并发上传限制器
+        finally:
+            release_upload_limiter()  # 并发上传限制器
     # =====上传模块结束=====
 
-    download_cd.join()
-    queue.pop(sn)  # 从任务列队中移除
-    processing_queue.remove(sn)  # 从当前任务列队中移除
+    if download_cd is not None:
+        download_cd.join()
+    dequeue()  # 从任务列队/当前任务列队中移除
 
     # videolist
     if settings['dashboard']['online_watch']:
         err_print(sn, '更新videolist')
-        updatelist()
+        try:
+            updatelist()
+        except BaseException as e:
+            # 影片已經下載完了, video_list.json 沒刷新只是線上看暫時看不到這集,
+            # 不該讓它把「任務完成」吃掉
+            err_print(sn, '更新videolist失敗', str(e), status=1)
+            err_print(sn, '更新videolist失敗', '異常詳情:\n' + traceback.format_exc(), status=1, display=False)
 
     err_print(sn, '任務完成', status=2)
 
@@ -512,73 +599,82 @@ def download_cd_counter():
 def check_tasks():
     Config.current_sn_list_all = {} # reset
     for sn in sn_dict.keys():
-        anime = build_anime(sn)
-        if anime['failed']:
-            err_print(sn, '更新狀態', '檢查更新失敗, 跳過等待下次檢查', status=1)
-            # # sn 解析冷却
-            # if settings['parse_sn_cd'] > 0:
-            #     err_print("更新資訊", "SN 解析冷卻 " + str(settings['parse_sn_cd']) + " 秒", no_sn=True)
-            #     time.sleep(settings['parse_sn_cd'])
-            continue
-        anime = anime['anime']
-        err_print(sn, '更新資訊', '正在檢查《' + anime.get_bangumi_name() + '》')
-        episode_list = list(anime.get_episode_list().values())
-        Config.current_sn_list_all[sn] = episode_list
+        try:
+            _check_one_sn(sn)
+        except BaseException as e:
+            # 一部番出問題不該讓 sn_list 後面的番全部不用檢查了
+            err_print(sn, '更新狀態', '檢查更新時發生未知錯誤, 跳過等待下次檢查: ' + str(e), status=1)
+            err_print(sn, '更新狀態', '異常詳情:\n' + traceback.format_exc(), status=1, display=False)
 
-        if sn_dict[sn]['mode'] == 'all':
-            # 如果用户选择全部下载 download_mode = 'all'
-            for ep in episode_list:  # 遍历剧集列表
-                try:
-                    db = read_db(ep)
-                    #           未下载的   或                设定要上传但是没上传的                         并且  还没在列队中
-                    if (db['status'] == 0 or (
-                            db['remote_status'] == 0 and settings['upload_to_server'])) and ep not in queue.keys():
-                        queue[ep] = sn_dict[sn]  # 添加至下载列队
-                except IndexError:
-                    # 如果数据库中尚不存在此条记录
-                    if anime.get_sn() == ep:
-                        new_anime = anime  # 如果是本身则不用重复创建实例
-                    else:
-                        new_anime = build_anime(ep)
-                        if new_anime['failed']:
-                            err_print(ep, '更新狀態', '更新數據失敗, 跳過等待下次檢查', status=1)
-                            continue
-                        new_anime = new_anime['anime']
-                    insert_db(new_anime)
-                    queue[ep] = sn_dict[sn]  # 添加至列队
-        else:
-            if sn_dict[sn]['mode'] == 'largest-sn':
-                # 如果用户选择仅下载最新上传, download_mode = 'largest_sn', 则对 sn 进行排序
-                episode_list.sort()
-                latest_sn = episode_list[-1]
-                # 否则用户选择仅下载最后剧集, download_mode = 'latest', 即下载网页上显示在最右的剧集
-            elif sn_dict[sn]['mode'] == 'single':
-                latest_sn = sn  # 适配命令行 sn-list 模式
-            else:
-                latest_sn = episode_list[-1]
-            try:
-                db = read_db(latest_sn)
-                #           未下载的   或                设定要上传但是没上传的                         并且  还没在列队中
-                if (db['status'] == 0 or (
-                        db['remote_status'] == 0 and settings['upload_to_server'])) and latest_sn not in queue.keys():
-                    queue[latest_sn] = sn_dict[sn]  # 添加至下载列队
-            except IndexError:
-                # 如果数据库中尚不存在此条记录
-                if anime.get_sn() == latest_sn:
-                    new_anime = anime  # 如果是本身则不用重复创建实例
-                else:
-                    new_anime = build_anime(latest_sn)
-                    if new_anime['failed']:
-                        err_print(latest_sn, '更新狀態', '更新數據失敗, 跳過等待下次檢查', status=1)
-                        continue
-                    new_anime = new_anime['anime']
-                insert_db(new_anime)
-                queue[latest_sn] = sn_dict[sn]
 
-        # sn 解析冷却
+def _check_one_sn(sn):
+    anime = build_anime(sn)
+    if anime['failed']:
+        err_print(sn, '更新狀態', '檢查更新失敗, 跳過等待下次檢查', status=1)
+        # # sn 解析冷却
         # if settings['parse_sn_cd'] > 0:
         #     err_print("更新資訊", "SN 解析冷卻 " + str(settings['parse_sn_cd']) + " 秒", no_sn=True)
         #     time.sleep(settings['parse_sn_cd'])
+        return
+    anime = anime['anime']
+    err_print(sn, '更新資訊', '正在檢查《' + anime.get_bangumi_name() + '》')
+    episode_list = list(anime.get_episode_list().values())
+    Config.current_sn_list_all[sn] = episode_list
+
+    if sn_dict[sn]['mode'] == 'all':
+        # 如果用户选择全部下载 download_mode = 'all'
+        for ep in episode_list:  # 遍历剧集列表
+            try:
+                db = read_db(ep)
+                #           未下载的   或                设定要上传但是没上传的                         并且  还没在列队中
+                if (db['status'] == 0 or (
+                        db['remote_status'] == 0 and settings['upload_to_server'])) and ep not in queue.keys():
+                    queue[ep] = sn_dict[sn]  # 添加至下载列队
+            except IndexError:
+                # 如果数据库中尚不存在此条记录
+                if anime.get_sn() == ep:
+                    new_anime = anime  # 如果是本身则不用重复创建实例
+                else:
+                    new_anime = build_anime(ep)
+                    if new_anime['failed']:
+                        err_print(ep, '更新狀態', '更新數據失敗, 跳過等待下次檢查', status=1)
+                        continue
+                    new_anime = new_anime['anime']
+                insert_db(new_anime)
+                queue[ep] = sn_dict[sn]  # 添加至列队
+    else:
+        if sn_dict[sn]['mode'] == 'largest-sn':
+            # 如果用户选择仅下载最新上传, download_mode = 'largest_sn', 则对 sn 进行排序
+            episode_list.sort()
+            latest_sn = episode_list[-1]
+            # 否则用户选择仅下载最后剧集, download_mode = 'latest', 即下载网页上显示在最右的剧集
+        elif sn_dict[sn]['mode'] == 'single':
+            latest_sn = sn  # 适配命令行 sn-list 模式
+        else:
+            latest_sn = episode_list[-1]
+        try:
+            db = read_db(latest_sn)
+            #           未下载的   或                设定要上传但是没上传的                         并且  还没在列队中
+            if (db['status'] == 0 or (
+                    db['remote_status'] == 0 and settings['upload_to_server'])) and latest_sn not in queue.keys():
+                queue[latest_sn] = sn_dict[sn]  # 添加至下载列队
+        except IndexError:
+            # 如果数据库中尚不存在此条记录
+            if anime.get_sn() == latest_sn:
+                new_anime = anime  # 如果是本身则不用重复创建实例
+            else:
+                new_anime = build_anime(latest_sn)
+                if new_anime['failed']:
+                    err_print(latest_sn, '更新狀態', '更新數據失敗, 跳過等待下次檢查', status=1)
+                    return
+                new_anime = new_anime['anime']
+            insert_db(new_anime)
+            queue[latest_sn] = sn_dict[sn]
+
+    # sn 解析冷却
+    # if settings['parse_sn_cd'] > 0:
+    #     err_print("更新資訊", "SN 解析冷卻 " + str(settings['parse_sn_cd']) + " 秒", no_sn=True)
+    #     time.sleep(settings['parse_sn_cd'])
 
 
 danmu_tasks_counter = None
@@ -946,7 +1042,7 @@ def __cui(sn, cui_resolution, cui_download_mode, cui_thread_limit, ep_range,
             check_tasks()  # 检查更新，生成任务列队
             for sn in queue.keys():  # 遍历任务列队
                 processing_queue.append(sn)
-                task = threading.Thread(target=worker, args=(sn, queue[sn], realtime_show_file_size))
+                task = threading.Thread(target=worker_thread, args=(sn, queue[sn], realtime_show_file_size))
                 task.daemon = True
                 thread_tasks.append(task)
                 task.start()
@@ -1147,11 +1243,15 @@ def updatelist():
             'source': '巴哈姆特動畫瘋',
             'timestamp': anime['timestamp']
         }
-        local_exists = (anime['local_file_path'] is not None and os.path.exists(anime['local_file_path']))
+        local_file_path = anime['local_file_path']
+        local_exists = (local_file_path is not None and os.path.exists(local_file_path))
         remote_exists = plugin_manager.has_remote(video_data)
         if local_exists or remote_exists:
-            danmupath = anime['local_file_path'].replace('.mp4', '.ass')
-            if os.path.exists(danmupath):
+            # 插件說遠端有、但本地沒有路徑(檔案被刪掉、只在雲端)時 local_file_path 是 None.
+            # 舊寫法會直接 None.replace() 炸掉, 而 updatelist() 是在 auto_update_loop
+            # 裡沒有保護地呼叫的 —— 一炸整個自動更新執行緒就死了, 追番從此不再繼續.
+            danmupath = local_file_path.replace('.mp4', '.ass') if local_file_path else None
+            if danmupath and os.path.exists(danmupath):
                 video_data['danmu_path'] = danmupath
                 video_data['danmu'] = True
             else:
@@ -1163,34 +1263,50 @@ def updatelist():
     for dirpath, _, filenames in os.walk(bangumi_dir):
         if ".aniGamerPlus.json" in filenames:
             datapath = os.path.join(dirpath, ".aniGamerPlus.json")
-            customVideos = json.load(open(datapath, "r"))
-            anime_name = customVideos["anime_name"]
-            unique_sn = str(customVideos["unique_sn"])
-            source = customVideos.get("source")
-            for v in customVideos["videos"]:
-                if v["type"] == "normal":
-                    anime_name2 = anime_name
-                    sn = "41" + unique_sn + "00" + str(v["episode"]).zfill(3)
-                else:
-                    anime_name2 = anime_name + f" [{v['type']}]"
-                    sn = "41" + unique_sn + str(hash(v['type']) % 100).zfill(2) + str(v["episode"]).zfill(3)
-                video_data = {
-                    'sn': sn,
-                    'anime_name': anime_name2,
-                    'title': anime_name2 + "[" + str(int(v["episode"])) + "]",
-                    'episode': int(v["episode"]),
-                    'resolution': int(v["resolution"]),
-                    'path': os.path.join(dirpath, v["filename"]),
-                    'source': "未知" if source is None else source,
-                    'danmu_path': None,
-                    'danmu': False,
-                    'timestamp': int(os.path.getmtime(datapath))
-                }
+            try:
+                # 沒指定 encoding 在 Windows 上會用 cp950 讀, 中文番劇名直接 UnicodeDecodeError;
+                # 而且一份壞掉的 .aniGamerPlus.json 不該讓整個片庫重建失敗
+                with open(datapath, "r", encoding="utf-8") as f:
+                    customVideos = json.load(f)
+            except BaseException as e:
+                err_print(0, '片庫掃描', f'讀取 {datapath} 失敗, 已跳過: {e}', no_sn=True, status=1)
+                continue
+            try:
+                anime_name = customVideos["anime_name"]
+                unique_sn = str(customVideos["unique_sn"])
+                source = customVideos.get("source")
+                custom_videos = customVideos["videos"]
+            except BaseException as e:
+                err_print(0, '片庫掃描', f'{datapath} 欄位不完整, 已跳過: {e}', no_sn=True, status=1)
+                continue
+            for v in custom_videos:
+                try:
+                    if v["type"] == "normal":
+                        anime_name2 = anime_name
+                        sn = "41" + unique_sn + "00" + str(v["episode"]).zfill(3)
+                    else:
+                        anime_name2 = anime_name + f" [{v['type']}]"
+                        sn = "41" + unique_sn + str(hash(v['type']) % 100).zfill(2) + str(v["episode"]).zfill(3)
+                    video_data = {
+                        'sn': sn,
+                        'anime_name': anime_name2,
+                        'title': anime_name2 + "[" + str(int(v["episode"])) + "]",
+                        'episode': int(v["episode"]),
+                        'resolution': int(v["resolution"]),
+                        'path': os.path.join(dirpath, v["filename"]),
+                        'source': "未知" if source is None else source,
+                        'danmu_path': None,
+                        'danmu': False,
+                        'timestamp': int(os.path.getmtime(datapath))
+                    }
+                except BaseException as e:
+                    err_print(0, '片庫掃描', f'{datapath} 內有一筆影片資料無法解析, 已跳過: {e}', no_sn=True, status=1)
+                    continue
                 local_exists = os.path.exists(video_data['path'])
                 remote_exists = plugin_manager.has_remote(video_data)
                 if local_exists or remote_exists:
                     my_list['videos'].append(video_data)
-    with open(os.path.join(working_dir, 'video_list.json'), 'w') as f:
+    with open(os.path.join(working_dir, 'video_list.json'), 'w', encoding='utf-8') as f:
         json.dump(my_list, f)
 
 
@@ -1218,63 +1334,88 @@ danmu = settings['danmu']
 _command_queue   = _queue.Queue()   # console 指令佇列
 _checknow_event  = threading.Event()  # checknow 觸發事件
 
-def auto_update_loop():
+def _run_update_cycle():
+    # 一輪自動更新的完整內容. 抽出來是為了讓 auto_update_loop() 能整個包在 try 裡:
+    # 這裡面任何一步(插件、片庫掃描、彈幕、檢查完結)丟出未捕捉的例外, 原本都會直接
+    # 打死 auto_update_loop 執行緒 —— 程式看起來還活著(Dashboard 照常開), 但再也不會
+    # 檢查更新、再也不會發新的下載任務, 也就是「下載無法繼續」.
     global settings, sn_dict, danmu
+    print()
+    err_print(0, '開始更新', no_sn=True)
+    Config.test_cookie()  # 测试cookie
+    cookies = Config.read_cookie(force_reload=True)
+    if not Config.is_logged_in_cookie(cookies):
+        err_print(0, 'cookie狀態', '偵測到已登出', no_sn=True, display=False)
+        if settings["auto_login"]["enabled"]:
+            err_print(0, 'cookie狀態', '已開啟自動登入，嘗試透過瀏覽器登入...', no_sn=True, display=True)
+            loginer_return = Loginer.do_all(settings["auto_login"]["username"], settings["auto_login"]["password"], settings["auto_login"]["headless"], settings["auto_login"]["save_browser_cookie"])
+            if loginer_return:
+                open('cookie.txt', 'w').write(loginer_return)
+                err_print(0, 'cookie狀態', '登入成功！已更新cookie。', no_sn=True, display=True)
+            else:
+                err_print(0, 'cookie狀態', '使用瀏覽器登入失敗！', no_sn=True, display=True)
+    if settings['read_sn_list_when_checking_update']:
+        sn_dict = Config.read_sn_list()
+    if settings['read_config_when_checking_update']:
+        settings = Config.read_settings()
+        Config.set_download_concurrency_limit(settings['multi-thread'])
+        plugin_manager.reload(settings)
+    danmu = settings['danmu']  # 避免手動加入工作時，global 覆寫掉 config 的 danmu 設定
+    check_tasks()  # 检查更新，生成任务列队
+    new_tasks_counter = 0  # 新增任务计数器
+    plugin_update_result = plugin_manager.auto_update({
+        'updatelist': updatelist,
+        'upload_video': upload_video,
+        'show_detail': False,
+    })
+    new_tasks_counter += int(plugin_update_result.get('scheduled', 0) or 0)
+    if queue:
+        # 先拍一份快照再跑. 直接迭代 queue.keys() 的話, 只要有任何一個 worker 在這
+        # 期間完成並把自己 pop 掉, 這裡就會丟 RuntimeError: dictionary changed size
+        # during iteration, 整輪更新就斷在這.
+        for task_sn, task_info in list(queue.items()):
+            if task_sn not in processing_queue:  # 如果该任务没有在进行中，则启动
+                task = threading.Thread(target=worker_thread, args=(task_sn, task_info))
+                task.daemon = True
+                task.start()
+                processing_queue.append(task_sn)
+                new_tasks_counter = new_tasks_counter + 1
+                err_print(task_sn, '加入任务列隊')
+    if settings['dashboard']['online_watch']:
+        err_print(0, '開始更新videolist.json', no_sn=True)
+        updatelist()
+    if settings['check_sn_ended']:
+        err_print(0, '開始檢查動漫是否已完結', no_sn=True)
+        Config.check_sn_ended()
+    if settings['auto_update_danmu']:
+        err_print(0, '開始更新彈幕', no_sn=True)
+        danmu_tasks_counter = update_danmu()
+        new_tasks_counter += danmu_tasks_counter
+    info = '本次更新添加了 ' + str(new_tasks_counter) + ' 個新任務, 目前列隊中共有 ' + str(
+        len(processing_queue)) + ' 個任務'
+    err_print(0, '更新資訊', info, no_sn=True)
+    err_print(0, '更新终了', no_sn=True)
+    print()
+
+
+def auto_update_loop():
     while True:
-        print()
-        err_print(0, '開始更新', no_sn=True)
-        Config.test_cookie()  # 测试cookie
-        cookies = Config.read_cookie(force_reload=True)
-        if not Config.is_logged_in_cookie(cookies):
-            err_print(0, 'cookie狀態', '偵測到已登出', no_sn=True, display=False)
-            if settings["auto_login"]["enabled"]:
-                err_print(0, 'cookie狀態', '已開啟自動登入，嘗試透過瀏覽器登入...', no_sn=True, display=True)
-                loginer_return = Loginer.do_all(settings["auto_login"]["username"], settings["auto_login"]["password"], settings["auto_login"]["headless"], settings["auto_login"]["save_browser_cookie"])
-                if loginer_return:
-                    open('cookie.txt', 'w').write(loginer_return)
-                    err_print(0, 'cookie狀態', '登入成功！已更新cookie。', no_sn=True, display=True)
-                else:
-                    err_print(0, 'cookie狀態', '使用瀏覽器登入失敗！', no_sn=True, display=True)
-        if settings['read_sn_list_when_checking_update']:
-            sn_dict = Config.read_sn_list()
-        if settings['read_config_when_checking_update']:
-            settings = Config.read_settings()
-            Config.set_download_concurrency_limit(settings['multi-thread'])
-            plugin_manager.reload(settings)
-        danmu = settings['danmu']  # 避免手動加入工作時，global 覆寫掉 config 的 danmu 設定
-        check_tasks()  # 检查更新，生成任务列队
-        new_tasks_counter = 0  # 新增任务计数器
-        plugin_update_result = plugin_manager.auto_update({
-            'updatelist': updatelist,
-            'upload_video': upload_video,
-            'show_detail': False,
-        })
-        new_tasks_counter += int(plugin_update_result.get('scheduled', 0) or 0)
-        if queue:
-            for task_sn in queue.keys():
-                if task_sn not in processing_queue:  # 如果该任务没有在进行中，则启动
-                    task = threading.Thread(target=worker, args=(task_sn, queue[task_sn]))
-                    task.daemon = True
-                    task.start()
-                    processing_queue.append(task_sn)
-                    new_tasks_counter = new_tasks_counter + 1
-                    err_print(task_sn, '加入任务列隊')
-        if settings['dashboard']['online_watch']:
-            err_print(0, '開始更新videolist.json', no_sn=True)
-            updatelist()
-        if settings['check_sn_ended']:
-            err_print(0, '開始檢查動漫是否已完結', no_sn=True)
-            Config.check_sn_ended()
-        if settings['auto_update_danmu']:
-            err_print(0, '開始更新彈幕', no_sn=True)
-            danmu_tasks_counter = update_danmu()
-            new_tasks_counter += danmu_tasks_counter
-        info = '本次更新添加了 ' + str(new_tasks_counter) + ' 個新任務, 目前列隊中共有 ' + str(
-            len(processing_queue)) + ' 個任務'
-        err_print(0, '更新資訊', info, no_sn=True)
-        err_print(0, '更新终了', no_sn=True)
-        print()
-        wait_total = settings['check_frequency'] * 60
+        try:
+            _run_update_cycle()
+        except SystemExit:
+            raise  # 真的要結束程序時別攔
+        except BaseException as e:
+            # 這一輪掛了就記下來, 睡飽了再試一次. 絕對不能讓執行緒死掉 ——
+            # 一死就再也不會檢查更新, 使用者看到的現象是「下載停在那裡不動了」.
+            err_print(0, '更新異常', '本輪更新發生未處理的錯誤, 將於下次檢查時重試: ' + str(e),
+                      no_sn=True, status=1)
+            err_print(0, '更新異常', '異常詳情:\n' + traceback.format_exc(),
+                      no_sn=True, status=1, display=False)
+
+        try:
+            wait_total = int(settings['check_frequency'] * 60)
+        except BaseException:
+            wait_total = 30 * 60
         waited = 0
         while waited < wait_total:
             # 每次最多等 1 秒，或被 checknow event 喚醒
@@ -1290,6 +1431,7 @@ def auto_update_loop():
                     _dispatch_console_command(raw)
                 except _queue.Empty:
                     break
+
 
 if __name__ == '__main__':
     if settings['check_latest_version']:
