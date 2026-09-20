@@ -202,15 +202,19 @@ void main() {
     await deleteTempDir(temp);
   });
   Future<void> open(WidgetTester tester,
-      {Brightness mode = Brightness.dark}) async {
+      {Brightness mode = Brightness.dark, double scale = 1}) async {
     levels.install(tester);
     addTearDown(() => levels.remove(tester));
-    await tester.binding.setSurfaceSize(const Size(1000, 800));
+    await resizeViewport(tester, const Size(1000, 800));
     await tester.pumpWidget(RepaintBoundary(
         key: const ValueKey('capture'),
         child: MaterialApp(
             debugShowCheckedModeBanner: false,
             theme: captureTheme(buildTheme(brightness: mode)),
+            builder: (context, child) => MediaQuery(
+                data: MediaQuery.of(context)
+                    .copyWith(textScaler: TextScaler.linear(scale)),
+                child: child!),
             home: WatchPage(state: state, sn: '1'))));
     for (var i = 0; i < 8; i++) {
       await tester.pump(const Duration(milliseconds: 100));
@@ -325,7 +329,7 @@ void main() {
     addTearDown(() => tester.binding.defaultBinaryMessenger
         .setMockMethodCallHandler(channel, null));
     await open(tester);
-    await tester.binding.setSurfaceSize(const Size(390, 844));
+    await resizeViewport(tester, const Size(390, 844));
     await tester.pump();
     final slider = tester.widget<Slider>(find.byType(Slider));
     slider.onChangeStart!(254);
@@ -352,7 +356,7 @@ void main() {
         if (target.$1.endsWith('fullscreen')) {
           await tester.tap(find.byTooltip('全螢幕'));
         }
-        await tester.binding.setSurfaceSize(target.$2);
+        await resizeViewport(tester, target.$2);
         await tester.pump(const Duration(milliseconds: 300));
         if (target.$1.endsWith('fullscreen')) {
           final timeline = tester.widget<Slider>(find.byType(Slider));
@@ -384,11 +388,11 @@ void main() {
       'phone and landscape controls fit and pending seek can be disposed',
       (tester) async {
     await open(tester);
-    await tester.binding.setSurfaceSize(const Size(390, 844));
+    await resizeViewport(tester, const Size(390, 844));
     await tester.pump();
     expect(tester.takeException(), isNull);
     await tester.tap(find.byTooltip('全螢幕'));
-    await tester.binding.setSurfaceSize(const Size(1000, 650));
+    await resizeViewport(tester, const Size(1000, 650));
     await tester.pump(const Duration(milliseconds: 300));
     expect(tester.takeException(), isNull);
     if (Platform.environment['AGP_PLAYER_CAPTURE'] == '1') {
@@ -479,7 +483,7 @@ void main() {
       'tablet layout uses available width; fit is fullscreen only with large targets',
       (tester) async {
     await open(tester);
-    await tester.binding.setSurfaceSize(const Size(1280, 882));
+    await resizeViewport(tester, const Size(1280, 882));
     await tester.pump();
     if (Platform.environment['AGP_PLAYER_CAPTURE'] == '1') {
       final boundary = tester.renderObject<RenderRepaintBoundary>(
@@ -534,7 +538,7 @@ void main() {
       ],
     });
     await open(tester, mode: Brightness.light);
-    await tester.binding.setSurfaceSize(const Size(1280, 882));
+    await resizeViewport(tester, const Size(1280, 882));
     await tester.pump();
     expect(find.byKey(const ValueKey('series-synopsis')), findsNothing);
     expect(tester.getSize(find.byKey(const ValueKey('series-info'))).height,
@@ -550,15 +554,22 @@ void main() {
     expect(tester.getCenter(find.byTooltip('快轉 10 秒')).dx,
         greaterThan(tester.getCenter(find.byTooltip('倒退 10 秒')).dx));
     if (Platform.environment['AGP_PLAYER_CAPTURE'] == '1') {
+      var fullscreen = false;
       for (final target in [
         ('player-reference-tablet', const Size(1280, 882)),
+        ('player-reference-phone-small', const Size(320, 568)),
         ('player-reference-phone', const Size(390, 844)),
+        ('player-reference-phone-large', const Size(430, 932)),
+        ('player-reference-phone-landscape', const Size(844, 390)),
+        ('player-reference-phone-fullscreen', const Size(844, 390)),
         ('player-reference-fullscreen', const Size(1280, 720)),
       ]) {
-        if (target.$1.endsWith('fullscreen')) {
-          await tester.tap(find.byTooltip('全螢幕'));
+        final nextFullscreen = target.$1.endsWith('fullscreen');
+        if (nextFullscreen != fullscreen) {
+          await tester.tap(find.byTooltip(fullscreen ? '離開全螢幕' : '全螢幕'));
+          fullscreen = nextFullscreen;
         }
-        await tester.binding.setSurfaceSize(target.$2);
+        await resizeViewport(tester, target.$2);
         await tester.pump(const Duration(milliseconds: 300));
         await settleImages(tester);
         await tester.runAsync(() async {
@@ -573,7 +584,7 @@ void main() {
         });
       }
       await tester.tap(find.byTooltip('離開全螢幕'));
-      await tester.binding.setSurfaceSize(const Size(1280, 882));
+      await resizeViewport(tester, const Size(1280, 882));
       await tester.pump(const Duration(milliseconds: 350));
     }
     await tester.tap(find.text('查看更多'));
@@ -582,6 +593,148 @@ void main() {
     expect(tester.takeException(), isNull);
     await tester.pumpWidget(const SizedBox());
   });
+  testWidgets(
+      'phone tools leave the picture clear and episode tabs preserve playback',
+      (tester) async {
+    state.client.seedSeriesJson('1', {
+      'videoSn': '1',
+      'title': '手機播放測試',
+      'content': '作品的劇情簡介。',
+      'groups': [
+        {
+          'name': '',
+          'episodes': [
+            for (var i = 1; i <= 12; i++)
+              {'videoSn': '$i', 'episode': '$i', 'local': true},
+          ],
+        },
+      ],
+    });
+    await open(tester, mode: Brightness.light);
+    tester.view.padding = const FakeViewPadding(top: 44, bottom: 34);
+    addTearDown(tester.view.resetPadding);
+    for (final size in [
+      const Size(320, 568),
+      const Size(390, 844),
+      const Size(430, 932),
+    ]) {
+      await resizeViewport(tester, size);
+      await tester.pump();
+      final surface =
+          tester.getRect(find.byKey(const ValueKey('player-surface')));
+      final tools =
+          tester.getRect(find.byKey(const ValueKey('mobile-player-tools')));
+      final play = tester.getRect(find.byTooltip('暫停'));
+      expect(surface.width / surface.height, closeTo(16 / 9, .01));
+      expect(tools.top, greaterThanOrEqualTo(surface.bottom));
+      expect(play.center.dy, greaterThan(surface.top + surface.height * .6));
+      expect(play.width, greaterThanOrEqualTo(48));
+      expect(find.byTooltip('設定').hitTestable(), findsOneWidget);
+      expect(find.byTooltip('全螢幕').hitTestable(), findsOneWidget);
+      expect(find.byKey(const ValueKey('episode-2')).hitTestable(),
+          findsOneWidget);
+      expect(find.byKey(const ValueKey('series-info')), findsNothing);
+      expect(tester.takeException(), isNull);
+    }
+    for (final size in [const Size(568, 320), const Size(844, 390)]) {
+      await resizeViewport(tester, size);
+      await tester.pump();
+      final surface =
+          tester.getRect(find.byKey(const ValueKey('player-surface')));
+      final episode = tester.getRect(find.byKey(const ValueKey('episode-2')));
+      expect(surface.width, greaterThan(size.width / 2));
+      expect(episode.left, greaterThanOrEqualTo(surface.right));
+      expect(episode.width, greaterThanOrEqualTo(48));
+      expect(find.byKey(const ValueKey('episode-2')).hitTestable(),
+          findsOneWidget);
+      expect(tester.takeException(), isNull);
+    }
+    await resizeViewport(tester, const Size(390, 844));
+    await tester.pump();
+    await tester.tap(find.text('簡介'));
+    await tester.pump(const Duration(milliseconds: 350));
+    expect(find.byKey(const ValueKey('series-synopsis')), findsOneWidget);
+    expect(find.byKey(const ValueKey('episode-2')), findsNothing);
+    expect(player.creations, 1);
+    expect(player.playing, isTrue);
+    await tester.tap(find.byTooltip('全螢幕'));
+    await resizeViewport(tester, const Size(844, 390));
+    await tester.pump(const Duration(milliseconds: 350));
+    expect(find.byKey(const ValueKey('mobile-player-tools')), findsNothing);
+    expect(find.byTooltip('離開全螢幕').hitTestable(), findsOneWidget);
+    expect(tester.takeException(), isNull);
+    await tester.tap(find.byTooltip('離開全螢幕'));
+    await resizeViewport(tester, const Size(390, 844));
+    await tester.pump(const Duration(milliseconds: 350));
+    expect(find.byKey(const ValueKey('series-synopsis')), findsOneWidget);
+    await tester.tap(find.text('選集'));
+    await tester.pump(const Duration(milliseconds: 350));
+    expect(
+        find.byKey(const ValueKey('episode-2')).hitTestable(), findsOneWidget);
+    await tester.tap(find.byTooltip('暫停'));
+    await tester.pump(const Duration(milliseconds: 350));
+    expect(player.playing, isFalse);
+    expect(player.creations, 1);
+    expect(tester.takeException(), isNull);
+    await tester.pumpWidget(const SizedBox());
+  });
+  for (final mode in [Brightness.light, Brightness.dark]) {
+    testWidgets('small phone supports large text and menus in ${mode.name}',
+        (tester) async {
+      await state.prefs.setRate(1);
+      addTearDown(() => state.prefs.setRate(1));
+      state.client.seedSeriesJson('1', {
+        'videoSn': '1',
+        'title': 'BLEACH 死神 千年血戰篇',
+        'groups': [
+          {
+            'name': '',
+            'episodes': [
+              for (var i = 1; i <= 12; i++)
+                {'videoSn': '$i', 'episode': '$i', 'local': true},
+            ],
+          },
+        ],
+      });
+      final frameFile = Platform.environment['AGP_FRAME_FILE'];
+      if (frameFile != null) {
+        player.frame =
+            await tester.runAsync(() => File(frameFile).readAsBytes());
+      }
+      await open(tester, mode: mode, scale: 1.8);
+      await resizeViewport(tester, const Size(320, 640));
+      await tester.pump();
+      expect(find.byTooltip('設定').hitTestable(), findsOneWidget);
+      expect(find.byTooltip('全螢幕').hitTestable(), findsOneWidget);
+      expect(tester.takeException(), isNull);
+      if (Platform.environment['AGP_PLAYER_CAPTURE'] == '1') {
+        await settleImages(tester);
+        await tester.runAsync(() async {
+          final raster = await tester
+              .renderObject<RenderRepaintBoundary>(
+                  find.byKey(const ValueKey('capture')))
+              .toImage();
+          final bytes = await raster.toByteData(format: ui.ImageByteFormat.png);
+          await File('../.agpwork/player-large-text-${mode.name}.png')
+              .writeAsBytes(bytes!.buffer.asUint8List());
+          raster.dispose();
+        });
+      }
+      await tester.tap(find.byTooltip('1.0x'));
+      await tester.pump(const Duration(milliseconds: 350));
+      await tester.ensureVisible(find.text('1.5x'));
+      await tester.pump(const Duration(milliseconds: 350));
+      expect(find.text('1.5x').hitTestable(), findsOneWidget);
+      await tester.tap(find.text('1.5x'));
+      await tester.pump(const Duration(milliseconds: 350));
+      expect(player.speed, 1.5);
+      await tester.tap(find.byTooltip('設定'));
+      await tester.pump(const Duration(milliseconds: 350));
+      expect(find.text('播放設定'), findsOneWidget);
+      expect(tester.takeException(), isNull);
+      await tester.pumpWidget(const SizedBox());
+    });
+  }
   testWidgets(
       'a full season is visible below the player without scrolling on tablets',
       (tester) async {
@@ -606,7 +759,7 @@ void main() {
       const Size(1024, 600),
       const Size(1000, 650)
     ]) {
-      await tester.binding.setSurfaceSize(size);
+      await resizeViewport(tester, size);
       await tester.pump();
       final last = find.byKey(const ValueKey('episode-13'));
       expect(last, findsOneWidget);
@@ -643,7 +796,7 @@ void main() {
     await open(tester);
     tester.view.padding = const FakeViewPadding(top: 24, bottom: 34);
     addTearDown(tester.view.resetPadding);
-    await tester.binding.setSurfaceSize(const Size(1280, 882));
+    await resizeViewport(tester, const Size(1280, 882));
     await tester.pump();
     Rect surface() =>
         tester.getRect(find.byKey(const ValueKey('player-surface')));
@@ -714,7 +867,7 @@ void main() {
     // 左挪一格, 使用者照原來的位置按下去按到的是畫面比例 —— 動畫瘋不會這樣,
     // 這裡把「最右邊永遠是全螢幕」釘住.
     await open(tester);
-    await tester.binding.setSurfaceSize(const Size(1280, 882));
+    await resizeViewport(tester, const Size(1280, 882));
     await tester.pump();
     double x(String tooltip) => tester.getCenter(find.byTooltip(tooltip)).dx;
     expect(x('全螢幕'), greaterThan(x('設定')));
@@ -752,7 +905,7 @@ void main() {
   testWidgets('開始播之後再緩衝就只留速度, 不再把轉圈壓在畫面中央', (tester) async {
     levels.install(tester);
     addTearDown(() => levels.remove(tester));
-    await tester.binding.setSurfaceSize(const Size(1000, 800));
+    await resizeViewport(tester, const Size(1000, 800));
     await tester.pumpWidget(MaterialApp(
         debugShowCheckedModeBanner: false,
         theme: ThemeData(fontFamily: 'Roboto'),

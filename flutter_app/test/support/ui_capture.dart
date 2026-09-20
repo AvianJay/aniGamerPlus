@@ -5,6 +5,16 @@ import 'package:flutter/rendering.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 
+/// Keep MediaQuery and layout constraints on the same simulated device size.
+Future<void> resizeViewport(WidgetTester tester, Size size) async {
+  tester.view.devicePixelRatio = 1;
+  tester.view.physicalSize = size;
+  await tester.binding.setSurfaceSize(size);
+  addTearDown(tester.view.resetPhysicalSize);
+  addTearDown(tester.view.resetDevicePixelRatio);
+  addTearDown(() => tester.binding.setSurfaceSize(null));
+}
+
 /// Optional local fonts make UI audit captures readable; CI stays self-contained.
 Future<void> loadCaptureFonts() async {
   final font = Platform.environment['AGP_CJK_FONT'];

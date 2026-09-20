@@ -350,6 +350,7 @@ class _WatchPageState extends State<WatchPage>
   Timer? _idleTimer;
   bool _fullscreen = false;
   bool _infoExpanded = false;
+  bool _mobileInfoSelected = false;
   String _flash = '';
   Timer? _flashTimer;
   String _hud = '';
@@ -1912,6 +1913,31 @@ class _WatchPageState extends State<WatchPage>
                   _titleBar(),
                   Expanded(child: LayoutBuilder(
                     builder: (context, constraints) {
+                      if (constraints.maxWidth >= 560 &&
+                          constraints.maxHeight < 420) {
+                        final panelWidth =
+                            (constraints.maxWidth * .32).clamp(240.0, 300.0);
+                        return Row(children: [
+                          Expanded(
+                            child: Column(children: [
+                              Expanded(
+                                  child: _playerSurface(mobileInline: true)),
+                              _mobilePlayerTools(),
+                            ]),
+                          ),
+                          SizedBox(width: panelWidth, child: _mobilePageBody()),
+                        ]);
+                      }
+                      if (constraints.maxWidth < 600) {
+                        return Column(children: [
+                          AspectRatio(
+                            aspectRatio: 16 / 9,
+                            child: _playerSurface(mobileInline: true),
+                          ),
+                          _mobilePlayerTools(),
+                          Expanded(child: _mobilePageBody()),
+                        ]);
+                      }
                       // 平板橫著拿的時候, 整片 16:9 會把螢幕吃光, 底下的作品資訊
                       // 跟選集一格都露不出來. 播放器最多只能佔這麼高, 超過就
                       // 連寬度一起縮, 維持 16:9 置中, 兩側留黑.
@@ -2146,7 +2172,7 @@ class _WatchPageState extends State<WatchPage>
 
   // ------------------------------------------------------------- 播放區
 
-  Widget _playerSurface() {
+  Widget _playerSurface({bool mobileInline = false}) {
     return LayoutBuilder(
       key: const ValueKey('player-surface'),
       builder: (context, constraints) {
@@ -2197,7 +2223,7 @@ class _WatchPageState extends State<WatchPage>
                     duration: const Duration(milliseconds: 180),
                     child: IgnorePointer(
                       ignoring: !_controlsVisible,
-                      child: _controls(),
+                      child: _controls(mobileInline: mobileInline),
                     ),
                   ),
                   if (!_scrubbing && (_flash.isNotEmpty || _hud.isNotEmpty))
@@ -2487,7 +2513,7 @@ class _WatchPageState extends State<WatchPage>
 
   // ------------------------------------------------------------- 控制列
 
-  Widget _controls() {
+  Widget _controls({bool mobileInline = false}) {
     return LayoutBuilder(
         builder: (context, constraints) => Stack(
               fit: StackFit.expand,
@@ -2508,7 +2534,8 @@ class _WatchPageState extends State<WatchPage>
                     ),
                   ),
                 )),
-                if (!_scrubbing &&
+                if (!mobileInline &&
+                    !_scrubbing &&
                     (_fullscreen || constraints.maxHeight >= 260))
                   Positioned(
                     left: 6,
@@ -2545,37 +2572,80 @@ class _WatchPageState extends State<WatchPage>
                               ),
                             ),
                           ),
-                          _topMenu<double>(
-                            label:
-                                '${_rate.toStringAsFixed(_rate == _rate.roundToDouble() ? 1 : 2)}x',
-                            current: _rate,
-                            choices: [
-                              for (final r in kPlaybackRates)
-                                PlayerChoice(r, '${r}x')
-                            ],
-                            onPick: (r) => unawaited(_setRate(r)),
-                          ),
-                          ValueListenableBuilder<List<int>>(
-                            valueListenable: _qualities,
-                            builder: (context, options, _) => _topMenu<int>(
-                              label: '${_currentQuality}p',
-                              current: _currentQuality,
-                              choices:
-                                  _qualityChoices(options).reversed.toList(),
-                              onOpen: () => unawaited(_loadQualities()),
-                              onPick: (r) => unawaited(_switchQuality(r)),
-                            ),
-                          ),
+                          _rateMenu(),
+                          _qualityMenu(),
                           _barButton(Icons.video_library_outlined, '選集',
                               _openEpisodeSheet),
                         ],
                       ),
                     ),
                   ),
-                Positioned(left: 0, right: 0, bottom: 0, child: _bottomBar()),
-                if (_scrubbing) _previewOverlay(constraints),
+                Positioned(
+                    left: 0,
+                    right: 0,
+                    bottom: 0,
+                    child: _bottomBar(
+                      mobileInline: mobileInline,
+                      compact: constraints.maxWidth < 600 ||
+                          (_fullscreen && constraints.maxHeight < 400),
+                    )),
+                if (_scrubbing)
+                  _previewOverlay(constraints, mobileInline: mobileInline),
               ],
             ));
+  }
+
+  Widget _rateMenu({bool onSurface = false}) => _topMenu<double>(
+        label:
+            '${_rate.toStringAsFixed(_rate == _rate.roundToDouble() ? 1 : 2)}x',
+        current: _rate,
+        choices: [for (final r in kPlaybackRates) PlayerChoice(r, '${r}x')],
+        onPick: (r) => unawaited(_setRate(r)),
+        onSurface: onSurface,
+      );
+
+  Widget _qualityMenu({bool onSurface = false}) =>
+      ValueListenableBuilder<List<int>>(
+        valueListenable: _qualities,
+        builder: (context, options, _) => _topMenu<int>(
+          label: '${_currentQuality}p',
+          current: _currentQuality,
+          choices: _qualityChoices(options).reversed.toList(),
+          onOpen: () => unawaited(_loadQualities()),
+          onPick: (r) => unawaited(_switchQuality(r)),
+          onSurface: onSurface,
+        ),
+      );
+
+  Widget _mobilePlayerTools() {
+    final colors = Theme.of(context).colorScheme;
+    return Material(
+      key: const ValueKey('mobile-player-tools'),
+      color: colors.surfaceContainerLow,
+      child: Padding(
+        padding: const EdgeInsets.symmetric(horizontal: 8),
+        child: Row(children: [
+          Expanded(
+              child: Row(children: [
+            _rateMenu(onSurface: true),
+            Flexible(child: _qualityMenu(onSurface: true)),
+          ])),
+          _barButton(
+              _danmakuOn
+                  ? Icons.chat_bubble_outline_rounded
+                  : Icons.comments_disabled_outlined,
+              _danmakuOn ? '關閉彈幕' : '開啟彈幕',
+              () => unawaited(_setDanmaku(!_danmakuOn)),
+              active: _danmakuOn,
+              foregroundColor: colors.onSurfaceVariant),
+          _barButton(Icons.settings_outlined, '設定', _openSettingsSheet,
+              foregroundColor: colors.onSurfaceVariant),
+          _barButton(Icons.fullscreen_rounded, '全螢幕',
+              () => unawaited(_setFullscreen(true)),
+              foregroundColor: colors.onSurface),
+        ]),
+      ),
+    );
   }
 
   Widget _topMenu<T>(
@@ -2583,6 +2653,7 @@ class _WatchPageState extends State<WatchPage>
       required T current,
       required List<PlayerChoice<T>> choices,
       required ValueChanged<T> onPick,
+      bool onSurface = false,
       VoidCallback? onOpen}) {
     return PopupMenuButton<T>(
       tooltip: label,
@@ -2596,7 +2667,7 @@ class _WatchPageState extends State<WatchPage>
         _armIdle();
       },
       initialValue: current,
-      color: const Color(0xE6191919),
+      color: onSurface ? null : const Color(0xE6191919),
       position: PopupMenuPosition.under,
       itemBuilder: (_) => [
         for (final choice in choices)
@@ -2609,16 +2680,23 @@ class _WatchPageState extends State<WatchPage>
                         ? AgpColors.bahamut
                         : Colors.transparent),
                 const SizedBox(width: 12),
-                Text(choice.label, style: const TextStyle(color: Colors.white)),
+                Text(choice.label,
+                    style: TextStyle(color: onSurface ? null : Colors.white)),
               ])),
       ],
-      child: Padding(
-          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 14),
+      child: Container(
+          constraints: const BoxConstraints(minWidth: 48, minHeight: 48),
+          padding: EdgeInsets.symmetric(
+              horizontal: onSurface ? 8 : 12, vertical: 14),
           child: Text(label,
-              style: const TextStyle(
-                  color: Colors.white,
-                  fontWeight: FontWeight.w800,
-                  fontSize: 16))),
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+              style: TextStyle(
+                  color: onSurface
+                      ? Theme.of(context).colorScheme.onSurface
+                      : Colors.white,
+                  fontWeight: onSurface ? FontWeight.w600 : FontWeight.w800,
+                  fontSize: onSurface ? 13 : 16))),
     );
   }
 
@@ -2672,9 +2750,11 @@ class _WatchPageState extends State<WatchPage>
         ));
   }
 
-  Widget _previewOverlay(BoxConstraints constraints) {
+  Widget _previewOverlay(BoxConstraints constraints,
+      {bool mobileInline = false}) {
     final inset = MediaQuery.paddingOf(context);
-    final bottom = 84.0 + (_fullscreen ? inset.bottom : 0);
+    final bottom =
+        (mobileInline ? 36.0 : 84.0) + (_fullscreen ? inset.bottom : 0);
     final available = math.max(40.0, constraints.maxHeight - bottom - 36);
     final width = math.min(
         160.0, math.min(available * 16 / 9, constraints.maxWidth - 24));
@@ -2699,7 +2779,7 @@ class _WatchPageState extends State<WatchPage>
     );
   }
 
-  Widget _bottomBar() {
+  Widget _bottomBar({bool mobileInline = false, bool compact = false}) {
     return SafeArea(
       top: false,
       // An inline player never reaches the home indicator. Applying the
@@ -2726,7 +2806,7 @@ class _WatchPageState extends State<WatchPage>
                               child: Text(
                                 '${formatPlayerClock(_scrubbing ? _scrubValue : position)} / '
                                 '${formatPlayerClock(_playableDuration)}',
-                                maxLines: 1,
+                                maxLines: mobileInline ? 2 : 1,
                                 overflow: TextOverflow.ellipsis,
                                 style: const TextStyle(
                                     fontSize: 12,
@@ -2739,43 +2819,43 @@ class _WatchPageState extends State<WatchPage>
                             ),
                           ),
                         ),
-                        _playbackButtons(
-                            compact: MediaQuery.sizeOf(context).width < 600),
+                        _playbackButtons(compact: compact),
                       ]))),
           _timeline(),
-          Row(children: [
-            _barButton(Icons.skip_next_rounded, '下一集',
-                _neighbour(1) == null ? null : () => _goRelative(1)),
-            Expanded(
-                child: Padding(
-              padding: const EdgeInsets.symmetric(horizontal: 4),
-              child: Text(_hereLabel,
-                  maxLines: 1,
-                  overflow: TextOverflow.ellipsis,
-                  style: const TextStyle(color: Colors.white, fontSize: 12)),
-            )),
-            _barButton(
-                _danmakuOn
-                    ? Icons.chat_bubble_outline_rounded
-                    : Icons.comments_disabled_outlined,
-                _danmakuOn ? '關閉彈幕' : '開啟彈幕',
-                () => unawaited(_setDanmaku(!_danmakuOn)),
-                active: _danmakuOn),
-            _barButton(Icons.settings_outlined, '設定', _openSettingsSheet),
-            if (_fullscreen)
-              _barButton(Icons.fit_screen_outlined, '畫面比例', () {
-                final index =
-                    kAspectModes.indexWhere((m) => m.value == _aspect);
-                unawaited(_setAspect(
-                    kAspectModes[(index + 1) % kAspectModes.length].value));
-              }),
-            _barButton(
-                _fullscreen
-                    ? Icons.fullscreen_exit_rounded
-                    : Icons.fullscreen_rounded,
-                _fullscreen ? '離開全螢幕' : '全螢幕',
-                () => unawaited(_setFullscreen(!_fullscreen))),
-          ]),
+          if (!mobileInline)
+            Row(children: [
+              _barButton(Icons.skip_next_rounded, '下一集',
+                  _neighbour(1) == null ? null : () => _goRelative(1)),
+              Expanded(
+                  child: Padding(
+                padding: const EdgeInsets.symmetric(horizontal: 4),
+                child: Text(_hereLabel,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: const TextStyle(color: Colors.white, fontSize: 12)),
+              )),
+              _barButton(
+                  _danmakuOn
+                      ? Icons.chat_bubble_outline_rounded
+                      : Icons.comments_disabled_outlined,
+                  _danmakuOn ? '關閉彈幕' : '開啟彈幕',
+                  () => unawaited(_setDanmaku(!_danmakuOn)),
+                  active: _danmakuOn),
+              _barButton(Icons.settings_outlined, '設定', _openSettingsSheet),
+              if (_fullscreen)
+                _barButton(Icons.fit_screen_outlined, '畫面比例', () {
+                  final index =
+                      kAspectModes.indexWhere((m) => m.value == _aspect);
+                  unawaited(_setAspect(
+                      kAspectModes[(index + 1) % kAspectModes.length].value));
+                }),
+              _barButton(
+                  _fullscreen
+                      ? Icons.fullscreen_exit_rounded
+                      : Icons.fullscreen_rounded,
+                  _fullscreen ? '離開全螢幕' : '全螢幕',
+                  () => unawaited(_setFullscreen(!_fullscreen))),
+            ]),
         ]),
       ),
     );
@@ -2849,7 +2929,7 @@ class _WatchPageState extends State<WatchPage>
   static const double kBarSlot = 48;
 
   Widget _barButton(IconData icon, String tooltip, VoidCallback? onTap,
-      {bool active = false}) {
+      {bool active = false, Color? foregroundColor}) {
     return IconButton(
       tooltip: tooltip,
       iconSize: kBarIcon,
@@ -2857,7 +2937,7 @@ class _WatchPageState extends State<WatchPage>
           const BoxConstraints.tightFor(width: kBarSlot, height: kBarSlot),
       padding: const EdgeInsets.all(12),
       visualDensity: VisualDensity.standard,
-      color: active ? AgpColors.accent : Colors.white,
+      color: active ? AgpColors.accent : foregroundColor ?? Colors.white,
       icon: icon == Icons.comments_disabled_outlined
           ? const Stack(alignment: Alignment.center, children: [
               Icon(Icons.chat_bubble_outline_rounded),
@@ -2897,6 +2977,69 @@ class _WatchPageState extends State<WatchPage>
 
   // ------------------------------------------------------------- 頁面內容
 
+  Widget _mobilePageBody() {
+    final colors = Theme.of(context).colorScheme;
+    final total = _orderedEpisodes().length;
+    return Material(
+      color: colors.surfaceContainerLow,
+      child: DefaultTabController(
+        length: 2,
+        initialIndex: _mobileInfoSelected ? 1 : 0,
+        child: Column(children: [
+          DecoratedBox(
+            decoration: BoxDecoration(
+                border:
+                    Border(bottom: BorderSide(color: colors.outlineVariant))),
+            child: Row(children: [
+              Expanded(
+                child: TabBar(
+                  isScrollable: true,
+                  tabAlignment: TabAlignment.start,
+                  padding: const EdgeInsets.symmetric(horizontal: 4),
+                  labelPadding: const EdgeInsets.symmetric(horizontal: 16),
+                  indicatorSize: TabBarIndicatorSize.label,
+                  indicatorWeight: 3,
+                  dividerColor: Colors.transparent,
+                  labelColor: AgpColors.bahamut,
+                  unselectedLabelColor: colors.onSurfaceVariant,
+                  labelStyle: const TextStyle(
+                      fontSize: 14, fontWeight: FontWeight.w700),
+                  onTap: (index) =>
+                      setState(() => _mobileInfoSelected = index == 1),
+                  tabs: const [Tab(text: '選集'), Tab(text: '簡介')],
+                ),
+              ),
+              if (total > 0)
+                Text('$total 集',
+                    style: TextStyle(
+                        fontSize: 12, color: colors.onSurfaceVariant)),
+              IconButton(
+                tooltip: '下一集',
+                icon: const Icon(Icons.skip_next_rounded),
+                onPressed: _neighbour(1) == null ? null : () => _goRelative(1),
+              ),
+            ]),
+          ),
+          Expanded(
+            child: ListView(
+              key: ValueKey(
+                  _mobileInfoSelected ? 'mobile-info' : 'mobile-episodes'),
+              padding: EdgeInsets.only(
+                  top: _mobileInfoSelected ? 0 : 12,
+                  bottom: 24 + MediaQuery.paddingOf(context).bottom),
+              children: [
+                if (_mobileInfoSelected)
+                  _infoCard(flush: true, expanded: true)
+                else
+                  _episodeSection(showHeading: false),
+              ],
+            ),
+          ),
+        ]),
+      ),
+    );
+  }
+
   Widget _pageBody({bool includeInfo = true}) {
     return ListView(
       padding: const EdgeInsets.only(bottom: 30),
@@ -2907,7 +3050,7 @@ class _WatchPageState extends State<WatchPage>
     );
   }
 
-  Widget _episodeSection() {
+  Widget _episodeSection({bool showHeading = true}) {
     final info = _series;
     final groups = info != null && info.groups.isNotEmpty
         ? info.groups
@@ -2918,19 +3061,20 @@ class _WatchPageState extends State<WatchPage>
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        Padding(
-          padding: const EdgeInsets.fromLTRB(16, 12, 16, 10),
-          child: Row(children: [
-            const Text('選集',
-                style: TextStyle(
-                    fontSize: 14, height: 1.4, fontWeight: FontWeight.w700)),
-            const SizedBox(width: 8),
-            Text('$total 集',
-                style: TextStyle(
-                    fontSize: 12,
-                    color: Theme.of(context).colorScheme.onSurfaceVariant)),
-          ]),
-        ),
+        if (showHeading)
+          Padding(
+            padding: const EdgeInsets.fromLTRB(16, 12, 16, 10),
+            child: Row(children: [
+              const Text('選集',
+                  style: TextStyle(
+                      fontSize: 14, height: 1.4, fontWeight: FontWeight.w700)),
+              const SizedBox(width: 8),
+              Text('$total 集',
+                  style: TextStyle(
+                      fontSize: 12,
+                      color: Theme.of(context).colorScheme.onSurfaceVariant)),
+            ]),
+          ),
         for (final group in groups) ...[
           if (group.name.isNotEmpty)
             Padding(
@@ -2962,7 +3106,10 @@ class _WatchPageState extends State<WatchPage>
         const gap = 8.0;
         // 動畫瘋一格大約 72-76pt 寬, 平板上剛好排九格. 150 那個除數排出來
         // 只有五六格, 每一格寬得像按鈕而不是集數.
-        final columns = (constraints.maxWidth / 82).round().clamp(5, 10);
+        final preferred = (constraints.maxWidth / 82).round().clamp(5, 10);
+        final maxFit =
+            ((constraints.maxWidth + gap) / (48 + gap)).floor().clamp(1, 10);
+        final columns = math.min(preferred, maxFit);
         final cell = (constraints.maxWidth - gap * (columns - 1)) / columns;
         return Wrap(
           spacing: gap,
@@ -3051,7 +3198,7 @@ class _WatchPageState extends State<WatchPage>
   }
 
   /// [flush] = 平板右欄那一版: 沒有外邊界、沒有圓角、沒有框線, 直接鋪滿整條.
-  Widget _infoCard({bool flush = false}) {
+  Widget _infoCard({bool flush = false, bool expanded = false}) {
     final info = _series;
     final video = _video;
     final rows = <MapEntry<String, String>>[];
@@ -3114,7 +3261,7 @@ class _WatchPageState extends State<WatchPage>
                 style: TextStyle(fontSize: 17, fontWeight: FontWeight.w600)),
             if (rows.isNotEmpty) ...[
               const SizedBox(height: 18),
-              for (final row in _infoExpanded ? rows : rows.take(4))
+              for (final row in expanded || _infoExpanded ? rows : rows.take(4))
                 Padding(
                   padding: const EdgeInsets.only(bottom: 10),
                   child: Row(
@@ -3158,7 +3305,7 @@ class _WatchPageState extends State<WatchPage>
                   ),
               ]),
             ],
-            if (_infoExpanded && synopsis.isNotEmpty) ...[
+            if ((expanded || _infoExpanded) && synopsis.isNotEmpty) ...[
               const SizedBox(height: 16),
               Text(synopsis,
                   key: const ValueKey('series-synopsis'),
@@ -3167,7 +3314,7 @@ class _WatchPageState extends State<WatchPage>
                       height: 1.65,
                       color: colors.onSurfaceVariant)),
             ],
-            if (rows.length > 4 || synopsis.isNotEmpty) ...[
+            if (!expanded && (rows.length > 4 || synopsis.isNotEmpty)) ...[
               const SizedBox(height: 14),
               SizedBox(
                   width: double.infinity,
