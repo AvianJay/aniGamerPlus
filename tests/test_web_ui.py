@@ -206,6 +206,76 @@ def open_sheet(page, server, anime_sn):
     return page.locator('#catalogSheet')
 
 
+def test_slow_index_does_not_delay_full_catalog(page, server):
+    pending = []
+    page.route('**/catalog/index.json', lambda route: pending.append(route))
+    page.goto(server.url, wait_until='domcontentloaded')
+    open_tab(page, 'all')
+    expect(page.locator('#homeCatalog .agp-poster').first).to_be_visible()
+    assert pending
+    pending[0].continue_()
+    assert page.errors == []
+
+
+def test_slow_full_catalog_does_not_delay_shared_detail(page, server):
+    pending = []
+    page.route('**/catalog/all.json*', lambda route: pending.append(route))
+    page.goto(server.url + '/#anime-' + CATALOG_SEASON[0]['animeSn'], wait_until='domcontentloaded')
+    expect(page.locator('#catalogSheet .agp-epgroup').first).to_be_visible()
+    assert pending
+    pending[0].continue_()
+    assert page.errors == []
+
+
+def test_slow_watch_history_does_not_hold_library_loading(page, server):
+    pending = []
+    page.route('**/watch/time?type=get', lambda route: pending.append(route))
+    page.goto(server.url, wait_until='domcontentloaded')
+    expect(page.locator('body')).not_to_have_class(re.compile(r'\bis-loading\b'))
+    open_tab(page, 'all')
+    expect(page.locator('#homeLibrary .agp-poster').first).to_be_visible()
+    assert pending
+    pending[0].continue_()
+    assert page.errors == []
+
+
+def test_cold_catalog_shows_loading_then_retries(page, server):
+    calls = []
+
+    def respond(route):
+        calls.append(True)
+        if len(calls) == 1:
+            route.fulfill(json={'items': [], 'page': 1, 'pages': 1, 'total': 0,
+                                'loading': True, 'retryAfter': 2})
+        else:
+            route.continue_()
+
+    page.route('**/catalog/all.json*', respond)
+    page.goto(server.url, wait_until='domcontentloaded')
+    open_tab(page, 'all')
+    expect(page.locator('#homeCatalog')).to_contain_text('正在準備動畫片單')
+    expect(page.locator('#homeCatalog .agp-poster').first).to_be_visible(timeout=8000)
+    assert len(calls) == 2
+    assert page.errors == []
+
+
+def test_pending_shared_detail_is_retried(page, server):
+    calls = []
+
+    def respond(route):
+        calls.append(True)
+        if len(calls) == 1:
+            route.fulfill(status=202, json={'loading': True, 'retryAfter': 2})
+        else:
+            route.continue_()
+
+    page.route('**/catalog/anime.json*', respond)
+    page.goto(server.url + '/#anime-' + CATALOG_SEASON[0]['animeSn'], wait_until='domcontentloaded')
+    expect(page.locator('#catalogSheet .agp-epgroup').first).to_be_visible(timeout=8000)
+    assert len(calls) == 2
+    assert page.errors == []
+
+
 def test_catalog_draws_the_bahamut_front_page(page, server):
     open_home(page, server)
 
@@ -774,12 +844,12 @@ def test_the_info_card_shows_the_real_synopsis_and_cover(page, server):
     expect(desc).to_contain_text(WATCH_SYNOPSIS[:20])
     assert 'aniGamerPlus+' not in desc.inner_text()
 
-    # The cover is the series' own portrait art. /thumbnail.jpg is a frame
+    # The cover is the series' own portrait art. /thumbnail.webp is a frame
     # ffmpeg pulled out of the episode, and it looks like exactly that: a
     # screenshot of whatever was on screen a few seconds in.
     expect(page.locator('#animeInfo .watch-info-cover img')).to_have_attribute(
         'src', re.compile(r'^/cover\.jpg'))
-    assert page.locator('#animeInfo .watch-info-cover img[src*="thumbnail.jpg"]').count() == 0
+    assert page.locator('#animeInfo .watch-info-cover img[src*="thumbnail.webp"]').count() == 0
 
     expect(page.locator('#animeInfo .watch-tag').first).to_have_text('奇幻')
     expect(page.locator('#animeInfo .watch-info-meta')).to_contain_text('測試導演')

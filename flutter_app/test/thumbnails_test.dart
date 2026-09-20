@@ -1,7 +1,7 @@
 /// 封面/縮圖那一層: 清單解析、落盤、以及兩道併發閘門.
 ///
 /// 這裡開兩台 loopback 伺服器 —— 一台假裝是 aniGamerPlus 自己 (清單跟
-/// /thumbnail.jpg 都在它身上), 一台假裝是動畫瘋的 CDN. 兩台分開才驗得出
+/// /thumbnail.webp 都在它身上), 一台假裝是動畫瘋的 CDN. 兩台分開才驗得出
 /// 「指回自己伺服器的圖走窄的那道閘」這件事.
 library;
 
@@ -91,7 +91,8 @@ class FakeHost {
         if (body == null) {
           response.statusCode = HttpStatus.notFound;
         } else {
-          response.headers.contentType = ContentType('image', 'jpeg');
+          response.headers.contentType = ContentType(
+              'image', request.uri.path.endsWith('.webp') ? 'webp' : 'jpeg');
           response.add(body);
         }
       }
@@ -140,7 +141,7 @@ void main() {
     cdn = await FakeHost.start();
     agp.etag = 'W/"abc123"';
     agp.manifest = manifestJson();
-    agp.files['/thumbnail.jpg'] = fakeJpeg(7);
+    agp.files['/thumbnail.webp'] = fakeJpeg(7);
     cdn.files['/poster-a1.jpg'] = fakeJpeg(1);
     cdn.files['/still-v1.jpg'] = fakeJpeg(2);
     client = AgpClient(baseUrl: agp.url);
@@ -267,15 +268,24 @@ void main() {
     expect(await store.resolve('v2'), isNotNull);
   });
 
-  test('清單上沒有的集數才退回伺服器的 /thumbnail.jpg', () async {
+  test('清單上沒有的集數才退回伺服器的 /thumbnail.webp', () async {
     await store.refresh();
     agp.reset();
 
     final file = await store.resolve('v9');
     expect(file, isNotNull);
-    expect(agp.hitsOn('/thumbnail.jpg'), 1);
+    expect(agp.hitsOn('/thumbnail.webp'), 1);
     expect(store.cachedServerThumb('v9'), isNotNull);
     expect(cdn.hits, isEmpty);
+  });
+
+  test('小於 256 bytes 的 WebP 仍可作為縮圖', () async {
+    final image = base64Decode(
+        'UklGRjgAAABXRUJQVlA4ICwAAABwAQCdASoIAAgAAUAiJaACdAFAAAD+/NVh/7Sz//tLP/+0s/z0NcXNkWkAAA==');
+    agp.files['/thumbnail.webp'] = image;
+    final file = await store.resolve('small-webp');
+    expect(file, isNotNull);
+    expect(file!.readAsBytesSync(), image);
   });
 
   test('離線那一輪記下的失敗, 連得上伺服器時要整組放掉', () async {

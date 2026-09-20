@@ -1,6 +1,6 @@
 /// 封面/縮圖的來源與落盤快取.
 ///
-/// 以前每張封面都是去打伺服器的 /thumbnail.jpg?id=sn: 那條路在伺服器上可能要
+/// 以前每張封面都是去打伺服器的 /thumbnail.webp?id=sn: 那條路在伺服器上可能要
 /// 先問一次動畫瘋 API, 再去 CDN 抓圖, 全部卡在一個 per-sn 的鎖後面. 片庫有
 /// 兩百多部作品時就是兩百多筆這種請求同時擠過去, 慢得跟沒圖一樣.
 ///
@@ -133,7 +133,7 @@ class ThumbnailStore extends ChangeNotifier {
   /// 跟伺服器要新的清單. 帶 ETag, 沒變就只是一個 304.
   ///
   /// 失敗一律靜靜吞掉: 舊版伺服器根本沒有 /thumbnails.json (404), 那種情況該
-  /// 退化回 /thumbnail.jpg, 不是在畫面上彈錯誤.
+  /// 退化回 /thumbnail.webp, 不是在畫面上彈錯誤.
   Future<void> refresh() async {
     if (!_client.hasServer) return;
     await init();
@@ -279,7 +279,7 @@ class ThumbnailStore extends ChangeNotifier {
   /// 抓這一集/這部作品的圖.
   ///
   /// 順序: 清單上的 CDN 網址 → 呼叫端自己手上那個網址 (收藏清單、片單卡片本來
-  /// 就帶著封面) → 伺服器的 /thumbnail.jpg. 最後那條最貴, 所以排最後.
+  /// 就帶著封面) → 伺服器的 /thumbnail.webp. 最後那條最貴, 所以排最後.
   Future<File?> resolve(String sn, {bool poster = false, String? fallbackUrl}) =>
       _dedupe('$sn:${poster ? 'p' : 's'}',
           () => _resolve(sn, poster: poster, fallbackUrl: fallbackUrl));
@@ -290,7 +290,7 @@ class ThumbnailStore extends ChangeNotifier {
     if (url.isEmpty || _failed.contains(url)) return Future<File?>.value(null);
     final hit = cachedFile(url);
     if (hit != null) return Future<File?>.value(hit);
-    // 指回自己伺服器的那種 (/thumbnail.jpg) 走窄的那道閘: 每一筆都可能在
+    // 指回自己伺服器的那種 (/thumbnail.webp) 走窄的那道閘: 每一筆都可能在
     // 伺服器上開一支 ffmpeg.
     final gate = _client.hasServer && url.startsWith(_client.baseUrl)
         ? _serverGate
@@ -340,8 +340,12 @@ class ThumbnailStore extends ChangeNotifier {
           .timeout(const Duration(seconds: 20));
       if (response.statusCode >= 400) return null;
       final bytes = response.bodyBytes;
-      // 太小的一定不是圖 (伺服器那條路在出錯時會回一小段文字)
-      if (bytes.length < 256) return null;
+      // A valid WebP can be well below 256 bytes. Recognize its container
+      // instead of mistaking a small compressed thumbnail for an error body.
+      final webp = bytes.length >= 12 &&
+          ascii.decode(bytes.sublist(0, 4), allowInvalid: true) == 'RIFF' &&
+          ascii.decode(bytes.sublist(8, 12), allowInvalid: true) == 'WEBP';
+      if (bytes.length < 256 && !webp) return null;
       final dir = await _covers();
       final file = File('${dir.path}/$key.img');
       // 先寫暫存檔再改名: 半張圖被別人同步讀到的話會變成一個壞掉的 Image.file.

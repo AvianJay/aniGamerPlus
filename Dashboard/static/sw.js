@@ -6,7 +6,7 @@
    --------------------------------------------------------------------------- */
 'use strict';
 
-var CACHE = 'agp-shell-v10';
+var CACHE = 'agp-shell-v11';
 
 /* Bare paths on purpose: the ?v= tokens in the templates move whenever an asset
    changes, and a list that pinned them would drift out of step unnoticed. These
@@ -61,7 +61,7 @@ self.addEventListener('activate', function (event) {
 var BYPASS = [
     '/get_video.mp4',
     '/get_danmu.ass',
-    '/thumbnail.jpg',
+    '/thumbnail.webp',
     '/video_list.json',
     '/watch/time',
     '/login',

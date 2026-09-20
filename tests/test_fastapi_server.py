@@ -379,23 +379,24 @@ def test_video_list_requires_login_when_configured(client, autouse_settings, set
 
 
 def test_thumbnail_serves_cached_file_with_etag(client, autouse_settings, monkeypatch, tmp_path):
-    cached = tmp_path / 'thumb.jpg'
-    cached.write_bytes(b'\xff\xd8fakejpeg')
+    from PIL import Image
+    cached = tmp_path / 'thumb.webp'
+    Image.new('RGB', (24, 16), 'navy').save(cached, 'WEBP')
     monkeypatch.setattr(server, '_thumbnail_cache_path', lambda sn: str(cached))
-    response = client.get('/thumbnail.jpg?id=123')
+    response = client.get('/thumbnail.webp?id=123')
     assert response.status_code == 200
-    assert response.headers['Content-Type'].startswith('image/jpeg')
+    assert response.headers['Content-Type'].startswith('image/webp')
     assert response.headers['ETag']
-    again = client.get('/thumbnail.jpg?id=123', headers={'If-None-Match': response.headers['ETag']})
+    again = client.get('/thumbnail.webp?id=123', headers={'If-None-Match': response.headers['ETag']})
     assert again.status_code == 304
 
 
 def test_thumbnail_404_for_unknown_sn(client, autouse_settings, monkeypatch, tmp_path):
-    monkeypatch.setattr(server, '_thumbnail_cache_path', lambda sn: str(tmp_path / 'no.jpg'))
+    monkeypatch.setattr(server, '_thumbnail_cache_path', lambda sn: str(tmp_path / 'no.webp'))
     monkeypatch.setattr(server, '_find_video_entry', lambda sn: None)
     monkeypatch.setattr(server, '_hls_task', lambda sn: None)
-    assert client.get('/thumbnail.jpg?id=123').status_code == 404
-    assert client.get('/thumbnail.jpg?id=x').status_code == 400
+    assert client.get('/thumbnail.webp?id=123').status_code == 404
+    assert client.get('/thumbnail.webp?id=x').status_code == 400
 
 
 @pytest.fixture

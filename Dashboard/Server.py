@@ -40,8 +40,11 @@ from logging.handlers import TimedRotatingFileHandler
 import mimetypes
 from email.utils import formatdate
 import urllib.parse
+import io
+from contextlib import asynccontextmanager
 from datetime import datetime
 from plugin_system import PluginManager
+from Dashboard.thumbnail_cache import write_webp, convert_jpeg, migrate_directory
 
 from fastapi import FastAPI, Request, WebSocket, WebSocketDisconnect
 from fastapi.responses import (
@@ -61,7 +64,15 @@ templates = Jinja2Templates(directory=template_path)
 
 # No API docs: the original server exposed no schema endpoints, and this is a
 # self-hosted dashboard, not a public API.
-app = FastAPI(docs_url=None, redoc_url=None, openapi_url=None)
+@asynccontextmanager
+async def _lifespan(app):
+    # One sequential migration worker; encoding never runs on the event loop.
+    threading.Thread(target=_migrate_thumbnails, daemon=True,
+                     name='thumbnail-webp-migration').start()
+    yield
+
+
+app = FastAPI(docs_url=None, redoc_url=None, openapi_url=None, lifespan=_lifespan)
 app.mount('/static', StaticFiles(directory=static_path), name='static')
 
 # Dashboard requests are small JSON/forms. Bound both declared and streamed
@@ -463,15 +474,21 @@ def _load_userdata_locked():
         changed = changed or user_changed
 
     for default_user in default_users:
-        normalized_default = _build_default_user(default_user)
-        user_key = normalized_default['username'].lower()
+        # Existing users need only the configured role. Building a default here
+        # hashes its plaintext password on EVERY authenticated request, under
+        # the global userdata lock, even though that hash is then thrown away.
+        username = _normalize_username(default_user.get('username', default_user.get('name')))
+        if not username:
+            continue
+        user_key = username.lower()
         existing_user = existing_by_name.get(user_key)
         if existing_user is None:
+            normalized_default = _build_default_user(default_user)
             users.append(normalized_default)
             existing_by_name[user_key] = normalized_default
             changed = True
             continue
-        default_role = normalized_default.get('role', 'user')
+        default_role = _normalize_role(default_user.get('role', 'user'))
         if existing_user.get('role') != default_role:
             existing_user['role'] = default_role
             changed = True
@@ -820,6 +837,11 @@ CATALOG_CRAWL_DELAY = 0.25
 # 爬缺了几页的片单只留一会儿, 好过顶着一天的有效期发一份不全的出去
 CATALOG_PARTIAL_TTL = 10 * 60
 CATALOG_PAGE_SIZE = 28
+CATALOG_REFRESH_RETRY = 60
+_catalog_refresh_lock = threading.Lock()
+_catalog_refresh_jobs = set()
+_catalog_refresh_after = {}
+_thumbnail_migration_lock = threading.Lock()
 
 
 def _keyed_lock(name):
@@ -887,22 +909,39 @@ def _thumbnail_cache_path(sn):
     cache_dir = os.path.join(Config.get_working_dir(), 'thumbnails')
     if not os.path.exists(cache_dir):
         os.makedirs(cache_dir, exist_ok=True)
-    return os.path.join(cache_dir, re.sub(r'[^0-9A-Za-z]', '', str(sn)) + '.jpg')
+    return os.path.join(cache_dir, re.sub(r'[^0-9A-Za-z]', '', str(sn)) + '.webp')
+
+
+def _migrate_thumbnails():
+    if not _thumbnail_migration_lock.acquire(blocking=False):
+        return
+    try:
+        result = migrate_directory(
+            os.path.join(Config.get_working_dir(), 'thumbnails'),
+            lock_for=lambda sn: _keyed_lock('thumb-' + sn))
+        if result['converted'] or result['failed']:
+            logger.info('Thumbnail WebP migration: %s', result)
+    finally:
+        _thumbnail_migration_lock.release()
 
 
 def _make_thumbnail(video_path, output_path):
     ffmpeg = _get_ffmpeg_path()
     if not ffmpeg:
         return False
-    tmp_path = output_path + '.tmp.jpg'
+    tmp_path = output_path + '.tmp.webp'
     # 4 分钟处通常已过 OP, 片子太短就依次往前退
     for seek in ('240', '30', '0'):
         try:
-            subprocess.call([ffmpeg, '-y', '-loglevel', 'error', '-ss', seek,
+            subprocess.run([ffmpeg, '-y', '-loglevel', 'error', '-ss', seek,
                              '-i', video_path, '-frames:v', '1',
-                             '-vf', 'scale=960:-2', '-q:v', '4', tmp_path],
-                            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                             '-vf', 'scale=960:-2', '-c:v', 'libwebp',
+                             '-quality', '82', '-threads', '1', tmp_path],
+                            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                            timeout=30, check=True)
         except BaseException:
+            if os.path.exists(tmp_path):
+                os.remove(tmp_path)
             err_print(0, '縮圖錯誤', traceback.format_exc(), status=1, no_sn=True, display=False)
             return False
         if os.path.exists(tmp_path) and os.path.getsize(tmp_path) > 0:
@@ -1020,11 +1059,49 @@ def _read_catalog_cache(name, ttl):
 
 
 def _write_catalog_cache(name, payload):
+    tmp_path = None
     try:
-        with open(_catalog_cache_path(name), 'w', encoding='utf-8') as f:
+        path = _catalog_cache_path(name)
+        fd, tmp_path = tempfile.mkstemp(dir=os.path.dirname(path), suffix='.tmp')
+        with os.fdopen(fd, 'w', encoding='utf-8') as f:
             json.dump(payload, f, ensure_ascii=False)
+        _replace_with_retry(tmp_path, path)
     except BaseException:
         pass  # 写不进去不影响这次返回, 下次再抓一遍就是
+    finally:
+        if tmp_path and os.path.exists(tmp_path):
+            os.remove(tmp_path)
+
+
+def _catalog_refreshing(name):
+    with _catalog_refresh_lock:
+        return name in _catalog_refresh_jobs
+
+
+def _schedule_catalog_refresh(name, refresh):
+    with _catalog_refresh_lock:
+        if (name in _catalog_refresh_jobs or
+                time.monotonic() < _catalog_refresh_after.get(name, 0)):
+            return
+        _catalog_refresh_jobs.add(name)
+
+    def run_refresh():
+        try:
+            refresh()
+        except Exception:
+            logger.exception('Catalog refresh failed: %s', name)
+        finally:
+            with _catalog_refresh_lock:
+                _catalog_refresh_after[name] = time.monotonic() + CATALOG_REFRESH_RETRY
+                _catalog_refresh_jobs.discard(name)
+
+    try:
+        threading.Thread(target=run_refresh, daemon=True,
+                         name='catalog-' + name).start()
+    except Exception:
+        with _catalog_refresh_lock:
+            _catalog_refresh_jobs.discard(name)
+        raise
 
 
 def _get_catalog_index():
@@ -1032,6 +1109,14 @@ def _get_catalog_index():
     cached = _read_catalog_cache('index', CATALOG_INDEX_TTL)
     if cached is not None:
         return cached
+    stale = _read_catalog_cache('index', 0)
+    if stale is not None:
+        _schedule_catalog_refresh('index', _refresh_catalog_index)
+        return stale
+    return _refresh_catalog_index()
+
+
+def _refresh_catalog_index():
     with _keyed_lock('catalog-index'):
         cached = _read_catalog_cache('index', CATALOG_INDEX_TTL)
         if cached is not None:
@@ -1118,19 +1203,12 @@ def _refresh_catalog_all():
 
 
 def _get_catalog_all():
-    """全站片单. 第一次要爬满六十几页, 之后都是拿缓存.
-
-    过期了先把旧的端出去, 更新丢到后台: 这个列表一天才动一次, 没必要让谁
-    等上二十几秒只为了看到几乎一样的东西.
-    """
+    """Serve cached data immediately; even the first crawl runs in the background."""
     cached = _read_catalog_cache('all', 0)
     if _catalog_all_is_fresh(cached):
         return cached.get('items') or []
-    if cached and cached.get('items'):
-        thread = threading.Thread(target=_refresh_catalog_all, daemon=True)
-        thread.start()
-        return cached.get('items') or []
-    return (_refresh_catalog_all() or {}).get('items') or []
+    _schedule_catalog_refresh('all', _refresh_catalog_all)
+    return (cached or {}).get('items') or []
 
 
 def _resolve_video_sn(anime_sn):
@@ -1163,7 +1241,7 @@ def _catalog_knows(anime_sn):
     """只认片单里出现过的作品.
 
     这个路由会替浏览器去抓巴哈, 不限住就成了打向人家 api 的请求放大器 ——
-    跟 /anime_info、/thumbnail.jpg 里那两道 "不在片库就不转发" 是同一个道理,
+    跟 /anime_info、/thumbnail.webp 里那两道 "不在片库就不转发" 是同一个道理,
     只是这里的边界从本地片库换成了片单本身.
     """
     target = str(anime_sn)
@@ -1232,18 +1310,13 @@ def _build_thumbnail(sn, cache_path, entry):
     if entry.get('source') == BAHAMUT_SOURCE:
         cover_url = ((_get_anime_info(sn) or {}).get('video') or {}).get('cover') or ''
         if cover_url.strip():
-            tmp_path = cache_path + '.tmp.jpg'
             try:
                 resp = _bahamut_get(cover_url.strip(), timeout=15)
                 if resp.status_code == 200 and resp.content:
-                    with open(tmp_path, 'wb') as f:
-                        f.write(resp.content)
-                    os.replace(tmp_path, cache_path)
+                    write_webp(io.BytesIO(resp.content), cache_path)
                     return True
             except BaseException:
                 err_print(sn, '下載封面失敗', traceback.format_exc(), status=1, display=False)
-            if os.path.exists(tmp_path):
-                os.remove(tmp_path)
 
     video_path = entry.get('path')
     if not video_path or not os.path.exists(video_path):
@@ -2389,7 +2462,7 @@ def watch_series(request: Request):
     sn = request.query_params.get('id')
     if not sn or not str(sn).isdigit():
         return JSONResponse({"error": "invalid sn"}, status_code=400)
-    # 跟 /anime_info、/thumbnail.jpg 同一道門: 片庫裡有, 或者正在下載, 才代抓
+    # 跟 /anime_info、/thumbnail.webp 同一道門: 片庫裡有, 或者正在下載, 才代抓
     if _find_video_entry(sn) is not None or _hls_task(sn) is not None:
         info = _get_anime_info(sn)
     else:
@@ -2449,6 +2522,11 @@ def catalog_all(request: Request):
         return denied
 
     items = _get_catalog_all()
+    loading = _catalog_refreshing('all')
+    # A worker may have published the first cache between the two reads.
+    if not items and not loading:
+        items = (_read_catalog_cache('all', 0) or {}).get('items') or []
+    available = bool(items)
     keyword = (request.query_params.get('q') or '').strip()
     if keyword:
         # 全站一千八百多部都已经在本地了, 搜个片名没必要再去问巴哈
@@ -2464,7 +2542,13 @@ def catalog_all(request: Request):
         'page': page,
         'pages': max(1, (len(items) + CATALOG_PAGE_SIZE - 1) // CATALOG_PAGE_SIZE),
         'total': len(items),
+        'loading': loading,
+        'retryAfter': 2 if loading else (CATALOG_REFRESH_RETRY if not available else 0),
     })
+    if loading or not available:
+        resp.headers['Cache-Control'] = 'no-store'
+        resp.headers['Retry-After'] = str(2 if loading else CATALOG_REFRESH_RETRY)
+        return resp
     return _apply_cache_headers(resp, current_settings, 600)
 
 
@@ -2483,6 +2567,9 @@ def catalog_anime(request: Request):
     if not anime_sn or not str(anime_sn).isdigit():
         return JSONResponse({"error": "invalid sn"}, status_code=400)
     if not _catalog_knows(anime_sn):
+        if _catalog_refreshing('all'):
+            return JSONResponse({'loading': True, 'retryAfter': 2}, status_code=202,
+                                headers={'Cache-Control': 'no-store', 'Retry-After': '2'})
         return JSONResponse({"error": "anime not found"}, status_code=404)
 
     video_sn = _resolve_video_sn(anime_sn)
@@ -2511,7 +2598,7 @@ def catalog_anime(request: Request):
     return _apply_cache_headers(resp, current_settings, 600)
 
 
-@app.api_route('/thumbnail.jpg', methods=['GET', 'HEAD'])
+@app.api_route('/thumbnail.webp', methods=['GET', 'HEAD'])
 def get_thumbnail(request: Request):
     # 首页/播放页的封面: 官方封面抓不到才从影片里抽一帧, 抓过就落盘缓存
     current_settings = _sync_plugin_manager()
@@ -2528,6 +2615,17 @@ def get_thumbnail(request: Request):
         return JSONResponse({"error": "invalid sn"}, status_code=400)
 
     cache_path = _thumbnail_cache_path(sn)
+    if not os.path.exists(cache_path):
+        # Convert an existing cache entry locally, without refetching the cover.
+        old_paths = [os.path.splitext(cache_path)[0] + suffix for suffix in ('.jpg', '.jpeg')]
+        if any(os.path.exists(path) for path in old_paths):
+            with _keyed_lock('thumb-' + str(sn)):
+                for old_path in old_paths:
+                    if os.path.exists(old_path):
+                        try:
+                            convert_jpeg(old_path)
+                        except Exception:
+                            logger.warning('Thumbnail conversion failed for %s', sn)
     if not os.path.exists(cache_path):
         # 先确认 sn 真的在片库里再干活: 否则任何人都能拿这个路由去捶巴哈,
         # 顺手把锁表和 anime_info/ 撑到没边
@@ -2555,10 +2653,10 @@ def get_thumbnail(request: Request):
         resp = Response(status_code=304)
     elif request.method == 'HEAD':
         resp = Response(status_code=200)
-        resp.headers['Content-Type'] = 'image/jpeg'
+        resp.headers['Content-Type'] = 'image/webp'
         resp.headers['Content-Length'] = str(file_size)
     else:
-        resp = FileResponse(cache_path, media_type='image/jpeg')
+        resp = FileResponse(cache_path, media_type='image/webp')
     resp.headers['ETag'] = etag
     resp.headers['Last-Modified'] = last_modified
     _apply_cache_headers(resp, current_settings, 86400)
@@ -2587,7 +2685,7 @@ def _read_anime_info_any_age(cache_path):
 def _thumbnail_manifest():
     """videoSn -> 官方封面 URL, 全部從 anime_info/ 現有的快取拼出來.
 
-    手機那端本來是每一張卡片各打一次 /thumbnail.jpg, 一整頁片庫就是幾百個
+    手機那端本來是每一張卡片各打一次 /thumbnail.webp, 一整頁片庫就是幾百個
     請求同時壓在同一支路由上, 每一個都可能去抓巴哈再落盤. 把對照表一次發下去,
     客戶端就能自己直接跟 CDN 要圖, 這邊一次上游請求都不用發.
     """
@@ -2644,7 +2742,7 @@ def _thumbnail_manifest():
 
 @app.api_route('/thumbnails.json', methods=['GET', 'HEAD'])
 def get_thumbnail_manifest(request: Request):
-    # 跟 /thumbnail.jpg 同一道門: 它擋得住的, 這張表也不該漏出去
+    # 跟 /thumbnail.webp 同一道門: 它擋得住的, 這張表也不該漏出去
     current_settings = _get_current_settings()
     gated = _online_watch_gate(current_settings)
     if gated is not None:

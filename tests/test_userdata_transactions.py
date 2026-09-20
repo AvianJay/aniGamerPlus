@@ -106,6 +106,45 @@ def test_transactional_api_exists():
         'missing transactional userdata API (update_user_data/userdata_transaction)'
 
 
+def test_existing_default_user_does_not_hash_on_authenticated_reads(real_userdata_env, monkeypatch):
+    from concurrent.futures import ThreadPoolExecutor
+    settings, path = real_userdata_env
+    settings['dashboard']['user_control']['default_user'] = [
+        {'name': ' ALICE ', 'password': 'old-config-password', 'role': 'admin'}]
+    original = _read_raw(path)['users'][0]
+
+    def forbidden_hash(*args):
+        raise AssertionError('An existing user must not rebuild the default password')
+
+    monkeypatch.setattr(server, '_hash_password', forbidden_hash)
+    with ThreadPoolExecutor(max_workers=8) as pool:
+        results = list(pool.map(lambda _: server.verify_user({'token': 'alice-token'}), range(16)))
+    assert results == [(True, 'admin')] * 16
+    after = _read_raw(path)['users'][0]
+    assert after['password_hash'] == original['password_hash']
+    assert after['token'] == original['token']
+
+
+def test_missing_default_is_created_and_hashed_only_once(real_userdata_env, monkeypatch):
+    settings, path = real_userdata_env
+    settings['dashboard']['user_control']['default_user'] = [
+        {'username': 'new-default', 'password': 'initial-password', 'role': 'admin'}]
+    hashes = []
+    original = server._hash_password
+
+    def record(password):
+        hashes.append(True)
+        return original(password)
+
+    monkeypatch.setattr(server, '_hash_password', record)
+    for _ in range(3):
+        server.load_user_data()
+    assert len(hashes) == 1
+    created = next(u for u in _read_raw(path)['users'] if u['username'] == 'new-default')
+    assert server._verify_password(created, 'initial-password')
+    assert 'password' not in created
+
+
 def test_concurrent_watch_time_both_survive(real_userdata_env):
     _, path = real_userdata_env
     barrier = threading.Barrier(2)

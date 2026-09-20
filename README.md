@@ -46,6 +46,15 @@ cd aniGamerPlus
 pip3 install -r requirements.txt
 ```
 
+縮圖使用 WebP，需要安裝上述依賴中的 Pillow。更新後啟動 Dashboard，會在背景逐張將
+`thumbnails/` 內的舊 JPG/JPEG 轉成 WebP；成功寫入並驗證後刪除原 JPG，失敗的原檔會保留。
+也可以在伺服器的專案目錄執行 `python -m Dashboard.thumbnail_cache` 一次轉完，或在命令後指定縮圖目錄。
+遷移可重複執行，轉好的圖片不會重做。縮圖 API 已改為 `/thumbnail.webp?id=…`，舊 JPG 路由已移除，
+Flutter App 也需要更新到本版。動畫瘋 CDN 的外部封面網址不屬於本機縮圖快取，不會被改寫。
+
+首次建立全站片單會在背景執行，`/catalog/all.json` 的 `loading` 和 `retryAfter` 欄位表示
+更新進度與建議重試秒數；網頁會自動重試，已有快取時先顯示快取內容。
+
 升級
 ```bash
 git pull

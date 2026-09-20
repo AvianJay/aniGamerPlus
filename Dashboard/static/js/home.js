@@ -88,12 +88,12 @@
     }
 
     /* video_list.json carries no artwork, so a title starts as a generated
-       gradient plate. /thumbnail.jpg pulls a real frame out of the episode on
+       gradient plate. /thumbnail.webp pulls a real frame out of the episode on
        disk and layers it over that plate; anything the server cannot grab a
        frame for 404s, the <img> is dropped, and the plate stays visible. */
     function thumbImg(video) {
         if (!video || !video.sn) { return ''; }
-        return '<img class="agp-art-img" alt="" loading="lazy" src="./thumbnail.jpg?id=' +
+        return '<img class="agp-art-img" alt="" loading="lazy" src="./thumbnail.webp?id=' +
             AGP.escapeHtml(encodeURIComponent(video.sn)) + '">';
     }
 
@@ -687,19 +687,17 @@
 
     async function boot() {
         var failure = null;
-        var results = await Promise.all([
-            fetch('./video_list.json').then(function (response) {
-                if (!response.ok) { return Promise.reject(response.status); }
-                return response.json();
-            }).catch(function (error) {
-                console.warn('video list unavailable:', error);
-                failure = typeof error === 'number' ? error : 0;
-                return { videos: [] };
-            }),
-            loadTimes()
-        ]);
+        var times = loadTimes();
+        var result = await fetch('./video_list.json').then(function (response) {
+            if (!response.ok) { return Promise.reject(response.status); }
+            return response.json();
+        }).catch(function (error) {
+            console.warn('video list unavailable:', error);
+            failure = typeof error === 'number' ? error : 0;
+            return { videos: [] };
+        });
 
-        var videos = Array.isArray(results[0].videos) ? results[0].videos.slice() : [];
+        var videos = Array.isArray(result.videos) ? result.videos.slice() : [];
         videos.sort(function (a, b) { return (b.timestamp || 0) - (a.timestamp || 0); });
 
         var grouped = groupByAnime(videos);
@@ -708,7 +706,6 @@
         state.byAnime = grouped.byAnime;
         state.bySn = {};
         videos.forEach(function (video) { state.bySn[String(video.sn)] = video; });
-        state.times = results[1];
 
         document.body.classList.remove('is-loading');
         if (failure !== null) {
@@ -716,6 +713,13 @@
             return;
         }
         renderAll();
+        times.then(function (positions) {
+            state.times = positions;
+            renderSection('homeContinue', renderContinue);
+            renderSection('homeTimetable', renderTimetable);
+            renderSection('homeHistory', renderHistory);
+            renderSection('homeAccount', renderAccount);
+        });
         /* Arriving with ?q= from the watch page: the answer lives on 所有動畫,
            so that is the page that opens. */
         applySearchMode();

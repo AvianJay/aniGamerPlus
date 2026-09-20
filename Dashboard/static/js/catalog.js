@@ -202,6 +202,10 @@
             }
             body = '<div class="agp-poster-grid">' +
                 new Array(15).join('<div class="agp-skeleton agp-poster-skeleton"></div>') + '</div>';
+        } else if (payload.loading && !payload.items.length) {
+            body = '<p class="agp-empty" role="status">正在準備動畫片單，完成後會自動顯示…</p>';
+        } else if (payload.error || (payload.retryAfter && !payload.items.length)) {
+            body = '<p class="agp-empty" role="status">片單暫時無法載入，稍後會自動重試。</p>';
         } else if (!payload.items.length) {
             body = '<p class="agp-empty">' + (query
                 ? '找不到符合「' + AGP.escapeHtml(query) + '」的作品。'
@@ -219,8 +223,16 @@
     /* --- catalogue data ---------------------------------------------------- */
 
     var catalogToken = 0;
+    var catalogRetryTimer = 0;
+    var catalogController = null;
+    var catalogDisabled = false;
+    var detailRetryTimer = 0;
 
     async function loadCatalog() {
+        if (catalogDisabled) { return; }
+        global.clearTimeout(catalogRetryTimer);
+        if (catalogController) { catalogController.abort(); }
+        catalogController = new AbortController();
         /* Every keystroke starts a request and they do not come back in order;
            a slow page 1 landing after a fast page 2 would silently replace the
            grid the reader is looking at. */
@@ -230,15 +242,23 @@
             (state.query.trim() ? '&q=' + encodeURIComponent(state.query.trim()) : '');
         var payload;
         try {
-            payload = await getJson(url);
+            var response = await fetch(url, { signal: catalogController.signal });
+            if (!response.ok) { throw response.status; }
+            payload = await response.json();
         } catch (error) {
-            payload = { items: [], page: 1, pages: 1, total: 0 };
+            if (error && error.name === 'AbortError') { return; }
+            payload = { items: [], page: 1, pages: 1, total: 0,
+                error: true, retryAfter: error === 403 || error === 404 ? 0 : 60 };
         }
         if (token !== catalogToken) { return; }
         state.page = payload.page || 1;
         state.pages = payload.pages || 1;
         state.total = payload.total || 0;
         renderCatalog(payload);
+        if (payload.loading || payload.retryAfter) {
+            catalogRetryTimer = global.setTimeout(loadCatalog,
+                Math.max(2, Number(payload.retryAfter) || 2) * 1000);
+        }
     }
 
     /* --- detail sheet ------------------------------------------------------ */
@@ -419,12 +439,20 @@
         /* The reader may have closed the sheet, or opened another title, while
            this was in flight. */
         if (state.sheetSn !== animeSn) { return; }
+        if (detail.loading) {
+            global.clearTimeout(detailRetryTimer);
+            detailRetryTimer = global.setTimeout(function () {
+                if (state.sheetSn === animeSn) { loadDetail(animeSn); }
+            }, Math.max(2, Number(detail.retryAfter) || 2) * 1000);
+            return;
+        }
         state.details[animeSn] = detail;
         state.detail = detail;
         renderSheet();
     }
 
     function openSheet(animeSn) {
+        global.clearTimeout(detailRetryTimer);
         var host = sheetHost();
         state.sheetSn = animeSn;
         state.expanded = {};
@@ -437,6 +465,7 @@
     }
 
     function closeSheet() {
+        global.clearTimeout(detailRetryTimer);
         var host = el('catalogSheet');
         state.sheetSn = '';
         state.detail = null;
@@ -627,6 +656,11 @@
        dashboard.online_watch is on. Leaving the hosts empty rather than filling
        them with apologies is what keeps the page from looking half-loaded. */
     function hideCatalog() {
+        catalogDisabled = true;
+        ++catalogToken;
+        global.clearTimeout(catalogRetryTimer);
+        if (catalogController) { catalogController.abort(); }
+        global.clearTimeout(detailRetryTimer);
         ['homeSeason', 'homeSchedule', 'homeCatalogHot', 'homeCatalogNew', 'homeCatalog']
             .forEach(function (id) {
                 var host = el(id);
@@ -653,10 +687,14 @@
             state.query = '';
         }
 
+        // These are independent: a slow index must not delay search or a shared
+        // detail link, and a cold full-catalogue crawl must not delay the index.
+        loadCatalog();
+        syncSheetToHash();
         try {
             state.index = await getJson('./catalog/index.json');
         } catch (error) {
-            hideCatalog();
+            if (error === 403 || error === 404) { hideCatalog(); }
             return;
         }
 
@@ -664,8 +702,6 @@
         renderSchedule();
         renderHot();
         renderNewAdded();
-        await loadCatalog();
-        syncSheetToHash();
     }
 
     document.addEventListener('click', onClick);

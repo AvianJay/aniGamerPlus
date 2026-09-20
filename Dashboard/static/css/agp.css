@@ -506,7 +506,7 @@ body.agp-body img { max-width: 100%; }
 
 .agp-card-art-fill { inset: 0; position: absolute; }
 
-/* The real frame, grabbed from the downloaded episode by /thumbnail.jpg. It
+/* The real frame, grabbed from the downloaded episode by /thumbnail.webp. It
    covers the generated plate when it loads and is removed on error, which is
    what uncovers the plate again. */
 .agp-art-img {

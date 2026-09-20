@@ -300,13 +300,13 @@ function watchUrl(video) {
         (video.resolution ? '&res=' + encodeURIComponent(video.resolution) : '');
 }
 
-/* Cover art comes out of the episode itself: /thumbnail.jpg grabs a frame with
+/* Cover art comes out of the episode itself: /thumbnail.webp grabs a frame with
    ffmpeg and caches it. It sits over the generated gradient plate, and the
    capture-phase error handler below drops it again when the server has nothing
    to grab -- which is what leaves the plate showing. */
 function thumbImg(video) {
     if (!video || !video.sn) { return ''; }
-    return '<img class="agp-art-img" alt="" loading="lazy" src="./thumbnail.jpg?id=' +
+    return '<img class="agp-art-img" alt="" loading="lazy" src="./thumbnail.webp?id=' +
         AGP.escapeHtml(encodeURIComponent(video.sn)) + '">';
 }
 
@@ -472,7 +472,7 @@ AgpPlayer.prototype.build = function () {
     this.streamRetries = 0;
 
     /* Something to look at while the first bytes arrive, instead of a black box. */
-    this.video.poster = './thumbnail.jpg?id=' + encodeURIComponent(this.videoData.sn);
+    this.video.poster = './thumbnail.webp?id=' + encodeURIComponent(this.videoData.sn);
     /* 串流要等第一次狀態回來才知道下到哪一片, 這裡先不接來源 */
     if (!this.streaming) { this.attachSource(); }
     this.video.playbackRate = this.rate;
@@ -2473,9 +2473,10 @@ async function main() {
 
     wireSideTabs();
 
-    var list = await getVideoList();
+    var initial = await Promise.all([getVideoList(), getAllTimes()]);
+    var list = initial[0];
     var videos = Array.isArray(list.videos) ? list.videos : [];
-    var times = await getAllTimes();
+    var times = initial[1];
     page.times = times;
 
     if (!sn) {

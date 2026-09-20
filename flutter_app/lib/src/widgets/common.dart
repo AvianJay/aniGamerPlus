@@ -14,7 +14,7 @@ import '../util/format.dart';
 /// 封面. 抓不到圖就退回片名 hash 出來的漸層 —— 跟網頁版的 artFor() 同一組顏色.
 ///
 /// 給了 [cache] 就交給 ThumbnailStore 去解析: 先看磁碟, 沒有再照清單去 CDN 抓,
-/// 都不行才退回伺服器的 /thumbnail.jpg. 這條路有排隊閘門, 所以一次捲進來
+/// 都不行才退回伺服器的 /thumbnail.webp. 這條路有排隊閘門, 所以一次捲進來
 /// 幾十張圖也不會同時打幾十筆請求出去. 沒給 [cache] 的話行為跟以前一模一樣.
 class CoverImage extends StatefulWidget {
   const CoverImage({

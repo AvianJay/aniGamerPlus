@@ -134,7 +134,7 @@ class AgpClient {
     }
   }
 
-  Uri thumbnailUrl(String sn) => uri('/thumbnail.jpg', {'id': sn});
+  Uri thumbnailUrl(String sn) => uri('/thumbnail.webp', {'id': sn});
 
   Uri danmuUrl(String sn) => uri('/get_danmu.ass', {'id': sn});
 
@@ -239,7 +239,7 @@ class AgpClient {
   /// /thumbnails.json —— 整台伺服器的封面網址表, 客戶端拿了自己去 CDN 抓圖.
   ///
   /// 一樣走 ETag 條件請求. 舊版伺服器沒有這條路由, 那就是 404, 呼叫端該把它
-  /// 當成「沒有清單」退回 /thumbnail.jpg, 不是一個要顯示的錯誤.
+  /// 當成「沒有清單」退回 /thumbnail.webp, 不是一個要顯示的錯誤.
   Future<({String? body, String etag, bool notModified})> thumbnailManifest(
       String? etag) async {
     final response = await _http.get(
@@ -308,7 +308,7 @@ class AgpClient {
   }
 
   Future<CatalogPage> catalogAll({String query = '', int page = 1}) async {
-    final data = await _json('/catalog/all.json', {
+    final data = await _catalogJson('/catalog/all.json', {
       if (query.isNotEmpty) 'q': query,
       'page': page,
     });
@@ -316,8 +316,26 @@ class AgpClient {
   }
 
   Future<SeriesInfo> catalogAnime(String animeSn) async {
-    final data = await _json('/catalog/anime.json', {'sn': animeSn});
+    final data = await _catalogJson('/catalog/anime.json', {'sn': animeSn});
     return SeriesInfo.fromJson((data as Map).cast<String, dynamic>());
+  }
+
+  /// A cold server builds its catalogue in the background. Keep the caller's
+  /// loading state until data arrives, rather than caching an empty detail.
+  Future<dynamic> _catalogJson(String path, Map<String, dynamic> query) async {
+    for (var attempt = 0; attempt < 60; attempt++) {
+      final data = await _json(path, query);
+      final items = data['items'] as List?;
+      if (data['loading'] != true || (items != null && items.isNotEmpty)) {
+        if (data['loading'] != true && (data['retryAfter'] as num? ?? 0) > 0) {
+          throw ApiException(503, '動畫片單暫時無法載入，請稍後重試。');
+        }
+        return data;
+      }
+      final seconds = (data['retryAfter'] as num? ?? 2).toInt().clamp(2, 10);
+      await Future<void>.delayed(Duration(seconds: seconds));
+    }
+    throw ApiException(503, '動畫片單仍在準備中，請稍後重試。');
   }
 
   // -------------------------------------------------------------- 觀看進度

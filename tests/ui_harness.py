@@ -10,6 +10,8 @@ the ``/watch/time`` route in ``Dashboard/Server.py``).
 """
 
 import copy
+import io
+from functools import lru_cache
 import json
 import os
 import re
@@ -24,11 +26,20 @@ from fastapi.responses import FileResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 import uvicorn
+from PIL import Image
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 TEMPLATE_PATH = os.path.join(ROOT, 'Dashboard', 'templates')
 STATIC_PATH = os.path.join(ROOT, 'Dashboard', 'static')
 FIXTURES = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'fixtures')
+
+
+@lru_cache(maxsize=1)
+def thumbnail_webp():
+    output = io.BytesIO()
+    with Image.open(os.path.join(FIXTURES, 'sample-thumb.jpg')) as image:
+        image.save(output, 'WEBP', quality=82)
+    return output.getvalue()
 
 # The settings page is driven entirely by data/config.json, so the shipped
 # sample is the right seed: a test that starts anywhere else is not testing
@@ -75,7 +86,7 @@ def build_video_list():
 
 VIDEO_LIST = build_video_list()
 FIRST_SN = VIDEO_LIST['videos'][0]['sn']
-# One title whose file is missing, so /thumbnail.jpg has something to 404 on.
+# One title whose file is missing, so /thumbnail.webp has something to 404 on.
 NO_THUMBNAIL_SN = VIDEO_LIST['videos'][-1]['sn']
 
 # Written by /watch/time and read back by the home page, exactly like the real
@@ -99,11 +110,11 @@ WATCH_TIMES = {
 # --- 動畫瘋 catalogue -------------------------------------------------------
 #
 # Mirrors ``Catalog.parse_index`` and the ``/catalog/*`` routes in
-# ``Dashboard/Server.py``. Covers point at /thumbnail.jpg so the fixture image
+# ``Dashboard/Server.py``. Covers point at /thumbnail.webp so the fixture image
 # stands in for p2.bahamut.com.tw and the suite never touches the network.
 
 CATALOG_PAGE_SIZE = 28
-CATALOG_COVER = '/thumbnail.jpg?id=%s' % FIRST_SN
+CATALOG_COVER = '/thumbnail.webp?id=%s' % FIRST_SN
 WEEKDAYS = ['週一', '週二', '週三', '週四', '週五', '週六', '週日']
 
 
@@ -455,7 +466,7 @@ def build_watch_series():
             'animeSn': str(400000 + index),
             'videoSn': local[0]['sn'],
             'title': anime,
-            # A different path from ./thumbnail.jpg on purpose: the cover the
+            # A different path from ./thumbnail.webp on purpose: the cover the
             # page ends up with says which of the two it chose.
             'cover': '/cover.jpg?anime=%d' % index,
             'content': WATCH_SYNOPSIS,
@@ -768,7 +779,7 @@ def create_app(logged_in=True, catalog=True, hls=True, proxy=None):
         # handles the Range requests the player issues while seeking.
         return FileResponse(os.path.join(FIXTURES, 'sample.webm'), media_type='video/webm')
 
-    @app.get('/thumbnail.jpg')
+    @app.get('/thumbnail.webp')
     def thumbnail(request: Request):
         # The real server grabs this frame out of the downloaded episode with
         # ffmpeg and 404s when there is no file to grab from; NO_THUMBNAIL_SN
@@ -776,7 +787,7 @@ def create_app(logged_in=True, catalog=True, hls=True, proxy=None):
         sn = request.query_params.get('id')
         if not sn or sn == NO_THUMBNAIL_SN:
             return JSONResponse({'error': 'thumbnail unavailable'}, status_code=404)
-        return FileResponse(os.path.join(FIXTURES, 'sample-thumb.jpg'), media_type='image/jpeg')
+        return Response(thumbnail_webp(), media_type='image/webp')
 
     @app.get('/get_danmu.ass')
     def get_danmu():
