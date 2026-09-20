@@ -80,7 +80,8 @@ class _SetupPageState extends State<SetupPage> {
       }
       return error.message;
     }
-    if (text.contains('SocketException') || text.contains('Connection refused')) {
+    if (text.contains('SocketException') ||
+        text.contains('Connection refused')) {
       return '連不上. 確認伺服器有開, 而且手機跟它在同一個網路';
     }
     if (text.contains('TimeoutException')) {
@@ -124,9 +125,12 @@ class _SetupPageState extends State<SetupPage> {
                 ],
               ),
               const SizedBox(height: 12),
-              const Text(
+              Text(
                 '填上你自己那台 aniGamerPlus 的網址 —— 就是平常用瀏覽器開 Dashboard 的那一個.',
-                style: TextStyle(fontSize: 14, height: 1.5, color: AgpColors.fgDim),
+                style: TextStyle(
+                    fontSize: 14,
+                    height: 1.5,
+                    color: Theme.of(context).colorScheme.onSurfaceVariant),
               ),
               const SizedBox(height: 26),
             ],
@@ -144,9 +148,11 @@ class _SetupPageState extends State<SetupPage> {
               ),
             ),
             const SizedBox(height: 8),
-            const Text(
+            Text(
               '沒填 http:// 的話會自動補上.',
-              style: TextStyle(fontSize: 12, color: AgpColors.fgFaint),
+              style: TextStyle(
+                  fontSize: 12,
+                  color: Theme.of(context).colorScheme.onSurfaceVariant),
             ),
             if (history.isNotEmpty) ...[
               const SizedBox(height: 16),
@@ -191,7 +197,8 @@ class _SetupPageState extends State<SetupPage> {
                     )
                   : const Text('連線'),
             ),
-            if (!widget.canPop && widget.state.downloads.finished.isNotEmpty) ...[
+            if (!widget.canPop &&
+                widget.state.downloads.finished.isNotEmpty) ...[
               const SizedBox(height: 12),
               OutlinedButton.icon(
                 onPressed: () {
@@ -201,7 +208,8 @@ class _SetupPageState extends State<SetupPage> {
                   widget.state.refreshLibrary();
                 },
                 icon: const Icon(Icons.download_done_rounded, size: 18),
-                label: Text('先看離線的 ${widget.state.downloads.finished.length} 集'),
+                label:
+                    Text('先看離線的 ${widget.state.downloads.finished.length} 集'),
               ),
             ],
             const SizedBox(height: 30),
@@ -212,10 +220,13 @@ class _SetupPageState extends State<SetupPage> {
               style: TextStyle(fontWeight: FontWeight.w700, fontSize: 14),
             ),
             const SizedBox(height: 6),
-            const Text(
+            Text(
               '在跑 aniGamerPlus 的那台電腦上看 config.json 的 dashboard.host 跟 port, '
               '例如 host 是 0.0.0.0、port 是 5000, 那手機上就填「電腦的區網 IP:5000」.',
-              style: TextStyle(fontSize: 13, height: 1.55, color: AgpColors.fgFaint),
+              style: TextStyle(
+                  fontSize: 13,
+                  height: 1.55,
+                  color: Theme.of(context).colorScheme.onSurfaceVariant),
             ),
           ],
         ),
@@ -246,7 +257,8 @@ class _Banner extends StatelessWidget {
           Icon(icon, size: 18, color: color),
           const SizedBox(width: 10),
           Expanded(
-            child: Text(text, style: const TextStyle(fontSize: 13.5, height: 1.45)),
+            child: Text(text,
+                style: const TextStyle(fontSize: 13.5, height: 1.45)),
           ),
         ],
       ),

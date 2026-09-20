@@ -205,9 +205,11 @@ class _SnListPageState extends State<SnListPage> {
                 style: TextStyle(fontSize: 17, fontWeight: FontWeight.w800),
               ),
               const SizedBox(height: 4),
-              const Text(
+              Text(
                 '一行一部作品，伺服器每次檢查更新時從上往下跑一遍。',
-                style: TextStyle(fontSize: 12.5, color: AgpColors.fgFaint),
+                style: TextStyle(
+                    fontSize: 12.5,
+                    color: Theme.of(context).colorScheme.onSurfaceVariant),
               ),
               const SizedBox(height: 14),
               for (final row in _formatHelp)
@@ -218,12 +220,15 @@ class _SnListPageState extends State<SnListPage> {
                     children: [
                       Container(
                         width: double.infinity,
-                        padding:
-                            const EdgeInsets.symmetric(horizontal: 10, vertical: 7),
+                        padding: const EdgeInsets.symmetric(
+                            horizontal: 10, vertical: 7),
                         decoration: BoxDecoration(
-                          color: AgpColors.bgElev,
+                          color: Theme.of(context)
+                              .colorScheme
+                              .surfaceContainerHighest,
                           borderRadius: BorderRadius.circular(kRadiusSmall),
-                          border: Border.all(color: AgpColors.line),
+                          border:
+                              Border.all(color: Theme.of(context).dividerColor),
                         ),
                         child: Text(
                           row[0],
@@ -236,8 +241,10 @@ class _SnListPageState extends State<SnListPage> {
                       const SizedBox(height: 4),
                       Text(
                         row[1],
-                        style: const TextStyle(
-                            fontSize: 12, color: AgpColors.fgDim),
+                        style: TextStyle(
+                            fontSize: 12,
+                            color:
+                                Theme.of(context).colorScheme.onSurfaceVariant),
                       ),
                     ],
                   ),
@@ -257,7 +264,8 @@ class _SnListPageState extends State<SnListPage> {
         ? 0
         : _editor.text
             .split('\n')
-            .where((line) => line.trim().isNotEmpty && !line.trim().startsWith('#'))
+            .where((line) =>
+                line.trim().isNotEmpty && !line.trim().startsWith('#'))
             .length;
 
     return PopScope(
@@ -318,7 +326,9 @@ class _SnListPageState extends State<SnListPage> {
                         _dirty ? '$lines 部作品 · 有還沒儲存的修改' : '$lines 部作品',
                         style: TextStyle(
                           fontSize: 12.5,
-                          color: _dirty ? AgpColors.accent : AgpColors.fgFaint,
+                          color: _dirty
+                              ? AgpColors.accent
+                              : Theme.of(context).colorScheme.onSurfaceVariant,
                         ),
                       ),
                     ),
@@ -358,9 +368,9 @@ class _SnListPageState extends State<SnListPage> {
       padding: const EdgeInsets.fromLTRB(16, 8, 16, 8),
       child: Container(
         decoration: BoxDecoration(
-          color: AgpColors.bgElev,
+          color: Theme.of(context).colorScheme.surfaceContainerHighest,
           borderRadius: BorderRadius.circular(kRadius),
-          border: Border.all(color: AgpColors.line),
+          border: Border.all(color: Theme.of(context).dividerColor),
         ),
         padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
         child: TextField(
@@ -371,7 +381,8 @@ class _SnListPageState extends State<SnListPage> {
           keyboardType: TextInputType.multiline,
           autocorrect: false,
           enableSuggestions: false,
-          style: const TextStyle(fontSize: 13, fontFamily: 'monospace', height: 1.6),
+          style: const TextStyle(
+              fontSize: 13, fontFamily: 'monospace', height: 1.6),
           decoration: const InputDecoration(
             border: InputBorder.none,
             enabledBorder: InputBorder.none,

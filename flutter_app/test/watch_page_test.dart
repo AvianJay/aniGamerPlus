@@ -200,7 +200,8 @@ void main() {
     await player.closeStreams();
     await deleteTempDir(temp);
   });
-  Future<void> open(WidgetTester tester) async {
+  Future<void> open(WidgetTester tester,
+      {Brightness mode = Brightness.dark}) async {
     levels.install(tester);
     addTearDown(() => levels.remove(tester));
     await tester.binding.setSurfaceSize(const Size(1000, 800));
@@ -208,7 +209,7 @@ void main() {
         key: const ValueKey('capture'),
         child: MaterialApp(
             debugShowCheckedModeBanner: false,
-            theme: captureTheme(buildTheme(brightness: Brightness.dark)),
+            theme: captureTheme(buildTheme(brightness: mode)),
             home: WatchPage(state: state, sn: '1'))));
     for (var i = 0; i < 8; i++) {
       await tester.pump(const Duration(milliseconds: 100));
@@ -501,6 +502,117 @@ void main() {
     await tester.tap(find.byTooltip('離開全螢幕'));
     await tester.pump(const Duration(milliseconds: 350));
     expect(find.byTooltip('畫面比例'), findsNothing);
+    await tester.pumpWidget(const SizedBox());
+  });
+  testWidgets(
+      'reference player keeps controls below the picture center and synopsis collapsed',
+      (tester) async {
+    final frameFile = Platform.environment['AGP_FRAME_FILE'];
+    if (frameFile != null) {
+      player.frame = await tester.runAsync(() => File(frameFile).readAsBytes());
+    }
+    state.client.seedSeriesJson('1', {
+      'animeSn': 'a1',
+      'videoSn': '1',
+      'title': 'BLEACH 死神 千年血戰篇',
+      'seasonStart': '2022 / 10',
+      'director': '田口智久',
+      'publisher': '木棉花',
+      'score': 4.9,
+      'popular': '1250000',
+      'tags': ['動作', '奇幻', '冒險'],
+      'content': List.filled(20, '黑崎一護與同伴們迎向新的戰鬥。').join(),
+      'groups': [
+        {
+          'name': '',
+          'episodes': [
+            for (var i = 1; i <= 12; i++)
+              {'videoSn': '$i', 'episode': '$i', 'local': true},
+          ]
+        }
+      ],
+    });
+    await open(tester, mode: Brightness.light);
+    await tester.binding.setSurfaceSize(const Size(1280, 882));
+    await tester.pump();
+    expect(find.byKey(const ValueKey('series-synopsis')), findsNothing);
+    expect(tester.getSize(find.byKey(const ValueKey('series-info'))).height,
+        lessThan(340));
+    final timeline =
+        tester.getRect(find.byKey(const ValueKey('player-timeline')));
+    final play = tester.getRect(find.byTooltip('暫停'));
+    expect(play.center.dx, greaterThan(timeline.center.dx));
+    expect(play.bottom, lessThanOrEqualTo(timeline.top));
+    expect(timeline.top - play.bottom, lessThan(20));
+    expect(find.text('1.0x'), findsOneWidget);
+    expect(find.byTooltip('選集'), findsOneWidget);
+    expect(tester.getCenter(find.byTooltip('快轉 10 秒')).dx,
+        greaterThan(tester.getCenter(find.byTooltip('倒退 10 秒')).dx));
+    if (Platform.environment['AGP_PLAYER_CAPTURE'] == '1') {
+      for (final target in [
+        ('player-reference-tablet', const Size(1280, 882)),
+        ('player-reference-phone', const Size(390, 844)),
+        ('player-reference-fullscreen', const Size(1280, 720)),
+      ]) {
+        if (target.$1.endsWith('fullscreen')) {
+          await tester.tap(find.byTooltip('全螢幕'));
+        }
+        await tester.binding.setSurfaceSize(target.$2);
+        await tester.pump(const Duration(milliseconds: 300));
+        await settleImages(tester);
+        await tester.runAsync(() async {
+          final raster = await tester
+              .renderObject<RenderRepaintBoundary>(
+                  find.byKey(const ValueKey('capture')))
+              .toImage();
+          final bytes = await raster.toByteData(format: ui.ImageByteFormat.png);
+          await File('../.agpwork/${target.$1}.png')
+              .writeAsBytes(bytes!.buffer.asUint8List());
+          raster.dispose();
+        });
+      }
+      await tester.tap(find.byTooltip('離開全螢幕'));
+      await tester.binding.setSurfaceSize(const Size(1280, 882));
+      await tester.pump(const Duration(milliseconds: 350));
+    }
+    await tester.tap(find.text('查看更多'));
+    await tester.pump();
+    expect(find.byKey(const ValueKey('series-synopsis')), findsOneWidget);
+    expect(tester.takeException(), isNull);
+    await tester.pumpWidget(const SizedBox());
+  });
+  testWidgets(
+      'a full season is visible below the player without scrolling on tablets',
+      (tester) async {
+    state.client.seedSeriesJson('1', {
+      'videoSn': '1',
+      'title': '平板選集',
+      'groups': [
+        {
+          'name': '第一季',
+          'episodes': [
+            for (var i = 1; i <= 13; i++)
+              {'videoSn': '$i', 'episode': '$i', 'local': true},
+          ]
+        }
+      ],
+    });
+    await open(tester, mode: Brightness.light);
+    tester.view.padding = const FakeViewPadding(top: 24, bottom: 20);
+    addTearDown(tester.view.resetPadding);
+    for (final size in [
+      const Size(1280, 720),
+      const Size(1024, 600),
+      const Size(1000, 650)
+    ]) {
+      await tester.binding.setSurfaceSize(size);
+      await tester.pump();
+      final last = find.byKey(const ValueKey('episode-13'));
+      expect(last, findsOneWidget);
+      expect(tester.getRect(last).bottom, lessThanOrEqualTo(size.height - 20));
+      expect(last.hitTestable(), findsOneWidget);
+      expect(tester.takeException(), isNull);
+    }
     await tester.pumpWidget(const SizedBox());
   });
   testWidgets('reopening the same episode reuses the parked native player',

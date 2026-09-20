@@ -10,7 +10,7 @@ import 'package:flutter/material.dart';
 
 import '../api/models.dart';
 import '../state/app_state.dart';
-import '../theme.dart';
+import '../state/prefs.dart';
 import '../util/format.dart';
 import '../widgets/cards.dart';
 import '../widgets/common.dart';
@@ -245,6 +245,19 @@ class _AllTabState extends State<AllTab> {
                               ? item.videoSn
                               : item.animeSn),
                       badge: video != null ? '片庫' : null,
+                      popularity: item?.popular,
+                      favourite: state.isFavourite(
+                          video?.displayName ?? item!.title, video?.animeName),
+                      onFavourite: () async {
+                        await state.toggleFavourite(Favourite(
+                          name: video?.displayName ?? item!.title,
+                          alias: video?.animeName ?? '',
+                          sn: video?.sn ?? item!.videoSn,
+                          cover: item?.cover ?? '',
+                          res: video?.resolution ?? 0,
+                        ));
+                        if (mounted) setState(() {});
+                      },
                       subtitle: video != null
                           ? '${state.episodesOf(video.displayName).length} 集'
                           : [
@@ -252,7 +265,6 @@ class _AllTabState extends State<AllTab> {
                                 item.info
                               else
                                 item.volume,
-                              if (item.popular.isNotEmpty) item.popular
                             ].where((s) => s.isNotEmpty).join(' · '),
                       onTap: () {
                         widget.onResultOpened?.call();
@@ -308,8 +320,9 @@ class _AllTabState extends State<AllTab> {
                 children: [
                   Text(
                     '片庫裡有 ${episodes.length} 集',
-                    style: const TextStyle(
-                        fontSize: 12.5, color: AgpColors.fgFaint),
+                    style: TextStyle(
+                        fontSize: 12.5,
+                        color: Theme.of(context).colorScheme.onSurfaceVariant),
                   ),
                   const Spacer(),
                   TextButton(

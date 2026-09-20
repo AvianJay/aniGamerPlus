@@ -54,6 +54,9 @@ class PosterCard extends StatelessWidget {
     this.cache,
     this.sn,
     this.headers,
+    this.popularity,
+    this.favourite,
+    this.onFavourite,
   });
 
   final String title;
@@ -69,12 +72,17 @@ class PosterCard extends StatelessWidget {
   final ThumbnailStore? cache;
   final String? sn;
   final Map<String, String>? headers;
+  final String? popularity;
+  final bool? favourite;
+  final VoidCallback? onFavourite;
 
   @override
   Widget build(BuildContext context) {
     return Material(
         color: Theme.of(context).cardTheme.color,
-        borderRadius: BorderRadius.circular(kRadiusSmall),
+        borderRadius: BorderRadius.circular(5),
+        elevation: Theme.of(context).brightness == Brightness.light ? 1 : 0,
+        shadowColor: const Color(0x26000000),
         clipBehavior: Clip.antiAlias,
         child: InkWell(
           onTap: onTap,
@@ -95,6 +103,54 @@ class PosterCard extends StatelessWidget {
                     aspectRatio: aspectRatio,
                     radius: 0,
                   ),
+                  if (onFavourite != null)
+                    Positioned(
+                      right: 0,
+                      top: 0,
+                      child: IconButton(
+                        tooltip: favourite == true ? '取消收藏' : '收藏',
+                        onPressed: onFavourite,
+                        icon: Icon(
+                          favourite == true
+                              ? Icons.favorite
+                              : Icons.favorite_border,
+                          color: Colors.white,
+                          size: 28,
+                          shadows: const [
+                            Shadow(color: Colors.black54, blurRadius: 8)
+                          ],
+                        ),
+                      ),
+                    ),
+                  if (popularity != null && popularity!.isNotEmpty)
+                    Positioned(
+                      left: 0,
+                      right: 0,
+                      bottom: 0,
+                      child: Container(
+                        padding: const EdgeInsets.fromLTRB(8, 22, 8, 6),
+                        decoration: const BoxDecoration(
+                          gradient: LinearGradient(
+                            begin: Alignment.topCenter,
+                            end: Alignment.bottomCenter,
+                            colors: [Colors.transparent, Colors.black54],
+                          ),
+                        ),
+                        child: Row(
+                            mainAxisAlignment: MainAxisAlignment.end,
+                            children: [
+                              const Icon(Icons.visibility_outlined,
+                                  color: Colors.white, size: 14),
+                              const SizedBox(width: 4),
+                              Flexible(
+                                  child: Text(popularity!,
+                                      maxLines: 1,
+                                      overflow: TextOverflow.ellipsis,
+                                      style: const TextStyle(
+                                          color: Colors.white, fontSize: 11))),
+                            ]),
+                      ),
+                    ),
                   if (badge != null)
                     Positioned(
                         right: 6,
@@ -170,6 +226,8 @@ class EpisodeCard extends StatelessWidget {
     this.onTap,
     this.onLongPress,
     this.showAnimeName = true,
+    this.detail,
+    this.onNext,
   });
 
   final VideoItem video;
@@ -177,6 +235,8 @@ class EpisodeCard extends StatelessWidget {
   final VoidCallback? onTap;
   final VoidCallback? onLongPress;
   final bool showAnimeName;
+  final String? detail;
+  final VoidCallback? onNext;
 
   @override
   Widget build(BuildContext context) {
@@ -252,24 +312,38 @@ class EpisodeCard extends StatelessWidget {
             ],
           ),
           const SizedBox(height: 7),
-          if (showAnimeName)
-            Text(
-              video.displayName,
-              maxLines: 1,
-              overflow: TextOverflow.ellipsis,
-              style: const TextStyle(fontSize: 13, fontWeight: FontWeight.w700),
-            ),
-          Padding(
-            padding: const EdgeInsets.only(top: 2),
-            child: Text(
-              episodeLabel(video.episode),
-              maxLines: 1,
-              overflow: TextOverflow.ellipsis,
-              style: TextStyle(
-                  fontSize: 11.5,
-                  color: Theme.of(context).colorScheme.onSurfaceVariant),
-            ),
-          ),
+          Row(crossAxisAlignment: CrossAxisAlignment.start, children: [
+            Expanded(
+                child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                if (showAnimeName)
+                  Text(video.displayName,
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: const TextStyle(
+                          fontSize: 13,
+                          height: 1.3,
+                          fontWeight: FontWeight.w700)),
+                const SizedBox(height: 3),
+                Text(
+                    [episodeLabel(video.episode), if (detail != null) detail!]
+                        .join(' · '),
+                    key: ValueKey('episode-caption-${video.sn}'),
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: TextStyle(
+                        fontSize: 11.5,
+                        height: 1.3,
+                        color: Theme.of(context).colorScheme.onSurfaceVariant)),
+              ],
+            )),
+            if (onNext != null)
+              IconButton(
+                  onPressed: onNext,
+                  tooltip: '下一集',
+                  icon: const Icon(Icons.skip_next_rounded, size: 23)),
+          ]),
         ],
       ),
     );

@@ -1,5 +1,4 @@
-/// 配色照 Dashboard/static/css/agp.css 的那組 custom property 搬過來,
-/// 手機跟瀏覽器上看起來才是同一個產品.
+/// Neutral surfaces and the cyan accent used throughout the anime catalog.
 library;
 
 import 'package:flutter/material.dart';
@@ -15,16 +14,15 @@ class AgpColors {
   static const fg = Color(0xFFF3F4F6);
   static const fgDim = Color(0xA3FFFFFF);
   static const fgFaint = Color(0x66FFFFFF);
-  static const accent = Color(0xFFFF0033);
-  static const accentSoft = Color(0x24FF0033);
+  static const accent = Color(0xFF00B5D4);
+  static const accentSoft = Color(0x1900B5D4);
 
   /// 動畫瘋自己的那個青色. 播放器跟選集刻意跟著站上走 —— 這兩塊是使用者拿來
   /// 跟官方 app 對照著用的地方, 顏色一樣才不會每次都要重新找按鈕在哪.
   static const bahamut = Color(0xFF00B5D4);
   static const bahamutSoft = Color(0x2900B5D4);
 
-  // 淺色模式: 同一個紅, 底換成近白
-  static const lightBg = Color(0xFFF7F7F8);
+  static const lightBg = Color(0xFFFAFBFB);
   static const lightCard = Color(0xFFFFFFFF);
   static const lightFg = Color(0xFF16181D);
 }
@@ -40,8 +38,14 @@ ThemeData buildTheme({required Brightness brightness}) {
     brightness: brightness,
   ).copyWith(
     primary: AgpColors.accent,
+    onPrimary: Colors.white,
+    onSurface: dark ? AgpColors.fg : AgpColors.lightFg,
+    onSurfaceVariant: dark ? const Color(0xFFADB4BC) : const Color(0xFF687378),
     surface: dark ? AgpColors.bg : AgpColors.lightBg,
-    surfaceContainerHighest: dark ? AgpColors.card : AgpColors.lightCard,
+    surfaceContainerLow: dark ? AgpColors.bgElev : Colors.white,
+    surfaceContainerHighest: dark ? AgpColors.card : const Color(0xFFEBF0F1),
+    outline: dark ? const Color(0xFF657078) : const Color(0xFF909C9F),
+    outlineVariant: dark ? const Color(0xFF30363D) : const Color(0xFFDDE4E6),
   );
 
   final base = ThemeData(
@@ -152,16 +156,16 @@ ThemeData buildTheme({required Brightness brightness}) {
     navigationBarTheme: NavigationBarThemeData(
       backgroundColor: dark ? const Color(0xF2101216) : Colors.white,
       surfaceTintColor: Colors.transparent,
-      indicatorColor: AgpColors.accentSoft,
-      height: 62,
+      indicatorColor: Colors.transparent,
+      height: 66,
       labelBehavior: NavigationDestinationLabelBehavior.alwaysShow,
-      labelTextStyle: WidgetStatePropertyAll(
-        TextStyle(
-          fontSize: 11,
-          fontWeight: FontWeight.w600,
-          color: dark ? AgpColors.fgDim : AgpColors.lightFg,
-        ),
-      ),
+      labelTextStyle: WidgetStateProperty.resolveWith((states) => TextStyle(
+            fontSize: 11,
+            fontWeight: FontWeight.w600,
+            color: states.contains(WidgetState.selected)
+                ? AgpColors.accent
+                : scheme.onSurfaceVariant,
+          )),
       iconTheme: WidgetStateProperty.resolveWith((states) {
         final selected = states.contains(WidgetState.selected);
         return IconThemeData(

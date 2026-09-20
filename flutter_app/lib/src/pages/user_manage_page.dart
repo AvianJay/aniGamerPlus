@@ -83,8 +83,8 @@ class _UserManagePageState extends State<UserManagePage> {
     String? role,
   }) async {
     try {
-      final message = await state.client
-          .manageUser(action, username: username, password: password, role: role);
+      final message = await state.client.manageUser(action,
+          username: username, password: password, role: role);
       if (!mounted) return true;
       toast(context, _say(message));
     } on ApiException catch (error) {
@@ -294,14 +294,17 @@ class _UserManagePageState extends State<UserManagePage> {
                 padding: const EdgeInsets.only(bottom: 4),
                 child: Text(
                   user.username,
-                  style: const TextStyle(fontSize: 17, fontWeight: FontWeight.w800),
+                  style: const TextStyle(
+                      fontSize: 17, fontWeight: FontWeight.w800),
                 ),
               ),
               Padding(
                 padding: const EdgeInsets.only(bottom: 16),
                 child: Text(
                   '觀看紀錄 ${user.videoTimes} 筆',
-                  style: const TextStyle(fontSize: 12.5, color: AgpColors.fgFaint),
+                  style: TextStyle(
+                      fontSize: 12.5,
+                      color: Theme.of(context).colorScheme.onSurfaceVariant),
                 ),
               ),
               _RolePicker(
@@ -386,9 +389,14 @@ class _RolePicker extends StatelessWidget {
   Widget build(BuildContext context) {
     return SegmentedButton<String>(
       segments: const [
-        ButtonSegment(value: 'user', label: Text('一般用戶'), icon: Icon(Icons.person_outline)),
         ButtonSegment(
-            value: 'admin', label: Text('管理員'), icon: Icon(Icons.shield_outlined)),
+            value: 'user',
+            label: Text('一般用戶'),
+            icon: Icon(Icons.person_outline)),
+        ButtonSegment(
+            value: 'admin',
+            label: Text('管理員'),
+            icon: Icon(Icons.shield_outlined)),
       ],
       selected: {value == 'admin' ? 'admin' : 'user'},
       showSelectedIcon: false,

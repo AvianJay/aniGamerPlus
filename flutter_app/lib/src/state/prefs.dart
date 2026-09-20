@@ -172,7 +172,7 @@ class Prefs {
   // -------------------------------------------------------------------- 外觀
 
   /// system / dark / light
-  String get themeMode => _sp.getString('agp-theme') ?? 'dark';
+  String get themeMode => _sp.getString('agp-theme') ?? 'light';
   Future<void> setThemeMode(String value) => _sp.setString('agp-theme', value);
 
   // -------------------------------------------------------------------- 收藏

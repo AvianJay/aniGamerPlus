@@ -10,7 +10,6 @@ import 'package:flutter/material.dart';
 
 import '../api/models.dart';
 import '../state/app_state.dart';
-import '../theme.dart';
 import '../util/format.dart';
 import '../widgets/cards.dart';
 import '../widgets/common.dart';
@@ -22,7 +21,8 @@ const int kHistoryLookups = 8;
 const int kHistoryRows = 200;
 
 class _Remote {
-  const _Remote({required this.name, required this.episode, required this.cover});
+  const _Remote(
+      {required this.name, required this.episode, required this.cover});
 
   final String name;
   final String episode;
@@ -53,8 +53,8 @@ void _loadNameCache(AppState state) {
   if (raw is! Map) return;
   raw.forEach((key, value) {
     if (value is Map) {
-      _remote.putIfAbsent(
-          key.toString(), () => _Remote.fromJson(value.cast<String, dynamic>()));
+      _remote.putIfAbsent(key.toString(),
+          () => _Remote.fromJson(value.cast<String, dynamic>()));
     }
   });
 }
@@ -185,10 +185,10 @@ class _HistoryTabState extends State<HistoryTab> {
           padding: const EdgeInsets.fromLTRB(16, 18, 16, 4),
           child: Text(
             label,
-            style: const TextStyle(
+            style: TextStyle(
               fontSize: 12.5,
               fontWeight: FontWeight.w700,
-              color: AgpColors.fgFaint,
+              color: Theme.of(context).colorScheme.onSurfaceVariant,
             ),
           ),
         ));

@@ -54,10 +54,6 @@ const int kSkipSeconds = 10;
 const double kGestureSeekSpan = 120;
 const double kMinBrightness = 0.2;
 
-/// 非全螢幕時, 播放器最多吃掉這麼多高度. 剩下的留給作品資訊跟選集 ——
-/// 手機直著拿本來就吃不到這個上限, 只有平板跟橫著拿的時候會生效.
-const double kPlayerMaxHeightRatio = 0.55;
-
 /// 手指按不出 mousemove, 所以控制列留得比桌面久
 const Duration kControlsIdle = Duration(milliseconds: 8000);
 const int kNextEpisodeCountdown = 8;
@@ -354,6 +350,7 @@ class _WatchPageState extends State<WatchPage>
   bool _controlsVisible = true;
   Timer? _idleTimer;
   bool _fullscreen = false;
+  bool _infoExpanded = false;
   String _flash = '';
   Timer? _flashTimer;
   String _hud = '';
@@ -1914,36 +1911,34 @@ class _WatchPageState extends State<WatchPage>
             ? _playerSurface()
             : SafeArea(
                 bottom: false,
-                child: LayoutBuilder(
-                  builder: (context, constraints) {
-                    // 平板橫著拿的時候, 整片 16:9 會把螢幕吃光, 底下的作品資訊
-                    // 跟選集一格都露不出來. 播放器最多只能佔這麼高, 超過就
-                    // 連寬度一起縮, 維持 16:9 置中, 兩側留黑.
-                    final height = math.min(
-                      constraints.maxWidth * 9 / 16,
-                      constraints.maxHeight * kPlayerMaxHeightRatio,
-                    );
-                    final width = math.min(
-                      constraints.maxWidth,
-                      height * 16 / 9,
-                    );
-                    if (constraints.maxWidth >= 1100 &&
-                        constraints.maxHeight >= 600) {
-                      // 動畫瘋的右欄是一整條貼齊螢幕邊的面板, 不是一張留了
-                      // 邊界又有圓角的卡片. 影片那一側也一路貼到左邊.
-                      const panelWidth = 300.0;
-                      final videoWidth = constraints.maxWidth - panelWidth;
-                      return Column(children: [
-                        _titleBar(),
-                        Expanded(
-                            child: Row(
-                          crossAxisAlignment: CrossAxisAlignment.start,
+                child: Column(children: [
+                  _titleBar(),
+                  Expanded(child: LayoutBuilder(
+                    builder: (context, constraints) {
+                      // 平板橫著拿的時候, 整片 16:9 會把螢幕吃光, 底下的作品資訊
+                      // 跟選集一格都露不出來. 播放器最多只能佔這麼高, 超過就
+                      // 連寬度一起縮, 維持 16:9 置中, 兩側留黑.
+                      final height = _inlinePlayerHeight(
+                          constraints.maxWidth, constraints.maxHeight);
+                      final width = math.min(
+                        constraints.maxWidth,
+                        height * 16 / 9,
+                      );
+                      if (constraints.maxWidth >= 1000 &&
+                          constraints.maxHeight >= 480) {
+                        // 動畫瘋的右欄是一整條貼齊螢幕邊的面板, 不是一張留了
+                        // 邊界又有圓角的卡片. 影片那一側也一路貼到左邊.
+                        final panelWidth =
+                            (constraints.maxWidth * .27).clamp(300.0, 360.0);
+                        final videoWidth = constraints.maxWidth - panelWidth;
+                        return Row(
+                          crossAxisAlignment: CrossAxisAlignment.stretch,
                           children: [
                             Expanded(
                                 child: Column(children: [
                               SizedBox(
-                                  height: math.min(videoWidth * 9 / 16,
-                                      constraints.maxHeight - 200),
+                                  height: _inlinePlayerHeight(
+                                      videoWidth, constraints.maxHeight),
                                   width: videoWidth,
                                   child: _playerSurface()),
                               Expanded(child: _pageBody(includeInfo: false)),
@@ -1955,40 +1950,67 @@ class _WatchPageState extends State<WatchPage>
                                 // 的話那邊會變成一條黑柱
                                 color: Theme.of(context)
                                     .colorScheme
-                                    .surfaceContainerHighest,
+                                    .surfaceContainerLow,
                                 child: SingleChildScrollView(
                                     child: _infoCard(flush: true)),
                               ),
                             ),
                           ],
-                        )),
-                      ]);
-                    }
-                    return Column(
-                      children: [
-                        _titleBar(),
-                        SizedBox(
-                          height: height,
-                          width: constraints.maxWidth,
-                          child: ColoredBox(
-                            color: Colors.black,
-                            child: Center(
-                              child: SizedBox(
-                                width: width,
-                                height: height,
-                                child: _playerSurface(),
+                        );
+                      }
+                      return Column(
+                        children: [
+                          SizedBox(
+                            height: height,
+                            width: constraints.maxWidth,
+                            child: ColoredBox(
+                              color: Colors.black,
+                              child: Center(
+                                child: SizedBox(
+                                  width: width,
+                                  height: height,
+                                  child: _playerSurface(),
+                                ),
                               ),
                             ),
                           ),
-                        ),
-                        Expanded(child: _pageBody()),
-                      ],
-                    );
-                  },
-                ),
+                          Expanded(child: _pageBody()),
+                        ],
+                      );
+                    },
+                  )),
+                ]),
               ),
       ),
     );
+  }
+
+  /// Reserve the episode grid before sizing the video, including the safe area
+  /// and larger system text. Long series still scroll, ordinary seasons fit.
+  double _inlinePlayerHeight(double width, double availableHeight) {
+    final groups = _series?.groups;
+    final columns = ((width - 28) / 82).round().clamp(5, 10);
+    final scaler = MediaQuery.textScalerOf(context);
+    final rowHeight = math.max(44.0, scaler.scale(14) * 1.2 + 16);
+    var rows = 0;
+    var groupHeaders = 0;
+    if (groups != null && groups.isNotEmpty) {
+      for (final group in groups) {
+        rows += (group.episodes.length / columns).ceil();
+        if (group.name.isNotEmpty) groupHeaders++;
+      }
+    } else {
+      rows = (_orderedEpisodes().length / columns).ceil();
+    }
+    final visibleRows = rows.clamp(2, 4);
+    final reserved = 24 +
+        scaler.scale(14) * 1.4 +
+        visibleRows * (rowHeight + 8) +
+        groupHeaders.clamp(0, 2) * (scaler.scale(12.5) * 1.4 + 8) +
+        12 +
+        MediaQuery.paddingOf(context).bottom;
+    return math.min(width * 9 / 16,
+        math.max(availableHeight * .42, availableHeight - reserved));
   }
 
   // ------------------------------------------------------------- 標題列
@@ -2552,21 +2574,6 @@ class _WatchPageState extends State<WatchPage>
                       ),
                     ),
                   ),
-                if (!_scrubbing)
-                  Positioned(
-                    left: 0,
-                    right: 0,
-                    top: math.max(
-                        0,
-                        (constraints.maxHeight -
-                                    100 -
-                                    MediaQuery.paddingOf(context).bottom) /
-                                2 -
-                            (constraints.maxWidth < 600 ? 26 : 34)),
-                    child: Center(
-                        child: _centreButtons(
-                            compact: constraints.maxWidth < 600)),
-                  ),
                 Positioned(left: 0, right: 0, bottom: 0, child: _bottomBar()),
                 if (_scrubbing) _previewOverlay(constraints),
               ],
@@ -2617,51 +2624,54 @@ class _WatchPageState extends State<WatchPage>
     );
   }
 
-  Widget _centreButtons({bool compact = false}) {
+  Widget _playbackButtons({bool compact = false}) {
     return Row(
       mainAxisSize: MainAxisSize.min,
       children: [
         _roundButton(
           Icons.replay_10_rounded,
           () => unawaited(_seekBy(-kSkipSeconds.toDouble())),
-          size: compact ? 34 : 42,
-          hitSize: compact ? 52 : 68,
+          tooltip: '倒退 10 秒',
+          size: compact ? 30 : 36,
+          hitSize: compact ? 48 : 60,
         ),
-        const SizedBox(width: 10),
-        _roundButton(
-          _showsPlaying ? Icons.pause_circle_filled : Icons.play_circle_fill,
-          () => unawaited(_togglePlay()),
-          size: compact ? 48 : 58,
-          hitSize: compact ? 52 : 68,
-        ),
-        const SizedBox(width: 10),
         _roundButton(
           Icons.forward_10_rounded,
           () => unawaited(_seekBy(kSkipSeconds.toDouble())),
-          size: compact ? 34 : 42,
-          hitSize: compact ? 52 : 68,
+          tooltip: '快轉 10 秒',
+          size: compact ? 30 : 36,
+          hitSize: compact ? 48 : 60,
+        ),
+        _roundButton(
+          _showsPlaying ? Icons.pause_circle_filled : Icons.play_circle_fill,
+          () => unawaited(_togglePlay()),
+          tooltip: _showsPlaying ? '暫停' : '播放',
+          size: compact ? 38 : 46,
+          hitSize: compact ? 48 : 60,
         ),
       ],
     );
   }
 
   Widget _roundButton(IconData icon, VoidCallback onTap,
-      {double size = 26, double hitSize = 68}) {
-    return Material(
-      color: Colors.transparent,
-      shape: const CircleBorder(),
-      child: InkWell(
-        customBorder: const CircleBorder(),
-        onTap: () {
-          _showControls();
-          onTap();
-        },
-        child: SizedBox(
-            width: hitSize,
-            height: hitSize,
-            child: Icon(icon, size: size, color: Colors.white)),
-      ),
-    );
+      {required String tooltip, double size = 26, double hitSize = 60}) {
+    return Tooltip(
+        message: tooltip,
+        child: Material(
+          color: Colors.transparent,
+          shape: const CircleBorder(),
+          child: InkWell(
+            customBorder: const CircleBorder(),
+            onTap: () {
+              _showControls();
+              onTap();
+            },
+            child: SizedBox(
+                width: hitSize,
+                height: hitSize,
+                child: Icon(icon, size: size, color: Colors.white)),
+          ),
+        ));
   }
 
   Widget _previewOverlay(BoxConstraints constraints) {
@@ -2697,30 +2707,50 @@ class _WatchPageState extends State<WatchPage>
       child: Padding(
         padding: const EdgeInsets.fromLTRB(10, 0, 10, 4),
         child: Column(mainAxisSize: MainAxisSize.min, children: [
+          IgnorePointer(
+              ignoring: _scrubbing,
+              child: Opacity(
+                  opacity: _scrubbing ? 0 : 1,
+                  child: Row(
+                      crossAxisAlignment: CrossAxisAlignment.end,
+                      children: [
+                        Expanded(
+                          child: ValueListenableBuilder<double>(
+                            valueListenable: _clock,
+                            builder: (context, position, _) => Padding(
+                              padding:
+                                  const EdgeInsets.only(left: 14, bottom: 8),
+                              child: Text(
+                                '${formatPlayerClock(_scrubbing ? _scrubValue : position)} / '
+                                '${formatPlayerClock(_playableDuration)}',
+                                maxLines: 1,
+                                overflow: TextOverflow.ellipsis,
+                                style: const TextStyle(
+                                    fontSize: 12,
+                                    color: Colors.white,
+                                    fontWeight: FontWeight.w600,
+                                    fontFeatures: [
+                                      FontFeature.tabularFigures()
+                                    ]),
+                              ),
+                            ),
+                          ),
+                        ),
+                        _playbackButtons(
+                            compact: MediaQuery.sizeOf(context).width < 600),
+                      ]))),
           _timeline(),
           Row(children: [
+            _barButton(Icons.skip_next_rounded, '下一集',
+                _neighbour(1) == null ? null : () => _goRelative(1)),
             Expanded(
-              child: ValueListenableBuilder<double>(
-                valueListenable: _clock,
-                builder: (context, position, _) => Padding(
-                  padding: const EdgeInsets.only(left: 6),
-                  child: Text(
-                    '${formatPlayerClock(_scrubbing ? _scrubValue : position)} / '
-                    '${formatPlayerClock(_playableDuration)}',
-                    maxLines: 1,
-                    overflow: TextOverflow.ellipsis,
-                    style: const TextStyle(
-                        fontSize: 12,
-                        color: Colors.white,
-                        fontWeight: FontWeight.w600,
-                        fontFeatures: [FontFeature.tabularFigures()]),
-                  ),
-                ),
-              ),
-            ),
-            if (MediaQuery.sizeOf(context).width >= 600)
-              _barButton(Icons.skip_next_rounded, '下一集',
-                  _neighbour(1) == null ? null : () => _goRelative(1)),
+                child: Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 4),
+              child: Text(_hereLabel,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: const TextStyle(color: Colors.white, fontSize: 12)),
+            )),
             _barButton(
                 _danmakuOn
                     ? Icons.chat_bubble_outline_rounded
@@ -2886,7 +2916,19 @@ class _WatchPageState extends State<WatchPage>
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        SectionHeader(title: '選集', subtitle: '$total 集'),
+        Padding(
+          padding: const EdgeInsets.fromLTRB(16, 12, 16, 10),
+          child: Row(children: [
+            const Text('選集',
+                style: TextStyle(
+                    fontSize: 14, height: 1.4, fontWeight: FontWeight.w700)),
+            const SizedBox(width: 8),
+            Text('$total 集',
+                style: TextStyle(
+                    fontSize: 12,
+                    color: Theme.of(context).colorScheme.onSurfaceVariant)),
+          ]),
+        ),
         for (final group in groups) ...[
           if (group.name.isNotEmpty)
             Padding(
@@ -2952,6 +2994,7 @@ class _WatchPageState extends State<WatchPage>
             : (remote ? null : colors.onSurfaceVariant));
 
     return Tooltip(
+      key: ValueKey('episode-${episode.videoSn}'),
       message:
           remote ? '尚未下載，點一下邊看邊下載' : (downloaded ? '已下載到這支手機' : '從伺服器片庫播放'),
       child: Material(
@@ -2960,16 +3003,16 @@ class _WatchPageState extends State<WatchPage>
         color: here
             ? AgpColors.bahamut
             : (remote ? Colors.transparent : colors.surfaceContainerHighest),
-        borderRadius: BorderRadius.circular(kRadiusSmall),
+        borderRadius: BorderRadius.circular(4),
         child: InkWell(
-          borderRadius: BorderRadius.circular(kRadiusSmall),
+          borderRadius: BorderRadius.circular(4),
           onTap: here ? null : (onTap ?? () => unawaited(_switchTo(episode))),
           child: Container(
             // 44 是點得準的下限, 跟動畫瘋那排方塊差不多高
             constraints: const BoxConstraints(minWidth: 48, minHeight: 44),
             padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 8),
             decoration: BoxDecoration(
-              borderRadius: BorderRadius.circular(kRadiusSmall),
+              borderRadius: BorderRadius.circular(4),
               border: remote
                   ? Border.all(color: Theme.of(context).dividerColor)
                   : null,
@@ -2984,6 +3027,7 @@ class _WatchPageState extends State<WatchPage>
                   textAlign: TextAlign.center,
                   style: TextStyle(
                     fontSize: 14,
+                    height: 1.2,
                     fontWeight: here ? FontWeight.w800 : FontWeight.w600,
                     color: here
                         ? Colors.white
@@ -3042,15 +3086,15 @@ class _WatchPageState extends State<WatchPage>
       add('離線', '已下載到這支手機');
     }
 
-    final synopsis = (info != null && info.content.trim().isNotEmpty)
-        ? info.content.trim()
-        : '《$_seriesName》目前收錄 ${_orderedEpisodes().length} 集，由 aniGamerPlus+ 直接從本機片庫串流播放，無須再次下載。';
+    final synopsis = info?.content.trim() ?? '';
     final tags = info?.tags ?? const <String>[];
+    final colors = Theme.of(context).colorScheme;
 
     return Padding(
       padding:
           flush ? EdgeInsets.zero : const EdgeInsets.fromLTRB(16, 8, 16, 4),
       child: Container(
+        key: const ValueKey('series-info'),
         padding: flush
             ? const EdgeInsets.fromLTRB(16, 16, 16, 24)
             : const EdgeInsets.fromLTRB(14, 13, 14, 13),
@@ -3064,38 +3108,18 @@ class _WatchPageState extends State<WatchPage>
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            const Text(
-              '作品資訊',
-              style: TextStyle(fontSize: 14.5, fontWeight: FontWeight.w800),
-            ),
-            const SizedBox(height: 9),
-            Text(
-              synopsis,
-              style: TextStyle(
-                  fontSize: 12.8,
-                  height: 1.65,
-                  color: Theme.of(context).colorScheme.onSurfaceVariant),
-            ),
-            if (tags.isNotEmpty) ...[
-              const SizedBox(height: 11),
-              Wrap(
-                spacing: 6,
-                runSpacing: 6,
-                children: [
-                  for (final tag in tags) Pill(label: tag, dense: true)
-                ],
-              ),
-            ],
+            const Text('作品資料',
+                style: TextStyle(fontSize: 17, fontWeight: FontWeight.w600)),
             if (rows.isNotEmpty) ...[
-              const SizedBox(height: 13),
-              for (final row in rows)
+              const SizedBox(height: 18),
+              for (final row in _infoExpanded ? rows : rows.take(4))
                 Padding(
-                  padding: const EdgeInsets.only(bottom: 6),
+                  padding: const EdgeInsets.only(bottom: 10),
                   child: Row(
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
                       SizedBox(
-                        width: 62,
+                        width: 74,
                         child: Text(
                           row.key,
                           style: TextStyle(
@@ -3108,12 +3132,55 @@ class _WatchPageState extends State<WatchPage>
                       Expanded(
                         child: Text(
                           row.value,
-                          style: const TextStyle(fontSize: 12.6),
+                          style: const TextStyle(fontSize: 13),
                         ),
                       ),
                     ],
                   ),
                 ),
+            ],
+            if (tags.isNotEmpty) ...[
+              const Divider(),
+              const SizedBox(height: 12),
+              Wrap(spacing: 6, runSpacing: 6, children: [
+                for (final tag in tags)
+                  Container(
+                    padding:
+                        const EdgeInsets.symmetric(horizontal: 9, vertical: 4),
+                    decoration: BoxDecoration(
+                        color: colors.surfaceContainerHighest,
+                        borderRadius: BorderRadius.circular(3)),
+                    child: Text(tag,
+                        style: TextStyle(
+                            fontSize: 12, color: colors.onSurfaceVariant)),
+                  ),
+              ]),
+            ],
+            if (_infoExpanded && synopsis.isNotEmpty) ...[
+              const SizedBox(height: 16),
+              Text(synopsis,
+                  key: const ValueKey('series-synopsis'),
+                  style: TextStyle(
+                      fontSize: 13,
+                      height: 1.65,
+                      color: colors.onSurfaceVariant)),
+            ],
+            if (rows.length > 4 || synopsis.isNotEmpty) ...[
+              const SizedBox(height: 14),
+              SizedBox(
+                  width: double.infinity,
+                  child: TextButton(
+                    onPressed: () =>
+                        setState(() => _infoExpanded = !_infoExpanded),
+                    style: TextButton.styleFrom(
+                      backgroundColor: colors.surfaceContainerHighest,
+                      foregroundColor: colors.onSurfaceVariant,
+                      minimumSize: const Size(48, 44),
+                      shape: RoundedRectangleBorder(
+                          borderRadius: BorderRadius.circular(4)),
+                    ),
+                    child: Text(_infoExpanded ? '收合資訊' : '查看更多'),
+                  )),
             ],
           ],
         ),
@@ -3157,7 +3224,7 @@ class _WatchPageState extends State<WatchPage>
           decoration: BoxDecoration(
             color: Theme.of(context).cardTheme.color,
             borderRadius: BorderRadius.circular(kRadius),
-            border: Border.all(color: AgpColors.line),
+            border: Border.all(color: Theme.of(context).dividerColor),
           ),
           child: ClipRRect(
             borderRadius: BorderRadius.circular(kRadius),
@@ -3497,8 +3564,10 @@ class _WatchPageState extends State<WatchPage>
                     Expanded(
                       child: Text(
                         row[1],
-                        style: const TextStyle(
-                            fontSize: 12.5, color: AgpColors.fgDim),
+                        style: TextStyle(
+                            fontSize: 12.5,
+                            color:
+                                Theme.of(context).colorScheme.onSurfaceVariant),
                       ),
                     ),
                   ],

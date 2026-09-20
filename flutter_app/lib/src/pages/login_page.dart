@@ -80,7 +80,9 @@ class _LoginPageState extends State<LoginPage> {
         children: [
           Text(
             state.client.baseUrl,
-            style: const TextStyle(fontSize: 12.5, color: AgpColors.fgFaint),
+            style: TextStyle(
+                fontSize: 12.5,
+                color: Theme.of(context).colorScheme.onSurfaceVariant),
           ),
           const SizedBox(height: 18),
           TextField(
@@ -129,7 +131,8 @@ class _LoginPageState extends State<LoginPage> {
                 ? const SizedBox(
                     width: 18,
                     height: 18,
-                    child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white),
+                    child: CircularProgressIndicator(
+                        strokeWidth: 2, color: Colors.white),
                   )
                 : const Text('登入'),
           ),
@@ -145,9 +148,12 @@ class _LoginPageState extends State<LoginPage> {
             ),
           ],
           const SizedBox(height: 18),
-          const Text(
+          Text(
             '觀看紀錄存在伺服器上，換裝置登入同一個帳號就找得回來。已經下載到這支手機的集數不受影響。',
-            style: TextStyle(fontSize: 12.5, height: 1.6, color: AgpColors.fgFaint),
+            style: TextStyle(
+                fontSize: 12.5,
+                height: 1.6,
+                color: Theme.of(context).colorScheme.onSurfaceVariant),
           ),
         ],
       ),

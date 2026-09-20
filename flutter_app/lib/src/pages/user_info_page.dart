@@ -55,7 +55,8 @@ class _UserInfoPageState extends State<UserInfoPage> {
 
     String message;
     try {
-      message = await state.client.changePassword(_old.text, _new1.text, _new2.text);
+      message =
+          await state.client.changePassword(_old.text, _new1.text, _new2.text);
     } on ApiException catch (error) {
       setState(() {
         _busy = false;
@@ -115,14 +116,17 @@ class _UserInfoPageState extends State<UserInfoPage> {
                 children: [
                   Text(
                     user?.username ?? '未登入',
-                    style: const TextStyle(fontSize: 17, fontWeight: FontWeight.w800),
+                    style: const TextStyle(
+                        fontSize: 17, fontWeight: FontWeight.w800),
                   ),
                   const SizedBox(height: 2),
                   Text(
                     user == null
                         ? ''
                         : (user.isAdmin ? '管理員 · 可以下載新的集數' : '一般用戶 · 只能觀看'),
-                    style: const TextStyle(fontSize: 12.5, color: AgpColors.fgFaint),
+                    style: TextStyle(
+                        fontSize: 12.5,
+                        color: Theme.of(context).colorScheme.onSurfaceVariant),
                   ),
                 ],
               ),
@@ -183,14 +187,18 @@ class _UserInfoPageState extends State<UserInfoPage> {
                 ? const SizedBox(
                     width: 18,
                     height: 18,
-                    child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white),
+                    child: CircularProgressIndicator(
+                        strokeWidth: 2, color: Colors.white),
                   )
                 : const Text('修改密碼'),
           ),
           const SizedBox(height: 14),
-          const Text(
+          Text(
             '改完密碼後這支手機會自動登出，用新密碼重新登入即可。',
-            style: TextStyle(fontSize: 12.5, height: 1.6, color: AgpColors.fgFaint),
+            style: TextStyle(
+                fontSize: 12.5,
+                height: 1.6,
+                color: Theme.of(context).colorScheme.onSurfaceVariant),
           ),
         ],
       ),

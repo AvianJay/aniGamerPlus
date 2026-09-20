@@ -139,14 +139,18 @@ class _RegisterPageState extends State<RegisterPage> {
                 ? const SizedBox(
                     width: 18,
                     height: 18,
-                    child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white),
+                    child: CircularProgressIndicator(
+                        strokeWidth: 2, color: Colors.white),
                   )
                 : const Text('建立帳號'),
           ),
           const SizedBox(height: 16),
-          const Text(
+          Text(
             '新帳號預設是一般用戶，只能看片與同步進度。要下載新的集數得請站台管理員把角色改成 admin。',
-            style: TextStyle(fontSize: 12.5, height: 1.6, color: AgpColors.fgFaint),
+            style: TextStyle(
+                fontSize: 12.5,
+                height: 1.6,
+                color: Theme.of(context).colorScheme.onSurfaceVariant),
           ),
         ],
       ),

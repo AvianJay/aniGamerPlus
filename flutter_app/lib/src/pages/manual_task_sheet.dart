@@ -11,7 +11,6 @@ import 'package:flutter/material.dart';
 
 import '../api/client.dart';
 import '../state/app_state.dart';
-import '../theme.dart';
 import '../util/format.dart';
 import '../widgets/common.dart';
 
@@ -97,7 +96,8 @@ class _ManualTaskSheetState extends State<_ManualTaskSheet> {
       final config = await state.client.config();
       if (!mounted) return;
       final thread = config['multi-thread'];
-      final resolution = '${config['download_resolution'] ?? ''}'.replaceAll('P', '');
+      final resolution =
+          '${config['download_resolution'] ?? ''}'.replaceAll('P', '');
       setState(() {
         if (thread != null) _thread.text = '$thread';
         if (config['classify_bangumi'] is bool) {
@@ -170,11 +170,13 @@ class _ManualTaskSheetState extends State<_ManualTaskSheet> {
                 style: TextStyle(fontSize: 17, fontWeight: FontWeight.w800),
               ),
             ),
-            const Padding(
-              padding: EdgeInsets.only(bottom: 16),
+            Padding(
+              padding: const EdgeInsets.only(bottom: 16),
               child: Text(
                 '交給伺服器下載到它的片庫，不是下載到這支手機。',
-                style: TextStyle(fontSize: 12.5, color: AgpColors.fgFaint),
+                style: TextStyle(
+                    fontSize: 12.5,
+                    color: Theme.of(context).colorScheme.onSurfaceVariant),
               ),
             ),
             TextField(
@@ -275,10 +277,10 @@ class _ManualTaskSheetState extends State<_ManualTaskSheet> {
         padding: const EdgeInsets.only(bottom: 8),
         child: Text(
           text,
-          style: const TextStyle(
+          style: TextStyle(
             fontSize: 12.5,
             fontWeight: FontWeight.w700,
-            color: AgpColors.fgFaint,
+            color: Theme.of(context).colorScheme.onSurfaceVariant,
           ),
         ),
       );

@@ -2,6 +2,8 @@
 /// 繼續觀看 / 本季新番 / 更新時間表 / 近期熱播 / 最新上架 / 片庫更新 / 片庫熱門.
 library;
 
+import 'dart:math' as math;
+
 import 'package:flutter/material.dart';
 
 import '../api/models.dart';
@@ -81,7 +83,7 @@ class HomeTab extends StatelessWidget {
         decoration: BoxDecoration(
           color: Theme.of(context).cardTheme.color,
           borderRadius: BorderRadius.circular(kRadius),
-          border: Border.all(color: AgpColors.line),
+          border: Border.all(color: Theme.of(context).dividerColor),
         ),
         child: Row(
           children: [
@@ -91,8 +93,10 @@ class HomeTab extends StatelessWidget {
             Expanded(
               child: Text(
                 state.offline ? '離線模式 · 只顯示已下載到手機的集數。' : text,
-                style: const TextStyle(
-                    fontSize: 13, height: 1.4, color: AgpColors.fgDim),
+                style: TextStyle(
+                    fontSize: 13,
+                    height: 1.4,
+                    color: Theme.of(context).colorScheme.onSurfaceVariant),
               ),
             ),
           ],
@@ -114,7 +118,9 @@ class HomeTab extends StatelessWidget {
             state.loggedIn || !state.serverInfo.userControl
                 ? '還沒有看到一半的影片。'
                 : '登入後即可跨裝置同步觀看進度。',
-            style: const TextStyle(fontSize: 13, color: AgpColors.fgFaint),
+            style: TextStyle(
+                fontSize: 13,
+                color: Theme.of(context).colorScheme.onSurfaceVariant),
           ),
         ),
       ];
@@ -123,7 +129,9 @@ class HomeTab extends StatelessWidget {
     return [
       const SectionHeader(title: '繼續觀看'),
       Rail(
-        height: 168,
+        height: 208 * 9 / 16 +
+            11 +
+            math.max(48, 34 * MediaQuery.textScalerOf(context).scale(14) / 14),
         itemWidth: 208,
         itemCount: items.length,
         itemBuilder: (context, index) {
@@ -134,42 +142,13 @@ class HomeTab extends StatelessWidget {
               : '已看到 ${formatClock(watched?.time ?? 0)}';
           final next = _nextEpisode(video);
 
-          return Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Expanded(
-                child: EpisodeCard(
-                  video: video,
-                  state: state,
-                  onTap: () => _watch(context, video.sn),
-                  onLongPress: () => _libraryMenu(context, video),
-                ),
-              ),
-              Row(
-                children: [
-                  Expanded(
-                    child: Text(
-                      remaining,
-                      style: const TextStyle(
-                          fontSize: 11, color: AgpColors.accent),
-                    ),
-                  ),
-                  if (next != null)
-                    InkWell(
-                      onTap: () => _watch(context, next.sn),
-                      child: const Padding(
-                        padding:
-                            EdgeInsets.symmetric(horizontal: 4, vertical: 2),
-                        child: Text(
-                          '下一集 ▸',
-                          style:
-                              TextStyle(fontSize: 11, color: AgpColors.fgDim),
-                        ),
-                      ),
-                    ),
-                ],
-              ),
-            ],
+          return EpisodeCard(
+            video: video,
+            state: state,
+            detail: remaining,
+            onNext: next == null ? null : () => _watch(context, next.sn),
+            onTap: () => _watch(context, video.sn),
+            onLongPress: () => _libraryMenu(context, video),
           );
         },
       ),
@@ -279,11 +258,13 @@ class HomeTab extends StatelessWidget {
     if (state.library.isEmpty) {
       return [
         const SectionHeader(title: '片庫更新'),
-        const Padding(
-          padding: EdgeInsets.symmetric(horizontal: 16),
+        Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 16),
           child: Text(
             '片庫還沒有任何影片，先到主控台加入追番清單吧。',
-            style: TextStyle(fontSize: 13, color: AgpColors.fgFaint),
+            style: TextStyle(
+                fontSize: 13,
+                color: Theme.of(context).colorScheme.onSurfaceVariant),
           ),
         ),
       ];
@@ -317,13 +298,17 @@ class HomeTab extends StatelessWidget {
             const SizedBox(width: 8),
             Text(
               '${videos.length} 集更新',
-              style: const TextStyle(fontSize: 11.5, color: AgpColors.fgFaint),
+              style: TextStyle(
+                  fontSize: 11.5,
+                  color: Theme.of(context).colorScheme.onSurfaceVariant),
             ),
           ],
         ),
       ));
       widgets.add(Rail(
-        height: 148,
+        height: 196 * 9 / 16 +
+            12 +
+            34 * MediaQuery.textScalerOf(context).scale(14) / 14,
         itemWidth: 196,
         itemCount: videos.length > 20 ? 20 : videos.length,
         itemBuilder: (context, index) => EpisodeCard(
@@ -545,7 +530,9 @@ class _ScheduleState extends State<_Schedule> {
                   padding: const EdgeInsets.symmetric(horizontal: 14),
                   alignment: Alignment.center,
                   decoration: BoxDecoration(
-                    color: on ? AgpColors.accent : Colors.white10,
+                    color: on
+                        ? AgpColors.accent
+                        : Theme.of(context).colorScheme.surfaceContainerHighest,
                     borderRadius: BorderRadius.circular(999),
                   ),
                   child: Text(
@@ -553,7 +540,9 @@ class _ScheduleState extends State<_Schedule> {
                     style: TextStyle(
                       fontSize: 13,
                       fontWeight: FontWeight.w700,
-                      color: on ? Colors.white : AgpColors.fgDim,
+                      color: on
+                          ? Colors.white
+                          : Theme.of(context).colorScheme.onSurfaceVariant,
                     ),
                   ),
                 ),
@@ -563,11 +552,13 @@ class _ScheduleState extends State<_Schedule> {
         ),
         const SizedBox(height: 10),
         if (today.episodes.isEmpty)
-          const Padding(
-            padding: EdgeInsets.symmetric(horizontal: 16),
+          Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 16),
             child: Text(
               '這天沒有排定更新。',
-              style: TextStyle(fontSize: 13, color: AgpColors.fgFaint),
+              style: TextStyle(
+                  fontSize: 13,
+                  color: Theme.of(context).colorScheme.onSurfaceVariant),
             ),
           )
         else
@@ -614,8 +605,11 @@ class _ScheduleState extends State<_Schedule> {
                           const SizedBox(height: 2),
                           Text(
                             row.volume,
-                            style: const TextStyle(
-                                fontSize: 11.5, color: AgpColors.fgFaint),
+                            style: TextStyle(
+                                fontSize: 11.5,
+                                color: Theme.of(context)
+                                    .colorScheme
+                                    .onSurfaceVariant),
                           ),
                         ],
                       ),

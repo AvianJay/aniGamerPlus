@@ -44,41 +44,21 @@ class FavouritesTab extends StatelessWidget {
                 : state.episodesOf(head.animeName);
             final latest = episodes.isEmpty ? null : episodes.last;
 
-            return Stack(
-              children: [
-                PosterCard(
-                  title: item.name,
-                  cover: item.cover.isEmpty ? null : item.cover,
-                  cache: state.thumbnails,
-                  sn: head?.sn,
-                  headers: state.client.authHeaders,
-                  subtitle: latest != null
-                      ? '共 ${episodes.length} 集 · 更新至 ${episodeLabel(latest.episode)}'
-                      : '片庫沒有這部，點開看作品資訊',
-                  onTap: () => _open(context, item, latest),
-                ),
-                Positioned(
-                  right: 0,
-                  top: 0,
-                  child: InkWell(
-                    borderRadius: BorderRadius.circular(999),
-                    onTap: () async {
-                      await state.toggleFavourite(item);
-                      if (context.mounted) toast(context, '已從收藏移除');
-                    },
-                    child: Container(
-                      margin: const EdgeInsets.all(4),
-                      padding: const EdgeInsets.all(4),
-                      decoration: const BoxDecoration(
-                        color: Color(0xB3000000),
-                        shape: BoxShape.circle,
-                      ),
-                      child: const Icon(Icons.close,
-                          size: 14, color: Colors.white),
-                    ),
-                  ),
-                ),
-              ],
+            return PosterCard(
+              title: item.name,
+              cover: item.cover.isEmpty ? null : item.cover,
+              cache: state.thumbnails,
+              sn: head?.sn,
+              headers: state.client.authHeaders,
+              subtitle: latest != null
+                  ? '共 ${episodes.length} 集 · 更新至 ${episodeLabel(latest.episode)}'
+                  : '片庫沒有這部，點開看作品資訊',
+              onTap: () => _open(context, item, latest),
+              favourite: true,
+              onFavourite: () async {
+                await state.toggleFavourite(item);
+                if (context.mounted) toast(context, '已從收藏移除');
+              },
             );
           },
         );

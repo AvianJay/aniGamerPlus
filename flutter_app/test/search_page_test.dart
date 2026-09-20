@@ -7,6 +7,7 @@ import 'package:agp_mobile/src/api/client.dart';
 import 'package:agp_mobile/src/api/models.dart';
 import 'package:agp_mobile/src/pages/search_page.dart';
 import 'package:agp_mobile/src/pages/all_tab.dart';
+import 'package:agp_mobile/src/pages/root_page.dart';
 import 'package:agp_mobile/src/state/app_state.dart';
 import 'package:agp_mobile/src/state/prefs.dart';
 import 'package:agp_mobile/src/theme.dart';
@@ -85,6 +86,29 @@ void main() {
     final client = AgpClient(
         baseUrl: 'http://example.test',
         httpClient: MockClient((request) async {
+          if (request.url.path == '/video_list.json') {
+            return http.Response(
+                jsonEncode({
+                  'videos': [
+                    for (var i = 0; i < titles.length; i++)
+                      {
+                        'sn': 'v$i',
+                        'anime_name': titles[i],
+                        'episode': '1',
+                        'resolution': 1080,
+                        'timestamp': 1790000000
+                      },
+                    {
+                      'sn': 'next',
+                      'anime_name': titles.first,
+                      'episode': '2',
+                      'resolution': 1080
+                    },
+                  ]
+                }),
+                200,
+                headers: {'content-type': 'application/json'});
+          }
           if (request.url.path == '/catalog/all.json') {
             final query = request.url.queryParameters['q'] ?? '';
             requests.add(query);
@@ -107,6 +131,7 @@ void main() {
           return http.Response('{}', 404);
         }));
     state = await AppState.boot(client: client);
+    state.booting = false;
     state.catalog =
         CatalogIndex(hot: catalog.map(CatalogItem.fromJson).toList());
     await state.thumbnails.init();
@@ -223,6 +248,57 @@ void main() {
             .crossAxisCount,
         2);
     await capture(tester, 'catalog-phone');
+  });
+
+  testWidgets(
+      'continue watching captions stay below thumbnails at every text size',
+      (tester) async {
+    await state.refreshLibrary();
+    state.booting = false;
+    state.watchTimes = {
+      for (var i = 0; i < 4; i++)
+        'v$i': WatchTime(time: 180, duration: 1440, timestamp: 100 - i),
+    };
+    for (final target in [
+      (const Size(1280, 882), 1.0, 'home-tablet'),
+      (const Size(390, 844), 1.0, 'home-phone'),
+      (const Size(320, 740), 1.8, 'home-large-text'),
+    ]) {
+      await open(tester, RootPage(state: state),
+          size: target.$1, scale: target.$2);
+      final card = find.byType(EpisodeCard).first;
+      final caption = find.descendant(
+          of: card, matching: find.byKey(const ValueKey('episode-caption-v0')));
+      final title =
+          find.descendant(of: card, matching: find.text(titles.first));
+      expect(tester.getRect(caption).top,
+          greaterThanOrEqualTo(tester.getRect(title).bottom));
+      expect(tester.getRect(caption).bottom,
+          lessThanOrEqualTo(tester.getRect(card).bottom));
+      expect(find.textContaining('剩餘'), findsWidgets);
+      expect(tester.takeException(), isNull);
+      await capture(tester, target.$3);
+    }
+  });
+
+  testWidgets('poster hearts persist favourites without opening the series',
+      (tester) async {
+    await open(tester, RootPage(state: state));
+    await tester.tap(find.text('所有動畫').last);
+    await tester.pumpAndSettle();
+    final heart = find.descendant(
+        of: find.byType(PosterCard).first, matching: find.byTooltip('收藏'));
+    await tester.tap(heart);
+    await tester.pumpAndSettle();
+    expect(state.isFavourite(titles.first), isTrue);
+    expect((await Prefs.load()).favourites.single.sn, 'v0');
+    await tester.tap(find.text('收藏').last);
+    await tester.pumpAndSettle();
+    expect(find.byType(PosterCard), findsOneWidget);
+    await tester.tap(find.byTooltip('取消收藏'));
+    await tester.pumpAndSettle();
+    expect(state.favourites, isEmpty);
+    expect(find.text('還沒有收藏任何作品'), findsOneWidget);
   });
 
   testWidgets(

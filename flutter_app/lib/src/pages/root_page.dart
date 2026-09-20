@@ -117,7 +117,7 @@ class _RootPageState extends State<RootPage> {
               label: '離線',
               dense: true,
               icon: Icons.cloud_off_rounded,
-              color: Color(0x33FFFFFF),
+              color: AgpColors.accent,
             ),
           ],
         ],

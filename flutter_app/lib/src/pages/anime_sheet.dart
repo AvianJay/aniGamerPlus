@@ -132,7 +132,8 @@ class _AnimeSheetState extends State<_AnimeSheet> {
     try {
       await state.addSeriesToSnList(videoSn);
     } on ApiException catch (error) {
-      toast(context, error.needsLogin ? '需要管理員權限才能更新 sn_list。' : '加入 sn_list 失敗。');
+      toast(context,
+          error.needsLogin ? '需要管理員權限才能更新 sn_list。' : '加入 sn_list 失敗。');
       return;
     } catch (_) {
       toast(context, '加入 sn_list 失敗。');
@@ -178,7 +179,8 @@ class _AnimeSheetState extends State<_AnimeSheet> {
   void _openWatch(String videoSn, {bool streaming = false}) {
     Navigator.of(context).pop();
     Navigator.of(context).push(MaterialPageRoute(
-      builder: (_) => WatchPage(state: state, sn: videoSn, streaming: streaming),
+      builder: (_) =>
+          WatchPage(state: state, sn: videoSn, streaming: streaming),
     ));
   }
 
@@ -240,7 +242,8 @@ class _AnimeSheetState extends State<_AnimeSheet> {
   }
 
   Future<void> _openOnBahamut(String videoSn) async {
-    final url = Uri.parse('https://ani.gamer.com.tw/animeVideo.php?sn=$videoSn');
+    final url =
+        Uri.parse('https://ani.gamer.com.tw/animeVideo.php?sn=$videoSn');
     try {
       await launchUrl(url, mode: LaunchMode.externalApplication);
     } catch (_) {
@@ -326,7 +329,8 @@ class _AnimeSheetState extends State<_AnimeSheet> {
             children: [
               Text(
                 title,
-                style: const TextStyle(fontSize: 19, fontWeight: FontWeight.w800, height: 1.25),
+                style: const TextStyle(
+                    fontSize: 19, fontWeight: FontWeight.w800, height: 1.25),
               ),
               const SizedBox(height: 8),
               Wrap(
@@ -335,7 +339,8 @@ class _AnimeSheetState extends State<_AnimeSheet> {
                 children: [
                   for (final chip in chips)
                     Container(
-                      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+                      padding: const EdgeInsets.symmetric(
+                          horizontal: 8, vertical: 3),
                       decoration: BoxDecoration(
                         color: AgpColors.accentSoft,
                         borderRadius: BorderRadius.circular(999),
@@ -353,7 +358,10 @@ class _AnimeSheetState extends State<_AnimeSheet> {
                     for (final tag in detail.tags.take(8))
                       Text(
                         '#$tag',
-                        style: const TextStyle(fontSize: 11.5, color: AgpColors.fgFaint),
+                        style: TextStyle(
+                            fontSize: 11.5,
+                            color:
+                                Theme.of(context).colorScheme.onSurfaceVariant),
                       ),
                   ],
                 ),
@@ -376,7 +384,8 @@ class _AnimeSheetState extends State<_AnimeSheet> {
 
   Widget _actions(SeriesInfo detail) {
     final local = _firstLocal(detail);
-    final currentSn = detail.videoSn.isNotEmpty ? detail.videoSn : widget.videoSn;
+    final currentSn =
+        detail.videoSn.isNotEmpty ? detail.videoSn : widget.videoSn;
     final current = detail.episodeOf(currentSn);
     final buttons = <Widget>[];
 
@@ -431,10 +440,14 @@ class _AnimeSheetState extends State<_AnimeSheet> {
           const SizedBox(height: 12),
           Row(
             children: [
-              const Text('下載畫質', style: TextStyle(fontSize: 13, color: AgpColors.fgDim)),
+              Text('下載畫質',
+                  style: TextStyle(
+                      fontSize: 13,
+                      color: Theme.of(context).colorScheme.onSurfaceVariant)),
               const SizedBox(width: 10),
               DropdownButton<String>(
-                value: kResolutions.contains(_resolution) ? _resolution : '1080',
+                value:
+                    kResolutions.contains(_resolution) ? _resolution : '1080',
                 underline: const SizedBox.shrink(),
                 borderRadius: BorderRadius.circular(kRadiusSmall),
                 items: [
@@ -456,7 +469,10 @@ class _AnimeSheetState extends State<_AnimeSheet> {
             state.canManage
                 ? '這部作品還沒有下載到片庫，「邊看邊下載」會立刻開始播放，檔案在背景繼續下載。'
                 : '這部作品還沒有下載到片庫，請聯絡站台管理員加入下載。',
-            style: const TextStyle(fontSize: 12.5, height: 1.5, color: AgpColors.fgFaint),
+            style: TextStyle(
+                fontSize: 12.5,
+                height: 1.5,
+                color: Theme.of(context).colorScheme.onSurfaceVariant),
           ),
         ],
       ],
@@ -470,7 +486,10 @@ class _AnimeSheetState extends State<_AnimeSheet> {
       children: [
         Text(
           clamped ? '${content.substring(0, kSynopsisClamp)}…' : content,
-          style: const TextStyle(fontSize: 13.5, height: 1.65, color: AgpColors.fgDim),
+          style: TextStyle(
+              fontSize: 13.5,
+              height: 1.65,
+              color: Theme.of(context).colorScheme.onSurfaceVariant),
         ),
         if (content.length > kSynopsisClamp)
           TextButton(
@@ -484,9 +503,8 @@ class _AnimeSheetState extends State<_AnimeSheet> {
 
   Widget _group(SeriesInfo detail, SeriesGroup group, int index) {
     final open = _expanded.contains(index);
-    final shown = open
-        ? group.episodes
-        : group.episodes.take(kEpisodesShown).toList();
+    final shown =
+        open ? group.episodes : group.episodes.take(kEpisodesShown).toList();
     final more = group.episodes.length - shown.length;
 
     return Column(
@@ -498,12 +516,15 @@ class _AnimeSheetState extends State<_AnimeSheet> {
             children: [
               Text(
                 group.name,
-                style: const TextStyle(fontSize: 15.5, fontWeight: FontWeight.w800),
+                style: const TextStyle(
+                    fontSize: 15.5, fontWeight: FontWeight.w800),
               ),
               const SizedBox(width: 8),
               Text(
                 '${group.episodes.length} 集',
-                style: const TextStyle(fontSize: 12, color: AgpColors.fgFaint),
+                style: TextStyle(
+                    fontSize: 12,
+                    color: Theme.of(context).colorScheme.onSurfaceVariant),
               ),
             ],
           ),
@@ -511,7 +532,9 @@ class _AnimeSheetState extends State<_AnimeSheet> {
         Wrap(
           spacing: 8,
           runSpacing: 8,
-          children: [for (final episode in shown) _episodeChip(detail, episode)],
+          children: [
+            for (final episode in shown) _episodeChip(detail, episode)
+          ],
         ),
         if (more > 0)
           Padding(
@@ -531,7 +554,7 @@ class _AnimeSheetState extends State<_AnimeSheet> {
     final queued = state.queued.contains(episode.videoSn);
 
     Color background;
-    Color foreground = AgpColors.fg;
+    Color foreground = Theme.of(context).colorScheme.onSurface;
     IconData? icon;
 
     if (episode.local) {
@@ -541,8 +564,8 @@ class _AnimeSheetState extends State<_AnimeSheet> {
       background = const Color(0x241B5E8F);
       icon = Icons.play_arrow_rounded;
     } else {
-      background = Colors.white10;
-      foreground = AgpColors.fgDim;
+      background = Theme.of(context).colorScheme.surfaceContainerHighest;
+      foreground = Theme.of(context).colorScheme.onSurfaceVariant;
     }
 
     return InkWell(
@@ -564,7 +587,9 @@ class _AnimeSheetState extends State<_AnimeSheet> {
           color: background,
           borderRadius: BorderRadius.circular(kRadiusSmall),
           border: Border.all(
-            color: episode.local ? AgpColors.accent.withValues(alpha: 0.5) : AgpColors.line,
+            color: episode.local
+                ? AgpColors.accent.withValues(alpha: 0.5)
+                : Theme.of(context).dividerColor,
           ),
         ),
         child: Row(
@@ -576,7 +601,8 @@ class _AnimeSheetState extends State<_AnimeSheet> {
             ],
             Text(
               label,
-              style: TextStyle(fontSize: 13, fontWeight: FontWeight.w600, color: foreground),
+              style: TextStyle(
+                  fontSize: 13, fontWeight: FontWeight.w600, color: foreground),
             ),
           ],
         ),
@@ -729,9 +755,8 @@ class _EpisodePickerSheetState extends State<_EpisodePickerSheet> {
   }
 
   Future<void> _confirm() async {
-    final picks = detail.allEpisodes
-        .where((e) => _picked.contains(e.videoSn))
-        .toList();
+    final picks =
+        detail.allEpisodes.where((e) => _picked.contains(e.videoSn)).toList();
     if (picks.isEmpty) return;
 
     final needServer = picks.where((e) => !e.local).toList();
@@ -831,9 +856,8 @@ class _EpisodePickerSheetState extends State<_EpisodePickerSheet> {
                 child: const Text('全不選'),
               ),
               TextButton(
-                onPressed: selectable == 0
-                    ? null
-                    : () => _selectAll(onlyLocal: true),
+                onPressed:
+                    selectable == 0 ? null : () => _selectAll(onlyLocal: true),
                 child: const Text('只選伺服器上有的'),
               ),
             ],
@@ -863,10 +887,13 @@ class _EpisodePickerSheetState extends State<_EpisodePickerSheet> {
                   ),
                 ],
                 if (detail.groups.isEmpty)
-                  const Padding(
-                    padding: EdgeInsets.only(top: 20),
+                  Padding(
+                    padding: const EdgeInsets.only(top: 20),
                     child: Text('這部作品沒有集數資訊。',
-                        style: TextStyle(color: AgpColors.fgFaint)),
+                        style: TextStyle(
+                            color: Theme.of(context)
+                                .colorScheme
+                                .onSurfaceVariant)),
                   ),
               ],
             ),
@@ -885,14 +912,16 @@ class _EpisodePickerSheetState extends State<_EpisodePickerSheet> {
     Color background;
     Color foreground;
     if (taken) {
-      background = Colors.white10;
-      foreground = AgpColors.fgFaint;
+      background = Theme.of(context).colorScheme.surfaceContainerHighest;
+      foreground = Theme.of(context).colorScheme.onSurfaceVariant;
     } else if (on) {
       background = AgpColors.accentSoft;
-      foreground = AgpColors.fg;
+      foreground = Theme.of(context).colorScheme.onSurface;
     } else {
-      background = Colors.white10;
-      foreground = episode.local ? AgpColors.fg : AgpColors.fgDim;
+      background = Theme.of(context).colorScheme.surfaceContainerHighest;
+      foreground = episode.local
+          ? Theme.of(context).colorScheme.onSurface
+          : Theme.of(context).colorScheme.onSurfaceVariant;
     }
 
     return InkWell(
@@ -911,7 +940,9 @@ class _EpisodePickerSheetState extends State<_EpisodePickerSheet> {
           color: background,
           borderRadius: BorderRadius.circular(kRadiusSmall),
           border: Border.all(
-            color: on ? AgpColors.accent.withValues(alpha: 0.6) : AgpColors.line,
+            color: on
+                ? AgpColors.accent.withValues(alpha: 0.6)
+                : Theme.of(context).dividerColor,
           ),
         ),
         child: Row(
@@ -950,8 +981,8 @@ class _EpisodePickerSheetState extends State<_EpisodePickerSheet> {
 
     return Container(
       padding: const EdgeInsets.fromLTRB(18, 12, 18, 16),
-      decoration: const BoxDecoration(
-        border: Border(top: BorderSide(color: AgpColors.line)),
+      decoration: BoxDecoration(
+        border: Border(top: BorderSide(color: Theme.of(context).dividerColor)),
       ),
       child: SafeArea(
         top: false,
@@ -960,11 +991,14 @@ class _EpisodePickerSheetState extends State<_EpisodePickerSheet> {
           children: [
             Row(
               children: [
-                const Text('下載畫質',
-                    style: TextStyle(fontSize: 13, color: AgpColors.fgDim)),
+                Text('下載畫質',
+                    style: TextStyle(
+                        fontSize: 13,
+                        color: Theme.of(context).colorScheme.onSurfaceVariant)),
                 const SizedBox(width: 8),
                 DropdownButton<String>(
-                  value: kResolutions.contains(_resolution) ? _resolution : '1080',
+                  value:
+                      kResolutions.contains(_resolution) ? _resolution : '1080',
                   underline: const SizedBox.shrink(),
                   borderRadius: BorderRadius.circular(kRadiusSmall),
                   items: [
@@ -980,8 +1014,10 @@ class _EpisodePickerSheetState extends State<_EpisodePickerSheet> {
                         },
                 ),
                 const Spacer(),
-                const Text('一起抓彈幕',
-                    style: TextStyle(fontSize: 13, color: AgpColors.fgDim)),
+                Text('一起抓彈幕',
+                    style: TextStyle(
+                        fontSize: 13,
+                        color: Theme.of(context).colorScheme.onSurfaceVariant)),
                 Switch(
                   value: _danmaku,
                   onChanged: _working
@@ -996,8 +1032,10 @@ class _EpisodePickerSheetState extends State<_EpisodePickerSheet> {
                 padding: const EdgeInsets.only(bottom: 8),
                 child: Text(
                   '其中 $serverCount 集伺服器上還沒有，會先請伺服器下載，抓完自動存到手機。',
-                  style: const TextStyle(
-                      fontSize: 12, height: 1.5, color: AgpColors.fgFaint),
+                  style: TextStyle(
+                      fontSize: 12,
+                      height: 1.5,
+                      color: Theme.of(context).colorScheme.onSurfaceVariant),
                 ),
               ),
             SizedBox(
@@ -1046,9 +1084,11 @@ class _FavouriteButtonState extends State<_FavouriteButton> {
       style: OutlinedButton.styleFrom(
         padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 9),
         foregroundColor: on ? AgpColors.accent : null,
-        side: BorderSide(color: on ? AgpColors.accent : AgpColors.lineStrong),
+        side: BorderSide(
+            color: on ? AgpColors.accent : Theme.of(context).dividerColor),
       ),
-      icon: Icon(on ? Icons.favorite_rounded : Icons.favorite_outline, size: 17),
+      icon:
+          Icon(on ? Icons.favorite_rounded : Icons.favorite_outline, size: 17),
       label: Text(on ? '已收藏' : '收藏'),
     );
   }
