@@ -10,6 +10,7 @@ import 'package:path_provider_platform_interface/path_provider_platform_interfac
 import 'package:video_player_platform_interface/video_player_platform_interface.dart';
 import 'package:wakelock_plus_platform_interface/wakelock_plus_platform_interface.dart';
 import 'package:agp_mobile/src/pages/watch_page.dart';
+import 'package:agp_mobile/src/danmaku/danmaku_overlay.dart';
 import 'package:agp_mobile/src/state/app_state.dart';
 import 'package:agp_mobile/src/theme.dart';
 
@@ -634,6 +635,59 @@ void main() {
     }
     expect(player.creations, 1);
     expect(find.byType(Slider), findsOneWidget);
+    await tester.pumpWidget(const SizedBox());
+  });
+  testWidgets(
+      'inline controls stay compact and only fullscreen pays the bottom safe area',
+      (tester) async {
+    await open(tester);
+    tester.view.padding = const FakeViewPadding(top: 24, bottom: 34);
+    addTearDown(tester.view.resetPadding);
+    await tester.binding.setSurfaceSize(const Size(1280, 882));
+    await tester.pump();
+    Rect surface() =>
+        tester.getRect(find.byKey(const ValueKey('player-surface')));
+    final button = tester.getRect(find.byTooltip('全螢幕'));
+    expect(surface().bottom - button.bottom, closeTo(4, 1));
+    expect(button.size.height, greaterThanOrEqualTo(48));
+    final timeline =
+        tester.getRect(find.byKey(const ValueKey('player-timeline')));
+    expect(surface().bottom - timeline.center.dy, lessThanOrEqualTo(70));
+    await tester.tap(find.byTooltip('全螢幕'));
+    await tester.pump(const Duration(milliseconds: 350));
+    expect(surface().bottom - tester.getRect(find.byTooltip('離開全螢幕')).bottom,
+        closeTo(4 + 34 / tester.view.devicePixelRatio, 1));
+    expect(tester.takeException(), isNull);
+    await tester.pumpWidget(const SizedBox());
+  });
+
+  testWidgets(
+      'danmaku stays on the video without a list below the episode grid',
+      (tester) async {
+    await tester.runAsync(() async {
+      final ass = await File('../tests/fixtures/sample.ass').readAsString();
+      await state.downloads.writeCachedDanmaku('1', ass);
+      expect(await state.downloads.readCachedDanmaku('1'), isNotNull);
+    });
+    await open(tester);
+    for (var i = 0;
+        i < 10 && find.byType(DanmakuOverlay).evaluate().isEmpty;
+        i++) {
+      await tester.runAsync(
+          () => Future<void>.delayed(const Duration(milliseconds: 20)));
+      await tester.pump();
+    }
+    expect(find.byType(DanmakuOverlay), findsOneWidget);
+    expect(tester.widget<DanmakuOverlay>(find.byType(DanmakuOverlay)).comments,
+        isNotEmpty);
+    expect(find.text('彈幕'), findsNothing);
+    expect(find.textContaining('這一集沒有彈幕'), findsNothing);
+    await tester.tap(find.byTooltip('關閉彈幕'));
+    await tester.pump(const Duration(milliseconds: 350));
+    expect(find.byType(DanmakuOverlay), findsNothing);
+    await tester.tap(find.byTooltip('開啟彈幕'));
+    await tester.pump(const Duration(milliseconds: 350));
+    expect(find.byType(DanmakuOverlay), findsOneWidget);
     await tester.pumpWidget(const SizedBox());
   });
   testWidgets('a different episode cannot adopt the parked player',

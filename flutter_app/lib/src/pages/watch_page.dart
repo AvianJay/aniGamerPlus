@@ -319,7 +319,6 @@ class _WatchPageState extends State<WatchPage>
 
   // ------------------------------------------------------------- 彈幕
   List<DanmakuComment> _danmaku = const [];
-  bool _danmakuLoading = false;
 
   // ------------------------------------------------------------- 設定
   double _rate = 1;
@@ -875,7 +874,6 @@ class _WatchPageState extends State<WatchPage>
   Future<void> _loadDanmaku() async {
     setState(() {
       _danmaku = const [];
-      _danmakuLoading = true;
     });
     String? text;
     final local = store.localDanmaku(_sn);
@@ -909,7 +907,6 @@ class _WatchPageState extends State<WatchPage>
       _danmaku = (text == null || text.trim().isEmpty)
           ? const <DanmakuComment>[]
           : parseAss(text);
-      _danmakuLoading = false;
     });
   }
 
@@ -2151,6 +2148,7 @@ class _WatchPageState extends State<WatchPage>
 
   Widget _playerSurface() {
     return LayoutBuilder(
+      key: const ValueKey('player-surface'),
       builder: (context, constraints) {
         final size = Size(constraints.maxWidth, constraints.maxHeight);
         final controller = _controller;
@@ -2676,7 +2674,7 @@ class _WatchPageState extends State<WatchPage>
 
   Widget _previewOverlay(BoxConstraints constraints) {
     final inset = MediaQuery.paddingOf(context);
-    final bottom = 100.0 + inset.bottom;
+    final bottom = 84.0 + (_fullscreen ? inset.bottom : 0);
     final available = math.max(40.0, constraints.maxHeight - bottom - 36);
     final width = math.min(
         160.0, math.min(available * 16 / 9, constraints.maxWidth - 24));
@@ -2704,6 +2702,11 @@ class _WatchPageState extends State<WatchPage>
   Widget _bottomBar() {
     return SafeArea(
       top: false,
+      // An inline player never reaches the home indicator. Applying the
+      // screen's bottom inset here leaves a second empty band under the icons.
+      bottom: _fullscreen,
+      left: _fullscreen,
+      right: _fullscreen,
       child: Padding(
         padding: const EdgeInsets.fromLTRB(10, 0, 10, 4),
         child: Column(mainAxisSize: MainAxisSize.min, children: [
@@ -2791,7 +2794,7 @@ class _WatchPageState extends State<WatchPage>
         final enabled =
             playable > 0 && (_controller?.value.isInitialized ?? false);
         return SizedBox(
-          height: 48,
+          height: 32,
           child: SliderTheme(
             data: SliderTheme.of(context).copyWith(
               trackHeight: 3,
@@ -2900,7 +2903,6 @@ class _WatchPageState extends State<WatchPage>
       children: [
         _episodeSection(),
         if (includeInfo) _infoCard(),
-        _danmakuSection(),
       ],
     );
   }
@@ -3185,101 +3187,6 @@ class _WatchPageState extends State<WatchPage>
           ],
         ),
       ),
-    );
-  }
-
-  Widget _danmakuSection() {
-    if (_danmakuLoading) {
-      return const Padding(
-        padding: EdgeInsets.symmetric(vertical: 22),
-        child: Center(
-          child: SizedBox(
-            width: 20,
-            height: 20,
-            child: CircularProgressIndicator(strokeWidth: 2),
-          ),
-        ),
-      );
-    }
-    if (_danmaku.isEmpty) {
-      return Padding(
-        padding: const EdgeInsets.fromLTRB(16, 16, 16, 8),
-        child: Text(
-          '這一集沒有彈幕。',
-          style: TextStyle(
-              fontSize: 12.8,
-              color: Theme.of(context).colorScheme.onSurfaceVariant),
-        ),
-      );
-    }
-
-    final shown = _danmaku.length > 400 ? _danmaku.sublist(0, 400) : _danmaku;
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        SectionHeader(title: '彈幕', subtitle: '${_danmaku.length} 則'),
-        Container(
-          height: 260,
-          margin: const EdgeInsets.fromLTRB(16, 2, 16, 4),
-          decoration: BoxDecoration(
-            color: Theme.of(context).cardTheme.color,
-            borderRadius: BorderRadius.circular(kRadius),
-            border: Border.all(color: Theme.of(context).dividerColor),
-          ),
-          child: ClipRRect(
-            borderRadius: BorderRadius.circular(kRadius),
-            child: ListView.builder(
-              padding: const EdgeInsets.symmetric(vertical: 4),
-              itemCount: shown.length,
-              itemBuilder: (context, index) {
-                final comment = shown[index];
-                return InkWell(
-                  onTap: () => unawaited(_seekTo(comment.start)),
-                  child: Padding(
-                    padding:
-                        const EdgeInsets.symmetric(horizontal: 12, vertical: 7),
-                    child: Row(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        SizedBox(
-                          width: 48,
-                          child: Text(
-                            formatClock(comment.start),
-                            style: TextStyle(
-                              fontSize: 11.5,
-                              color: Theme.of(context)
-                                  .colorScheme
-                                  .onSurfaceVariant,
-                            ),
-                          ),
-                        ),
-                        Expanded(
-                          child: Text(
-                            comment.text,
-                            style: TextStyle(
-                                fontSize: 12.6,
-                                color: Theme.of(context).colorScheme.onSurface),
-                          ),
-                        ),
-                      ],
-                    ),
-                  ),
-                );
-              },
-            ),
-          ),
-        ),
-        if (_danmaku.length > shown.length)
-          Padding(
-            padding: const EdgeInsets.fromLTRB(16, 2, 16, 8),
-            child: Text(
-              '只列出前 400 則，畫面上還是照播全部。',
-              style: TextStyle(
-                  fontSize: 11.5,
-                  color: Theme.of(context).colorScheme.onSurfaceVariant),
-            ),
-          ),
-      ],
     );
   }
 
