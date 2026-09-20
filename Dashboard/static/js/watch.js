@@ -1414,8 +1414,7 @@ AgpPlayer.prototype.syncDanmakuButton = function () {
 
 AgpPlayer.prototype.applyDanmakuStyle = function () {
     this.danmakuLayer.hidden = !this.danmakuEnabled;
-    /* Set as a variable, not as opacity: the stylesheet scales it down while
-       the chrome is up so the flood does not swallow the controls. */
+    /* Pointer activity and control visibility never override this preference. */
     this.danmakuLayer.style.setProperty('--danmaku-opacity',
         String(this.danmakuOpacity / 100));
     this.shell.dataset.danmakuArea = this.danmakuArea;

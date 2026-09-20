@@ -136,6 +136,8 @@ tests/fixtures/hls/
 catalog/
 # 本地临时脚本与调试产物
 .agpwork/
+.playwright-cli/
+output/playwright/
 Dashboard/sslkey/server.crt
 Dashboard/sslkey/server.key
 cookies.pkl

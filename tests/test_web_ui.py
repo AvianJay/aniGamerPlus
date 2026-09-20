@@ -990,6 +990,41 @@ def test_fullscreen_prefers_the_real_thing(page, server):
     assert page.errors == []
 
 
+def assert_fullscreen_has_no_frame(page):
+    shell = page.locator('#playerShell')
+    box = shell.bounding_box()
+    viewport = page.evaluate('() => ({width: innerWidth, height: innerHeight})')
+    assert box == pytest.approx({'x': 0, 'y': 0, **viewport}, abs=1)
+    for prop in ('border-top-width', 'border-radius', 'outline-width'):
+        expect(shell).to_have_css(prop, '0px')
+    expect(shell).to_have_css('background-color', 'rgb(0, 0, 0)')
+    expect(shell).to_have_css('box-shadow', 'none')
+    expect(page.locator('.desktop-player-surface')).to_have_css('box-shadow', 'none')
+
+
+def test_fullscreen_keyboard_focus_stays_on_controls_without_a_white_frame(page, server):
+    goto_watch(page, server)
+    # Use the keyboard path that previously put a white inset frame around the
+    # entire fullscreen surface, including while the chrome was idle.
+    page.keyboard.press('Tab')
+    surface = page.locator('.desktop-player-surface')
+    surface.focus()
+    assert surface.evaluate("el => el.matches(':focus-visible')")
+    page.keyboard.press('f')
+    expect(page.locator('#fullscreenToggle')).to_have_attribute('aria-pressed', 'true')
+    assert_fullscreen_has_no_frame(page)
+    page.locator('#playerShell').evaluate("el => el.classList.remove('controls-visible')")
+    expect(page.locator('.desktop-player-controls')).to_have_css('opacity', '1')
+    expect(page.locator('#playToggle')).to_have_css('outline-width', '2px')
+    page.keyboard.press('Space')
+    page.wait_for_function("() => !document.querySelector('#playerShell video').paused")
+    page.keyboard.press('Space')
+    page.wait_for_function("() => document.querySelector('#playerShell video').paused")
+    page.keyboard.press('f')
+    expect(page.locator('#fullscreenToggle')).to_have_attribute('aria-pressed', 'false')
+    assert page.errors == []
+
+
 def test_fullscreen_falls_back_without_handing_over_the_player(phone, server):
     """iPhone Safari has no element fullscreen, only ``webkitEnterFullscreen``
     on the video -- which swaps this player for Apple's own and takes the
@@ -1022,6 +1057,11 @@ def test_fullscreen_falls_back_without_handing_over_the_player(phone, server):
     assert box['x'] == 0 and box['y'] == 0
     assert box['width'] == IPHONE_VIEWPORT['width']
     assert box['height'] == IPHONE_VIEWPORT['height']
+    assert_fullscreen_has_no_frame(phone)
+    # The fixed fallback must follow a rotation rather than retaining the old
+    # document height and exposing the surrounding page.
+    phone.set_viewport_size({'width': 844, 'height': 390})
+    assert_fullscreen_has_no_frame(phone)
     assert phone.evaluate("() => getComputedStyle(document.body).overflow") == 'hidden'
 
     phone.click('#fullscreenToggle')
@@ -1231,24 +1271,21 @@ def test_a_run_of_taps_keeps_skipping_instead_of_blinking_the_bar(phone, server)
         "(el) => el.classList.contains('controls-visible')")
 
 
-def test_danmaku_fades_back_while_the_chrome_is_up(page, server):
-    """A popular episode floods the picture, and the flood runs straight through
-    the buttons. The layer drops back while the bar is up and returns to the
-    viewer's own opacity setting once it fades."""
+@pytest.mark.parametrize('opacity', [100, 65])
+def test_danmaku_keeps_its_opacity_when_the_mouse_reveals_controls(page, server, opacity):
+    page.add_init_script("localStorage.setItem('agp-danmaku-opacity', '%s')" % opacity)
     goto_watch(page, server)
     layer = page.locator('#danmakuLayer')
     shell = page.locator('#playerShell')
-
-    shell.evaluate("(el) => el.classList.add('controls-visible')")
-    page.wait_for_timeout(300)
-    dimmed = layer.evaluate('(el) => Number(getComputedStyle(el).opacity)')
-
+    page.mouse.move(0, 0)
     shell.evaluate("(el) => el.classList.remove('controls-visible')")
-    page.wait_for_timeout(300)
-    full = layer.evaluate('(el) => Number(getComputedStyle(el).opacity)')
-
-    assert full == pytest.approx(1.0, abs=0.01), full
-    assert dimmed < 0.5, dimmed
+    expect(layer).to_have_css('opacity', str(opacity / 100).rstrip('0').rstrip('.'))
+    box = shell.bounding_box()
+    page.mouse.move(box['x'] + box['width'] * .6, box['y'] + box['height'] * .4)
+    expect(shell).to_have_class(re.compile(r'controls-visible'))
+    page.wait_for_timeout(250)  # Allow the former opacity transition to finish.
+    assert layer.evaluate('(el) => Number(getComputedStyle(el).opacity)') == pytest.approx(opacity / 100)
+    assert page.errors == []
 
 
 # ------------------------------------------------------------- 邊看邊下載

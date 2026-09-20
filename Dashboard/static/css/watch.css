@@ -36,6 +36,7 @@
 
 .player-shell video {
   border: 0;
+  display: block;
   height: 100%;
   object-fit: contain;
   width: 100%;
@@ -54,20 +55,30 @@
 .player-shell.is-custom-player:not(.controls-visible) { cursor: none; }
 .player-shell.is-custom-player > video { pointer-events: none; }
 
-.player-shell.is-fullscreen {
+.player-shell:is(.is-fullscreen, :fullscreen, :-webkit-full-screen) {
   aspect-ratio: auto;
+  background: #000;
   border: 0;
   border-radius: 0;
+  box-shadow: none;
   height: 100%;
+  margin: 0;
+  max-height: none;
+  max-width: none;
+  outline: 0;
   width: 100%;
 }
+
+.player-shell::backdrop { background: #000; }
 
 /* The stand-in for platforms with no element fullscreen. inset rather than a
    width/height pair, so it takes whatever the visual viewport currently is —
    iOS shrinks that as the address bar comes back. */
 .player-shell.is-pseudo-fullscreen {
+  height: auto;
   inset: 0;
   position: fixed;
+  width: auto;
   z-index: 70;
 }
 
@@ -85,7 +96,6 @@ body.player-pseudo-fullscreen { overflow: hidden; }
 }
 
 .desktop-player-surface:focus-visible {
-  box-shadow: inset 0 0 0 3px rgb(255 255 255 / 82%);
   outline: 0;
 }
 
@@ -174,7 +184,8 @@ body.player-pseudo-fullscreen { overflow: hidden; }
 /* The idle timer fades the bar out from under a control that still holds
    keyboard focus, leaving Enter wired to an invisible button. Kept in its own
    rule so engines without :has() only drop this one. */
-.desktop-player-controls:has(:focus-visible) {
+.desktop-player-controls:has(:focus-visible),
+.player-shell:has(.desktop-player-surface:focus-visible) .desktop-player-controls {
   opacity: 1;
   pointer-events: auto;
   transform: translateY(0);
@@ -300,7 +311,8 @@ body.player-pseudo-fullscreen { overflow: hidden; }
 .desktop-player-icon-button:hover,
 .desktop-player-icon-button:focus-visible { transform: scale(1.08); }
 
-.desktop-player-icon-button:focus-visible {
+.desktop-player-icon-button:focus-visible,
+.player-shell:has(.desktop-player-surface:focus-visible) #playToggle {
   outline: 2px solid rgb(255 255 255 / 88%);
   outline-offset: -2px;
 }
@@ -409,11 +421,8 @@ body.player-pseudo-fullscreen { overflow: hidden; }
   transition: opacity .16s;
 }
 
-/* A popular episode puts three thousand comments on the picture at once, and
-   they run straight through the buttons. While the chrome is up the flood
-   drops back so the controls and the centre buttons stay readable; it comes
-   back to the viewer's own setting the moment the bar fades. */
-.player-shell.controls-visible .danmaku-layer { opacity: calc(var(--danmaku-opacity, 1) * .3); }
+/* Pointer activity must not change the viewer's chosen opacity. The local
+   control-bar scrim provides contrast without dimming comments across the video. */
 
 .danmaku-layer[hidden] { display: none; }
 .player-shell[data-danmaku-area="75"] .danmaku-layer { bottom: 25%; }
