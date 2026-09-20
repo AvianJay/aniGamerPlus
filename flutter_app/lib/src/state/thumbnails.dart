@@ -24,6 +24,7 @@ import 'package:http/http.dart' as http;
 import 'package:path_provider/path_provider.dart';
 
 import '../api/client.dart';
+import '../api/models.dart';
 
 /// 磁碟上最多留幾張. 一頁片庫大概 30~40 張, 留 600 張夠使用者來回翻好幾頁.
 const int kCoverCacheMax = 600;
@@ -77,6 +78,43 @@ class ThumbnailStore extends ChangeNotifier {
 
   /// videoSn -> (animeSn, 16:9 劇照)
   Map<String, List<String>> _episodes = const {};
+  final Map<String, String> _extraPosters = {};
+  final Map<String, String> _titlePosters = {};
+  final Set<String> _posterLookups = {};
+  Future<void> _posterWrite = Future<void>.value();
+  bool _disposed = false;
+
+  @override
+  void notifyListeners() {
+    if (!_disposed) super.notifyListeners();
+  }
+
+  void seedCatalog(Iterable<CatalogItem> items) {
+    var changed = false;
+    for (final item in items) {
+      if (item.cover.isEmpty) continue;
+      final url = _normalizeUrl(item.cover);
+      for (final key in [item.animeSn, item.videoSn]) {
+        if (key.isNotEmpty && _extraPosters[key] != url) {
+          _extraPosters[key] = url;
+          changed = true;
+        }
+      }
+      if (item.title.isNotEmpty) _titlePosters[_titleKey(item.title)] = url;
+    }
+    if (changed) notifyListeners();
+  }
+
+  static String _titleKey(String title) =>
+      title.replaceAll(RegExp(r'\s+'), '').toLowerCase();
+  String? posterForTitle(String title) => _titlePosters[_titleKey(title)];
+  String _normalizeUrl(String url) {
+    if (url.startsWith('//')) return 'https:$url';
+    if (url.startsWith('/') && _client.hasServer) {
+      return '${_client.baseUrl}$url';
+    }
+    return url;
+  }
 
   Directory? _dir;
   Directory? _coverDir;
@@ -122,6 +160,17 @@ class ThumbnailStore extends ChangeNotifier {
       await _covers();
       final file = await _manifestFile();
       if (file.existsSync()) _apply(jsonDecode(await file.readAsString()));
+      final extra = File('${(await _supportDir()).path}/poster-sources.json');
+      if (extra.existsSync()) {
+        final decoded = jsonDecode(await extra.readAsString());
+        if (decoded is Map) {
+          for (final entry in decoded.entries) {
+            if (entry.value is String) {
+              _extraPosters['${entry.key}'] = entry.value as String;
+            }
+          }
+        }
+      }
       final etag = await _etagFile();
       if (etag.existsSync()) _etag = (await etag.readAsString()).trim();
     } catch (_) {
@@ -138,11 +187,16 @@ class ThumbnailStore extends ChangeNotifier {
     if (!_client.hasServer) return;
     await init();
     try {
-      final fresh = await _client.thumbnailManifest(_etag.isEmpty ? null : _etag);
+      final fresh =
+          await _client.thumbnailManifest(_etag.isEmpty ? null : _etag);
       // 問得到伺服器就表示網路通了, 之前抓不到的那些再給一次機會 —— 離線時
       // 每一格都會失敗一次並記在黑名單裡, 不清掉的話回線上還是一片漸層
       _failed.clear();
-      if (fresh.notModified) return;
+      _posterLookups.clear();
+      if (fresh.notModified) {
+        notifyListeners();
+        return;
+      }
       final body = fresh.body;
       if (body == null) return;
       _apply(jsonDecode(body));
@@ -190,6 +244,9 @@ class ThumbnailStore extends ChangeNotifier {
   Future<void> clear() async {
     _posters = const {};
     _episodes = const {};
+    _extraPosters.clear();
+    _titlePosters.clear();
+    _posterLookups.clear();
     _etag = '';
     _failed.clear();
     try {
@@ -197,6 +254,8 @@ class ThumbnailStore extends ChangeNotifier {
       if (manifest.existsSync()) await manifest.delete();
       final etag = await _etagFile();
       if (etag.existsSync()) await etag.delete();
+      final extra = File('${(await _supportDir()).path}/poster-sources.json');
+      if (extra.existsSync()) await extra.delete();
       final covers = await _covers();
       if (covers.existsSync()) await covers.delete(recursive: true);
       _coverDir = null;
@@ -217,18 +276,20 @@ class ThumbnailStore extends ChangeNotifier {
 
   /// 3:4 主視覺. sn 可以是 animeSn, 也可以是某一集的 videoSn.
   String? posterFor(String sn) {
-    final direct = _posters[sn];
-    if (direct != null && direct.isNotEmpty) return direct;
+    final direct = _posters[sn] ?? _extraPosters[sn];
+    if (direct != null && direct.isNotEmpty) return _normalizeUrl(direct);
     final animeSn = animeSnOf(sn);
     if (animeSn == null) return null;
-    final poster = _posters[animeSn];
-    return (poster == null || poster.isEmpty) ? null : poster;
+    final poster = _posters[animeSn] ?? _extraPosters[animeSn];
+    return (poster == null || poster.isEmpty) ? null : _normalizeUrl(poster);
   }
 
   /// 16:9 劇照. 沒有的話退回主視覺 —— 有圖比沒圖好, 比例交給 BoxFit.cover.
   String? stillFor(String sn) {
     final row = _episodes[sn];
-    if (row != null && row.length > 1 && row[1].isNotEmpty) return row[1];
+    if (row != null && row.length > 1 && row[1].isNotEmpty) {
+      return _normalizeUrl(row[1]);
+    }
     return posterFor(sn);
   }
 
@@ -244,7 +305,7 @@ class ThumbnailStore extends ChangeNotifier {
     if (url == null || url.isEmpty) return null;
     final dir = _coverDir;
     if (dir == null) return null;
-    final file = File('${dir.path}/${_key(url)}.img');
+    final file = File('${dir.path}/${_key(_normalizeUrl(url))}.img');
     return file.existsSync() ? file : null;
   }
 
@@ -280,21 +341,21 @@ class ThumbnailStore extends ChangeNotifier {
   ///
   /// 順序: 清單上的 CDN 網址 → 呼叫端自己手上那個網址 (收藏清單、片單卡片本來
   /// 就帶著封面) → 伺服器的 /thumbnail.webp. 最後那條最貴, 所以排最後.
-  Future<File?> resolve(String sn, {bool poster = false, String? fallbackUrl}) =>
-      _dedupe('$sn:${poster ? 'p' : 's'}',
+  Future<File?> resolve(String sn,
+          {bool poster = false, String? fallbackUrl}) =>
+      _dedupe('$sn:${poster ? 'p' : 's'}:$fallbackUrl',
           () => _resolve(sn, poster: poster, fallbackUrl: fallbackUrl));
 
   /// 直接給網址的那種 —— 片單卡片的 cover 本來就是動畫瘋 CDN 的網址, 不必
   /// 繞伺服器一圈, 但一樣要落盤.
   Future<File?> resolveUrl(String url, {Map<String, String>? headers}) {
+    url = _normalizeUrl(url);
     if (url.isEmpty || _failed.contains(url)) return Future<File?>.value(null);
     final hit = cachedFile(url);
     if (hit != null) return Future<File?>.value(hit);
     // 指回自己伺服器的那種 (/thumbnail.webp) 走窄的那道閘: 每一筆都可能在
     // 伺服器上開一支 ffmpeg.
-    final gate = _client.hasServer && url.startsWith(_client.baseUrl)
-        ? _serverGate
-        : _cdnGate;
+    final gate = _isServerUrl(url) ? _serverGate : _cdnGate;
     return _dedupe(url, () async {
       final file =
           await gate.run(() => _download(url, _key(url), headers: headers));
@@ -305,6 +366,33 @@ class ThumbnailStore extends ChangeNotifier {
 
   Future<File?> _resolve(String sn,
       {required bool poster, String? fallbackUrl}) async {
+    if (_disposed) return null;
+    // A missing manifest entry previously fell straight back to a landscape
+    // video frame. Ask the existing series endpoint for the actual poster once.
+    if (poster &&
+        posterFor(sn) == null &&
+        (fallbackUrl?.isEmpty ?? true) &&
+        _client.hasServer &&
+        _posterLookups.add(sn)) {
+      try {
+        final info = await _serverGate
+            .run(() => _client.series(sn).timeout(const Duration(seconds: 12)));
+        if (_disposed) return null;
+        if (info.cover.isNotEmpty) {
+          final cover = _normalizeUrl(info.cover);
+          _extraPosters[sn] = cover;
+          if (info.animeSn.isNotEmpty) _extraPosters[info.animeSn] = cover;
+          for (final episode in info.allEpisodes) {
+            _extraPosters[episode.videoSn] = cover;
+          }
+          _titlePosters[_titleKey(info.title)] = cover;
+          notifyListeners();
+          await _persistPosterSources();
+        }
+      } catch (_) {
+        // Older/offline servers can still provide the ordinary fallback image.
+      }
+    }
     for (final url in [urlFor(sn, poster: poster), fallbackUrl]) {
       if (url == null || url.isEmpty) continue;
       // 走 resolveUrl 而不是自己開一筆 _download: 同一部作品的每一集共用同一
@@ -334,18 +422,26 @@ class ThumbnailStore extends ChangeNotifier {
 
   Future<File?> _download(String url, String key,
       {Map<String, String>? headers}) async {
+    if (_disposed) return null;
     try {
+      final requestHeaders = <String, String>{
+        if (!_isServerUrl(url)) 'Referer': 'https://ani.gamer.com.tw/',
+        ...?headers,
+        if (_isServerUrl(url)) ..._client.authHeaders,
+      };
+      if (!_isServerUrl(url)) {
+        requestHeaders.removeWhere((key, _) =>
+            key.toLowerCase() == 'cookie' ||
+            key.toLowerCase() == 'authorization');
+      }
       final response = await _http
-          .get(Uri.parse(url), headers: headers)
+          .get(Uri.parse(url), headers: requestHeaders)
           .timeout(const Duration(seconds: 20));
       if (response.statusCode >= 400) return null;
       final bytes = response.bodyBytes;
-      // A valid WebP can be well below 256 bytes. Recognize its container
-      // instead of mistaking a small compressed thumbnail for an error body.
-      final webp = bytes.length >= 12 &&
-          ascii.decode(bytes.sublist(0, 4), allowInvalid: true) == 'RIFF' &&
-          ascii.decode(bytes.sublist(8, 12), allowInvalid: true) == 'WEBP';
-      if (bytes.length < 256 && !webp) return null;
+      // Validate the image signature, including WebP smaller than 256 bytes,
+      // so a successful HTTP error page is never cached as a poster.
+      if (!_imageBytes(bytes) || _disposed) return null;
       final dir = await _covers();
       final file = File('${dir.path}/$key.img');
       // 先寫暫存檔再改名: 半張圖被別人同步讀到的話會變成一個壞掉的 Image.file.
@@ -369,6 +465,48 @@ class ThumbnailStore extends ChangeNotifier {
     } catch (_) {
       return null;
     }
+  }
+
+  bool _isServerUrl(String url) {
+    if (!_client.hasServer) return false;
+    final target = Uri.tryParse(url);
+    final server = Uri.tryParse(_client.baseUrl);
+    return target != null &&
+        server != null &&
+        target.scheme == server.scheme &&
+        target.host == server.host &&
+        target.port == server.port;
+  }
+
+  Future<void> _persistPosterSources() {
+    final body = jsonEncode(_extraPosters);
+    final previous = _posterWrite;
+    return _posterWrite = () async {
+      try {
+        await previous;
+      } catch (_) {}
+      final file = File('${(await _supportDir()).path}/poster-sources.json');
+      final temp = File('${file.path}.tmp');
+      await temp.writeAsString(body, flush: true);
+      await temp.rename(file.path);
+    }();
+  }
+
+  static bool _imageBytes(List<int> bytes) {
+    if (bytes.length < 12) return false;
+    return (bytes[0] == 0xff && bytes[1] == 0xd8 && bytes[2] == 0xff) ||
+        (bytes[0] == 0x89 &&
+            ascii.decode(bytes.sublist(1, 4), allowInvalid: true) == 'PNG') ||
+        (ascii.decode(bytes.sublist(0, 4), allowInvalid: true) == 'RIFF' &&
+            ascii.decode(bytes.sublist(8, 12), allowInvalid: true) == 'WEBP') ||
+        ascii.decode(bytes.sublist(0, 3), allowInvalid: true) == 'GIF';
+  }
+
+  Future<void> invalidate(File file) async {
+    if (_coverDir == null || file.parent.path != _coverDir!.path) return;
+    try {
+      if (await file.exists()) await file.delete();
+    } catch (_) {}
   }
 
   /// 暫存檔的流水號. 只要在同一個行程裡不重複就夠了.
@@ -435,6 +573,7 @@ class ThumbnailStore extends ChangeNotifier {
 
   @override
   void dispose() {
+    _disposed = true;
     _http.close();
     super.dispose();
   }

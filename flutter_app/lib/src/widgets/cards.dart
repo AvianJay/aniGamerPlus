@@ -13,20 +13,21 @@ import '../theme.dart';
 import '../util/format.dart';
 import 'common.dart';
 
-/// 一格海報大概長這麼寬. 欄數是除出來的, 不是寫死的 —— 寫死 3 欄的話
-/// 平板上一張封面會撐到 200 多寬, 像被放大鏡照過.
-const double kPosterTargetWidth = 128;
+/// Comfortable poster widths: two columns on phones, five on a 1280px tablet.
+const double kPosterTargetWidth = 200;
 const double kPosterGridSpacing = 10;
 const double kPosterGridPadding = 16;
 
 /// 封面底下留給標題跟集數那兩行字的高度
-const double kPosterCaptionHeight = 52;
+const double kPosterCaptionHeight = 68;
 
-/// 片庫、收藏共用的海報格線. 手機還是 3 欄 (寬度除下來剛好), 平板會自己
-/// 長成 5 欄以上, 每一格的寬度維持差不多.
-SliverGridDelegate posterGridDelegate(double width) {
+/// Shared responsive grid; reserve caption space for larger system text.
+SliverGridDelegate posterGridDelegate(double width, {double textScale = 1}) {
   final usable = width - kPosterGridPadding * 2;
-  final columns = math.max(3, (usable / kPosterTargetWidth).round());
+  final columns = ((usable + kPosterGridSpacing) /
+          (kPosterTargetWidth + kPosterGridSpacing))
+      .floor()
+      .clamp(2, 8);
   final itemWidth =
       math.max(1.0, (usable - kPosterGridSpacing * (columns - 1)) / columns);
   return SliverGridDelegateWithFixedCrossAxisCount(
@@ -34,7 +35,8 @@ SliverGridDelegate posterGridDelegate(double width) {
     crossAxisSpacing: kPosterGridSpacing,
     mainAxisSpacing: 16,
     // 圖是 3:4, 底下留兩行字的位置 —— 用比例算會在窄螢幕上溢出
-    mainAxisExtent: itemWidth * 4 / 3 + kPosterCaptionHeight,
+    mainAxisExtent:
+        itemWidth * 4 / 3 + kPosterCaptionHeight * math.max(1, textScale),
   );
 }
 
@@ -70,71 +72,92 @@ class PosterCard extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return InkWell(
-      onTap: onTap,
-      borderRadius: BorderRadius.circular(kRadiusSmall),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          Stack(
+    return Material(
+        color: Theme.of(context).cardTheme.color,
+        borderRadius: BorderRadius.circular(kRadiusSmall),
+        clipBehavior: Clip.antiAlias,
+        child: InkWell(
+          onTap: onTap,
+          borderRadius: BorderRadius.circular(kRadiusSmall),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            mainAxisSize: MainAxisSize.min,
             children: [
-              CoverImage(
-                name: title,
-                url: cover,
-                cache: cache,
-                sn: sn,
-                poster: true,
-                headers: headers,
-                aspectRatio: aspectRatio,
-              ),
-              if (badge != null)
-                Positioned(right: 6, bottom: 6, child: Pill(label: badge!, dense: true)),
-              if (rank != null)
-                Positioned(
-                  left: 0,
-                  top: 0,
-                  child: Container(
-                    padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
-                    decoration: const BoxDecoration(
-                      color: AgpColors.accent,
-                      borderRadius: BorderRadius.only(
-                        topLeft: Radius.circular(kRadiusSmall),
-                        bottomRight: Radius.circular(kRadiusSmall),
-                      ),
-                    ),
-                    child: Text(
-                      '${rank!}',
-                      style: const TextStyle(
-                        color: Colors.white,
-                        fontSize: 12,
-                        fontWeight: FontWeight.w800,
-                      ),
-                    ),
+              Stack(
+                children: [
+                  CoverImage(
+                    name: title,
+                    url: cover,
+                    cache: cache,
+                    sn: sn,
+                    poster: true,
+                    headers: headers,
+                    aspectRatio: aspectRatio,
+                    radius: 0,
                   ),
-                ),
+                  if (badge != null)
+                    Positioned(
+                        right: 6,
+                        bottom: 6,
+                        child: Pill(label: badge!, dense: true)),
+                  if (rank != null)
+                    Positioned(
+                      left: 0,
+                      top: 0,
+                      child: Container(
+                        padding: const EdgeInsets.symmetric(
+                            horizontal: 8, vertical: 3),
+                        decoration: const BoxDecoration(
+                          color: AgpColors.accent,
+                          borderRadius: BorderRadius.only(
+                            topLeft: Radius.circular(kRadiusSmall),
+                            bottomRight: Radius.circular(kRadiusSmall),
+                          ),
+                        ),
+                        child: Text(
+                          '${rank!}',
+                          style: const TextStyle(
+                            color: Colors.white,
+                            fontSize: 12,
+                            fontWeight: FontWeight.w800,
+                          ),
+                        ),
+                      ),
+                    ),
+                ],
+              ),
+              Padding(
+                  padding: const EdgeInsets.fromLTRB(8, 8, 8, 6),
+                  child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text(
+                          title,
+                          maxLines: 2,
+                          overflow: TextOverflow.ellipsis,
+                          style: const TextStyle(
+                              fontSize: 13,
+                              fontWeight: FontWeight.w700,
+                              height: 1.25),
+                        ),
+                        if (subtitle != null && subtitle!.isNotEmpty)
+                          Padding(
+                            padding: const EdgeInsets.only(top: 4),
+                            child: Text(
+                              subtitle!,
+                              maxLines: 1,
+                              overflow: TextOverflow.ellipsis,
+                              style: TextStyle(
+                                  fontSize: 11.5,
+                                  color: Theme.of(context)
+                                      .colorScheme
+                                      .onSurfaceVariant),
+                            ),
+                          ),
+                      ])),
             ],
           ),
-          const SizedBox(height: 7),
-          Text(
-            title,
-            maxLines: 2,
-            overflow: TextOverflow.ellipsis,
-            style: const TextStyle(fontSize: 13, fontWeight: FontWeight.w700, height: 1.25),
-          ),
-          if (subtitle != null && subtitle!.isNotEmpty)
-            Padding(
-              padding: const EdgeInsets.only(top: 2),
-              child: Text(
-                subtitle!,
-                maxLines: 1,
-                overflow: TextOverflow.ellipsis,
-                style: const TextStyle(fontSize: 11.5, color: AgpColors.fgFaint),
-              ),
-            ),
-        ],
-      ),
-    );
+        ));
   }
 }
 
@@ -242,7 +265,9 @@ class EpisodeCard extends StatelessWidget {
               episodeLabel(video.episode),
               maxLines: 1,
               overflow: TextOverflow.ellipsis,
-              style: const TextStyle(fontSize: 11.5, color: AgpColors.fgFaint),
+              style: TextStyle(
+                  fontSize: 11.5,
+                  color: Theme.of(context).colorScheme.onSurfaceVariant),
             ),
           ),
         ],
@@ -282,61 +307,71 @@ class EpisodeRow extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return InkWell(
-      onTap: onTap,
-      child: Padding(
-        padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 9),
-        child: Row(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            SizedBox(
-              width: 124,
-              child: Stack(
-                children: [
-                  CoverImage(
-                    name: title,
-                    url: cover,
-                    file: coverFile,
-                    headers: headers,
-                    cache: cache,
-                    sn: sn,
-                  ),
-                  if (progress != null)
-                    Positioned(
-                      left: 0,
-                      right: 0,
-                      bottom: 0,
-                      child: ThinProgress(value: progress!),
+    return LayoutBuilder(builder: (context, constraints) {
+      final compact = constraints.maxWidth < 500 ||
+          MediaQuery.textScalerOf(context).scale(14) > 20;
+      return InkWell(
+        onTap: onTap,
+        child: Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 9),
+          child: Row(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              SizedBox(
+                width: compact ? 88 : 124,
+                child: Stack(
+                  children: [
+                    CoverImage(
+                      name: title,
+                      url: cover,
+                      file: coverFile,
+                      headers: headers,
+                      cache: cache,
+                      sn: sn,
                     ),
-                ],
+                    if (progress != null)
+                      Positioned(
+                        left: 0,
+                        right: 0,
+                        bottom: 0,
+                        child: ThinProgress(value: progress!),
+                      ),
+                  ],
+                ),
               ),
-            ),
-            const SizedBox(width: 12),
-            Expanded(
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Text(
-                    title,
-                    maxLines: 2,
-                    overflow: TextOverflow.ellipsis,
-                    style: const TextStyle(fontSize: 14.5, fontWeight: FontWeight.w700),
-                  ),
-                  const SizedBox(height: 3),
-                  Text(
-                    subtitle,
-                    maxLines: 2,
-                    overflow: TextOverflow.ellipsis,
-                    style: const TextStyle(fontSize: 12.5, color: AgpColors.fgFaint),
-                  ),
-                  if (footer != null) ...[const SizedBox(height: 6), footer!],
-                ],
+              const SizedBox(width: 12),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      title,
+                      maxLines: compact ? 3 : 2,
+                      overflow: TextOverflow.ellipsis,
+                      style: const TextStyle(
+                          fontSize: 14.5, fontWeight: FontWeight.w700),
+                    ),
+                    const SizedBox(height: 3),
+                    Text(
+                      subtitle,
+                      maxLines: 2,
+                      overflow: TextOverflow.ellipsis,
+                      style: TextStyle(
+                          fontSize: 12.5,
+                          color:
+                              Theme.of(context).colorScheme.onSurfaceVariant),
+                    ),
+                    if (footer != null) ...[const SizedBox(height: 6), footer!],
+                    if (compact && trailing != null)
+                      Align(alignment: Alignment.centerRight, child: trailing!),
+                  ],
+                ),
               ),
-            ),
-            if (trailing != null) trailing!,
-          ],
+              if (!compact && trailing != null) trailing!,
+            ],
+          ),
         ),
-      ),
-    );
+      );
+    });
   }
 }

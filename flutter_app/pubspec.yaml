@@ -25,6 +25,8 @@ dependencies:
 
   # 播放器 (mp4 + HLS 邊看邊下載)
   video_player: ">=2.8.0 <3.0.0"
+  video_thumbnail: ^0.5.6
+  connectivity_plus: ^7.0.0
 
   # 播放中別讓螢幕睡著
   wakelock_plus: ">=1.2.0 <2.0.0"

@@ -33,13 +33,15 @@ class FavouritesTab extends StatelessWidget {
         return GridView.builder(
           padding: const EdgeInsets.fromLTRB(
               kPosterGridPadding, 16, kPosterGridPadding, 28),
-          gridDelegate: posterGridDelegate(constraints.maxWidth),
+          gridDelegate: posterGridDelegate(constraints.maxWidth,
+              textScale: MediaQuery.textScalerOf(context).scale(14) / 14),
           itemCount: list.length,
           itemBuilder: (context, index) {
             final item = list[index];
             final head = _libraryHead(item);
-            final episodes =
-                head == null ? const <VideoItem>[] : state.episodesOf(head.animeName);
+            final episodes = head == null
+                ? const <VideoItem>[]
+                : state.episodesOf(head.animeName);
             final latest = episodes.isEmpty ? null : episodes.last;
 
             return Stack(
@@ -71,7 +73,8 @@ class FavouritesTab extends StatelessWidget {
                         color: Color(0xB3000000),
                         shape: BoxShape.circle,
                       ),
-                      child: const Icon(Icons.close, size: 14, color: Colors.white),
+                      child: const Icon(Icons.close,
+                          size: 14, color: Colors.white),
                     ),
                   ),
                 ),

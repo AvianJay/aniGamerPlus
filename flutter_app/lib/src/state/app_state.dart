@@ -14,16 +14,18 @@ import 'package:path_provider/path_provider.dart';
 import '../api/client.dart';
 import '../api/models.dart';
 import 'downloads.dart';
+import 'download_network.dart';
 import 'prefs.dart';
 import 'thumbnails.dart';
 import 'video_cache.dart';
 
 class AppState extends ChangeNotifier {
-  AppState._(this.prefs)
-      : client = AgpClient(
-          baseUrl: prefs.server,
-          token: prefs.token.isEmpty ? null : prefs.token,
-        ) {
+  AppState._(this.prefs, {AgpClient? api})
+      : client = api ??
+            AgpClient(
+              baseUrl: prefs.server,
+              token: prefs.token.isEmpty ? null : prefs.token,
+            ) {
     downloads = DownloadStore(client);
     thumbnails = ThumbnailStore(client);
   }
@@ -35,10 +37,12 @@ class AppState extends ChangeNotifier {
     return value;
   }
 
-  static Future<AppState> boot() async {
+  static Future<AppState> boot({AgpClient? client}) async {
     final prefs = await Prefs.load();
-    final state = AppState._(prefs);
+    final state = AppState._(prefs, api: client);
     _instance = state;
+    state.downloadNetwork = DownloadNetwork(state.downloads);
+    await state.downloadNetwork.start(wifiOnly: prefs.downloadWifiOnly);
     await state.downloads.init(concurrency: prefs.downloadConcurrency);
     return state;
   }
@@ -46,6 +50,13 @@ class AppState extends ChangeNotifier {
   final Prefs prefs;
   final AgpClient client;
   late final DownloadStore downloads;
+  late final DownloadNetwork downloadNetwork;
+
+  Future<void> setDownloadWifiOnly(bool value) async {
+    await prefs.setDownloadWifiOnly(value);
+    await downloadNetwork.setWifiOnly(value);
+    notifyListeners();
+  }
 
   /// 封面/縮圖的來源表與落盤快取
   late final ThumbnailStore thumbnails;
@@ -84,7 +95,9 @@ class AppState extends ChangeNotifier {
 
   /// 需要登入才看得到片庫, 但還沒登入
   bool get needsLogin =>
-      serverInfo.userControl && serverInfo.onlineWatchRequiresLogin && !loggedIn;
+      serverInfo.userControl &&
+      serverInfo.onlineWatchRequiresLogin &&
+      !loggedIn;
 
   /// 這台伺服器到底有沒有在替我們存進度.
   ///
@@ -315,6 +328,8 @@ class AppState extends ChangeNotifier {
     try {
       final json = await client.catalogIndexJson();
       catalog = CatalogIndex.fromJson(json);
+      thumbnails.seedCatalog(
+          [...catalog.season, ...catalog.hot, ...catalog.newAdded]);
       unawaited(prefs.cacheJson('catalog', json));
     } catch (_) {
       // 片單是站上的東西, 抓不到就用上次那份, 首頁不必為此空一塊
@@ -329,6 +344,8 @@ class AppState extends ChangeNotifier {
     final raw = prefs.readCachedJson('catalog');
     if (raw is! Map) return;
     catalog = CatalogIndex.fromJson(raw.cast<String, dynamic>());
+    thumbnails
+        .seedCatalog([...catalog.season, ...catalog.hot, ...catalog.newAdded]);
   }
 
   // ----------------------------------------------------------- 觀看進度
@@ -648,8 +665,8 @@ class AppState extends ChangeNotifier {
   /// 同一部作品的其他集數 (依 sn 排序, 跟網頁版一樣)
   List<VideoItem> episodesOf(String animeName) {
     final list = library.where((v) => v.animeName == animeName).toList();
-    list.sort((a, b) =>
-        (int.tryParse(a.sn) ?? 0).compareTo(int.tryParse(b.sn) ?? 0));
+    list.sort(
+        (a, b) => (int.tryParse(a.sn) ?? 0).compareTo(int.tryParse(b.sn) ?? 0));
     return list;
   }
 

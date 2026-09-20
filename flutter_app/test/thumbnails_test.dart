@@ -10,6 +10,7 @@ import 'dart:convert';
 import 'dart:io';
 
 import 'package:agp_mobile/src/api/client.dart';
+import 'package:agp_mobile/src/api/models.dart';
 import 'package:agp_mobile/src/state/thumbnails.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:path_provider_platform_interface/path_provider_platform_interface.dart';
@@ -37,6 +38,7 @@ class FakeHost {
   String etag = '';
 
   final List<String> hits = <String>[];
+  final Map<String, Map<String, String>> headers = {};
 
   /// 同時有幾筆在手上 / 最多曾經有幾筆. 閘門就是靠這個驗的.
   int inFlight = 0;
@@ -73,6 +75,10 @@ class FakeHost {
 
   Future<void> _handle(HttpRequest request) async {
     hits.add(request.uri.path);
+    headers[request.uri.path] = {};
+    request.headers.forEach((name, values) {
+      headers[request.uri.path]![name] = values.join('; ');
+    });
     inFlight += 1;
     if (inFlight > peak) peak = inFlight;
     try {
@@ -105,9 +111,9 @@ class FakeHost {
   }
 }
 
-/// _download 會把小於 256 bytes 的東西當成錯誤訊息丟掉, 所以假圖要夠大
+/// Cache transport tests need a recognized image signature, not decoded pixels.
 List<int> fakeJpeg([int seed = 0]) =>
-    List<int>.generate(512, (i) => (i + seed) % 256);
+    [0xff, 0xd8, 0xff, ...List<int>.generate(509, (i) => (i + seed) % 256)];
 
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
@@ -288,6 +294,69 @@ void main() {
     expect(file!.readAsBytesSync(), image);
   });
 
+  test(
+      'catalog posters normalize relative paths and never leak server credentials to the CDN',
+      () async {
+    client.token = 'test-session';
+    await store.init();
+    store.seedCatalog([
+      CatalogItem.fromJson({
+        'animeSn': 'a5',
+        'videoSn': 'v5',
+        'title': '測試 動畫',
+        'cover': '/poster.jpg'
+      }),
+    ]);
+    agp.files['/poster.jpg'] = fakeJpeg();
+    expect(store.posterForTitle('測試動畫'), '${agp.url}/poster.jpg');
+    expect(await store.resolve('v5', poster: true), isNotNull);
+    expect(agp.headers['/poster.jpg']!['cookie'], contains('test-session'));
+    final file = await store.resolveUrl('${cdn.url}/poster-a1.jpg', headers: {
+      'Cookie': 'private-cookie',
+      'Authorization': 'private-token'
+    });
+    expect(file, isNotNull);
+    expect(
+        cdn.headers['/poster-a1.jpg']!['referer'], 'https://ani.gamer.com.tw/');
+    expect(cdn.headers['/poster-a1.jpg']!['cookie'], isNull);
+    expect(cdn.headers['/poster-a1.jpg']!['authorization'], isNull);
+  });
+
+  test('missing manifest posters are recovered from series and survive restart',
+      () async {
+    agp.files['/watch/series.json'] = utf8.encode(jsonEncode({
+      'animeSn': 'a9',
+      'videoSn': 'v9',
+      'title': 'Recovered series',
+      'cover': '${cdn.url}/poster-a1.jpg',
+      'groups': [
+        {
+          'name': '',
+          'episodes': [
+            {'videoSn': 'v9'},
+            {'videoSn': 'v10'}
+          ]
+        }
+      ],
+    }));
+    await store.init();
+    expect(await store.resolve('v9', poster: true), isNotNull);
+    expect(store.posterFor('v10'), '${cdn.url}/poster-a1.jpg');
+    expect(agp.hitsOn('/thumbnail.webp'), 0);
+    final again = ThumbnailStore(client);
+    addTearDown(again.dispose);
+    await again.init();
+    expect(again.posterFor('v10'), '${cdn.url}/poster-a1.jpg');
+    expect(await again.resolve('v10', poster: true), isNotNull);
+    expect(agp.hitsOn('/watch/series.json'), 1);
+  });
+
+  test('a successful HTML response is never cached as a poster', () async {
+    cdn.files['/error.jpg'] = utf8.encode('<html>${'Error' * 100}</html>');
+    expect(await store.resolveUrl('${cdn.url}/error.jpg'), isNull);
+    expect(store.cachedFile('${cdn.url}/error.jpg'), isNull);
+  });
+
   test('離線那一輪記下的失敗, 連得上伺服器時要整組放掉', () async {
     await store.refresh();
     final url = '${cdn.url}/late.jpg';
@@ -318,7 +387,8 @@ void main() {
       cdn.files['/gate-$i.jpg'] = fakeJpeg(i);
     }
     final all = [
-      for (var i = 0; i < wanted; i++) store.resolveUrl('${cdn.url}/gate-$i.jpg'),
+      for (var i = 0; i < wanted; i++)
+        store.resolveUrl('${cdn.url}/gate-$i.jpg'),
     ];
 
     await waitFor(() => cdn.inFlight >= kCoverFetchConcurrency,

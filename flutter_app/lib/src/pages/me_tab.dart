@@ -33,7 +33,7 @@ class MeTab extends StatelessWidget {
       children: [
         _card(context),
         if (state.serverInfo.userControl && !state.loggedIn) ...[
-          _group('帳號'),
+          _group(context, '帳號'),
           _tile(
             context,
             icon: Icons.login_rounded,
@@ -50,7 +50,7 @@ class MeTab extends StatelessWidget {
             ),
         ],
         if (state.loggedIn) ...[
-          _group('帳號'),
+          _group(context, '帳號'),
           _tile(
             context,
             icon: Icons.badge_outlined,
@@ -64,11 +64,11 @@ class MeTab extends StatelessWidget {
             onTap: () => _logout(context),
           ),
         ],
-        _group('手機'),
+        _group(context, '手機'),
         _tile(
           context,
           icon: Icons.download_rounded,
-          title: '下載管理',
+          title: '離線下載',
           subtitle: '存在這支手機上的集數',
           page: () => DownloadsPage(state: state),
         ),
@@ -93,12 +93,12 @@ class MeTab extends StatelessWidget {
           )),
         ),
         if (state.canManage) ...[
-          _group('管理'),
+          _group(context, '管理'),
           _tile(
             context,
             icon: Icons.settings_outlined,
-            title: '主控台',
-            subtitle: '下載器設定',
+            title: '伺服器設定',
+            subtitle: '伺服器的下載目錄、畫質與排程',
             page: () => SettingsPage(state: state),
           ),
           _tile(
@@ -111,7 +111,7 @@ class MeTab extends StatelessWidget {
           _tile(
             context,
             icon: Icons.monitor_heart_outlined,
-            title: '下載監控',
+            title: '伺服器下載監控',
             subtitle: '伺服器現在正在下載什麼',
             page: () => MonitorPage(state: state),
           ),
@@ -137,7 +137,7 @@ class MeTab extends StatelessWidget {
               page: () => UserManagePage(state: state),
             ),
         ],
-        _group('關於'),
+        _group(context, '關於'),
         ListTile(
           leading: const Icon(Icons.refresh_rounded),
           title: const Text('重新整理'),
@@ -188,7 +188,7 @@ class MeTab extends StatelessWidget {
         decoration: BoxDecoration(
           color: Theme.of(context).cardTheme.color,
           borderRadius: BorderRadius.circular(kRadius),
-          border: Border.all(color: AgpColors.line),
+          border: Border.all(color: Theme.of(context).dividerColor),
         ),
         child: Row(
           children: [
@@ -216,12 +216,15 @@ class MeTab extends StatelessWidget {
                 children: [
                   Text(
                     name.isEmpty ? '訪客' : name,
-                    style: const TextStyle(fontSize: 18, fontWeight: FontWeight.w800),
+                    style: const TextStyle(
+                        fontSize: 18, fontWeight: FontWeight.w800),
                   ),
                   const SizedBox(height: 4),
                   Text(
                     '$role · 片庫 $animes 部 $episodes 集 · 收藏 ${state.favourites.length} 部',
-                    style: const TextStyle(fontSize: 12.5, color: AgpColors.fgFaint),
+                    style: TextStyle(
+                        fontSize: 12.5,
+                        color: Theme.of(context).colorScheme.onSurfaceVariant),
                   ),
                 ],
               ),
@@ -257,14 +260,14 @@ class MeTab extends StatelessWidget {
 
   // ------------------------------------------------------------------ 小零件
 
-  Widget _group(String title) => Padding(
+  Widget _group(BuildContext context, String title) => Padding(
         padding: const EdgeInsets.fromLTRB(16, 22, 16, 6),
         child: Text(
           title,
-          style: const TextStyle(
+          style: TextStyle(
             fontSize: 12.5,
             fontWeight: FontWeight.w700,
-            color: AgpColors.fgFaint,
+            color: Theme.of(context).colorScheme.onSurfaceVariant,
           ),
         ),
       );

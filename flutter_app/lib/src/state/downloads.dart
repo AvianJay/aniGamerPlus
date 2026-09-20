@@ -172,8 +172,43 @@ class DownloadStore extends ChangeNotifier {
   Directory? _dir;
   final Map<String, DownloadEntry> _entries = {};
   final Map<String, _Job> _jobs = {};
-  int concurrency = 1;
+  int _concurrency = 1;
+  int get concurrency => _concurrency;
+  set concurrency(int value) {
+    _concurrency = value.clamp(0, 3);
+    unawaited(_pump());
+  }
+
   bool _ready = false;
+  bool _disposed = false;
+  bool _networkAllowed = true;
+  bool get networkAllowed => _networkAllowed;
+
+  Future<void> setNetworkAllowed(bool allowed) async {
+    if (_disposed || allowed == _networkAllowed) return;
+    _networkAllowed = allowed;
+    if (!allowed) {
+      for (final job in _jobs.values) {
+        job.cancel();
+        if (job.entry.status == DownloadStatus.running) {
+          job.entry.status = DownloadStatus.queued;
+        }
+      }
+    }
+    await _save();
+    notifyListeners();
+    _syncWaitingTimer();
+    if (allowed) {
+      unawaited(_pump());
+      unawaited(pollWaiting());
+      unawaited(retryMissingDanmaku());
+    }
+  }
+
+  @override
+  void notifyListeners() {
+    if (!_disposed) super.notifyListeners();
+  }
 
   bool get ready => _ready;
 
@@ -313,11 +348,24 @@ class DownloadStore extends ChangeNotifier {
 
   Future<void> _save() async {
     if (_dir == null) return;
-    final index = File('${directory.path}/index.json');
-    await index.writeAsString(
-      jsonEncode(_entries.values.map((e) => e.toJson()).toList()),
-    );
+    // A pause, progress update and completion can all save concurrently.
+    // Serialize writes so an older snapshot cannot overwrite a newer one.
+    final body = jsonEncode(_entries.values.map((e) => e.toJson()).toList());
+    final previous = _saving;
+    final write = () async {
+      try {
+        await previous;
+      } catch (_) {}
+      final index = File('${directory.path}/index.json');
+      final temp = File('${index.path}.tmp');
+      await temp.writeAsString(body, flush: true);
+      await temp.rename(index.path);
+    }();
+    _saving = write;
+    return write;
   }
+
+  Future<void> _saving = Future<void>.value();
 
   // ------------------------------------------------------------------ 佇列
 
@@ -344,6 +392,7 @@ class DownloadStore extends ChangeNotifier {
   }) async {
     final existing = _entries[video.sn];
     if (existing != null && existing.playable) return existing;
+    if (existing != null && _jobs.containsKey(video.sn)) return existing;
 
     final entry = existing ??
         DownloadEntry(
@@ -353,7 +402,8 @@ class DownloadStore extends ChangeNotifier {
           title: video.title,
           resolution: video.resolution,
         );
-    entry.animeName = video.animeName.isNotEmpty ? video.animeName : entry.animeName;
+    entry.animeName =
+        video.animeName.isNotEmpty ? video.animeName : entry.animeName;
     entry.episode = video.episode.isNotEmpty ? video.episode : entry.episode;
     entry.title = video.title.isNotEmpty ? video.title : entry.title;
     if (video.resolution > 0) entry.resolution = video.resolution;
@@ -406,15 +456,17 @@ class DownloadStore extends ChangeNotifier {
   }
 
   Future<void> remove(String sn, {bool deleteFiles = true}) async {
+    // Remove from the queue before awaiting cancellation; _run's finally must
+    // not start another copy while this deletion is waiting for the file sink.
+    final entry = _entries.remove(sn);
     final job = _jobs[sn];
     if (job != null) {
       job.cancel();
       // 等它真的收完再刪檔: 還開著 sink 的時候把 .part 刪掉, 在 Windows 上是
       // 一個例外, 在別的平台上是刪完又被寫回來
-      await job.done.future.timeout(const Duration(seconds: 10),
-          onTimeout: () {});
+      await job.done.future
+          .timeout(const Duration(seconds: 10), onTimeout: () {});
     }
-    final entry = _entries.remove(sn);
     if (entry != null && deleteFiles) {
       for (final file in [
         videoFile(entry),
@@ -440,7 +492,7 @@ class DownloadStore extends ChangeNotifier {
       if (entry.status == DownloadStatus.running ||
           entry.status == DownloadStatus.queued ||
           entry.status == DownloadStatus.waiting) {
-        _jobs.remove(entry.sn)?.cancel();
+        _jobs[entry.sn]?.cancel();
         entry.status = DownloadStatus.paused;
       }
     }
@@ -473,7 +525,7 @@ class DownloadStore extends ChangeNotifier {
   bool _polling = false;
 
   void _syncWaitingTimer() {
-    if (hasWaiting) {
+    if (!_disposed && _networkAllowed && hasWaiting) {
       _waitingTimer ??= Timer.periodic(
         kWaitingPollInterval,
         (_) => unawaited(pollWaiting()),
@@ -486,7 +538,7 @@ class DownloadStore extends ChangeNotifier {
 
   /// 問一輪伺服器: 等著的那幾集有沒有檔案了. 回線上時也叫這支.
   Future<void> pollWaiting() async {
-    if (_polling || !_client.hasServer) return;
+    if (_disposed || !_networkAllowed || _polling || !_client.hasServer) return;
     final pending = _entries.values
         .where((e) => e.status == DownloadStatus.waiting)
         .toList();
@@ -502,6 +554,12 @@ class DownloadStore extends ChangeNotifier {
         if (!_entries.containsKey(entry.sn)) continue;
         if (entry.status != DownloadStatus.waiting) continue;
         if (!await _serverHasVideo(entry)) continue;
+        if (_disposed ||
+            !_networkAllowed ||
+            !identical(_entries[entry.sn], entry) ||
+            entry.status != DownloadStatus.waiting) {
+          continue;
+        }
         entry.status = DownloadStatus.queued;
         entry.error = '';
         promoted = true;
@@ -535,13 +593,17 @@ class DownloadStore extends ChangeNotifier {
 
   @override
   void dispose() {
+    _disposed = true;
+    for (final job in _jobs.values) {
+      job.cancel();
+    }
     _waitingTimer?.cancel();
     _waitingTimer = null;
     super.dispose();
   }
 
   Future<void> _pump() async {
-    if (_dir == null) return;
+    if (_disposed || !_networkAllowed || _dir == null) return;
     while (runningCount < concurrency) {
       DownloadEntry? next;
       for (final entry in entries.reversed) {
@@ -579,14 +641,17 @@ class DownloadStore extends ChangeNotifier {
         start = await part.length();
       }
 
-      final request = http.Request('GET', _client.videoUrl(
-        entry.sn,
-        resolution: entry.resolution > 0 ? entry.resolution : null,
-      ));
+      final request = http.Request(
+          'GET',
+          _client.videoUrl(
+            entry.sn,
+            resolution: entry.resolution > 0 ? entry.resolution : null,
+          ));
       request.headers.addAll(_client.authHeaders);
       if (start > 0) request.headers['Range'] = 'bytes=$start-';
 
       final response = await job.client.send(request);
+      if (job.cancelled || _disposed) return;
 
       if (response.statusCode == 416) {
         // 已經抓完了, 只是上次沒改名
@@ -685,14 +750,19 @@ class DownloadStore extends ChangeNotifier {
   Future<void> _finish(_Job job, DownloadEntry entry) async {
     entry.status = DownloadStatus.done;
     entry.error = '';
+    await _save();
     notifyListeners();
 
     // 封面是配菜, 抓不到不該讓整集算失敗
     try {
-      final response = await http.get(
+      if (job.cancelled || _disposed || !_networkAllowed) return;
+      final response = await job.client.get(
         _client.thumbnailUrl(entry.sn),
         headers: _client.authHeaders,
       );
+      if (job.cancelled || _disposed || !identical(_entries[entry.sn], entry)) {
+        return;
+      }
       if (response.statusCode == 200 && response.bodyBytes.isNotEmpty) {
         await thumbFile(entry.sn).writeAsBytes(response.bodyBytes);
         entry.hasThumb = true;
@@ -714,9 +784,14 @@ class DownloadStore extends ChangeNotifier {
   /// 的那一集離線永遠沒有彈幕, 所以這裡多問幾輪等它生完.
   Future<void> _fetchDanmaku(DownloadEntry entry) async {
     for (final wait in kDanmakuRetryWaits) {
+      if (_disposed || !_networkAllowed) return;
       if (wait > Duration.zero) await Future<void>.delayed(wait);
       // 等待途中被刪掉了就別再寫檔
-      if (!_entries.containsKey(entry.sn)) return;
+      if (_disposed ||
+          !_networkAllowed ||
+          !identical(_entries[entry.sn], entry)) {
+        return;
+      }
       if (await _tryDanmakuOnce(entry)) return;
     }
     if (entry.hasDanmaku && !danmakuFile(entry.sn).existsSync()) {
@@ -728,9 +803,15 @@ class DownloadStore extends ChangeNotifier {
 
   /// 問一次. 拿到真的字幕就落盤並回 true.
   Future<bool> _tryDanmakuOnce(DownloadEntry entry) async {
+    if (_disposed || !_networkAllowed) return false;
     entry.danmakuTries += 1;
     try {
       final ass = await _client.danmakuAss(entry.sn);
+      if (_disposed ||
+          !_networkAllowed ||
+          !identical(_entries[entry.sn], entry)) {
+        return false;
+      }
       // 只有真的問到伺服器才算一次「試過」. 連線失敗不記 —— 不然離線開機時
       // 白跑的那一輪會把冷卻時間吃掉, 等真的有網路了反而被自己擋住.
       entry.danmakuLastTry = DateTime.now().millisecondsSinceEpoch;
@@ -756,7 +837,9 @@ class DownloadStore extends ChangeNotifier {
   /// 開機、回到線上、使用者在下載頁按「補抓彈幕」都會走到這裡, 所以「當時沒抓到」
   /// 不再等於「永遠沒有」.
   Future<void> retryMissingDanmaku({bool force = false}) async {
-    if (_dir == null || !_client.hasServer) return;
+    if (_disposed || !_networkAllowed || _dir == null || !_client.hasServer) {
+      return;
+    }
     if (_retryingDanmaku) return;
     _retryingDanmaku = true;
     try {

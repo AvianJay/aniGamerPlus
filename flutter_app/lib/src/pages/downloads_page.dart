@@ -4,6 +4,8 @@
 /// 續傳靠 .part 的長度接回去. 下載完的集數在首頁跟播放器都會自動改讀本機檔.
 library;
 
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 
 import '../state/app_state.dart';
@@ -25,6 +27,10 @@ class DownloadsPage extends StatefulWidget {
 
 class _DownloadsPageState extends State<DownloadsPage> {
   int _bytes = -1;
+  Timer? _measureTimer;
+  int _filter = 0;
+  bool _retrying = false;
+  bool _bulkBusy = false;
 
   AppState get state => widget.state;
   DownloadStore get store => state.downloads;
@@ -33,6 +39,21 @@ class _DownloadsPageState extends State<DownloadsPage> {
   void initState() {
     super.initState();
     _measure();
+    store.addListener(_onDownloadsChanged);
+  }
+
+  @override
+  void dispose() {
+    store.removeListener(_onDownloadsChanged);
+    _measureTimer?.cancel();
+    super.dispose();
+  }
+
+  void _onDownloadsChanged() {
+    _measureTimer ??= Timer(const Duration(milliseconds: 500), () {
+      _measureTimer = null;
+      if (mounted) unawaited(_measure());
+    });
   }
 
   Future<void> _measure() async {
@@ -46,10 +67,13 @@ class _DownloadsPageState extends State<DownloadsPage> {
   /// 自動那條路有冷卻時間 (免得每次開 app 都把伺服器問一遍), 使用者自己按的
   /// 時候就不必等 —— force 直接跳過冷卻.
   Future<void> _retryDanmaku() async {
+    if (_retrying) return;
+    setState(() => _retrying = true);
     final before = store.danmakuPending.length;
     toast(context, '正在向伺服器要 $before 集的彈幕…');
     await store.retryMissingDanmaku(force: true);
     if (!mounted) return;
+    setState(() => _retrying = false);
     final after = store.danmakuPending.length;
     toast(
       context,
@@ -76,25 +100,37 @@ class _DownloadsPageState extends State<DownloadsPage> {
 
         return Scaffold(
           appBar: AppBar(
-            title: const Text('下載管理'),
+            title: const Text('離線下載'),
             actions: [
-              if (missingDanmaku > 0 && !state.offline)
+              if (missingDanmaku > 0 && !state.offline && store.networkAllowed)
                 IconButton(
                   tooltip: '補抓彈幕 ($missingDanmaku 集)',
                   icon: const Icon(Icons.comment_outlined),
-                  onPressed: _retryDanmaku,
+                  onPressed: _retrying ? null : _retryDanmaku,
                 ),
               if (active.isNotEmpty)
                 IconButton(
                   tooltip: busy ? '全部暫停' : '全部繼續',
-                  icon: Icon(busy ? Icons.pause_rounded : Icons.play_arrow_rounded),
-                  onPressed: () async {
-                    if (busy) {
-                      await store.pauseAll();
-                    } else {
-                      await store.resumeAll();
-                    }
-                  },
+                  icon: Icon(
+                      busy ? Icons.pause_rounded : Icons.play_arrow_rounded),
+                  onPressed: _bulkBusy
+                      ? null
+                      : () async {
+                          setState(() => _bulkBusy = true);
+                          try {
+                            if (busy) {
+                              await store.pauseAll();
+                            } else {
+                              await store.resumeAll();
+                            }
+                          } catch (_) {
+                            if (context.mounted) {
+                              toast(context, '無法更新下載佇列，請稍後重試。');
+                            }
+                          } finally {
+                            if (mounted) setState(() => _bulkBusy = false);
+                          }
+                        },
                 ),
               const SizedBox(width: 4),
             ],
@@ -109,17 +145,44 @@ class _DownloadsPageState extends State<DownloadsPage> {
                   padding: const EdgeInsets.only(bottom: 28),
                   children: [
                     _summary(active, finished),
-                    if (active.isNotEmpty) ...[
+                    Padding(
+                      padding: const EdgeInsets.fromLTRB(16, 12, 16, 0),
+                      child: Wrap(spacing: 8, runSpacing: 4, children: [
+                        for (final item in [
+                          (0, '全部'),
+                          (1, '佇列 ${active.length}'),
+                          (2, '已完成 ${finished.length}')
+                        ])
+                          ChoiceChip(
+                              label: Text(item.$2),
+                              selected: _filter == item.$1,
+                              onSelected: (_) =>
+                                  setState(() => _filter = item.$1)),
+                      ]),
+                    ),
+                    if (!store.networkAllowed)
+                      const ListTile(
+                        leading: Icon(Icons.wifi_off_rounded),
+                        title: Text('等待 Wi-Fi'),
+                        subtitle: Text('連上 Wi-Fi 後會自動繼續；手動暫停的項目會維持暫停。'),
+                      ),
+                    if (_filter != 2 && active.isNotEmpty) ...[
                       const SectionHeader(title: '佇列中'),
                       for (final entry in active) _row(entry),
                     ],
-                    if (finished.isNotEmpty) ...[
+                    if (_filter != 1 && finished.isNotEmpty) ...[
                       SectionHeader(
                         title: '已下載',
                         subtitle: '${finished.length} 集',
                       ),
                       for (final entry in finished) _row(entry),
                     ],
+                    if ((_filter == 1 && active.isEmpty) ||
+                        (_filter == 2 && finished.isEmpty))
+                      Padding(
+                          padding: const EdgeInsets.all(32),
+                          child: Text(_filter == 1 ? '目前沒有排隊的下載' : '還沒有已完成的下載',
+                              textAlign: TextAlign.center)),
                   ],
                 ),
         );
@@ -135,18 +198,21 @@ class _DownloadsPageState extends State<DownloadsPage> {
         decoration: BoxDecoration(
           color: Theme.of(context).cardTheme.color,
           borderRadius: BorderRadius.circular(kRadius),
-          border: Border.all(color: AgpColors.line),
+          border: Border.all(color: Theme.of(context).dividerColor),
         ),
         child: Row(
           children: [
-            const Icon(Icons.sd_storage_outlined, size: 18, color: AgpColors.accent),
+            const Icon(Icons.sd_storage_outlined,
+                size: 18, color: AgpColors.accent),
             const SizedBox(width: 10),
             Expanded(
               child: Text(
                 _bytes < 0
                     ? '正在計算佔用空間…'
                     : '佔用 ${formatBytes(_bytes)} · 已下載 ${finished.length} 集 · 佇列 ${active.length} 集',
-                style: const TextStyle(fontSize: 13, color: AgpColors.fgDim),
+                style: TextStyle(
+                    fontSize: 13,
+                    color: Theme.of(context).colorScheme.onSurfaceVariant),
               ),
             ),
             IconButton(
@@ -181,7 +247,7 @@ class _DownloadsPageState extends State<DownloadsPage> {
               borderRadius: BorderRadius.circular(999),
               child: LinearProgressIndicator(
                 // 等伺服器的那段沒有進度可言, 給一條不動的底線比跑馬燈誠實
-                value: entry.status == DownloadStatus.waiting
+                value: entry.status != DownloadStatus.running
                     ? 0
                     : entry.total > 0
                         ? entry.progress
@@ -237,9 +303,11 @@ class _DownloadsPageState extends State<DownloadsPage> {
                 : '';
         return '$res已下載 · ${formatBytes(entry.total)}$danmaku';
       case DownloadStatus.running:
-        return '$res下載中 ${(entry.progress * 100).round()}% · $size';
+        return entry.total > 0
+            ? '$res下載中 ${(entry.progress * 100).round()}% · $size'
+            : '$res下載中 · $size';
       case DownloadStatus.queued:
-        return '$res排隊中';
+        return store.networkAllowed ? '$res排隊中' : '$res等待 Wi-Fi · $size';
       case DownloadStatus.waiting:
         return '$res等待伺服器下載完成';
       case DownloadStatus.paused:
@@ -272,8 +340,12 @@ class _DownloadsPageState extends State<DownloadsPage> {
       ),
     );
     if (yes != true) return;
-    await store.remove(entry.sn);
-    await _measure();
-    if (mounted) toast(context, '已從這支手機刪除。');
+    try {
+      await store.remove(entry.sn);
+      await _measure();
+      if (mounted) toast(context, '已從這支手機刪除。');
+    } catch (_) {
+      if (mounted) toast(context, '刪除失敗，請稍後再試。');
+    }
   }
 }

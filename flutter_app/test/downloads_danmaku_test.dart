@@ -120,8 +120,8 @@ class FakeServer {
     if (match != null) {
       start = int.parse(match.group(1)!);
       response.statusCode = HttpStatus.partialContent;
-      response.headers.set('Content-Range',
-          'bytes $start-${video.length - 1}/${video.length}');
+      response.headers.set(
+          'Content-Range', 'bytes $start-${video.length - 1}/${video.length}');
     }
     final payload = video.sublist(start.clamp(0, video.length));
     response.headers.contentLength = payload.length;
@@ -344,6 +344,52 @@ void main() {
       expect(store.partFile(entry).existsSync(), isFalse);
       expect(fake.videoRanges.where((r) => r.isNotEmpty), isNotEmpty,
           reason: '續傳那一筆要帶 Range, 不然就是整支重抓');
+    });
+
+    test('全部暫停後立即繼續會完整續傳，沒有重複位元組', () async {
+      store.concurrency = 1;
+      fake.have.add('902');
+      fake.video = List<int>.generate(512 * 1024, (i) => i % 251);
+      fake.hold = Completer<void>();
+      await store.enqueue(VideoItem(sn: '902', resolution: 720),
+          withDanmaku: false);
+      await waitFor(() => store.entryFor('902')!.received >= fake.holdAfter);
+      await store.pauseAll();
+      await store.resumeAll();
+      await store.resumeAll();
+      fake.hold!.complete();
+      fake.hold = null;
+      await waitFor(() => store.entryFor('902')!.playable);
+      expect(await store.videoFile(store.entryFor('902')!).readAsBytes(),
+          fake.video);
+      await Future<void>.delayed(const Duration(milliseconds: 100));
+    });
+
+    test('Wi-Fi 限制阻止搬檔，解除後自動續傳但保留手動暫停', () async {
+      store.concurrency = 1;
+      await store.setNetworkAllowed(false);
+      fake.have.addAll(['903', '904']);
+      fake.video = List<int>.generate(512 * 1024, (i) => i % 253);
+      await store.enqueue(VideoItem(sn: '903'), withDanmaku: false);
+      await store.enqueue(VideoItem(sn: '904'), withDanmaku: false);
+      await store.pause('904');
+      await Future<void>.delayed(const Duration(milliseconds: 50));
+      expect(fake.videoRanges, isEmpty);
+      fake.hold = Completer<void>();
+      await store.setNetworkAllowed(true);
+      await waitFor(() => store.entryFor('903')!.received >= fake.holdAfter);
+      await store.setNetworkAllowed(false);
+      expect(store.entryFor('903')!.status, DownloadStatus.queued);
+      fake.hold!.complete();
+      fake.hold = null;
+      await Future<void>.delayed(const Duration(milliseconds: 100));
+      expect(store.entryFor('903')!.playable, false);
+      await store.setNetworkAllowed(true);
+      await waitFor(() => store.entryFor('903')!.playable);
+      expect(store.entryFor('904')!.status, DownloadStatus.paused);
+      expect(await store.videoFile(store.entryFor('903')!).readAsBytes(),
+          fake.video);
+      await Future<void>.delayed(const Duration(milliseconds: 100));
     });
 
     test('暫停的時候 job 還在, 不會被第二個 job 頂掉', () async {

@@ -27,7 +27,9 @@ class Favourite {
         name: (json['name'] ?? '').toString(),
         alias: (json['alias'] ?? '').toString(),
         sn: (json['sn'] ?? '').toString(),
-        res: json['res'] is int ? json['res'] as int : int.tryParse('${json['res']}') ?? 0,
+        res: json['res'] is int
+            ? json['res'] as int
+            : int.tryParse('${json['res']}') ?? 0,
         cover: (json['cover'] ?? '').toString(),
         added: json['added'] is int
             ? json['added'] as int
@@ -49,7 +51,8 @@ class Favourite {
       if (a != null && a.isNotEmpty) a,
       if (b != null && b.isNotEmpty) b,
     };
-    return candidates.contains(name) || (alias.isNotEmpty && candidates.contains(alias));
+    return candidates.contains(name) ||
+        (alias.isNotEmpty && candidates.contains(alias));
   }
 }
 
@@ -86,7 +89,8 @@ class Prefs {
     await _sp.setStringList(_kServerHistory, history.take(8).toList());
   }
 
-  List<String> get serverHistory => _sp.getStringList(_kServerHistory) ?? const [];
+  List<String> get serverHistory =>
+      _sp.getStringList(_kServerHistory) ?? const [];
 
   String get token => _sp.getString(_kToken) ?? '';
   Future<void> setToken(String value) => _sp.setString(_kToken, value);
@@ -98,7 +102,8 @@ class Prefs {
   Future<void> setVolume(double value) => _sp.setDouble('agp-volume', value);
 
   double get brightness => _sp.getDouble('agp-brightness') ?? 1.0;
-  Future<void> setBrightness(double value) => _sp.setDouble('agp-brightness', value);
+  Future<void> setBrightness(double value) =>
+      _sp.setDouble('agp-brightness', value);
 
   double get rate => _sp.getDouble('agp-rate') ?? 1.0;
   Future<void> setRate(double value) => _sp.setDouble('agp-rate', value);
@@ -108,17 +113,21 @@ class Prefs {
 
   /// 100 / 75 / 50 / 25
   int get danmakuOpacity => _sp.getInt('agp-danmaku-opacity') ?? 100;
-  Future<void> setDanmakuOpacity(int value) => _sp.setInt('agp-danmaku-opacity', value);
+  Future<void> setDanmakuOpacity(int value) =>
+      _sp.setInt('agp-danmaku-opacity', value);
 
   /// 1 = 全畫面, 0.75 / 0.5 / 0.25
   double get danmakuArea => _sp.getDouble('agp-danmaku-area') ?? 1.0;
-  Future<void> setDanmakuArea(double value) => _sp.setDouble('agp-danmaku-area', value);
+  Future<void> setDanmakuArea(double value) =>
+      _sp.setDouble('agp-danmaku-area', value);
 
   double get danmakuScale => _sp.getDouble('agp-danmaku-scale') ?? 1.0;
-  Future<void> setDanmakuScale(double value) => _sp.setDouble('agp-danmaku-scale', value);
+  Future<void> setDanmakuScale(double value) =>
+      _sp.setDouble('agp-danmaku-scale', value);
 
   double get danmakuSpeed => _sp.getDouble('agp-danmaku-speed') ?? 1.0;
-  Future<void> setDanmakuSpeed(double value) => _sp.setDouble('agp-danmaku-speed', value);
+  Future<void> setDanmakuSpeed(double value) =>
+      _sp.setDouble('agp-danmaku-speed', value);
 
   /// contain / cover / fill
   String get aspect => _sp.getString('agp-aspect') ?? 'contain';
@@ -130,29 +139,35 @@ class Prefs {
   /// 線上播放預設用幾 P. 跟 downloadResolution 分開存 —— 一個是「我在這支手機上
   /// 想看多清楚」, 另一個是「我要存多大一份到手機裡」, 常常不是同一個答案
   int get playbackResolution => _sp.getInt('agp-play-res') ?? 1080;
-  Future<void> setPlaybackResolution(int value) => _sp.setInt('agp-play-res', value);
+  Future<void> setPlaybackResolution(int value) =>
+      _sp.setInt('agp-play-res', value);
 
   // ------------------------------------------------------------------ 下載器
 
   /// 手機端要下幾 P
   String get downloadResolution => _sp.getString('agp-dl-res') ?? '1080';
-  Future<void> setDownloadResolution(String value) => _sp.setString('agp-dl-res', value);
+  Future<void> setDownloadResolution(String value) =>
+      _sp.setString('agp-dl-res', value);
 
   bool get downloadDanmaku => _sp.getBool('agp-dl-danmu') ?? true;
-  Future<void> setDownloadDanmaku(bool value) => _sp.setBool('agp-dl-danmu', value);
+  Future<void> setDownloadDanmaku(bool value) =>
+      _sp.setBool('agp-dl-danmu', value);
 
   bool get downloadWifiOnly => _sp.getBool('agp-dl-wifi') ?? false;
-  Future<void> setDownloadWifiOnly(bool value) => _sp.setBool('agp-dl-wifi', value);
+  Future<void> setDownloadWifiOnly(bool value) =>
+      _sp.setBool('agp-dl-wifi', value);
 
   int get downloadConcurrency => _sp.getInt('agp-dl-jobs') ?? 1;
-  Future<void> setDownloadConcurrency(int value) => _sp.setInt('agp-dl-jobs', value);
+  Future<void> setDownloadConcurrency(int value) =>
+      _sp.setInt('agp-dl-jobs', value);
 
   /// 線上播放要不要走本機的影片快取 (把檔頭留在手機上, 下次開快一點).
   ///
   /// 有開關是因為它擋在播放器跟伺服器中間: 萬一在某個網路環境下反而更糟,
   /// 關掉就直連, 不必等新版.
   bool get videoCache => _sp.getBool('agp-video-cache') ?? true;
-  Future<void> setVideoCache(bool value) => _sp.setBool('agp-video-cache', value);
+  Future<void> setVideoCache(bool value) =>
+      _sp.setBool('agp-video-cache', value);
 
   // -------------------------------------------------------------------- 外觀
 
@@ -161,6 +176,23 @@ class Prefs {
   Future<void> setThemeMode(String value) => _sp.setString('agp-theme', value);
 
   // -------------------------------------------------------------------- 收藏
+
+  List<String> get searchHistory =>
+      _sp.getStringList('agp-search-history') ?? const [];
+
+  Future<void> rememberSearch(String raw) async {
+    final query = raw.trim().replaceAll(RegExp(r'\s+'), ' ');
+    if (query.isEmpty) return;
+    final history =
+        searchHistory.where((e) => e.toLowerCase() != query.toLowerCase());
+    await _sp.setStringList(
+        'agp-search-history', [query, ...history].take(12).toList());
+  }
+
+  Future<void> removeSearch(String query) async => _sp.setStringList(
+      'agp-search-history', searchHistory.where((e) => e != query).toList());
+
+  Future<void> clearSearchHistory() async => _sp.remove('agp-search-history');
 
   static const _kFavs = 'agp-favs';
 
@@ -179,8 +211,8 @@ class Prefs {
     }
   }
 
-  Future<void> saveFavourites(List<Favourite> favourites) =>
-      _sp.setString(_kFavs, jsonEncode(favourites.map((f) => f.toJson()).toList()));
+  Future<void> saveFavourites(List<Favourite> favourites) => _sp.setString(
+      _kFavs, jsonEncode(favourites.map((f) => f.toJson()).toList()));
 
   bool isFavourite(String? name, [String? alias]) =>
       favourites.any((f) => f.matches(name, alias));

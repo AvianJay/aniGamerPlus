@@ -35,9 +35,11 @@ import '../danmaku/danmaku_overlay.dart';
 import '../state/app_state.dart';
 import '../state/downloads.dart';
 import '../state/prefs.dart';
+import '../state/seek_preview.dart';
 import '../theme.dart';
 import '../util/format.dart';
 import '../widgets/common.dart';
+import '../widgets/seek_preview_card.dart';
 
 // --------------------------------------------------------------- 常數
 // 全部照抄 static/js/watch.js, 改了就跟網頁版對不起來了
@@ -361,6 +363,7 @@ class _WatchPageState extends State<WatchPage>
   int _sourceGeneration = 0;
   bool _scrubbing = false;
   double _scrubValue = 0;
+  final SeekPreview _preview = SeekPreview();
   bool _background = false;
   bool _resumeAfterBackground = false;
   Future<void> _lifecycleWork = Future<void>.value();
@@ -427,6 +430,7 @@ class _WatchPageState extends State<WatchPage>
     _streamTimer?.cancel();
     _ticker?.dispose();
     _sourceGeneration++;
+    _preview.dispose();
     _pendingSeek = null;
     final controller = _controller;
     _controller = null;
@@ -474,7 +478,8 @@ class _WatchPageState extends State<WatchPage>
         // 回到前景時播放器已經壞掉的話, 多半是本機快取那台在背景被系統收走了,
         // 連不上. 從剛剛的位置重開一次 —— 磁碟上的快取還在, 所以這一趟很快.
         if (controller.value.hasError) {
-          await _openSource(seekTo: _clock.value, autoplay: _resumeAfterBackground);
+          await _openSource(
+              seekTo: _clock.value, autoplay: _resumeAfterBackground);
           return;
         }
         // Retain the native player and its buffered media. Never seek or reopen
@@ -670,6 +675,8 @@ class _WatchPageState extends State<WatchPage>
   /// 建立 / 換掉 VideoPlayerController
   Future<void> _openSource({double? seekTo, bool autoplay = true}) async {
     final generation = ++_sourceGeneration;
+    _scrubbing = false;
+    _preview.cancel();
     _pendingSeek = null;
     _playIntent = null;
     final previous = _controller;
@@ -980,13 +987,14 @@ class _WatchPageState extends State<WatchPage>
     final previousQuality = _quality;
     final previousPicked = _qualityPicked;
     final at = _pendingSeek ?? _clock.value;
+    final resume = _showsPlaying;
     setState(() {
       _quality = res;
       _qualityPicked = true;
     });
     unawaited(state.savePref(() => prefs.setPlaybackResolution(res)));
 
-    await _openSource(seekTo: at);
+    await _openSource(seekTo: at, autoplay: resume);
     if (!mounted) return;
     if (_error.isEmpty) {
       _flashMessage('已切換到 ${res}P');
@@ -997,7 +1005,7 @@ class _WatchPageState extends State<WatchPage>
       _quality = previousQuality;
       _qualityPicked = previousPicked;
     });
-    await _openSource(seekTo: at);
+    await _openSource(seekTo: at, autoplay: resume);
     if (mounted) _flashMessage('切換到 ${res}P 失敗，已還原');
   }
 
@@ -1411,7 +1419,7 @@ class _WatchPageState extends State<WatchPage>
     } catch (_) {
       // 叫不動就把按鈕改回去, 不要留一個永遠對不上的樣子
       if (mounted) setState(() => _playIntent = null);
-      rethrow;
+      _flashMessage('播放操作失敗，請重試');
     }
     _armIdle();
   }
@@ -1590,20 +1598,21 @@ class _WatchPageState extends State<WatchPage>
   }
 
   void _onHorizontalStart(DragStartDetails details) {
+    if (!(_controller?.value.isInitialized ?? false)) return;
     _dragFrom = _clock.value;
     _dragAccum = 0;
     _showControls();
   }
 
   void _onHorizontalUpdate(DragUpdateDetails details, Size size) {
-    if (size.width <= 0) return;
+    if (size.width <= 0 || !(_controller?.value.isInitialized ?? false)) return;
     _dragAccum += details.delta.dx / size.width * kGestureSeekSpan;
     final target = (_dragFrom + _dragAccum)
         .clamp(0.0, math.max(0.0, _playableDuration))
         .toDouble();
     _scrubbing = true;
     _scrubValue = target;
-    _clock.value = target;
+    _requestPreview(target);
     final delta = target - _dragFrom;
     final sign = delta >= 0 ? '+' : '-';
     setState(() => _hud =
@@ -1611,9 +1620,22 @@ class _WatchPageState extends State<WatchPage>
   }
 
   void _onHorizontalEnd(DragEndDetails details) {
+    if (!_scrubbing) return;
     _scrubbing = false;
+    _preview.cancel();
     setState(() => _hud = '');
     unawaited(_seekTo(_dragFrom + _dragAccum));
+  }
+
+  void _requestPreview(double seconds) {
+    final controller = _controller;
+    if (controller == null) return;
+    _preview.setSource(controller.dataSource, controller.httpHeaders);
+    if (_streaming && !_needsProxy && seconds >= _streamReady) {
+      _preview.cancel();
+      return;
+    }
+    _preview.request(seconds.clamp(0.0, math.max(0, _playableDuration - 0.1)));
   }
 
   void _onVerticalStart(DragStartDetails details, Size size) {
@@ -1997,8 +2019,9 @@ class _WatchPageState extends State<WatchPage>
                   '$_hereLabel${_video != null && _video!.resolution > 0 ? ' · ${_video!.resolution}P' : ''}',
                   maxLines: 1,
                   overflow: TextOverflow.ellipsis,
-                  style:
-                      const TextStyle(fontSize: 11.5, color: AgpColors.fgFaint),
+                  style: TextStyle(
+                      fontSize: 11.5,
+                      color: Theme.of(context).colorScheme.onSurfaceVariant),
                 ),
               ],
             ),
@@ -2157,7 +2180,8 @@ class _WatchPageState extends State<WatchPage>
                       child: _controls(),
                     ),
                   ),
-                  if (_flash.isNotEmpty || _hud.isNotEmpty) _hudChip(),
+                  if (!_scrubbing && (_flash.isNotEmpty || _hud.isNotEmpty))
+                    _hudChip(),
                   if (_boosting)
                     Positioned(
                         top: 62,
@@ -2431,6 +2455,7 @@ class _WatchPageState extends State<WatchPage>
         setState(() => _hud = '');
       },
       onHorizontalDragCancel: () {
+        _preview.cancel();
         setState(() {
           _scrubbing = false;
           _hud = '';
@@ -2463,73 +2488,87 @@ class _WatchPageState extends State<WatchPage>
                     ),
                   ),
                 )),
-                Positioned(
-                  left: 6,
-                  right: 6,
-                  top: 6,
-                  child: SafeArea(
-                    bottom: false,
-                    child: Row(
-                      children: [
-                        if (_fullscreen)
-                          IconButton(
-                            icon: const Icon(Icons.arrow_back_rounded,
-                                color: Colors.white),
-                            tooltip: '返回',
-                            // 箭頭就是「回上一頁」. 只離開全螢幕的話右下角
-                            // 那顆本來就在做這件事, 這裡再放一顆一樣的,
-                            // 從觀看紀錄點進來的人要按兩次才回得去.
-                            // 先收掉全螢幕再 pop, 免得上一頁閃一下橫的.
-                            onPressed: () async {
-                              if (_fullscreen) await _setFullscreen(false);
-                              if (!mounted) return;
-                              await Navigator.of(context).maybePop();
-                            },
-                          ),
-                        Expanded(
-                          child: Text(
-                            _fullscreen ? '$_seriesName · $_hereLabel' : '',
-                            maxLines: 1,
-                            overflow: TextOverflow.ellipsis,
-                            style: const TextStyle(
-                              fontSize: 14,
-                              color: Colors.white,
-                              fontWeight: FontWeight.w700,
+                if (!_scrubbing &&
+                    (_fullscreen || constraints.maxHeight >= 260))
+                  Positioned(
+                    left: 6,
+                    right: 6,
+                    top: 6,
+                    child: SafeArea(
+                      bottom: false,
+                      child: Row(
+                        children: [
+                          if (_fullscreen)
+                            IconButton(
+                              icon: const Icon(Icons.arrow_back_rounded,
+                                  color: Colors.white),
+                              tooltip: '返回',
+                              // 箭頭就是「回上一頁」. 只離開全螢幕的話右下角
+                              // 那顆本來就在做這件事, 這裡再放一顆一樣的,
+                              // 從觀看紀錄點進來的人要按兩次才回得去.
+                              // 先收掉全螢幕再 pop, 免得上一頁閃一下橫的.
+                              onPressed: () async {
+                                if (_fullscreen) await _setFullscreen(false);
+                                if (!mounted) return;
+                                await Navigator.of(context).maybePop();
+                              },
+                            ),
+                          Expanded(
+                            child: Text(
+                              _fullscreen ? '$_seriesName · $_hereLabel' : '',
+                              maxLines: 1,
+                              overflow: TextOverflow.ellipsis,
+                              style: const TextStyle(
+                                fontSize: 14,
+                                color: Colors.white,
+                                fontWeight: FontWeight.w700,
+                              ),
                             ),
                           ),
-                        ),
-                        _topMenu<double>(
-                          label:
-                              '${_rate.toStringAsFixed(_rate == _rate.roundToDouble() ? 1 : 2)}x',
-                          current: _rate,
-                          choices: [
-                            for (final r in kPlaybackRates)
-                              PlayerChoice(r, '${r}x')
-                          ],
-                          onPick: (r) => unawaited(_setRate(r)),
-                        ),
-                        ValueListenableBuilder<List<int>>(
-                          valueListenable: _qualities,
-                          builder: (context, options, _) => _topMenu<int>(
-                            label: '${_currentQuality}p',
-                            current: _currentQuality,
-                            choices: _qualityChoices(options).reversed.toList(),
-                            onOpen: () => unawaited(_loadQualities()),
-                            onPick: (r) => unawaited(_switchQuality(r)),
+                          _topMenu<double>(
+                            label:
+                                '${_rate.toStringAsFixed(_rate == _rate.roundToDouble() ? 1 : 2)}x',
+                            current: _rate,
+                            choices: [
+                              for (final r in kPlaybackRates)
+                                PlayerChoice(r, '${r}x')
+                            ],
+                            onPick: (r) => unawaited(_setRate(r)),
                           ),
-                        ),
-                        _barButton(Icons.video_library_outlined, '選集',
-                            _openEpisodeSheet),
-                      ],
+                          ValueListenableBuilder<List<int>>(
+                            valueListenable: _qualities,
+                            builder: (context, options, _) => _topMenu<int>(
+                              label: '${_currentQuality}p',
+                              current: _currentQuality,
+                              choices:
+                                  _qualityChoices(options).reversed.toList(),
+                              onOpen: () => unawaited(_loadQualities()),
+                              onPick: (r) => unawaited(_switchQuality(r)),
+                            ),
+                          ),
+                          _barButton(Icons.video_library_outlined, '選集',
+                              _openEpisodeSheet),
+                        ],
+                      ),
                     ),
                   ),
-                ),
-                Positioned(
-                    right: 14,
-                    bottom: (constraints.maxWidth >= 600 ? 76 : 108) +
-                        MediaQuery.paddingOf(context).bottom,
-                    child: _centreButtons(compact: constraints.maxWidth < 600)),
+                if (!_scrubbing)
+                  Positioned(
+                    left: 0,
+                    right: 0,
+                    top: math.max(
+                        0,
+                        (constraints.maxHeight -
+                                    100 -
+                                    MediaQuery.paddingOf(context).bottom) /
+                                2 -
+                            (constraints.maxWidth < 600 ? 26 : 34)),
+                    child: Center(
+                        child: _centreButtons(
+                            compact: constraints.maxWidth < 600)),
+                  ),
                 Positioned(left: 0, right: 0, bottom: 0, child: _bottomBar()),
+                if (_scrubbing) _previewOverlay(constraints),
               ],
             ));
   }
@@ -2590,16 +2629,16 @@ class _WatchPageState extends State<WatchPage>
         ),
         const SizedBox(width: 10),
         _roundButton(
-          Icons.forward_10_rounded,
-          () => unawaited(_seekBy(kSkipSeconds.toDouble())),
-          size: compact ? 34 : 42,
+          _showsPlaying ? Icons.pause_circle_filled : Icons.play_circle_fill,
+          () => unawaited(_togglePlay()),
+          size: compact ? 48 : 58,
           hitSize: compact ? 52 : 68,
         ),
         const SizedBox(width: 10),
         _roundButton(
-          _showsPlaying ? Icons.pause_circle_filled : Icons.play_circle_fill,
-          () => unawaited(_togglePlay()),
-          size: compact ? 48 : 58,
+          Icons.forward_10_rounded,
+          () => unawaited(_seekBy(kSkipSeconds.toDouble())),
+          size: compact ? 34 : 42,
           hitSize: compact ? 52 : 68,
         ),
       ],
@@ -2625,48 +2664,88 @@ class _WatchPageState extends State<WatchPage>
     );
   }
 
+  Widget _previewOverlay(BoxConstraints constraints) {
+    final inset = MediaQuery.paddingOf(context);
+    final bottom = 100.0 + inset.bottom;
+    final available = math.max(40.0, constraints.maxHeight - bottom - 36);
+    final width = math.min(
+        160.0, math.min(available * 16 / 9, constraints.maxWidth - 24));
+    final ratio = _playableDuration > 0
+        ? (_scrubValue / _playableDuration).clamp(0.0, 1.0)
+        : 0.0;
+    final left = (inset.left +
+            24 +
+            (constraints.maxWidth - inset.horizontal - 48) * ratio -
+            width / 2)
+        .clamp(12.0, math.max(12.0, constraints.maxWidth - width - 12));
+    return Positioned(
+      left: left.toDouble(),
+      bottom: bottom,
+      child: SeekPreviewCard(
+        key: const ValueKey('seek-preview'),
+        preview: _preview,
+        seconds: _scrubValue,
+        width: width,
+        unavailable: _streaming && !_needsProxy && _scrubValue >= _streamReady,
+      ),
+    );
+  }
+
   Widget _bottomBar() {
     return SafeArea(
-        top: false,
-        child: Padding(
-          // 底下留多一點: 貼著螢幕邊緣的控制列在有 home indicator 的機器上
-          // 會被壓到, 動畫瘋那條也是浮在離底邊一點的位置
-          padding: const EdgeInsets.fromLTRB(10, 0, 10, 12),
-          child: LayoutBuilder(builder: (context, constraints) {
-            // 排列照動畫瘋: 彈幕 → 關彈幕 → 設定 →(全螢幕時多一個)畫面比例 →
-            // 全螢幕. 全螢幕鍵固定在最右邊那一格, 進出全螢幕都不會換位置 ——
-            // 之前是畫面比例排在它右邊, 一進全螢幕整排就往左挪一格, 拇指
-            // 按原來的位置按下去變成在改畫面比例.
-            final actions = Row(mainAxisSize: MainAxisSize.min, children: [
-              _barButton(Icons.message_rounded, '彈幕設定', _openSettingsSheet),
-              _barButton(
-                  Icons.comments_disabled_outlined,
-                  _danmakuOn ? '關閉彈幕' : '開啟彈幕',
-                  () => unawaited(_setDanmaku(!_danmakuOn))),
-              _barButton(Icons.settings_outlined, '設定', _openSettingsSheet),
-              if (_fullscreen)
-                _barButton(Icons.fit_screen_outlined, '畫面比例', () {
-                  final index =
-                      kAspectModes.indexWhere((m) => m.value == _aspect);
-                  unawaited(_setAspect(
-                      kAspectModes[(index + 1) % kAspectModes.length].value));
-                }),
-              _barButton(
-                  _fullscreen
-                      ? Icons.fullscreen_exit_rounded
-                      : Icons.fullscreen_rounded,
-                  _fullscreen ? '離開全螢幕' : '全螢幕',
-                  () => unawaited(_setFullscreen(!_fullscreen))),
-            ]);
-            if (constraints.maxWidth >= 600) {
-              return Row(children: [Expanded(child: _timeline()), actions]);
-            }
-            return Column(mainAxisSize: MainAxisSize.min, children: [
-              _timeline(),
-              Align(alignment: Alignment.centerRight, child: actions),
-            ]);
-          }),
-        ));
+      top: false,
+      child: Padding(
+        padding: const EdgeInsets.fromLTRB(10, 0, 10, 4),
+        child: Column(mainAxisSize: MainAxisSize.min, children: [
+          _timeline(),
+          Row(children: [
+            Expanded(
+              child: ValueListenableBuilder<double>(
+                valueListenable: _clock,
+                builder: (context, position, _) => Padding(
+                  padding: const EdgeInsets.only(left: 6),
+                  child: Text(
+                    '${formatPlayerClock(_scrubbing ? _scrubValue : position)} / '
+                    '${formatPlayerClock(_playableDuration)}',
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: const TextStyle(
+                        fontSize: 12,
+                        color: Colors.white,
+                        fontWeight: FontWeight.w600,
+                        fontFeatures: [FontFeature.tabularFigures()]),
+                  ),
+                ),
+              ),
+            ),
+            if (MediaQuery.sizeOf(context).width >= 600)
+              _barButton(Icons.skip_next_rounded, '下一集',
+                  _neighbour(1) == null ? null : () => _goRelative(1)),
+            _barButton(
+                _danmakuOn
+                    ? Icons.chat_bubble_outline_rounded
+                    : Icons.comments_disabled_outlined,
+                _danmakuOn ? '關閉彈幕' : '開啟彈幕',
+                () => unawaited(_setDanmaku(!_danmakuOn)),
+                active: _danmakuOn),
+            _barButton(Icons.settings_outlined, '設定', _openSettingsSheet),
+            if (_fullscreen)
+              _barButton(Icons.fit_screen_outlined, '畫面比例', () {
+                final index =
+                    kAspectModes.indexWhere((m) => m.value == _aspect);
+                unawaited(_setAspect(
+                    kAspectModes[(index + 1) % kAspectModes.length].value));
+              }),
+            _barButton(
+                _fullscreen
+                    ? Icons.fullscreen_exit_rounded
+                    : Icons.fullscreen_rounded,
+                _fullscreen ? '離開全螢幕' : '全螢幕',
+                () => unawaited(_setFullscreen(!_fullscreen))),
+          ]),
+        ]),
+      ),
+    );
   }
 
   Widget _timeline() {
@@ -2679,48 +2758,54 @@ class _WatchPageState extends State<WatchPage>
         final secondary = _streaming && !_needsProxy
             ? _seekableDuration.clamp(0.0, max)
             : _bufferedSeconds().clamp(0.0, max);
-        return Row(children: [
-          _barButton(Icons.skip_next_rounded, '下一集', () => _goRelative(1)),
-          const SizedBox(width: 2),
-          Text('${formatPlayerClock(shown)}/${formatPlayerClock(playable)}',
-              style: const TextStyle(
-                fontSize: 13,
-                color: Colors.white,
-                fontWeight: FontWeight.w600,
-                // 等寬數字: 不然秒數每跳一次整條時間軸就跟著抖一下
-                fontFeatures: [FontFeature.tabularFigures()],
-              )),
-          Expanded(
-              child: SliderTheme(
+        final enabled =
+            playable > 0 && (_controller?.value.isInitialized ?? false);
+        return SizedBox(
+          height: 48,
+          child: SliderTheme(
             data: SliderTheme.of(context).copyWith(
-              trackHeight: 2,
+              trackHeight: 3,
               thumbShape: const RoundSliderThumbShape(enabledThumbRadius: 7),
               overlayShape: const RoundSliderOverlayShape(overlayRadius: 14),
               activeTrackColor: AgpColors.bahamut,
               inactiveTrackColor: const Color(0x4DFFFFFF),
               secondaryActiveTrackColor: const Color(0x80FFFFFF),
               thumbColor: AgpColors.bahamut,
+              showValueIndicator: ShowValueIndicator.never,
             ),
             child: Slider(
+              key: const ValueKey('player-timeline'),
               value: shown.clamp(0.0, max),
               max: max,
               secondaryTrackValue: secondary,
-              onChangeStart: (value) {
-                _scrubbing = true;
-                _showControls();
-                setState(() => _scrubValue = value);
-              },
-              onChanged: (value) {
-                setState(() => _scrubValue = value);
-                _clock.value = value;
-              },
-              onChangeEnd: (value) {
-                _scrubbing = false;
-                unawaited(_seekTo(value));
-              },
+              semanticFormatterCallback: formatPlayerClock,
+              onChangeStart: !enabled
+                  ? null
+                  : (value) {
+                      _showControls();
+                      setState(() {
+                        _scrubbing = true;
+                        _scrubValue = value;
+                      });
+                      _requestPreview(value);
+                    },
+              onChanged: !enabled
+                  ? null
+                  : (value) {
+                      setState(() => _scrubValue = value);
+                      _requestPreview(value);
+                    },
+              onChangeEnd: !enabled
+                  ? null
+                  : (value) {
+                      setState(() => _scrubbing = false);
+                      _preview.cancel();
+                      unawaited(_seekTo(value));
+                      _armIdle();
+                    },
             ),
-          )),
-        ]);
+          ),
+        );
       },
     );
   }
@@ -2730,7 +2815,7 @@ class _WatchPageState extends State<WatchPage>
   static const double kBarIcon = 24;
   static const double kBarSlot = 48;
 
-  Widget _barButton(IconData icon, String tooltip, VoidCallback onTap,
+  Widget _barButton(IconData icon, String tooltip, VoidCallback? onTap,
       {bool active = false}) {
     return IconButton(
       tooltip: tooltip,
@@ -2748,10 +2833,12 @@ class _WatchPageState extends State<WatchPage>
                   child: Icon(Icons.close_rounded, size: 13)),
             ])
           : Icon(icon),
-      onPressed: () {
-        _showControls();
-        onTap();
-      },
+      onPressed: onTap == null
+          ? null
+          : () {
+              _showControls();
+              onTap();
+            },
     );
   }
 
@@ -2806,9 +2893,9 @@ class _WatchPageState extends State<WatchPage>
               padding: const EdgeInsets.fromLTRB(16, 6, 16, 2),
               child: Text(
                 group.name,
-                style: const TextStyle(
+                style: TextStyle(
                   fontSize: 12.5,
-                  color: AgpColors.fgFaint,
+                  color: Theme.of(context).colorScheme.onSurfaceVariant,
                   fontWeight: FontWeight.w700,
                 ),
               ),
@@ -2832,8 +2919,7 @@ class _WatchPageState extends State<WatchPage>
         // 動畫瘋一格大約 72-76pt 寬, 平板上剛好排九格. 150 那個除數排出來
         // 只有五六格, 每一格寬得像按鈕而不是集數.
         final columns = (constraints.maxWidth / 82).round().clamp(5, 10);
-        final cell =
-            (constraints.maxWidth - gap * (columns - 1)) / columns;
+        final cell = (constraints.maxWidth - gap * (columns - 1)) / columns;
         return Wrap(
           spacing: gap,
           runSpacing: gap,
@@ -2850,6 +2936,7 @@ class _WatchPageState extends State<WatchPage>
   }
 
   Widget _episodeChip(SeriesEpisode episode, {VoidCallback? onTap}) {
+    final colors = Theme.of(context).colorScheme;
     final here = episode.videoSn == _sn;
     final downloaded = store.isDownloaded(episode.videoSn);
     final remote = !episode.local && !downloaded;
@@ -2860,7 +2947,9 @@ class _WatchPageState extends State<WatchPage>
     // 改用右上角一顆小點表示, 資訊還在, 但不會把數字擠歪.
     final marker = here
         ? null
-        : (downloaded ? AgpColors.bahamut : (remote ? null : AgpColors.fgFaint));
+        : (downloaded
+            ? AgpColors.bahamut
+            : (remote ? null : colors.onSurfaceVariant));
 
     return Tooltip(
       message:
@@ -2870,7 +2959,7 @@ class _WatchPageState extends State<WatchPage>
         // 跟手上就有的分開 —— 站上不必分是因為它每一集都在.
         color: here
             ? AgpColors.bahamut
-            : (remote ? Colors.transparent : AgpColors.cardHover),
+            : (remote ? Colors.transparent : colors.surfaceContainerHighest),
         borderRadius: BorderRadius.circular(kRadiusSmall),
         child: InkWell(
           borderRadius: BorderRadius.circular(kRadiusSmall),
@@ -2881,7 +2970,9 @@ class _WatchPageState extends State<WatchPage>
             padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 8),
             decoration: BoxDecoration(
               borderRadius: BorderRadius.circular(kRadiusSmall),
-              border: remote ? Border.all(color: AgpColors.line) : null,
+              border: remote
+                  ? Border.all(color: Theme.of(context).dividerColor)
+                  : null,
             ),
             child: Stack(
               alignment: Alignment.center,
@@ -2896,7 +2987,7 @@ class _WatchPageState extends State<WatchPage>
                     fontWeight: here ? FontWeight.w800 : FontWeight.w600,
                     color: here
                         ? Colors.white
-                        : (remote ? AgpColors.fgFaint : AgpColors.fg),
+                        : (remote ? colors.onSurfaceVariant : colors.onSurface),
                   ),
                 ),
                 if (marker != null)
@@ -2957,9 +3048,8 @@ class _WatchPageState extends State<WatchPage>
     final tags = info?.tags ?? const <String>[];
 
     return Padding(
-      padding: flush
-          ? EdgeInsets.zero
-          : const EdgeInsets.fromLTRB(16, 8, 16, 4),
+      padding:
+          flush ? EdgeInsets.zero : const EdgeInsets.fromLTRB(16, 8, 16, 4),
       child: Container(
         padding: flush
             ? const EdgeInsets.fromLTRB(16, 16, 16, 24)
@@ -2969,7 +3059,7 @@ class _WatchPageState extends State<WatchPage>
             : BoxDecoration(
                 color: Theme.of(context).cardTheme.color,
                 borderRadius: BorderRadius.circular(kRadius),
-                border: Border.all(color: AgpColors.line),
+                border: Border.all(color: Theme.of(context).dividerColor),
               ),
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
@@ -2981,8 +3071,10 @@ class _WatchPageState extends State<WatchPage>
             const SizedBox(height: 9),
             Text(
               synopsis,
-              style: const TextStyle(
-                  fontSize: 12.8, height: 1.65, color: AgpColors.fgDim),
+              style: TextStyle(
+                  fontSize: 12.8,
+                  height: 1.65,
+                  color: Theme.of(context).colorScheme.onSurfaceVariant),
             ),
             if (tags.isNotEmpty) ...[
               const SizedBox(height: 11),
@@ -3006,8 +3098,11 @@ class _WatchPageState extends State<WatchPage>
                         width: 62,
                         child: Text(
                           row.key,
-                          style: const TextStyle(
-                              fontSize: 12.3, color: AgpColors.fgFaint),
+                          style: TextStyle(
+                              fontSize: 12.3,
+                              color: Theme.of(context)
+                                  .colorScheme
+                                  .onSurfaceVariant),
                         ),
                       ),
                       Expanded(
@@ -3040,11 +3135,13 @@ class _WatchPageState extends State<WatchPage>
       );
     }
     if (_danmaku.isEmpty) {
-      return const Padding(
-        padding: EdgeInsets.fromLTRB(16, 16, 16, 8),
+      return Padding(
+        padding: const EdgeInsets.fromLTRB(16, 16, 16, 8),
         child: Text(
           '這一集沒有彈幕。',
-          style: TextStyle(fontSize: 12.8, color: AgpColors.fgFaint),
+          style: TextStyle(
+              fontSize: 12.8,
+              color: Theme.of(context).colorScheme.onSurfaceVariant),
         ),
       );
     }
@@ -3081,17 +3178,20 @@ class _WatchPageState extends State<WatchPage>
                           width: 48,
                           child: Text(
                             formatClock(comment.start),
-                            style: const TextStyle(
+                            style: TextStyle(
                               fontSize: 11.5,
-                              color: AgpColors.fgFaint,
+                              color: Theme.of(context)
+                                  .colorScheme
+                                  .onSurfaceVariant,
                             ),
                           ),
                         ),
                         Expanded(
                           child: Text(
                             comment.text,
-                            style:
-                                TextStyle(fontSize: 12.6, color: comment.color),
+                            style: TextStyle(
+                                fontSize: 12.6,
+                                color: Theme.of(context).colorScheme.onSurface),
                           ),
                         ),
                       ],
@@ -3103,11 +3203,13 @@ class _WatchPageState extends State<WatchPage>
           ),
         ),
         if (_danmaku.length > shown.length)
-          const Padding(
-            padding: EdgeInsets.fromLTRB(16, 2, 16, 8),
+          Padding(
+            padding: const EdgeInsets.fromLTRB(16, 2, 16, 8),
             child: Text(
               '只列出前 400 則，畫面上還是照播全部。',
-              style: TextStyle(fontSize: 11.5, color: AgpColors.fgFaint),
+              style: TextStyle(
+                  fontSize: 11.5,
+                  color: Theme.of(context).colorScheme.onSurfaceVariant),
             ),
           ),
       ],
@@ -3142,9 +3244,10 @@ class _WatchPageState extends State<WatchPage>
                         padding: const EdgeInsets.fromLTRB(2, 8, 2, 6),
                         child: Text(
                           group.name,
-                          style: const TextStyle(
+                          style: TextStyle(
                             fontSize: 12.5,
-                            color: AgpColors.fgFaint,
+                            color:
+                                Theme.of(context).colorScheme.onSurfaceVariant,
                             fontWeight: FontWeight.w700,
                           ),
                         ),
@@ -3297,7 +3400,7 @@ class _WatchPageState extends State<WatchPage>
                     (_brightness * 100).round(),
                     (value) =>
                         refresh(() => unawaited(_setBrightness(value / 100))),
-                    note: '這會調暗播放畫面本身；App 不會改到裝置的螢幕亮度。',
+                    note: '調整這次播放的螢幕亮度，離開播放器後恢復系統設定。',
                   ),
                   SwitchListTile(
                     dense: true,
@@ -3338,22 +3441,14 @@ class _WatchPageState extends State<WatchPage>
     return ListTile(
       dense: true,
       title: Text(title),
-      subtitle: note.isEmpty
-          ? null
-          : Text(note, style: const TextStyle(fontSize: 11.5)),
-      trailing: Row(
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          Text(value,
-              style: const TextStyle(fontSize: 12.5, color: AgpColors.fgFaint)),
-          const Icon(Icons.chevron_right_rounded, size: 20),
-        ],
-      ),
+      subtitle: Text(note.isEmpty ? value : '$value · $note'),
+      trailing: const Icon(Icons.chevron_right_rounded, size: 20),
       onTap: () async {
         final picked = await showModalBottomSheet<T>(
           context: context,
           builder: (sheetContext) => SafeArea(
-            child: Column(
+            child: SingleChildScrollView(
+                child: Column(
               mainAxisSize: MainAxisSize.min,
               children: [
                 _SheetTitle(title),
@@ -3369,10 +3464,10 @@ class _WatchPageState extends State<WatchPage>
                   ),
                 const SizedBox(height: 8),
               ],
-            ),
+            )),
           ),
         );
-        if (picked != null) onPick(picked);
+        if (picked != null && mounted) onPick(picked);
       },
     );
   }

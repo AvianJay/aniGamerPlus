@@ -72,6 +72,9 @@ class _SettingsPageState extends State<SettingsPage> {
   bool _dirty = false;
   bool _showPassword = false;
   String _error = '';
+  final Map<String, String> _fieldErrors = {};
+  bool _confirmingLeave = false;
+  Map<String, String> _loadedProxy = {};
 
   AppState get state => widget.state;
 
@@ -111,6 +114,12 @@ class _SettingsPageState extends State<SettingsPage> {
       if (!mounted) return;
       _config = config;
       _spread(config);
+      _fieldErrors.clear();
+      _loadedProxy = {
+        for (final key in _textKeys.where((k) => k.startsWith('proxy_')))
+          key: _fields[key]!.text,
+        'proxy_protocol': '${_config['proxy_protocol']}',
+      };
       setState(() {
         _loading = false;
         _dirty = false;
@@ -202,8 +211,16 @@ class _SettingsPageState extends State<SettingsPage> {
 
     _fields['proxy_ip']!.text = host;
     _fields['proxy_port']!.text = port;
-    _fields['proxy_user']!.text = user;
-    _fields['proxy_passwd']!.text = password;
+    String decode(String value) {
+      try {
+        return Uri.decodeComponent(value);
+      } catch (_) {
+        return value;
+      }
+    }
+
+    _fields['proxy_user']!.text = decode(user);
+    _fields['proxy_passwd']!.text = decode(password);
     _config['proxy_protocol'] =
         kProxyProtocols.contains(protocol) ? protocol : 'HTTP';
   }
@@ -219,7 +236,9 @@ class _SettingsPageState extends State<SettingsPage> {
       out[key] = _fields[key]!.text;
     }
     for (final key in _numberKeys) {
-      out[key] = int.tryParse(_fields[key]!.text.trim()) ?? 0;
+      if (_config.containsKey(key) || _fields[key]!.text.isNotEmpty) {
+        out[key] = int.parse(_fields[key]!.text.trim());
+      }
     }
 
     out['browser_fingerprint'] = {
@@ -227,18 +246,27 @@ class _SettingsPageState extends State<SettingsPage> {
       'akamai': _fields['browser_fingerprint_akamai']!.text.trim(),
     };
 
-    final host = _fields['proxy_ip']!.text.trim();
+    var host = _fields['proxy_ip']!.text.trim();
+    if (host.contains(':') && !host.startsWith('[')) host = '[$host]';
     final port = _fields['proxy_port']!.text.trim();
     final user = _fields['proxy_user']!.text;
     final password = _fields['proxy_passwd']!.text;
     final protocol = '${out['proxy_protocol'] ?? 'HTTP'}'.toLowerCase();
-    if (host.isEmpty && port.isEmpty) {
+    final proxyUnchanged = _loadedProxy.entries.every((e) =>
+        e.value ==
+        (e.key == 'proxy_protocol'
+            ? '${_config[e.key]}'
+            : _fields[e.key]!.text));
+    if (proxyUnchanged) {
+      out['proxy'] = _config['proxy'];
+    } else if (host.isEmpty && port.isEmpty) {
       // 網頁版這時會存成 `http://:`, 手機上乾脆留空, 伺服器兩種都當作沒設代理
       out['proxy'] = '';
-    } else if (user.isEmpty || password.isEmpty) {
+    } else if (user.isEmpty) {
       out['proxy'] = '$protocol://$host:$port';
     } else {
-      out['proxy'] = '$protocol://$user:$password@$host:$port';
+      out['proxy'] = '$protocol://${Uri.encodeComponent(user)}:'
+          '${Uri.encodeComponent(password)}@$host:$port';
     }
 
     // 這五個只是畫面上的拆解, config.json 裡沒有這些鍵
@@ -251,6 +279,41 @@ class _SettingsPageState extends State<SettingsPage> {
   }
 
   Future<void> _save() async {
+    if (_saving || !_dirty) return;
+    _fieldErrors.clear();
+    const limits = {
+      'check_frequency': (1, '更新間隔'),
+      'multi-thread': (1, '最大同時下載數'),
+      'multi_downloading_segment': (1, '最大同時分段數'),
+      'download_cd': (0, '下載冷卻時間'),
+      'parse_sn_cd': (3, 'SN 解析冷卻時間'),
+      'quantity_of_logs': (1, '日誌數量'),
+    };
+    for (final entry in limits.entries) {
+      final text = _fields[entry.key]!.text.trim();
+      if (!_config.containsKey(entry.key) && text.isEmpty) continue;
+      final value = int.tryParse(text);
+      if (value == null || value < entry.value.$1) {
+        _fieldErrors[entry.key] = '${entry.value.$2}至少為 ${entry.value.$1}';
+      }
+    }
+    final host = _fields['proxy_ip']!.text.trim();
+    final port = _fields['proxy_port']!.text.trim();
+    if (_config['use_proxy'] == true || host.isNotEmpty || port.isNotEmpty) {
+      if (host.isEmpty || host.contains(RegExp(r'\s|://|/|@'))) {
+        _fieldErrors['proxy_ip'] = '請填入有效的代理主機名稱或 IP';
+      }
+      final value = int.tryParse(port);
+      if (value == null || value < 1 || value > 65535) {
+        _fieldErrors['proxy_port'] = 'Port 必須介於 1 與 65535';
+      }
+    }
+    if (_fieldErrors.isNotEmpty) {
+      setState(() {});
+      toast(context, _fieldErrors.values.first);
+      return;
+    }
+    FocusManager.instance.primaryFocus?.unfocus();
     setState(() => _saving = true);
     try {
       await state.client.uploadConfig(_collect());
@@ -305,11 +368,18 @@ class _SettingsPageState extends State<SettingsPage> {
   @override
   Widget build(BuildContext context) {
     return PopScope(
-      canPop: !_dirty,
+      canPop: !_dirty && !_saving,
       onPopInvokedWithResult: (didPop, _) async {
-        if (didPop) return;
+        if (didPop || _saving || _confirmingLeave) return;
+        _confirmingLeave = true;
         final yes = await _confirmDiscard('離開這一頁就會丟掉還沒儲存的修改。', '離開');
-        if (yes == true && mounted) Navigator.of(context).pop();
+        _confirmingLeave = false;
+        if (yes == true && mounted) {
+          setState(() => _dirty = false);
+          WidgetsBinding.instance.addPostFrameCallback((_) {
+            if (mounted) Navigator.of(context).pop();
+          });
+        }
       },
       child: Scaffold(
         appBar: AppBar(
@@ -324,7 +394,7 @@ class _SettingsPageState extends State<SettingsPage> {
           ],
         ),
         bottomNavigationBar: _loading || _error.isNotEmpty ? null : _saveBar(),
-        body: _body(),
+        body: AbsorbPointer(absorbing: _saving, child: _body()),
       ),
     );
   }
@@ -336,15 +406,21 @@ class _SettingsPageState extends State<SettingsPage> {
         children: [
           Expanded(
             child: Text(
-              _dirty ? '有還沒儲存的修改' : '設定與伺服器一致',
+              _fieldErrors.isNotEmpty
+                  ? '請修正 ${_fieldErrors.length} 個欄位'
+                  : _dirty
+                      ? '有還沒儲存的修改'
+                      : '設定與伺服器一致',
               style: TextStyle(
                 fontSize: 12.5,
-                color: _dirty ? AgpColors.accent : AgpColors.fgFaint,
+                color: _dirty
+                    ? AgpColors.accent
+                    : Theme.of(context).colorScheme.onSurfaceVariant,
               ),
             ),
           ),
           FilledButton.icon(
-            onPressed: _saving ? null : _save,
+            onPressed: _saving || !_dirty ? null : _save,
             icon: _saving
                 ? const SizedBox(
                     width: 15,
@@ -400,8 +476,8 @@ class _SettingsPageState extends State<SettingsPage> {
           _switch('danmu', '下載彈幕', '存成同名的 .ass'),
           _switch('m3u8', '創建播放清單', null),
           _number('check_frequency', '更新間隔', suffix: '分鐘', min: 1),
-          _number('multi-thread', '最大并發下載數', suffix: '個', min: 1),
-          _number('multi_downloading_segment', '最大并發分段數', suffix: '段', min: 1),
+          _number('multi-thread', '最大同時下載數', suffix: '個', min: 1),
+          _number('multi_downloading_segment', '最大同時分段數', suffix: '段', min: 1),
           _number('download_cd', '下載冷卻時間', suffix: '秒'),
           _number('parse_sn_cd', 'SN 解析冷卻時間', suffix: '秒', min: 3),
           _text('customized_video_filename_prefix', '影片檔名前綴'),
@@ -438,12 +514,15 @@ class _SettingsPageState extends State<SettingsPage> {
           _switch('save_logs', '記錄日志', null),
           _number('quantity_of_logs', '日志數量', suffix: '天', min: 1),
         ]),
-        const Padding(
-          padding: EdgeInsets.fromLTRB(4, 18, 4, 0),
+        Padding(
+          padding: const EdgeInsets.fromLTRB(4, 18, 4, 0),
           child: Text(
             '這一頁改的是伺服器上的 config.json，跟這支手機怎麼播放、下載無關；'
             '那些在「App 偏好設定」裡。',
-            style: TextStyle(fontSize: 12, color: AgpColors.fgFaint, height: 1.5),
+            style: TextStyle(
+                fontSize: 12,
+                color: Theme.of(context).colorScheme.onSurfaceVariant,
+                height: 1.5),
           ),
         ),
       ],
@@ -462,10 +541,10 @@ class _SettingsPageState extends State<SettingsPage> {
             padding: const EdgeInsets.fromLTRB(4, 6, 4, 8),
             child: Text(
               title,
-              style: const TextStyle(
+              style: TextStyle(
                 fontSize: 13,
                 fontWeight: FontWeight.w800,
-                color: AgpColors.fgFaint,
+                color: Theme.of(context).colorScheme.onSurfaceVariant,
                 letterSpacing: 0.4,
               ),
             ),
@@ -474,12 +553,13 @@ class _SettingsPageState extends State<SettingsPage> {
             decoration: BoxDecoration(
               color: Theme.of(context).cardTheme.color,
               borderRadius: BorderRadius.circular(kRadius),
-              border: Border.all(color: AgpColors.line),
+              border: Border.all(color: Theme.of(context).dividerColor),
             ),
             child: Column(
               children: [
                 for (var i = 0; i < children.length; i++) ...[
-                  if (i > 0) const Divider(height: 1, indent: 14, endIndent: 14),
+                  if (i > 0)
+                    const Divider(height: 1, indent: 14, endIndent: 14),
                   children[i],
                 ],
               ],
@@ -515,6 +595,7 @@ class _SettingsPageState extends State<SettingsPage> {
     return Padding(
       padding: const EdgeInsets.fromLTRB(14, 10, 14, 10),
       child: TextField(
+        key: ValueKey('setting-$key'),
         controller: _fields[key],
         maxLines: password ? 1 : maxLines,
         obscureText: password && !_showPassword,
@@ -523,6 +604,7 @@ class _SettingsPageState extends State<SettingsPage> {
         style: const TextStyle(fontSize: 14),
         decoration: InputDecoration(
           labelText: label,
+          errorText: _fieldErrors[key],
           hintText: hint.isEmpty ? null : hint,
           isDense: true,
           suffixIcon: password
@@ -533,7 +615,8 @@ class _SettingsPageState extends State<SettingsPage> {
                         : Icons.visibility_rounded,
                     size: 18,
                   ),
-                  onPressed: () => setState(() => _showPassword = !_showPassword),
+                  onPressed: () =>
+                      setState(() => _showPassword = !_showPassword),
                 )
               : null,
         ),
@@ -552,12 +635,14 @@ class _SettingsPageState extends State<SettingsPage> {
     return Padding(
       padding: const EdgeInsets.fromLTRB(14, 10, 14, 10),
       child: TextField(
+        key: ValueKey('setting-$key'),
         controller: _fields[key],
         keyboardType: TextInputType.number,
         inputFormatters: [FilteringTextInputFormatter.digitsOnly],
         style: const TextStyle(fontSize: 14),
         decoration: InputDecoration(
           labelText: label,
+          errorText: _fieldErrors[key],
           hintText: hint.isEmpty ? null : hint,
           isDense: true,
           suffixText: suffix.isEmpty ? null : suffix,
@@ -577,21 +662,15 @@ class _SettingsPageState extends State<SettingsPage> {
     return ListTile(
       dense: true,
       title: Text(title, style: const TextStyle(fontSize: 14.5)),
-      trailing: Row(
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          Text(
-            labelOf(values.contains(current) ? current : values.first),
-            style: const TextStyle(fontSize: 12.8, color: AgpColors.fgFaint),
-          ),
-          const Icon(Icons.chevron_right_rounded, size: 20),
-        ],
-      ),
+      subtitle:
+          Text(labelOf(values.contains(current) ? current : values.first)),
+      trailing: const Icon(Icons.chevron_right_rounded, size: 20),
       onTap: () async {
         final picked = await showModalBottomSheet<String>(
           context: context,
           builder: (sheetContext) => SafeArea(
-            child: Column(
+            child: SingleChildScrollView(
+                child: Column(
               mainAxisSize: MainAxisSize.min,
               children: [
                 Padding(
@@ -617,10 +696,10 @@ class _SettingsPageState extends State<SettingsPage> {
                   ),
                 const SizedBox(height: 10),
               ],
-            ),
+            )),
           ),
         );
-        if (picked == null) return;
+        if (picked == null || !mounted) return;
         setState(() {
           _config[key] = picked;
           _dirty = true;

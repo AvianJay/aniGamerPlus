@@ -21,10 +21,17 @@ import 'watch_page.dart';
 const Duration kSearchDebounce = Duration(milliseconds: 260);
 
 class AllTab extends StatefulWidget {
-  const AllTab({super.key, required this.state, required this.query});
+  const AllTab(
+      {super.key,
+      required this.state,
+      required this.query,
+      this.searchMode = false,
+      this.onResultOpened});
 
   final AppState state;
   final String query;
+  final bool searchMode;
+  final VoidCallback? onResultOpened;
 
   @override
   State<AllTab> createState() => _AllTabState();
@@ -33,6 +40,8 @@ class AllTab extends StatefulWidget {
 class _AllTabState extends State<AllTab> {
   CatalogPage? _page;
   bool _loading = true;
+  bool _libraryOnly = false;
+  String _error = '';
   int _token = 0;
   Timer? _debounce;
   final ScrollController _scroll = ScrollController();
@@ -50,6 +59,11 @@ class _AllTabState extends State<AllTab> {
     super.didUpdateWidget(oldWidget);
     if (oldWidget.query != widget.query) {
       _debounce?.cancel();
+      _token++;
+      _page = null;
+      _error = '';
+      _loading = true;
+      if (_scroll.hasClients) _scroll.jumpTo(0);
       _debounce = Timer(kSearchDebounce, () => _load(1));
     }
   }
@@ -63,15 +77,27 @@ class _AllTabState extends State<AllTab> {
 
   Future<void> _load(int page) async {
     final token = ++_token;
-    setState(() => _loading = true);
+    if (state.offline || !state.hasServer) {
+      setState(() {
+        _loading = false;
+        _page = CatalogPage();
+      });
+      return;
+    }
+    setState(() {
+      _loading = true;
+      _error = '';
+    });
     CatalogPage result;
     try {
-      result = await state.client
-          .catalogAll(query: widget.query.trim(), page: page);
+      result =
+          await state.client.catalogAll(query: widget.query.trim(), page: page);
     } catch (_) {
+      if (mounted && token == _token) _error = '暫時無法取得動畫瘋片單，請重試。';
       result = CatalogPage();
     }
     if (!mounted || token != _token) return;
+    state.thumbnails.seedCatalog(result.items);
     setState(() {
       _page = result;
       _loading = false;
@@ -97,123 +123,162 @@ class _AllTabState extends State<AllTab> {
   @override
   Widget build(BuildContext context) {
     final query = widget.query.trim();
+    final searching = widget.searchMode || query.isNotEmpty;
+    final libraryOnly = _libraryOnly || state.offline;
     final matches = _libraryMatches;
     final page = _page;
-
-    // 兩個格線都改成 sliver: 以前是 ListView 裡塞兩個 shrinkWrap 的
-    // GridView.builder, 那等於一進來就把兩百多格全部 build 出來, 也就是
-    // 兩百多筆縮圖請求同時出去. 現在只有看得到的那幾格會 build.
-    return LayoutBuilder(
-      builder: (context, constraints) {
-        final delegate = posterGridDelegate(constraints.maxWidth);
-        return CustomScrollView(
+    final remote = page?.items ?? const <CatalogItem>[];
+    final localNames = matches.map((v) => v.displayName.toLowerCase()).toSet();
+    final cards = <({VideoItem? video, CatalogItem? item})>[
+      if (searching || libraryOnly)
+        for (final video in matches) (video: video, item: null),
+      if (searching || !libraryOnly)
+        for (final item in remote)
+          if (!searching || !localNames.contains(item.title.toLowerCase()))
+            (video: null, item: item),
+    ];
+    final showingRemote = searching || !libraryOnly;
+    return LayoutBuilder(builder: (context, constraints) {
+      final delegate = posterGridDelegate(constraints.maxWidth,
+          textScale: MediaQuery.textScalerOf(context).scale(14) / 14);
+      return RefreshIndicator(
+        onRefresh: () async {
+          await state.thumbnails.refresh();
+          await _load(1);
+        },
+        child: CustomScrollView(
+          key: const ValueKey('anime-results'),
           controller: _scroll,
+          physics: const AlwaysScrollableScrollPhysics(),
+          keyboardDismissBehavior: ScrollViewKeyboardDismissBehavior.onDrag,
           slivers: [
             SliverToBoxAdapter(
-              child: SectionHeader(
-                title: query.isEmpty ? '片庫' : '片庫搜尋結果',
-                subtitle: matches.isEmpty ? null : '${matches.length} 部作品',
-              ),
-            ),
-            if (matches.isEmpty)
-              SliverToBoxAdapter(
                 child: Padding(
-                  padding: const EdgeInsets.symmetric(horizontal: 16),
-                  child: Text(
-                    query.isEmpty
-                        ? '片庫還沒有任何影片，先到主控台下載幾集吧。'
-                        : '找不到符合「$query」的作品。',
-                    style: const TextStyle(fontSize: 13, color: AgpColors.fgFaint),
-                  ),
-                ),
-              )
+              padding: const EdgeInsets.fromLTRB(16, 12, 16, 16),
+              child: searching
+                  ? Row(children: [
+                      Expanded(
+                          child: Text('搜尋「$query」',
+                              maxLines: 2,
+                              style: const TextStyle(
+                                  fontWeight: FontWeight.w700, fontSize: 16))),
+                      const SizedBox(width: 12),
+                      Text('${cards.length} 部作品',
+                          style: TextStyle(
+                              color: Theme.of(context)
+                                  .colorScheme
+                                  .onSurfaceVariant)),
+                    ])
+                  : Wrap(
+                      spacing: 10,
+                      runSpacing: 8,
+                      crossAxisAlignment: WrapCrossAlignment.center,
+                      children: [
+                          ChoiceChip(
+                              label: const Text('動畫瘋片單'),
+                              selected: !libraryOnly,
+                              onSelected: state.offline
+                                  ? null
+                                  : (_) =>
+                                      setState(() => _libraryOnly = false)),
+                          ChoiceChip(
+                              label: Text('我的片庫 ${matches.length}'),
+                              selected: libraryOnly,
+                              onSelected: (_) =>
+                                  setState(() => _libraryOnly = true)),
+                          if (!libraryOnly && page != null)
+                            Text('共 ${page.total} 部作品',
+                                style: TextStyle(
+                                    color: Theme.of(context)
+                                        .colorScheme
+                                        .onSurfaceVariant)),
+                        ]),
+            )),
+            if (_loading && showingRemote)
+              const SliverToBoxAdapter(
+                  child: LinearProgressIndicator(minHeight: 2)),
+            if (_error.isNotEmpty && showingRemote)
+              SliverToBoxAdapter(
+                  child: ListTile(
+                leading: const Icon(Icons.cloud_off_rounded),
+                title: Text(_error),
+                trailing: TextButton(
+                    onPressed: () => _load(1), child: const Text('重試')),
+              )),
+            if (cards.isEmpty && !(_loading && showingRemote))
+              SliverFillRemaining(
+                  hasScrollBody: false,
+                  child: EmptyState(
+                    icon: searching
+                        ? Icons.search_off_rounded
+                        : Icons.video_library_outlined,
+                    title: searching
+                        ? '沒有找到相符的動畫'
+                        : libraryOnly
+                            ? '片庫還沒有動畫'
+                            : '暫時沒有片單',
+                    message: searching
+                        ? '試試較短的作品名稱，或確認伺服器連線。'
+                        : libraryOnly
+                            ? '下載到伺服器的作品會顯示在這裡。'
+                            : '下拉重新整理後再試一次。',
+                  ))
             else
               _grid(
-                delegate: delegate,
-                count: matches.length,
-                builder: (context, index) {
-                  final video = matches[index];
-                  final episodes = state.episodesOf(video.animeName).length;
-                  return PosterCard(
-                    title: video.displayName,
-                    cache: state.thumbnails,
-                    sn: video.sn,
-                    headers: state.client.authHeaders,
-                    subtitle: '$episodes 集',
-                    onTap: () => _openLibrary(video),
-                  );
-                },
-              ),
-            SliverToBoxAdapter(
-              child: SectionHeader(
-                title: query.isEmpty ? '所有動畫' : '搜尋結果',
-                subtitle: page == null || page.total == 0
-                    ? null
-                    : (query.isEmpty
-                        ? '共 ${page.total} 部作品'
-                        : '找到 ${page.total} 部作品'),
-              ),
-            ),
-            if (_loading && page == null)
-              const SliverToBoxAdapter(
-                child: Padding(
-                  padding: EdgeInsets.symmetric(vertical: 34),
-                  child: Center(child: CircularProgressIndicator()),
-                ),
-              )
-            else if (page == null || page.items.isEmpty)
-              SliverToBoxAdapter(
-                child: Padding(
-                  padding: const EdgeInsets.symmetric(horizontal: 16),
-                  child: Text(
-                    query.isEmpty
-                        ? '目前拿不到動畫瘋的片單。'
-                        : '找不到符合「$query」的作品。',
-                    style: const TextStyle(fontSize: 13, color: AgpColors.fgFaint),
-                  ),
-                ),
-              )
-            else ...[
-              SliverOpacity(
-                opacity: _loading ? 0.45 : 1,
-                sliver: _grid(
                   delegate: delegate,
-                  count: page.items.length,
+                  count: cards.length,
                   builder: (context, index) {
-                    final item = page.items[index];
+                    final row = cards[index];
+                    final video = row.video;
+                    final item = row.item;
                     return PosterCard(
-                      title: item.title,
-                      // 片單卡片的 cover 本來就是動畫瘋 CDN 的網址, 不必繞
-                      // 伺服器, 但一樣交給快取去落盤
-                      cover: item.cover.isEmpty ? null : item.cover,
+                      key: ValueKey(video == null
+                          ? 'catalog-${item!.animeSn}-${item.videoSn}'
+                          : 'library-${video.sn}'),
+                      title: video?.displayName ?? item!.title,
+                      cover: video == null && item!.cover.isNotEmpty
+                          ? item.cover
+                          : null,
                       cache: state.thumbnails,
-                      subtitle: [
-                        if (item.info.isNotEmpty) item.info else item.volume,
-                        if (item.popular.isNotEmpty) item.popular,
-                      ].where((t) => t.isNotEmpty).join(' · '),
-                      onTap: () => showAnimeSheet(
-                        context,
-                        state,
-                        animeSn: item.animeSn,
-                        videoSn: item.videoSn,
-                        title: item.title,
-                        cover: item.cover,
-                      ),
+                      sn: video?.sn ??
+                          (item!.videoSn.isNotEmpty
+                              ? item.videoSn
+                              : item.animeSn),
+                      badge: video != null ? '片庫' : null,
+                      subtitle: video != null
+                          ? '${state.episodesOf(video.displayName).length} 集'
+                          : [
+                              if (item!.info.isNotEmpty)
+                                item.info
+                              else
+                                item.volume,
+                              if (item.popular.isNotEmpty) item.popular
+                            ].where((s) => s.isNotEmpty).join(' · '),
+                      onTap: () {
+                        widget.onResultOpened?.call();
+                        if (video != null) {
+                          _openLibrary(video);
+                          return;
+                        }
+                        showAnimeSheet(context, state,
+                            animeSn: item!.animeSn,
+                            videoSn: item.videoSn,
+                            title: item.title,
+                            cover: item.cover);
+                      },
                     );
-                  },
-                ),
-              ),
-              if (page.pages > 1) SliverToBoxAdapter(child: _pager(page)),
-            ],
+                  }),
+            if (showingRemote && page != null && page.pages > 1)
+              SliverToBoxAdapter(child: _pager(page)),
             const SliverToBoxAdapter(child: SizedBox(height: 28)),
           ],
-        );
-      },
-    );
+        ),
+      );
+    });
   }
 
   void _openLibrary(VideoItem video) {
-    final episodes = state.episodesOf(video.animeName);
+    final episodes = state.episodesOf(video.displayName);
     if (episodes.length <= 1) {
       Navigator.of(context).push(MaterialPageRoute(
         builder: (_) => WatchPage(state: state, sn: video.sn),
@@ -233,7 +298,8 @@ class _AllTabState extends State<AllTab> {
               padding: const EdgeInsets.only(bottom: 6),
               child: Text(
                 video.displayName,
-                style: const TextStyle(fontSize: 18, fontWeight: FontWeight.w800),
+                style:
+                    const TextStyle(fontSize: 18, fontWeight: FontWeight.w800),
               ),
             ),
             Padding(
@@ -242,7 +308,8 @@ class _AllTabState extends State<AllTab> {
                 children: [
                   Text(
                     '片庫裡有 ${episodes.length} 集',
-                    style: const TextStyle(fontSize: 12.5, color: AgpColors.fgFaint),
+                    style: const TextStyle(
+                        fontSize: 12.5, color: AgpColors.fgFaint),
                   ),
                   const Spacer(),
                   TextButton(
@@ -317,23 +384,29 @@ class _AllTabState extends State<AllTab> {
   Widget _pager(CatalogPage page) {
     return Padding(
       padding: const EdgeInsets.fromLTRB(16, 18, 16, 4),
-      child: Row(
-        mainAxisAlignment: MainAxisAlignment.center,
+      child: Wrap(
+        alignment: WrapAlignment.center,
+        crossAxisAlignment: WrapCrossAlignment.center,
+        runSpacing: 8,
         children: [
           OutlinedButton(
-            onPressed: page.page <= 1 || _loading ? null : () => _load(page.page - 1),
+            onPressed:
+                page.page <= 1 || _loading ? null : () => _load(page.page - 1),
             child: const Text('上一頁'),
           ),
           Padding(
             padding: const EdgeInsets.symmetric(horizontal: 14),
             child: Text(
               '第 ${page.page} / ${page.pages} 頁',
-              style: const TextStyle(fontSize: 13, color: AgpColors.fgDim),
+              style: TextStyle(
+                  fontSize: 13,
+                  color: Theme.of(context).colorScheme.onSurfaceVariant),
             ),
           ),
           OutlinedButton(
-            onPressed:
-                page.page >= page.pages || _loading ? null : () => _load(page.page + 1),
+            onPressed: page.page >= page.pages || _loading
+                ? null
+                : () => _load(page.page + 1),
             child: const Text('下一頁'),
           ),
         ],

@@ -50,13 +50,16 @@ class MonitorPage extends StatefulWidget {
   State<MonitorPage> createState() => _MonitorPageState();
 }
 
-class _MonitorPageState extends State<MonitorPage> {
+class _MonitorPageState extends State<MonitorPage> with WidgetsBindingObserver {
   WebSocketChannel? _channel;
   StreamSubscription<dynamic>? _sub;
   Timer? _retry;
 
   List<MonitorTask> _tasks = const [];
   bool _connected = false;
+  bool _connecting = false;
+  bool _hasSnapshot = false;
+  bool _background = false;
   bool _disposed = false;
   int _attempts = 0;
   String _error = '';
@@ -66,12 +69,14 @@ class _MonitorPageState extends State<MonitorPage> {
   @override
   void initState() {
     super.initState();
+    WidgetsBinding.instance.addObserver(this);
     _connect();
   }
 
   @override
   void dispose() {
     _disposed = true;
+    WidgetsBinding.instance.removeObserver(this);
     _retry?.cancel();
     _sub?.cancel();
     _channel?.sink.close();
@@ -80,14 +85,23 @@ class _MonitorPageState extends State<MonitorPage> {
 
   // ---------------------------------------------------------------- 連線
 
-  void _connect() {
-    if (_disposed) return;
+  Future<void> _connect() async {
+    if (_disposed || _background) return;
     _retry?.cancel();
     _sub?.cancel();
     _channel?.sink.close();
+    _channel = null;
+    setState(() {
+      _connected = false;
+      _connecting = true;
+      _error = '';
+    });
 
     if (!state.client.hasServer) {
-      setState(() => _error = '還沒設定伺服器位址。');
+      setState(() {
+        _connecting = false;
+        _error = '還沒設定伺服器位址。';
+      });
       return;
     }
 
@@ -95,14 +109,28 @@ class _MonitorPageState extends State<MonitorPage> {
       final channel = state.client.connectTasksProgress();
       _channel = channel;
       _sub = channel.stream.listen(
-        _onMessage,
-        onError: (Object error) => _drop('連線發生錯誤: $error'),
-        onDone: () => _drop(''),
+        (raw) {
+          if (_channel == channel) _onMessage(raw);
+        },
+        onError: (Object error) {
+          if (_channel == channel) _drop('連線發生錯誤: $error');
+        },
+        onDone: () {
+          if (_channel == channel) _drop('');
+        },
         cancelOnError: true,
       );
+      try {
+        await channel.ready;
+      } catch (_) {
+        if (_channel == channel) _drop('連不上任務監控，請確認網路與管理員權限。');
+        return;
+      }
+      if (_disposed || _background || _channel != channel) return;
       setState(() {
         _error = '';
         _connected = true;
+        _connecting = false;
       });
     } catch (error) {
       _drop('連不上任務監控: $error');
@@ -110,9 +138,10 @@ class _MonitorPageState extends State<MonitorPage> {
   }
 
   void _drop(String message) {
-    if (_disposed) return;
+    if (_disposed || _background) return;
     setState(() {
       _connected = false;
+      _connecting = false;
       if (message.isNotEmpty) _error = message;
     });
     _scheduleReconnect();
@@ -120,7 +149,7 @@ class _MonitorPageState extends State<MonitorPage> {
 
   /// 網頁版固定 1500 毫秒, 手機上連不上時往後拉到最多 10 秒, 省點電
   void _scheduleReconnect() {
-    if (_disposed) return;
+    if (_disposed || _background || (_retry?.isActive ?? false)) return;
     _attempts += 1;
     final delay = Duration(
       milliseconds: (1500 * _attempts).clamp(1500, 10000),
@@ -134,7 +163,8 @@ class _MonitorPageState extends State<MonitorPage> {
     _attempts = 0;
     Map<dynamic, dynamic> payload;
     try {
-      final decoded = jsonDecode(raw is String ? raw : utf8.decode(raw as List<int>));
+      final decoded =
+          jsonDecode(raw is String ? raw : utf8.decode(raw as List<int>));
       if (decoded is! Map) return;
       payload = decoded;
     } catch (_) {
@@ -150,9 +180,24 @@ class _MonitorPageState extends State<MonitorPage> {
 
     setState(() {
       _tasks = tasks;
+      _hasSnapshot = true;
       _connected = true;
       _error = '';
     });
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState lifecycle) {
+    if (lifecycle == AppLifecycleState.paused) {
+      _background = true;
+      _retry?.cancel();
+      _sub?.cancel();
+      _channel?.sink.close();
+      _channel = null;
+    } else if (lifecycle == AppLifecycleState.resumed && _background) {
+      _background = false;
+      unawaited(_connect());
+    }
   }
 
   // -------------------------------------------------------------------- UI
@@ -186,10 +231,16 @@ class _MonitorPageState extends State<MonitorPage> {
             child: _tasks.isEmpty
                 ? EmptyState(
                     icon: Icons.playlist_play_rounded,
-                    title: '當前無任務',
+                    title: !_connected
+                        ? '尚未取得下載狀態'
+                        : !_hasSnapshot
+                            ? '正在取得任務…'
+                            : '目前沒有下載任務',
                     message: _error.isNotEmpty
                         ? _error
-                        : '伺服器的下載佇列是空的。排了新任務之後這裡會即時跳出來。',
+                        : !_hasSnapshot
+                            ? '連上伺服器後會自動更新下載進度。'
+                            : '伺服器的下載佇列是空的。排了新任務之後這裡會即時跳出來。',
                   )
                 : ListView.separated(
                     padding: const EdgeInsets.fromLTRB(16, 12, 16, 24),
@@ -219,8 +270,14 @@ class _MonitorPageState extends State<MonitorPage> {
             child: Text(
               _connected
                   ? '已連線 · ${_tasks.length} 個任務進行中'
-                  : (_error.isEmpty ? '連線中斷，正在重連…' : _error),
-              style: const TextStyle(fontSize: 12.5, color: AgpColors.fgDim),
+                  : (_connecting
+                      ? '正在連線…'
+                      : _error.isEmpty
+                          ? '連線中斷，正在重連…'
+                          : _error),
+              style: TextStyle(
+                  fontSize: 12.5,
+                  color: Theme.of(context).colorScheme.onSurfaceVariant),
             ),
           ),
         ],
@@ -235,7 +292,7 @@ class _MonitorPageState extends State<MonitorPage> {
       decoration: BoxDecoration(
         color: Theme.of(context).cardTheme.color,
         borderRadius: BorderRadius.circular(kRadius),
-        border: Border.all(color: AgpColors.line),
+        border: Border.all(color: Theme.of(context).dividerColor),
       ),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
@@ -250,7 +307,9 @@ class _MonitorPageState extends State<MonitorPage> {
               Expanded(
                 child: Text(
                   task.status.isEmpty ? '處理中' : task.status,
-                  style: const TextStyle(fontSize: 12.5, color: AgpColors.fgDim),
+                  style: TextStyle(
+                      fontSize: 12.5,
+                      color: Theme.of(context).colorScheme.onSurfaceVariant),
                 ),
               ),
               Text(

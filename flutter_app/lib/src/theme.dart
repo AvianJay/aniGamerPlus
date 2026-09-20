@@ -49,10 +49,18 @@ ThemeData buildTheme({required Brightness brightness}) {
     brightness: brightness,
     colorScheme: scheme,
     scaffoldBackgroundColor: dark ? AgpColors.bg : AgpColors.lightBg,
+    dividerColor: dark ? AgpColors.line : const Color(0x14000000),
     splashFactory: InkSparkle.splashFactory,
   );
 
   return base.copyWith(
+    iconButtonTheme: IconButtonThemeData(
+      style: IconButton.styleFrom(
+        minimumSize: const Size(48, 48),
+        visualDensity: VisualDensity.standard,
+        tapTargetSize: MaterialTapTargetSize.padded,
+      ),
+    ),
     appBarTheme: AppBarTheme(
       backgroundColor: dark ? AgpColors.bg : AgpColors.lightBg,
       surfaceTintColor: Colors.transparent,
@@ -73,7 +81,8 @@ ThemeData buildTheme({required Brightness brightness}) {
       surfaceTintColor: Colors.transparent,
       elevation: 0,
       margin: EdgeInsets.zero,
-      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(kRadius)),
+      shape:
+          RoundedRectangleBorder(borderRadius: BorderRadius.circular(kRadius)),
     ),
     dividerTheme: DividerThemeData(
       color: dark ? AgpColors.line : const Color(0x14000000),
@@ -90,11 +99,13 @@ ThemeData buildTheme({required Brightness brightness}) {
       contentPadding: const EdgeInsets.symmetric(horizontal: 14, vertical: 14),
       border: OutlineInputBorder(
         borderRadius: BorderRadius.circular(kRadiusSmall),
-        borderSide: BorderSide(color: dark ? AgpColors.line : const Color(0x1F000000)),
+        borderSide:
+            BorderSide(color: dark ? AgpColors.line : const Color(0x1F000000)),
       ),
       enabledBorder: OutlineInputBorder(
         borderRadius: BorderRadius.circular(kRadiusSmall),
-        borderSide: BorderSide(color: dark ? AgpColors.line : const Color(0x1F000000)),
+        borderSide:
+            BorderSide(color: dark ? AgpColors.line : const Color(0x1F000000)),
       ),
       focusedBorder: OutlineInputBorder(
         borderRadius: BorderRadius.circular(kRadiusSmall),
@@ -115,7 +126,8 @@ ThemeData buildTheme({required Brightness brightness}) {
     outlinedButtonTheme: OutlinedButtonThemeData(
       style: OutlinedButton.styleFrom(
         foregroundColor: dark ? AgpColors.fg : AgpColors.lightFg,
-        side: BorderSide(color: dark ? AgpColors.lineStrong : const Color(0x33000000)),
+        side: BorderSide(
+            color: dark ? AgpColors.lineStrong : const Color(0x33000000)),
         padding: const EdgeInsets.symmetric(horizontal: 18, vertical: 13),
         shape: RoundedRectangleBorder(
           borderRadius: BorderRadius.circular(kRadiusSmall),
@@ -127,6 +139,8 @@ ThemeData buildTheme({required Brightness brightness}) {
     ),
     chipTheme: ChipThemeData(
       backgroundColor: dark ? AgpColors.card : AgpColors.lightCard,
+      selectedColor: AgpColors.bahamutSoft,
+      checkmarkColor: AgpColors.bahamut,
       side: BorderSide(color: dark ? AgpColors.line : const Color(0x14000000)),
       labelStyle: TextStyle(
         color: dark ? AgpColors.fgDim : AgpColors.lightFg,
@@ -162,7 +176,8 @@ ThemeData buildTheme({required Brightness brightness}) {
       behavior: SnackBarBehavior.floating,
       backgroundColor: dark ? AgpColors.cardHover : const Color(0xFF23262C),
       contentTextStyle: const TextStyle(color: AgpColors.fg, fontSize: 14),
-      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(kRadiusSmall)),
+      shape: RoundedRectangleBorder(
+          borderRadius: BorderRadius.circular(kRadiusSmall)),
     ),
     bottomSheetTheme: BottomSheetThemeData(
       backgroundColor: dark ? AgpColors.bgElev : Colors.white,

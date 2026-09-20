@@ -4,6 +4,8 @@
 /// 那份是「下載器怎麼抓片」, 這一頁是「這支手機怎麼播、怎麼存」。
 library;
 
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 
 import '../state/app_state.dart';
@@ -27,6 +29,8 @@ class AppPrefsPage extends StatefulWidget {
 
 class _AppPrefsPageState extends State<AppPrefsPage> {
   int _bytes = -1;
+  Timer? _measureTimer;
+  bool _clearing = false;
 
   AppState get state => widget.state;
   Prefs get prefs => state.prefs;
@@ -37,6 +41,21 @@ class _AppPrefsPageState extends State<AppPrefsPage> {
     super.initState();
     _measure();
     _measureCache();
+    store.addListener(_onDownloadsChanged);
+  }
+
+  @override
+  void dispose() {
+    store.removeListener(_onDownloadsChanged);
+    _measureTimer?.cancel();
+    super.dispose();
+  }
+
+  void _onDownloadsChanged() {
+    _measureTimer ??= Timer(const Duration(milliseconds: 500), () {
+      _measureTimer = null;
+      if (mounted) unawaited(_measure());
+    });
   }
 
   Future<void> _measure() async {
@@ -78,12 +97,18 @@ class _AppPrefsPageState extends State<AppPrefsPage> {
             onPick: (value) => _save(() => prefs.setAspect(value)),
           ),
           _pick<int>(
-            title: '預設畫面亮度',
-            value: (prefs.brightness * 100).round(),
-            label: '${(prefs.brightness * 100).round()}%',
-            note: '播放器把畫面本身調暗，不會動到裝置的螢幕亮度。',
-            choices: [for (final level in kBrightnessLevels) _Opt(level, '$level%')],
-            onPick: (value) => _save(() => prefs.setBrightness(value / 100)),
+            title: '線上播放畫質',
+            value: prefs.playbackResolution,
+            label: '${prefs.playbackResolution}P',
+            choices: [
+              for (final res in kResolutionChoices)
+                _Opt(int.parse(res), '${res}P')
+            ],
+            onPick: (value) => _save(() => prefs.setPlaybackResolution(value)),
+          ),
+          const ListTile(
+            title: Text('螢幕亮度'),
+            subtitle: Text('進入播放器時跟隨裝置亮度，播放時可在畫面左側上下滑動調整。'),
           ),
           SwitchListTile(
             title: const Text('自動播放下一集'),
@@ -91,7 +116,6 @@ class _AppPrefsPageState extends State<AppPrefsPage> {
             value: prefs.autoNext,
             onChanged: (value) => _save(() => prefs.setAutoNext(value)),
           ),
-
           _group('彈幕'),
           SwitchListTile(
             title: const Text('預設開啟彈幕'),
@@ -119,7 +143,8 @@ class _AppPrefsPageState extends State<AppPrefsPage> {
             value: prefs.danmakuScale,
             label: _scaleLabel(prefs.danmakuScale),
             choices: [
-              for (final scale in kDanmakuScales) _Opt(scale.value, scale.label),
+              for (final scale in kDanmakuScales)
+                _Opt(scale.value, scale.label),
             ],
             onPick: (value) => _save(() => prefs.setDanmakuScale(value)),
           ),
@@ -128,18 +153,20 @@ class _AppPrefsPageState extends State<AppPrefsPage> {
             value: prefs.danmakuSpeed,
             label: _speedLabel(prefs.danmakuSpeed),
             choices: [
-              for (final speed in kDanmakuSpeeds) _Opt(speed.value, speed.label),
+              for (final speed in kDanmakuSpeeds)
+                _Opt(speed.value, speed.label),
             ],
             onPick: (value) => _save(() => prefs.setDanmakuSpeed(value)),
           ),
-
           _group('下載到手機'),
           _pick<String>(
             title: '預設畫質',
             value: prefs.downloadResolution,
             label: '${prefs.downloadResolution}P',
             note: '伺服器片庫裡沒有這個畫質時會退回它手上有的那一份。',
-            choices: [for (final res in kResolutionChoices) _Opt(res, '${res}P')],
+            choices: [
+              for (final res in kResolutionChoices) _Opt(res, '${res}P')
+            ],
             onPick: (value) => _save(() => prefs.setDownloadResolution(value)),
           ),
           SwitchListTile(
@@ -158,7 +185,7 @@ class _AppPrefsPageState extends State<AppPrefsPage> {
             title: const Text('只在 Wi-Fi 下載'),
             subtitle: const Text('行動網路時佇列會停著等連上 Wi-Fi'),
             value: prefs.downloadWifiOnly,
-            onChanged: (value) => _save(() => prefs.setDownloadWifiOnly(value)),
+            onChanged: (value) => _save(() => state.setDownloadWifiOnly(value)),
           ),
           _pick<int>(
             title: '同時下載數',
@@ -170,31 +197,22 @@ class _AppPrefsPageState extends State<AppPrefsPage> {
               await _save(() => prefs.setDownloadConcurrency(value));
             },
           ),
-
           _group('外觀'),
-          ListTile(
-            title: const Text('主題'),
-            trailing: SegmentedButton<String>(
-              segments: const [
-                ButtonSegment(value: 'dark', label: Text('深色')),
-                ButtonSegment(value: 'light', label: Text('淺色')),
-                ButtonSegment(value: 'system', label: Text('跟隨系統')),
-              ],
-              // SegmentedButton 收到不在 segments 裡的值會直接 assert,
-              // 舊版本存過別的字串時不該讓設定頁整個開不起來
-              selected: {
-                const {'dark', 'light', 'system'}.contains(prefs.themeMode)
-                    ? prefs.themeMode
-                    : 'dark',
-              },
-              showSelectedIcon: false,
-              onSelectionChanged: (selection) async {
-                await state.setThemeMode(selection.first);
-                if (mounted) setState(() {});
-              },
-            ),
+          _pick<String>(
+            title: '主題',
+            value: prefs.themeMode,
+            label: switch (prefs.themeMode) {
+              'light' => '淺色',
+              'system' => '跟隨系統',
+              _ => '深色',
+            },
+            choices: const [
+              _Opt('dark', '深色'),
+              _Opt('light', '淺色'),
+              _Opt('system', '跟隨系統')
+            ],
+            onPick: (value) => _save(() => state.setThemeMode(value)),
           ),
-
           _group('儲存空間'),
           ListTile(
             leading: const Icon(Icons.sd_storage_outlined),
@@ -207,9 +225,9 @@ class _AppPrefsPageState extends State<AppPrefsPage> {
           ),
           ListTile(
             leading: const Icon(Icons.cleaning_services_outlined),
-            title: const Text('清除離線快取'),
+            title: Text(_clearing ? '正在清除…' : '清除播放與片單快取'),
             subtitle: Text(_cacheLabel),
-            onTap: _clearCache,
+            onTap: _clearing ? null : _clearCache,
           ),
         ],
       ),
@@ -221,17 +239,23 @@ class _AppPrefsPageState extends State<AppPrefsPage> {
   Future<void> _measureCache() async {
     final bytes = await state.videoCacheBytes();
     if (!mounted || bytes <= 0) return;
-    setState(() => _cacheLabel =
-        '線上播放的暫存目前 ${formatBytes(bytes)}，不會刪掉已下載的影片');
+    setState(() => _cacheLabel = '線上播放的暫存目前 ${formatBytes(bytes)}，不會刪掉已下載的影片');
   }
 
   Future<void> _clearCache() async {
-    await prefs.clearCache();
-    await state.clearVideoCache();
-    if (!mounted) return;
-    setState(() =>
-        _cacheLabel = '首頁、片單與線上播放的暫存，不會刪掉已下載的影片');
-    toast(context, '已清除離線快取。');
+    if (_clearing) return;
+    setState(() => _clearing = true);
+    try {
+      await prefs.clearCache();
+      await state.clearVideoCache();
+      if (!mounted) return;
+      setState(() => _cacheLabel = '首頁、片單與線上播放的暫存，不會刪掉已下載的影片');
+      toast(context, '已清除播放與片單快取。');
+    } catch (_) {
+      if (mounted) toast(context, '暫時無法清除快取，請稍後再試。');
+    } finally {
+      if (mounted) setState(() => _clearing = false);
+    }
   }
 
   // ------------------------------------------------------------------ 小零件
@@ -240,10 +264,10 @@ class _AppPrefsPageState extends State<AppPrefsPage> {
         padding: const EdgeInsets.fromLTRB(16, 22, 16, 6),
         child: Text(
           title,
-          style: const TextStyle(
+          style: TextStyle(
             fontSize: 12.5,
             fontWeight: FontWeight.w700,
-            color: AgpColors.fgFaint,
+            color: Theme.of(context).colorScheme.onSurfaceVariant,
           ),
         ),
       );
@@ -258,20 +282,14 @@ class _AppPrefsPageState extends State<AppPrefsPage> {
   }) {
     return ListTile(
       title: Text(title),
-      subtitle: note.isEmpty ? null : Text(note),
-      trailing: Row(
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          Text(label,
-              style: const TextStyle(fontSize: 12.8, color: AgpColors.fgFaint)),
-          const Icon(Icons.chevron_right_rounded, size: 20),
-        ],
-      ),
+      subtitle: Text(note.isEmpty ? label : '$label · $note'),
+      trailing: const Icon(Icons.chevron_right_rounded, size: 20),
       onTap: () async {
         final picked = await showModalBottomSheet<T>(
           context: context,
           builder: (sheetContext) => SafeArea(
-            child: Column(
+            child: SingleChildScrollView(
+                child: Column(
               mainAxisSize: MainAxisSize.min,
               children: [
                 Padding(
@@ -297,10 +315,10 @@ class _AppPrefsPageState extends State<AppPrefsPage> {
                   ),
                 const SizedBox(height: 10),
               ],
-            ),
+            )),
           ),
         );
-        if (picked != null) await onPick(picked);
+        if (picked != null && mounted) await onPick(picked);
       },
     );
   }

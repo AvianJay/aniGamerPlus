@@ -11,8 +11,10 @@ import 'package:video_player_platform_interface/video_player_platform_interface.
 import 'package:wakelock_plus_platform_interface/wakelock_plus_platform_interface.dart';
 import 'package:agp_mobile/src/pages/watch_page.dart';
 import 'package:agp_mobile/src/state/app_state.dart';
+import 'package:agp_mobile/src/theme.dart';
 
 import 'support/temp_dir.dart';
+import 'support/ui_capture.dart';
 
 class Paths extends PathProviderPlatform {
   Paths(this.path);
@@ -37,12 +39,13 @@ class DelayedPlayer extends VideoPlayerPlatform {
   bool playing = false;
   double speed = 1;
   int creations = 0;
+  Uint8List? frame;
 
   /// 第一個播放器的那一條. 多數測試只會有這一個.
   StreamController<VideoEvent> get events => _streamFor(1);
 
-  StreamController<VideoEvent> _streamFor(int id) => streams.putIfAbsent(
-      id, () => StreamController<VideoEvent>.broadcast());
+  StreamController<VideoEvent> _streamFor(int id) =>
+      streams.putIfAbsent(id, () => StreamController<VideoEvent>.broadcast());
 
   Future<void> closeStreams() async {
     for (final stream in streams.values) {
@@ -105,7 +108,9 @@ class DelayedPlayer extends VideoPlayerPlatform {
   }
 
   @override
-  Widget buildView(int id) => const ColoredBox(color: Color(0xFF384054));
+  Widget buildView(int id) => frame == null
+      ? const ColoredBox(color: Color(0xFF384054))
+      : Image.memory(frame!, fit: BoxFit.cover);
 }
 
 /// 假的系統音量與螢幕亮度. 這兩個手勢的重點就是「有沒有真的打到系統那一層」,
@@ -157,6 +162,7 @@ class DeviceLevels {
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
   setUpAll(() async {
+    await loadCaptureFonts();
     final fonts = Platform.environment['AGP_FONT_DIR'];
     if (fonts != null) {
       for (final entry in {
@@ -202,7 +208,7 @@ void main() {
         key: const ValueKey('capture'),
         child: MaterialApp(
             debugShowCheckedModeBanner: false,
-            theme: ThemeData(fontFamily: 'Roboto'),
+            theme: captureTheme(buildTheme(brightness: Brightness.dark)),
             home: WatchPage(state: state, sn: '1'))));
     for (var i = 0; i < 8; i++) {
       await tester.pump(const Duration(milliseconds: 100));
@@ -266,6 +272,112 @@ void main() {
     await tester.pumpWidget(const SizedBox());
     await tester.pump(const Duration(seconds: 1));
   });
+  testWidgets('dragging shows the selected frame without seeking until release',
+      (tester) async {
+    const channel = MethodChannel('plugins.justsoft.xyz/video_thumbnail');
+    final times = <int>[];
+    final recorder = ui.PictureRecorder();
+    final canvas = Canvas(recorder);
+    canvas.drawRect(const Rect.fromLTWH(0, 0, 320, 180),
+        Paint()..color = const Color(0xFF225566));
+    canvas.drawCircle(
+        const Offset(248, 45), 24, Paint()..color = const Color(0xFFFFC96B));
+    final mountain = Path()
+      ..moveTo(0, 180)
+      ..lineTo(115, 38)
+      ..lineTo(250, 180)
+      ..close();
+    canvas.drawPath(mountain, Paint()..color = const Color(0xFF67A898));
+    final picture = recorder.endRecording();
+    await tester.runAsync(() async {
+      final raster = await picture.toImage(320, 180);
+      final bytes = await raster.toByteData(format: ui.ImageByteFormat.png);
+      player.frame = bytes!.buffer.asUint8List();
+      raster.dispose();
+    });
+    picture.dispose();
+    final frameFile = Platform.environment['AGP_FRAME_FILE'];
+    if (frameFile != null) {
+      player.frame = await tester.runAsync(() => File(frameFile).readAsBytes());
+    }
+    state.client.seedSeriesJson('1', {
+      'animeSn': 'a1',
+      'videoSn': '1',
+      'title': 'BLEACH 死神 千年血戰篇',
+      'content': '黑崎一護與同伴們迎向新的戰鬥。',
+      'groups': [
+        {
+          'name': '',
+          'episodes': [
+            for (var i = 1; i <= 12; i++)
+              {'videoSn': '$i', 'episode': '$i', 'local': true},
+          ]
+        }
+      ],
+    });
+    tester.binding.defaultBinaryMessenger.setMockMethodCallHandler(channel,
+        (call) async {
+      times.add(call.arguments['timeMs'] as int);
+      return player.frame;
+    });
+    addTearDown(() => tester.binding.defaultBinaryMessenger
+        .setMockMethodCallHandler(channel, null));
+    await open(tester);
+    await tester.binding.setSurfaceSize(const Size(390, 844));
+    await tester.pump();
+    final slider = tester.widget<Slider>(find.byType(Slider));
+    slider.onChangeStart!(254);
+    slider.onChanged!(254);
+    await tester.pump(const Duration(milliseconds: 200));
+    await tester.pump();
+    expect(times, [254000]);
+    expect(player.seeks, isEmpty);
+    expect(player.playing, true);
+    expect(find.text('04:14'), findsOneWidget);
+    expect(find.byKey(const ValueKey('seek-preview')), findsOneWidget);
+    final preview = tester.getRect(find.byKey(const ValueKey('seek-preview')));
+    final track = tester.getRect(find.byKey(const ValueKey('player-timeline')));
+    expect(preview.bottom, lessThanOrEqualTo(track.top));
+    expect(preview.left, greaterThanOrEqualTo(0));
+    expect(preview.right, lessThanOrEqualTo(390));
+    expect(tester.takeException(), isNull);
+    if (Platform.environment['AGP_PLAYER_CAPTURE'] == '1') {
+      for (final target in [
+        ('player-preview-phone', const Size(390, 844)),
+        ('player-preview-landscape', const Size(1000, 650)),
+        ('player-preview-fullscreen', const Size(1280, 720)),
+      ]) {
+        if (target.$1.endsWith('fullscreen')) {
+          await tester.tap(find.byTooltip('全螢幕'));
+        }
+        await tester.binding.setSurfaceSize(target.$2);
+        await tester.pump(const Duration(milliseconds: 300));
+        if (target.$1.endsWith('fullscreen')) {
+          final timeline = tester.widget<Slider>(find.byType(Slider));
+          timeline.onChangeStart!(254);
+          timeline.onChanged!(254);
+          await tester.pump(const Duration(milliseconds: 200));
+        }
+        await settleImages(tester);
+        final boundary = tester.renderObject<RenderRepaintBoundary>(
+            find.byKey(const ValueKey('capture')));
+        await tester.runAsync(() async {
+          final image = await boundary.toImage(pixelRatio: 2);
+          final bytes = await image.toByteData(format: ui.ImageByteFormat.png);
+          await File('../.agpwork/${target.$1}.png')
+              .writeAsBytes(bytes!.buffer.asUint8List());
+          image.dispose();
+        });
+      }
+    }
+    player.actual = const Duration(seconds: 254);
+    tester.widget<Slider>(find.byType(Slider)).onChangeEnd!(254);
+    await tester.pump(const Duration(milliseconds: 300));
+    expect(player.seeks.last.inSeconds, 254);
+    expect(find.byKey(const ValueKey('seek-preview')), findsNothing);
+    await tester.pumpWidget(const SizedBox());
+  });
+
   testWidgets(
       'phone and landscape controls fit and pending seek can be disposed',
       (tester) async {
@@ -459,8 +571,7 @@ void main() {
         eventType: VideoEventType.isPlayingStateUpdate, isPlaying: false));
     await tester.pump(const Duration(milliseconds: 300));
     await tester.pump(const Duration(milliseconds: 300));
-    expect(state.watchTimeOf('1')?.ended, isNot(true),
-        reason: '還在緩衝就被當成看完了');
+    expect(state.watchTimeOf('1')?.ended, isNot(true), reason: '還在緩衝就被當成看完了');
 
     // 但真的播完了還是要認得出來
     player.events.add(VideoEvent(eventType: VideoEventType.bufferingEnd));
@@ -472,8 +583,7 @@ void main() {
     await tester.pumpWidget(const SizedBox());
     await tester.pump(const Duration(seconds: 1));
   });
-  testWidgets('開始播之後再緩衝就只留速度, 不再把轉圈壓在畫面中央',
-      (tester) async {
+  testWidgets('開始播之後再緩衝就只留速度, 不再把轉圈壓在畫面中央', (tester) async {
     levels.install(tester);
     addTearDown(() => levels.remove(tester));
     await tester.binding.setSurfaceSize(const Size(1000, 800));

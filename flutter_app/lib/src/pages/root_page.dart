@@ -13,6 +13,7 @@ import 'favourites_tab.dart';
 import 'history_tab.dart';
 import 'home_tab.dart';
 import 'me_tab.dart';
+import 'search_page.dart';
 
 class RootPage extends StatefulWidget {
   const RootPage({super.key, required this.state});
@@ -25,35 +26,10 @@ class RootPage extends StatefulWidget {
 
 class _RootPageState extends State<RootPage> {
   int _index = 0;
-  bool _searching = false;
-  String _query = '';
-  final TextEditingController _search = TextEditingController();
-  final FocusNode _searchFocus = FocusNode();
-
   AppState get state => widget.state;
 
-  @override
-  void dispose() {
-    _search.dispose();
-    _searchFocus.dispose();
-    super.dispose();
-  }
-
-  void _openSearch() {
-    setState(() {
-      _searching = true;
-      _index = 1;
-    });
-    WidgetsBinding.instance.addPostFrameCallback((_) => _searchFocus.requestFocus());
-  }
-
-  void _closeSearch() {
-    setState(() {
-      _searching = false;
-      _query = '';
-      _search.clear();
-    });
-  }
+  void _openSearch() => Navigator.of(context)
+      .push(MaterialPageRoute<void>(builder: (_) => SearchPage(state: state)));
 
   static const _titles = ['首頁', '所有動畫', '收藏', '紀錄', '我的'];
 
@@ -63,12 +39,10 @@ class _RootPageState extends State<RootPage> {
       listenable: state,
       builder: (context, _) {
         return PopScope(
-          canPop: !_searching && _index == 0,
+          canPop: _index == 0,
           onPopInvokedWithResult: (didPop, _) {
             if (didPop) return;
-            if (_searching) {
-              _closeSearch();
-            } else if (_index != 0) {
+            if (_index != 0) {
               setState(() => _index = 0);
             }
           },
@@ -79,8 +53,9 @@ class _RootPageState extends State<RootPage> {
               child: IndexedStack(
                 index: _index,
                 children: [
-                  HomeTab(state: state, onSeeAll: _openSearch),
-                  AllTab(state: state, query: _query),
+                  HomeTab(
+                      state: state, onSeeAll: () => setState(() => _index = 1)),
+                  AllTab(state: state, query: ''),
                   FavouritesTab(state: state),
                   HistoryTab(state: state),
                   MeTab(state: state),
@@ -95,11 +70,6 @@ class _RootPageState extends State<RootPage> {
                 }
                 setState(() {
                   _index = index;
-                  if (index != 1 && _searching) {
-                    _searching = false;
-                    _query = '';
-                    _search.clear();
-                  }
                 });
               },
               destinations: const [
@@ -137,39 +107,6 @@ class _RootPageState extends State<RootPage> {
   }
 
   PreferredSizeWidget _buildAppBar() {
-    if (_searching) {
-      return AppBar(
-        titleSpacing: 0,
-        leading: IconButton(
-          icon: const Icon(Icons.arrow_back),
-          onPressed: _closeSearch,
-        ),
-        title: TextField(
-          controller: _search,
-          focusNode: _searchFocus,
-          autocorrect: false,
-          textInputAction: TextInputAction.search,
-          decoration: InputDecoration(
-            hintText: '搜尋作品名稱',
-            filled: false,
-            border: InputBorder.none,
-            enabledBorder: InputBorder.none,
-            focusedBorder: InputBorder.none,
-            suffixIcon: _query.isEmpty
-                ? null
-                : IconButton(
-                    icon: const Icon(Icons.close, size: 18),
-                    onPressed: () {
-                      _search.clear();
-                      setState(() => _query = '');
-                    },
-                  ),
-          ),
-          onChanged: (value) => setState(() => _query = value),
-        ),
-      );
-    }
-
     return AppBar(
       title: Row(
         children: [
@@ -224,7 +161,8 @@ class _DownloadsButton extends StatelessWidget {
                 right: 6,
                 top: 8,
                 child: Container(
-                  padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 1),
+                  padding:
+                      const EdgeInsets.symmetric(horizontal: 4, vertical: 1),
                   constraints: const BoxConstraints(minWidth: 15),
                   decoration: BoxDecoration(
                     color: AgpColors.accent,

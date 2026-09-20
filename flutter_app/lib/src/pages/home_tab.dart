@@ -65,7 +65,8 @@ class HomeTab extends StatelessWidget {
   Widget _notice(BuildContext context) {
     final animes = state.animeHeads.length;
     final episodes = state.library.length;
-    final newest = state.library.isNotEmpty ? state.library.first.addedAt : null;
+    final newest =
+        state.library.isNotEmpty ? state.library.first.addedAt : null;
 
     var text = '片庫收錄 $animes 部作品、$episodes 集';
     if (newest != null) {
@@ -84,12 +85,14 @@ class HomeTab extends StatelessWidget {
         ),
         child: Row(
           children: [
-            const Icon(Icons.video_library_outlined, size: 18, color: AgpColors.accent),
+            const Icon(Icons.video_library_outlined,
+                size: 18, color: AgpColors.accent),
             const SizedBox(width: 10),
             Expanded(
               child: Text(
                 state.offline ? '離線模式 · 只顯示已下載到手機的集數。' : text,
-                style: const TextStyle(fontSize: 13, height: 1.4, color: AgpColors.fgDim),
+                style: const TextStyle(
+                    fontSize: 13, height: 1.4, color: AgpColors.fgDim),
               ),
             ),
           ],
@@ -147,17 +150,20 @@ class HomeTab extends StatelessWidget {
                   Expanded(
                     child: Text(
                       remaining,
-                      style: const TextStyle(fontSize: 11, color: AgpColors.accent),
+                      style: const TextStyle(
+                          fontSize: 11, color: AgpColors.accent),
                     ),
                   ),
                   if (next != null)
                     InkWell(
                       onTap: () => _watch(context, next.sn),
                       child: const Padding(
-                        padding: EdgeInsets.symmetric(horizontal: 4, vertical: 2),
+                        padding:
+                            EdgeInsets.symmetric(horizontal: 4, vertical: 2),
                         child: Text(
                           '下一集 ▸',
-                          style: TextStyle(fontSize: 11, color: AgpColors.fgDim),
+                          style:
+                              TextStyle(fontSize: 11, color: AgpColors.fgDim),
                         ),
                       ),
                     ),
@@ -194,7 +200,10 @@ class HomeTab extends StatelessWidget {
     return [
       const SectionHeader(title: '本季新番'),
       Rail(
-        height: 176,
+        height: 232 * 9 / 16 +
+            kPosterCaptionHeight *
+                MediaQuery.textScalerOf(context).scale(14) /
+                14,
         itemWidth: 232,
         itemCount: items.length,
         itemBuilder: (context, index) {
@@ -240,8 +249,11 @@ class HomeTab extends StatelessWidget {
     return [
       SectionHeader(title: title, actionLabel: '所有動畫', onAction: onSeeAll),
       Rail(
-        height: 232,
-        itemWidth: 128,
+        height: 160 * 4 / 3 +
+            kPosterCaptionHeight *
+                MediaQuery.textScalerOf(context).scale(14) /
+                14,
+        itemWidth: 160,
         itemCount: items.length,
         itemBuilder: (context, index) {
           final item = items[index];
@@ -344,8 +356,11 @@ class HomeTab extends StatelessWidget {
     return [
       const SectionHeader(title: '片庫熱門'),
       Rail(
-        height: 232,
-        itemWidth: 128,
+        height: 160 * 4 / 3 +
+            kPosterCaptionHeight *
+                MediaQuery.textScalerOf(context).scale(14) /
+                14,
+        itemWidth: 160,
         itemCount: top.length,
         itemBuilder: (context, index) {
           final video = top[index].key;
@@ -425,7 +440,8 @@ Future<void> showLibraryMenu(
                   '${video.displayName} · ${episodeLabel(video.episode)}',
                   style: const TextStyle(fontWeight: FontWeight.w700),
                 ),
-                subtitle: video.resolution > 0 ? Text('${video.resolution}P') : null,
+                subtitle:
+                    video.resolution > 0 ? Text('${video.resolution}P') : null,
               ),
               const Divider(),
               ListTile(
@@ -444,7 +460,8 @@ Future<void> showLibraryMenu(
                     : Icons.smartphone_rounded),
                 title: Text(downloaded ? '已下載到手機' : '下載到手機'),
                 subtitle: entry != null && !downloaded
-                    ? Text('${(entry.progress * 100).round()}% · ${entry.status.name}')
+                    ? Text(
+                        '${(entry.progress * 100).round()}% · ${entry.status.name}')
                     : null,
                 enabled: !downloaded,
                 onTap: () async {
@@ -558,7 +575,8 @@ class _ScheduleState extends State<_Schedule> {
             InkWell(
               onTap: () => widget.onTap(row),
               child: Padding(
-                padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 7),
+                padding:
+                    const EdgeInsets.symmetric(horizontal: 16, vertical: 7),
                 child: Row(
                   children: [
                     SizedBox(

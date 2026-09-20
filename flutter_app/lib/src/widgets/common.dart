@@ -63,6 +63,9 @@ class CoverImage extends StatefulWidget {
 class _CoverImageState extends State<CoverImage> {
   File? _resolved;
   bool _asked = false;
+  int _request = 0;
+  int _decodeRetries = 0;
+  bool _loading = false;
 
   /// 交給 ThumbnailStore 管的那種. 這種情況下不再掛 CachedNetworkImage ——
   /// 兩邊同時抓就等於繞過了閘門.
@@ -73,18 +76,42 @@ class _CoverImageState extends State<CoverImage> {
   @override
   void initState() {
     super.initState();
+    widget.cache?.addListener(_onCacheChanged);
     _sync();
+  }
+
+  void _onCacheChanged() {
+    if (!mounted) return;
+    setState(() {
+      _asked = false;
+      _sync();
+    });
+  }
+
+  @override
+  void dispose() {
+    widget.cache?.removeListener(_onCacheChanged);
+    _request++;
+    super.dispose();
   }
 
   @override
   void didUpdateWidget(covariant CoverImage oldWidget) {
     super.didUpdateWidget(oldWidget);
+    if (oldWidget.cache != widget.cache) {
+      oldWidget.cache?.removeListener(_onCacheChanged);
+      widget.cache?.addListener(_onCacheChanged);
+    }
     if (oldWidget.sn != widget.sn ||
         oldWidget.url != widget.url ||
+        oldWidget.name != widget.name ||
+        oldWidget.file != widget.file ||
         oldWidget.poster != widget.poster ||
         oldWidget.cache != widget.cache) {
       _resolved = null;
       _asked = false;
+      _request++;
+      _decodeRetries = 0;
       _sync();
     }
   }
@@ -95,23 +122,34 @@ class _CoverImageState extends State<CoverImage> {
     // 已經下載到手機的那一集有自己的縮圖檔, 不必再去要
     if (widget.file != null) return;
     final sn = widget.sn ?? '';
-    final url = widget.url;
+    final url = widget.url ??
+        (widget.poster ? cache.posterForTitle(widget.name) : null);
     // 熱的封面同步就撈得到, 第一帧直接畫出來 —— 不要先閃一格漸層
     final hit = sn.isNotEmpty
         ? cache.cached(sn, poster: widget.poster, fallbackUrl: url)
         : cache.cachedFile(url);
     if (hit != null) {
       _resolved = hit;
-      return;
+      final preferred = cache.urlFor(sn, poster: widget.poster) ?? url;
+      if (preferred != null && cache.cachedFile(preferred)?.path == hit.path) {
+        _loading = false;
+        return;
+      }
+      if (!widget.poster && preferred == null) return;
     }
     if (_asked) return;
     _asked = true;
+    _loading = true;
+    final request = ++_request;
     final pending = sn.isNotEmpty
         ? cache.resolve(sn, poster: widget.poster, fallbackUrl: url)
         : cache.resolveUrl(url!, headers: widget.headers);
     unawaited(pending.then((file) {
-      if (!mounted || file == null) return;
-      setState(() => _resolved = file);
+      if (!mounted || request != _request) return;
+      setState(() {
+        _loading = false;
+        if (file != null) _resolved = file;
+      });
     }));
   }
 
@@ -147,7 +185,22 @@ class _CoverImageState extends State<CoverImage> {
             ] else
               const ColoredBox(color: Color(0xFF000000)),
             if (local != null)
-              Image.file(local, fit: widget.fit, errorBuilder: _fallback)
+              Image.file(local, fit: widget.fit,
+                  errorBuilder: (context, error, stack) {
+                if (widget.file == null && _decodeRetries++ == 0) {
+                  WidgetsBinding.instance.addPostFrameCallback((_) async {
+                    await widget.cache?.invalidate(local);
+                    await FileImage(local).evict();
+                    if (!mounted) return;
+                    setState(() {
+                      _resolved = null;
+                      _asked = false;
+                      _sync();
+                    });
+                  });
+                }
+                return const SizedBox.shrink();
+              })
             else if (!_managed && url != null && url.isNotEmpty)
               CachedNetworkImage(
                 imageUrl: url,
@@ -160,14 +213,19 @@ class _CoverImageState extends State<CoverImage> {
                 errorWidget: (_, __, ___) => const SizedBox.shrink(),
                 fadeInDuration: const Duration(milliseconds: 180),
               ),
+            if (_loading && local == null)
+              const Center(
+                  child: SizedBox(
+                      width: 20,
+                      height: 20,
+                      child: CircularProgressIndicator(
+                          strokeWidth: 2, color: Colors.white54))),
           ],
         ));
-    return ratio == null ? content : AspectRatio(aspectRatio: ratio, child: content);
+    return ratio == null
+        ? content
+        : AspectRatio(aspectRatio: ratio, child: content);
   }
-
-  static Widget _fallback(
-          BuildContext context, Object error, StackTrace? stack) =>
-      const SizedBox.shrink();
 }
 
 /// 首頁那種「標題 + 右邊一條連結」的區塊頭
@@ -256,7 +314,9 @@ class EmptyState extends StatelessWidget {
         child: Column(
           mainAxisSize: MainAxisSize.min,
           children: [
-            Icon(icon, size: 46, color: AgpColors.fgFaint),
+            Icon(icon,
+                size: 46,
+                color: Theme.of(context).colorScheme.onSurfaceVariant),
             const SizedBox(height: 14),
             Text(
               title,
@@ -268,8 +328,9 @@ class EmptyState extends StatelessWidget {
               Text(
                 message!,
                 textAlign: TextAlign.center,
-                style:
-                    const TextStyle(fontSize: 13.5, color: AgpColors.fgFaint),
+                style: TextStyle(
+                    fontSize: 13.5,
+                    color: Theme.of(context).colorScheme.onSurfaceVariant),
               ),
             ],
             if (actionLabel != null) ...[
