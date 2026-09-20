@@ -549,11 +549,12 @@ class _SettingsPageState extends State<SettingsPage> {
               ),
             ),
           ),
-          Container(
-            decoration: BoxDecoration(
-              color: Theme.of(context).cardTheme.color,
+          Material(
+            color: Theme.of(context).cardTheme.color,
+            clipBehavior: Clip.antiAlias,
+            shape: RoundedRectangleBorder(
               borderRadius: BorderRadius.circular(kRadius),
-              border: Border.all(color: Theme.of(context).dividerColor),
+              side: BorderSide(color: Theme.of(context).dividerColor),
             ),
             child: Column(
               children: [
