@@ -1,0 +1,22 @@
+name: video_thumbnail
+description: Local compatibility patch of video_thumbnail 0.5.6 for current Android builds.
+version: 0.5.6+agp.1
+publish_to: none
+repository: https://github.com/justsoft/video_thumbnail
+
+environment:
+  sdk: '>=3.6.0 <4.0.0'
+  flutter: '>=3.27.0'
+
+dependencies:
+  flutter:
+    sdk: flutter
+
+flutter:
+  plugin:
+    platforms:
+      android:
+        package: xyz.justsoft.video_thumbnail
+        pluginClass: VideoThumbnailPlugin
+      ios:
+        pluginClass: VideoThumbnailPlugin
