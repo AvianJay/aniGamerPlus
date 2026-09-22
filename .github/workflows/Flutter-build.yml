@@ -6,9 +6,9 @@
 #
 # The IPA comes out unsigned, same as the WebView shell in iOS-build.yml: an
 # Apple Developer identity cannot live in a public repository, and every
-# sideloader re-signs with the installer's own identity anyway. The APK is
-# signed with Flutter's debug key, which is enough to install by hand but not
-# for the Play Store.
+# sideloader re-signs with the installer's own identity anyway. Android release
+# builds use the repository's upload keystore; pull requests without access to
+# repository secrets fall back to Flutter's debug key.
 
 name: aniGamerPlus Flutter App
 
@@ -89,10 +89,37 @@ jobs:
       - name: Generate the platform shell
         run: bash tool/prepare_platforms.sh
 
+      - name: Restore the Android signing key
+        env:
+          KEYSTORE_BASE64: ${{ secrets.KEYSTORE_BASE64 }}
+          KEYSTORE_ALIAS: ${{ secrets.KEYSTORE_ALIAS }}
+          KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
+        run: |
+          set -euo pipefail
+          if [[ -z "${KEYSTORE_BASE64}" || -z "${KEYSTORE_ALIAS}" || -z "${KEYSTORE_PASSWORD}" ]]; then
+            if [[ "${GITHUB_EVENT_NAME}" == "pull_request" ]]; then
+              echo "Android signing secrets are unavailable; this pull request will use the debug key."
+              exit 0
+            fi
+            echo "KEYSTORE_BASE64, KEYSTORE_ALIAS and KEYSTORE_PASSWORD are required." >&2
+            exit 1
+          fi
+          umask 077
+          printf '%s' "${KEYSTORE_BASE64}" | base64 --decode > android/app/release-keystore.jks
+          test -s android/app/release-keystore.jks
+
       - name: Build the APK
+        env:
+          KEYSTORE_PATH: ${{ github.workspace }}/flutter_app/android/app/release-keystore.jks
+          KEYSTORE_ALIAS: ${{ secrets.KEYSTORE_ALIAS }}
+          KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
         run: flutter build apk --release --build-number "${GITHUB_RUN_NUMBER}"
 
       - name: Build the app bundle
+        env:
+          KEYSTORE_PATH: ${{ github.workspace }}/flutter_app/android/app/release-keystore.jks
+          KEYSTORE_ALIAS: ${{ secrets.KEYSTORE_ALIAS }}
+          KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
         run: flutter build appbundle --release --build-number "${GITHUB_RUN_NUMBER}"
 
       - name: Name the artifacts

@@ -109,6 +109,51 @@ def patch_manifest(path):
     print('  patched', path)
 
 
+def patch_android_signing(path):
+    with open(path, encoding='utf-8') as handle:
+        source = handle.read()
+
+    android_marker = '\nandroid {\n'
+    if source.count(android_marker) != 1:
+        raise RuntimeError(f'unexpected Android Gradle template in {path}')
+
+    environment = '''
+val releaseKeystorePath = System.getenv("KEYSTORE_PATH")
+val releaseKeystoreAlias = System.getenv("KEYSTORE_ALIAS")
+val releaseKeystorePassword = System.getenv("KEYSTORE_PASSWORD")
+'''
+    signing_config = '''
+    signingConfigs {
+        if (listOf(
+                releaseKeystorePath,
+                releaseKeystoreAlias,
+                releaseKeystorePassword,
+            ).all { !it.isNullOrBlank() }) {
+            create("release") {
+                storeFile = file(releaseKeystorePath!!)
+                storePassword = releaseKeystorePassword
+                keyAlias = releaseKeystoreAlias
+                keyPassword = releaseKeystorePassword
+            }
+        }
+    }
+'''
+
+    source = source.replace(android_marker, environment + android_marker, 1)
+    source = source.replace(android_marker, android_marker + signing_config, 1)
+
+    debug_signing = 'signingConfig = signingConfigs.getByName("debug")'
+    release_signing = '''signingConfig = signingConfigs.findByName("release")
+                ?: signingConfigs.getByName("debug")'''
+    if source.count(debug_signing) != 1:
+        raise RuntimeError(f'unexpected release signing block in {path}')
+    source = source.replace(debug_signing, release_signing, 1)
+
+    with open(path, 'w', encoding='utf-8', newline='') as handle:
+        handle.write(source)
+    print('  patched', path)
+
+
 def patch_plist(path):
     with open(path, 'rb') as handle:
         info = plistlib.load(handle)
@@ -142,6 +187,7 @@ def patch_plist(path):
 
 
 patch_manifest(os.path.join('android', 'app', 'src', 'main', 'AndroidManifest.xml'))
+patch_android_signing(os.path.join('android', 'app', 'build.gradle.kts'))
 patch_plist(os.path.join('ios', 'Runner', 'Info.plist'))
 PYTHON
 
