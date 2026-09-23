@@ -264,14 +264,23 @@ jobs:
           VERSION=$(grep -m1 '^version:' flutter_app/pubspec.yaml | sed 's/version: *//; s/+.*//')
           mv dist/aniGamerPlus-*-"${GITHUB_RUN_NUMBER}".apk dist/aniGamerPlus-nightly.apk
           mv dist/aniGamerPlus-flutter-*-"${GITHUB_RUN_NUMBER}"-unsigned.ipa dist/aniGamerPlus-nightly-unsigned.ipa
+          APK=dist/aniGamerPlus-nightly.apk
+          IPA=dist/aniGamerPlus-nightly-unsigned.ipa
           # The same run number is the app's build number, see --build-number.
+          # Size and hash let the updater reject a download that was cut short:
+          # the installer only reports that as a signature mismatch.
           jq -n \
             --arg version "${VERSION}" \
             --argjson build "${GITHUB_RUN_NUMBER}" \
             --arg commit "${GITHUB_SHA}" \
             --arg date "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+            --argjson apk_size "$(stat -c %s "${APK}")" \
+            --arg apk_sha256 "$(sha256sum "${APK}" | cut -d' ' -f1)" \
+            --argjson ipa_size "$(stat -c %s "${IPA}")" \
+            --arg ipa_sha256 "$(sha256sum "${IPA}" | cut -d' ' -f1)" \
             '{version: $version, build: $build, commit: $commit, date: $date,
-              apk: "aniGamerPlus-nightly.apk", ipa: "aniGamerPlus-nightly-unsigned.ipa"}' \
+              apk: "aniGamerPlus-nightly.apk", apk_size: $apk_size, apk_sha256: $apk_sha256,
+              ipa: "aniGamerPlus-nightly-unsigned.ipa", ipa_size: $ipa_size, ipa_sha256: $ipa_sha256}' \
             > dist/flutter-nightly.json
           echo "VERSION=${VERSION}" >> "${GITHUB_ENV}"
           ls -lh dist

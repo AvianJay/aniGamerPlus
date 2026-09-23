@@ -13,9 +13,11 @@
 /// 讓它自己下載、簽名、安裝.
 library;
 
+import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 
+import 'package:crypto/crypto.dart';
 import 'package:http/http.dart' as http;
 import 'package:open_filex/open_filex.dart';
 import 'package:package_info_plus/package_info_plus.dart';
@@ -80,6 +82,8 @@ class UpdateInfo {
     required this.url,
     this.notes = '',
     this.commit = '',
+    this.size = 0,
+    this.sha256 = '',
   });
 
   final UpdateChannel channel;
@@ -90,6 +94,12 @@ class UpdateInfo {
   final String url;
   final String notes;
   final String commit;
+
+  /// 檔案應有的大小與 SHA-256 (小寫 hex); 0 / 空字串 = 不知道, 不檢查.
+  /// 行動網路斷一下, 串流可能「正常結束」但只收到一半 —— 那樣的 APK
+  /// 系統安裝器只會說簽章對不上, 看不出是檔案壞了.
+  final int size;
+  final String sha256;
 
   String get label => '$version ($build)';
 }
@@ -176,6 +186,9 @@ class Updater {
         build: int.parse(match.group(2)!),
         url: url,
         notes: '${release['body'] ?? ''}'.trim(),
+        size: _int(asset['size']),
+        // GitHub 從 2025 年起在 asset 上附 "sha256:<hex>"
+        sha256: _digest(asset['digest']),
       );
     }
     return null;
@@ -184,10 +197,9 @@ class Updater {
   Future<UpdateInfo?> _nightly({required bool ios}) async {
     final base = '$downloadBase/$kNightlyTag';
     final manifest = await _json(Uri.parse('$base/$kNightlyManifest'));
-    final file = '${manifest[ios ? 'ipa' : 'apk'] ?? ''}';
-    final build = manifest['build'] is int
-        ? manifest['build'] as int
-        : int.tryParse('${manifest['build']}') ?? 0;
+    final kind = ios ? 'ipa' : 'apk';
+    final file = '${manifest[kind] ?? ''}';
+    final build = _int(manifest['build']);
     if (file.isEmpty || build <= 0) return null;
     return UpdateInfo(
       channel: UpdateChannel.nightly,
@@ -196,7 +208,18 @@ class Updater {
       url: '$base/$file',
       commit: '${manifest['commit'] ?? ''}',
       notes: '${manifest['date'] ?? ''}',
+      size: _int(manifest['${kind}_size']),
+      sha256: _digest(manifest['${kind}_sha256']),
     );
+  }
+
+  static int _int(Object? value) =>
+      value is int ? value : int.tryParse('${value ?? ''}') ?? 0;
+
+  static String _digest(Object? value) {
+    final raw = '${value ?? ''}'.trim().toLowerCase();
+    final hex = raw.startsWith('sha256:') ? raw.substring(7) : raw;
+    return RegExp(r'^[0-9a-f]{64}$').hasMatch(hex) ? hex : '';
   }
 
   // --------------------------------------------------------------- Android
@@ -212,23 +235,45 @@ class Updater {
     if (response.statusCode != 200) {
       throw UpdateException('下載失敗 (HTTP ${response.statusCode})。');
     }
-    final total = response.contentLength ?? -1;
+    final total = response.contentLength ?? info.size;
     var received = 0;
+    final digest = _DigestSink();
+    final hasher = sha256.startChunkedConversion(digest);
     final sink = part.openWrite();
     try {
-      await for (final chunk in response.stream) {
+      // 卡住不動 30 秒就當作斷線, 不要讓進度條永遠停在那裡
+      await for (final chunk
+          in response.stream.timeout(const Duration(seconds: 30))) {
         sink.add(chunk);
+        hasher.add(chunk);
         received += chunk.length;
         onProgress?.call(received, total);
       }
+      await sink.close();
     } catch (_) {
       await sink.close();
-      if (await part.exists()) await part.delete();
+      await _discard(part);
       throw UpdateException('下載中斷，請再試一次。');
     }
-    await sink.close();
+    hasher.close();
+
+    final expectedSize = info.size > 0 ? info.size : total;
+    if (expectedSize > 0 && received != expectedSize) {
+      await _discard(part);
+      throw UpdateException('下載不完整（$received / $expectedSize bytes），請再試一次。');
+    }
+    if (info.sha256.isNotEmpty && digest.value.toString() != info.sha256) {
+      await _discard(part);
+      throw UpdateException('下載的檔案校驗失敗，請再試一次。');
+    }
     if (await file.exists()) await file.delete();
     return part.rename(file.path);
+  }
+
+  static Future<void> _discard(File file) async {
+    try {
+      if (await file.exists()) await file.delete();
+    } catch (_) {}
   }
 
   /// 交給系統安裝器. 第一次會被系統要求允許「安裝未知應用程式」.
@@ -282,4 +327,14 @@ class Updater {
   }
 
   void close() => _http.close();
+}
+
+class _DigestSink implements Sink<Digest> {
+  late Digest value;
+
+  @override
+  void add(Digest data) => value = data;
+
+  @override
+  void close() {}
 }

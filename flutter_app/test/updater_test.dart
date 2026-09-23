@@ -1,9 +1,37 @@
 import 'dart:convert';
+import 'dart:io';
 
 import 'package:agp_mobile/src/state/updater.dart';
+import 'package:crypto/crypto.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:http/http.dart' as http;
 import 'package:http/testing.dart';
+import 'package:path_provider_platform_interface/path_provider_platform_interface.dart';
+
+import 'support/temp_dir.dart';
+
+class Paths extends PathProviderPlatform {
+  Paths(this.path);
+  final String path;
+  @override
+  Future<String?> getTemporaryPath() async => path;
+}
+
+/// 回 [body] 的 APK 下載, 可以謊報 Content-Length 來模擬斷在半路
+Updater _apkServer(List<int> body, {int? contentLength}) => Updater(
+      httpClient: MockClient.streaming((request, _) async =>
+          http.StreamedResponse(Stream.value(body), 200,
+              contentLength: contentLength ?? body.length)),
+    );
+
+UpdateInfo _apk({int size = 0, String sha = ''}) => UpdateInfo(
+      channel: UpdateChannel.nightly,
+      version: '1.0.0',
+      build: 9,
+      url: 'http://dl.test/a.apk',
+      size: size,
+      sha256: sha,
+    );
 
 Updater _updater(Map<String, Object> routes) => Updater(
       apiBase: 'http://api.test',
@@ -114,5 +142,79 @@ void main() {
     expect(IosInstaller.parse('sidestore'), IosInstaller.sideStore);
     expect(IosInstaller.parse('bogus'), IosInstaller.auto);
     expect(UpdateChannel.parse('nightly'), UpdateChannel.nightly);
+  });
+
+  group('downloadApk', () {
+    late Directory temp;
+    final body = List<int>.generate(4096, (i) => i % 251);
+    final sha = sha256.convert(body).toString();
+
+    setUp(() {
+      temp = Directory.systemTemp.createTempSync('agp-update-');
+      PathProviderPlatform.instance = Paths(temp.path);
+    });
+    tearDown(() => deleteTempDir(temp));
+
+    test('keeps a complete file whose hash matches', () async {
+      final updater = _apkServer(body);
+      addTearDown(updater.close);
+      final file = await updater.downloadApk(_apk(size: body.length, sha: sha));
+      expect(await file.readAsBytes(), body);
+    });
+
+    test('rejects a stream that ends before Content-Length', () async {
+      final updater =
+          _apkServer(body.sublist(0, 1000), contentLength: body.length);
+      addTearDown(updater.close);
+      await expectLater(
+          updater.downloadApk(_apk()), throwsA(isA<UpdateException>()));
+      expect(temp.listSync(), isEmpty);
+    });
+
+    test('rejects a file shorter than the published size', () async {
+      final short = body.sublist(0, 1000);
+      final updater = _apkServer(short);
+      addTearDown(updater.close);
+      await expectLater(updater.downloadApk(_apk(size: body.length)),
+          throwsA(isA<UpdateException>()));
+      expect(temp.listSync(), isEmpty);
+    });
+
+    test('rejects a file whose hash does not match', () async {
+      final corrupt = [...body]..[10] ^= 0xff;
+      final updater = _apkServer(corrupt);
+      addTearDown(updater.close);
+      await expectLater(updater.downloadApk(_apk(size: body.length, sha: sha)),
+          throwsA(isA<UpdateException>()));
+      expect(temp.listSync(), isEmpty);
+    });
+  });
+
+  test('nightly manifest and GitHub digests feed size and hash', () async {
+    final hex = 'ab' * 32;
+    final updater = _updater({
+      'http://dl.test/nightly/flutter-nightly.json': {
+        ..._nightly,
+        'apk_size': 123,
+        'apk_sha256': hex,
+      },
+      'http://api.test/releases/latest': {
+        'assets': [
+          {
+            'name': 'aniGamerPlus-1.2.0-140.apk',
+            'browser_download_url': 'http://dl.test/app.apk',
+            'size': 456,
+            'digest': 'sha256:${hex.toUpperCase()}',
+          },
+        ],
+      },
+    });
+    addTearDown(updater.close);
+    final nightly = await updater.latest(UpdateChannel.nightly, ios: false);
+    expect(nightly!.size, 123);
+    expect(nightly.sha256, hex);
+    final stable = await updater.latest(UpdateChannel.stable, ios: false);
+    expect(stable!.size, 456);
+    expect(stable.sha256, hex);
   });
 }
