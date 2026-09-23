@@ -13,11 +13,18 @@
 ///
 /// 刻意不做預抓. 快取只從「播放器本來就要的東西」順手撿, 所以永遠不會跟正在
 /// 看的那一集搶頻寬 —— 慢線路上那是最要命的事.
+///
+/// 整台跑在自己的 isolate 裡. 播放器讀的每一個 byte 都要經過這裡一手 (複製、
+/// 落盤、再寫回 socket), 以前這些全擠在畫面那條執行緒上, 跟彈幕搶同一顆核心
+/// —— 播放器一口氣緩衝的那幾秒, 彈幕就一頓一頓的. 主 isolate 這邊只剩一層
+/// 薄薄的殼: 轉發 wrap(), 收速度.
 library;
 
 import 'dart:async';
+import 'dart:collection';
 import 'dart:convert';
 import 'dart:io';
+import 'dart:isolate';
 import 'dart:math' as math;
 
 import 'package:http/http.dart' as http;
@@ -50,6 +57,12 @@ const int kUpstreamRetries = 4;
 
 // ignore: constant_identifier_names
 const String HLS_MIME = 'application/vnd.apple.mpegurl';
+
+/// 速度回報多久送一次. 每一包都送的話主 isolate 一秒要被叫醒幾十次.
+const Duration _kSpeedReport = Duration(milliseconds: 100);
+
+/// 最近開過的這幾集不會被淘汰 —— 正在播的、剛退出去等著接回來的都在裡面
+const int _kProtectedKeys = 4;
 
 class _Target {
   _Target({
@@ -95,27 +108,25 @@ class _Meta {
   }
 }
 
+String _sanitize(String key) => key.replaceAll(RegExp(r'[^A-Za-z0-9_.-]'), '_');
+
+// =================================================================== 主 isolate
+
+/// 主 isolate 這一側. 真正在收發資料的是 [_CacheWorker], 在另一個 isolate.
 class VideoCacheServer {
   VideoCacheServer._(
-    this._server,
-    this._dir, {
-    required Duration connectTimeout,
-    required Duration stallTimeout,
-  })  : _connectTimeout = connectTimeout,
-        _stallTimeout = stallTimeout,
-        _http = IOClient(HttpClient()
-          ..connectionTimeout = connectTimeout
-          // 閒置的連線別留太久: 切過網路之後, 池子裡那幾條多半已經是死的
-          ..idleTimeout = const Duration(seconds: 5));
+      this._isolate, this._commands, this.port, this._events, this._exit);
 
-  final HttpServer _server;
-  final Directory _dir;
-  final Duration _connectTimeout;
-  final Duration _stallTimeout;
-  final http.Client _http;
-  final Map<String, _Target> _targets = {};
-  final Map<String, Future<_Meta?>> _metaWork = {};
+  final Isolate _isolate;
+  final SendPort _commands;
+  final ReceivePort _events;
+  final ReceivePort _exit;
+  final Completer<void> _closedAck = Completer<void>();
+  final Completer<void> _exited = Completer<void>();
   final List<List<int>> _samples = <List<int>>[];
+
+  /// 本機那台聽的埠
+  final int port;
 
   int _token = 0;
   bool _closed = false;
@@ -128,20 +139,59 @@ class VideoCacheServer {
     Duration connectTimeout = kUpstreamConnectTimeout,
     Duration stallTimeout = kUpstreamStallTimeout,
   }) async {
+    final hello = ReceivePort();
+    // 這兩個在 spawn 之前就開好: 那一頭一起來就可能開始回報, 也可能馬上掛掉
+    final events = ReceivePort();
+    final exit = ReceivePort();
+    Isolate? isolate;
     try {
-      if (!await dir.exists()) await dir.create(recursive: true);
-      final server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
-      final cache = VideoCacheServer._(server, dir,
-          connectTimeout: connectTimeout, stallTimeout: stallTimeout);
-      server.listen(cache._handle, onError: (Object _) {});
-      unawaited(cache._evict());
-      return cache;
+      isolate = await Isolate.spawn(
+        _workerMain,
+        _WorkerConfig(
+          hello: hello.sendPort,
+          events: events.sendPort,
+          dir: dir.path,
+          connectTimeout: connectTimeout,
+          stallTimeout: stallTimeout,
+        ),
+        onExit: exit.sendPort,
+        debugName: 'video-cache',
+      );
+      // 第一句話: [埠, 下指令用的 SendPort], 起不來就是 null
+      final first = await hello.first.timeout(const Duration(seconds: 10));
+      if (first is! List || first.length != 2) {
+        throw StateError('video cache worker failed to bind');
+      }
+      final server = VideoCacheServer._(
+          isolate, first[1] as SendPort, first[0] as int, events, exit);
+      server._listen();
+      return server;
     } catch (_) {
+      hello.close();
+      events.close();
+      exit.close();
+      isolate?.kill(priority: Isolate.immediate);
       return null;
     }
   }
 
-  int get port => _server.port;
+  void _listen() {
+    _events.listen((message) {
+      if (message is List && message.length == 2) {
+        // [這一批的第一個 byte 是什麼時候轉手的, 這一批多少 byte]
+        _samples.add(<int>[message[0] as int, message[1] as int]);
+        _prune(DateTime.now().millisecondsSinceEpoch);
+      } else if (message == 'closed' && !_closedAck.isCompleted) {
+        _closedAck.complete();
+      }
+    });
+    _exit.listen((_) {
+      // 那一頭不管是正常收掉還是掛了, 這一台都不能再用 —— healthy() 會回
+      // false, 下次開播時 AppState 會重起一台
+      _closed = true;
+      if (!_exited.isCompleted) _exited.complete();
+    });
+  }
 
   bool get closed => _closed;
 
@@ -153,8 +203,7 @@ class VideoCacheServer {
   Future<bool> healthy() async {
     if (_closed) return false;
     try {
-      final socket = await Socket.connect(
-          InternetAddress.loopbackIPv4, _server.port,
+      final socket = await Socket.connect(InternetAddress.loopbackIPv4, port,
           timeout: const Duration(milliseconds: 800));
       socket.destroy();
       return true;
@@ -180,13 +229,6 @@ class VideoCacheServer {
     _samples.removeWhere((sample) => sample[0] < cutoff);
   }
 
-  void _note(int bytes) {
-    if (bytes <= 0) return;
-    final now = DateTime.now().millisecondsSinceEpoch;
-    _samples.add(<int>[now, bytes]);
-    _prune(now);
-  }
-
   /// 把一個伺服器上的位址換成本機的. key 要能代表「哪一集的哪一份」——
   /// 換了畫質就是另一份, 不能共用同一塊快取.
   Uri wrap({
@@ -196,13 +238,17 @@ class VideoCacheServer {
   }) {
     if (_closed) return upstream;
     final token = (++_token).toString();
-    final target =
-        _Target(upstream: upstream, headers: headers, key: _sanitize(key));
-    _targets[token] = target;
-    // 開一集就跟伺服器對一次長度/驗證標頭: 檔案換過的話手上那堆塊就不算數了.
-    // 只有一個 byte, 但它必須在發任何一塊快取出去之前做完.
-    _metaWork[target.key] = _resolveMeta(target);
-    return Uri.parse('http://127.0.0.1:${_server.port}/v/$token');
+    // 這一句一定比播放器連過來那一下先到: 同一個 isolate 的訊息照送出的順序
+    // 處理, 而播放器要等這個函式回傳之後才拿得到網址
+    _commands.send(<Object>[
+      'wrap',
+      token,
+      upstream.toString(),
+      Map<String, String>.of(headers),
+      _sanitize(key),
+      false,
+    ]);
+    return Uri.parse('http://127.0.0.1:$port/v/$token');
   }
 
   /// 換畫質那條路 (/stream/playlist.m3u8) 的版本.
@@ -217,17 +263,199 @@ class VideoCacheServer {
   }) {
     if (_closed) return playlist;
     final token = (++_token).toString();
-    _targets[token] = _Target(
-        upstream: playlist,
-        headers: headers,
-        key: _sanitize(key),
-        hls: true);
-    return Uri.parse(
-        'http://127.0.0.1:${_server.port}/h/$token/playlist.m3u8');
+    _commands.send(<Object>[
+      'wrap',
+      token,
+      playlist.toString(),
+      Map<String, String>.of(headers),
+      _sanitize(key),
+      true,
+    ]);
+    return Uri.parse('http://127.0.0.1:$port/h/$token/playlist.m3u8');
   }
 
-  static String _sanitize(String key) =>
-      key.replaceAll(RegExp(r'[^A-Za-z0-9_.-]'), '_');
+  /// 收掉. 要等那一頭真的放開檔案才回來 —— 接著要刪快取目錄的人 (清除快取、
+  /// 測試收尾) 在 Windows 上會撞到還開著的檔案.
+  Future<void> close() async {
+    if (_closed && _exited.isCompleted) return;
+    _closed = true;
+    try {
+      _commands.send('close');
+      await _closedAck.future.timeout(const Duration(seconds: 3));
+    } catch (_) {
+      // 那一頭已經不在了, 或者收不乾淨 —— 下面直接把它關掉
+    }
+    _isolate.kill(priority: Isolate.immediate);
+    try {
+      await _exited.future.timeout(const Duration(seconds: 3));
+    } catch (_) {
+      // 等不到就算了
+    }
+    _events.close();
+    _exit.close();
+  }
+}
+
+class _WorkerConfig {
+  const _WorkerConfig({
+    required this.hello,
+    required this.events,
+    required this.dir,
+    required this.connectTimeout,
+    required this.stallTimeout,
+  });
+
+  final SendPort hello;
+  final SendPort events;
+  final String dir;
+  final Duration connectTimeout;
+  final Duration stallTimeout;
+}
+
+void _workerMain(_WorkerConfig config) {
+  // 這個 isolate 裡的任何一個例外都不該讓它整個掛掉 —— 那等於正在播的那一集
+  // 突然斷線. 真的掛了主 isolate 那邊會收到 exit, 下次開播會重起一台.
+  runZonedGuarded(() async {
+    final worker = await _CacheWorker.start(Directory(config.dir),
+        connectTimeout: config.connectTimeout,
+        stallTimeout: config.stallTimeout);
+    if (worker == null) {
+      config.hello.send(null);
+      return;
+    }
+    worker.events = config.events;
+    final commands = ReceivePort();
+    commands.listen((message) async {
+      if (message is List && message.isNotEmpty && message[0] == 'wrap') {
+        worker.register(
+          message[1] as String,
+          _Target(
+            upstream: Uri.parse(message[2] as String),
+            headers: (message[3] as Map).cast<String, String>(),
+            key: message[4] as String,
+            hls: message[5] as bool,
+          ),
+        );
+      } else if (message == 'close') {
+        await worker.close();
+        config.events.send('closed');
+        commands.close();
+      }
+    });
+    config.hello.send(<Object>[worker.port, commands.sendPort]);
+  }, (error, stack) {
+    // 吞掉. 播放器那一頭會看到連線斷掉, 它自己會再要一次.
+  });
+}
+
+// =================================================================== 工作 isolate
+
+class _CacheWorker {
+  _CacheWorker._(
+    this._server,
+    this._dir, {
+    required Duration connectTimeout,
+    required Duration stallTimeout,
+  })  : _connectTimeout = connectTimeout,
+        _stallTimeout = stallTimeout,
+        _http = IOClient(HttpClient()
+          ..connectionTimeout = connectTimeout
+          // 閒置的連線別留太久: 切過網路之後, 池子裡那幾條多半已經是死的
+          ..idleTimeout = const Duration(seconds: 5));
+
+  final HttpServer _server;
+  final Directory _dir;
+  final Duration _connectTimeout;
+  final Duration _stallTimeout;
+  final http.Client _http;
+  final Map<String, _Target> _targets = {};
+  final Map<String, Future<_Meta?>> _metaWork = {};
+
+  /// 最近 wrap 過的幾集, 淘汰時跳過
+  final LinkedHashSet<String> _recentKeys = LinkedHashSet<String>();
+
+  /// 每一集磁碟上有哪幾塊、各存到第幾個 byte.
+  ///
+  /// 以前每個請求都拿 existsSync / lengthSync 一塊一塊去問磁碟: 播放器發的
+  /// 多半是「一路要到檔尾」, 那就是一個請求好幾百次同步的系統呼叫 —— 而且
+  /// 當時還是在畫面那條執行緒上. 現在一集只掃一次, 之後照著寫入自己記帳.
+  final Map<String, Map<int, int>> _index = {};
+
+  /// 磁碟上總共用了多少. null = 還沒掃過.
+  ///
+  /// 以前每抓完一段就把整個快取目錄掃一遍 (一千多個檔案各 stat 一次), 只為了
+  /// 知道有沒有超過額度. 現在開機掃一次, 之後照著寫入加上去, 真的超過了才掃.
+  int? _usage;
+  bool _evicting = false;
+
+  /// 主 isolate 那邊收速度的地方
+  SendPort? events;
+  int _unreported = 0;
+  int _unreportedSince = 0;
+  int _reportedAt = 0;
+  Timer? _reportTimer;
+
+  bool _closed = false;
+
+  static Future<_CacheWorker?> start(
+    Directory dir, {
+    required Duration connectTimeout,
+    required Duration stallTimeout,
+  }) async {
+    try {
+      if (!await dir.exists()) await dir.create(recursive: true);
+      final server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
+      final worker = _CacheWorker._(server, dir,
+          connectTimeout: connectTimeout, stallTimeout: stallTimeout);
+      server.listen(worker._handle, onError: (Object _) {});
+      unawaited(worker._evict());
+      return worker;
+    } catch (_) {
+      return null;
+    }
+  }
+
+  int get port => _server.port;
+
+  void register(String token, _Target target) {
+    if (_closed) return;
+    _targets[token] = target;
+    _recentKeys
+      ..remove(target.key)
+      ..add(target.key);
+    while (_recentKeys.length > _kProtectedKeys) {
+      _recentKeys.remove(_recentKeys.first);
+    }
+    if (target.hls) return;
+    // 開一集就跟伺服器對一次長度/驗證標頭: 檔案換過的話手上那堆塊就不算數了.
+    // 只有一個 byte, 但它必須在發任何一塊快取出去之前做完.
+    _metaWork[target.key] = _resolveMeta(target);
+  }
+
+  // ---------------------------------------------------------------- 速度
+
+  void _note(int bytes) {
+    if (bytes <= 0) return;
+    final now = DateTime.now().millisecondsSinceEpoch;
+    if (_unreported == 0) _unreportedSince = now;
+    _unreported += bytes;
+    if (now - _reportedAt >= _kSpeedReport.inMilliseconds) {
+      _report();
+    } else {
+      _reportTimer ??= Timer(_kSpeedReport, _report);
+    }
+  }
+
+  void _report() {
+    _reportTimer?.cancel();
+    _reportTimer = null;
+    if (_unreported <= 0) return;
+    _reportedAt = DateTime.now().millisecondsSinceEpoch;
+    events?.send(<int>[_unreportedSince, _unreported]);
+    _unreported = 0;
+  }
+
+  // ---------------------------------------------------------------- 塊
 
   Directory _episodeDir(String key) => Directory('${_dir.path}/$key');
   File _metaFile(String key) => File('${_dir.path}/$key/meta.json');
@@ -240,19 +468,40 @@ class VideoCacheServer {
   int _blockLength(int index, _Meta meta) =>
       math.min(kCacheBlockBytes, meta.total - _blockStart(index));
 
+  static final RegExp _blockName = RegExp(r'^(\d+)\.blk$');
+
+  /// 這一集的塊帳本, 第一次用到時掃一次磁碟.
+  ///
+  /// 同步掃是故意的: 這裡是背景 isolate, 擋的是自己; 而同步做完就不會有「掃到
+  /// 一半, 另一個請求剛好寫進一塊」那種帳對不起來的時候.
+  Map<int, int> _coverage(String key) {
+    final known = _index[key];
+    if (known != null) return known;
+    final found = <int, int>{};
+    try {
+      final dir = _episodeDir(key);
+      if (dir.existsSync()) {
+        for (final item in dir.listSync()) {
+          if (item is! File) continue;
+          final match =
+              _blockName.firstMatch(item.uri.pathSegments.last);
+          if (match == null) continue;
+          final length = item.lengthSync();
+          if (length > 0) found[int.parse(match.group(1)!)] = length;
+        }
+      }
+    } catch (_) {
+      // 掃不動就當作什麼都沒有, 最壞是重抓一次
+    }
+    return _index[key] = found;
+  }
+
   /// 這一塊從塊開頭算起存了幾個 byte.
   ///
   /// 不是「有沒有」而是「到哪裡」: 播放器開一集時只會把檔頭讀個兩三百 KB 就
   /// 跑去拿 moov, 那一塊永遠湊不滿. 只認滿塊的話, 最常走的那條路就永遠快取
   /// 不到 —— 半塊也是有用的, 前綴照樣發得出去.
-  int _blockCovered(String key, int index) {
-    try {
-      final file = _blockFile(key, index);
-      return file.existsSync() ? file.lengthSync() : 0;
-    } catch (_) {
-      return 0;
-    }
-  }
+  int _blockCovered(String key, int index) => _coverage(key)[index] ?? 0;
 
   bool _hasFullBlock(String key, int index, _Meta meta) {
     if (_blockStart(index) >= meta.total) return false;
@@ -343,11 +592,17 @@ class VideoCacheServer {
       _metaWork[target.key] ??= _resolveMeta(target);
 
   Future<void> _forget(String key) async {
+    // 帳本先清: 就算下面刪不乾淨, 剩下的檔案下次掃的時候會重新算
+    final had = _index.remove(key);
     try {
       final dir = _episodeDir(key);
       if (dir.existsSync()) await dir.delete(recursive: true);
     } catch (_) {
       // 刪不掉的話下面的長度檢查會把那些塊判成不完整
+    }
+    final usage = _usage;
+    if (usage != null && had != null) {
+      _usage = math.max(0, usage - had.values.fold<int>(0, (a, b) => a + b));
     }
   }
 
@@ -449,7 +704,8 @@ class VideoCacheServer {
       }
 
       if (target.hls) {
-        await _handleHls(target, request, response, parts.length > 2 ? parts[2] : '');
+        await _handleHls(
+            target, request, response, parts.length > 2 ? parts[2] : '');
         return;
       }
 
@@ -559,7 +815,8 @@ class VideoCacheServer {
       final length = result.contentLength;
       if (length != null) response.contentLength = length;
       // 一片卡死就整片放掉 (不留半片), 播放器會自己再要一次同一片
-      await response.addStream(result.stream.timeout(_stallTimeout).map((chunk) {
+      await response
+          .addStream(result.stream.timeout(_stallTimeout).map((chunk) {
         _note(chunk.length);
         sink?.add(chunk);
         return chunk;
@@ -569,9 +826,10 @@ class VideoCacheServer {
       // 再跟上游要一次.
       await sink?.close();
       sink = null;
-      if (part.existsSync() && await part.length() > 0) {
+      final saved = part.existsSync() ? await part.length() : 0;
+      if (saved > 0) {
         await part.rename(file.path);
-        unawaited(_evict());
+        _grew(saved);
       }
       await response.close();
     } catch (_) {
@@ -599,7 +857,8 @@ class VideoCacheServer {
       if (mime != null) {
         response.headers.set(HttpHeaders.contentTypeHeader, mime);
       }
-      await response.addStream(result.stream.timeout(_stallTimeout).map((chunk) {
+      await response
+          .addStream(result.stream.timeout(_stallTimeout).map((chunk) {
         _note(chunk.length);
         return chunk;
       }));
@@ -650,8 +909,15 @@ class VideoCacheServer {
       if (covered <= 0) return;
       final lastCached = _blockStart(index) + covered - 1;
       final stop = math.min(to, lastCached);
-      await response.addStream(_blockFile(target.key, index)
-          .openRead(at - _blockStart(index), stop - _blockStart(index) + 1));
+      try {
+        await response.addStream(_blockFile(target.key, index)
+            .openRead(at - _blockStart(index), stop - _blockStart(index) + 1));
+      } on FileSystemException {
+        // 帳上有, 磁碟上卻讀不到 (被系統或使用者清掉了). 帳本丟掉, 下一次
+        // 重掃; 這一次讓播放器自己重要.
+        _index.remove(target.key);
+        rethrow;
+      }
       at = stop + 1;
     }
   }
@@ -683,10 +949,13 @@ class VideoCacheServer {
       try {
         if (ok && part.existsSync()) {
           final grown = await part.length();
+          final had = _blockCovered(target.key, block);
           // 半塊也留著 —— 但只有在比手上那份更長的時候才換, 不然中途被掐斷
           // 的一小段會把已經存好的整塊蓋掉
-          if (grown > 0 && grown > _blockCovered(target.key, block)) {
+          if (grown > 0 && grown > had) {
             await part.rename(_blockFile(target.key, block).path);
+            _coverage(target.key)[block] = grown;
+            _grew(grown - had);
           } else {
             await part.delete();
           }
@@ -749,7 +1018,6 @@ class VideoCacheServer {
     try {
       await response.addStream(body());
       await settle(keep: true);
-      unawaited(_evict());
       return true;
     } catch (_) {
       await settle(keep: true);
@@ -791,7 +1059,8 @@ class VideoCacheServer {
         if (name == 'transfer-encoding' || name == 'content-encoding') return;
         response.headers.set(name, value);
       });
-      await response.addStream(upstream.stream.timeout(_stallTimeout).map((chunk) {
+      await response
+          .addStream(upstream.stream.timeout(_stallTimeout).map((chunk) {
         _note(chunk.length);
         return chunk;
       }));
@@ -807,10 +1076,19 @@ class VideoCacheServer {
 
   // ------------------------------------------------------------------ 清掃
 
+  /// 磁碟上多了 [bytes]. 帳上超過額度了才真的去掃一遍.
+  void _grew(int bytes) {
+    final usage = _usage;
+    if (usage == null) return; // 開機那一趟還在掃, 它會算到的
+    _usage = usage + bytes;
+    if (_usage! > kCacheBudgetBytes) unawaited(_evict());
+  }
+
   /// 超過額度就整集整集地丟, 最久沒碰的先走. 丟半集沒有意義 —— 那只會留下
   /// 一堆補不齊的洞.
   Future<void> _evict() async {
-    if (_closed) return;
+    if (_closed || _evicting) return;
+    _evicting = true;
     try {
       final sizes = <String, int>{};
       final seen = <String, DateTime>{};
@@ -836,24 +1114,29 @@ class VideoCacheServer {
           seen[key] = DateTime.fromMillisecondsSinceEpoch(0);
         }
       }
+      _usage = total;
       if (total <= kCacheBudgetBytes) return;
 
       final order = sizes.keys.toList()
         ..sort((a, b) => seen[a]!.compareTo(seen[b]!));
       for (final key in order) {
         if (total <= kCacheBudgetBytes) break;
-        // 正在播的那一集不能丟
-        if (_targets.values.any((target) => target.key == key)) continue;
+        // 正在播的、剛退出去等著接回來的那幾集不能丟
+        if (_recentKeys.contains(key)) continue;
         total -= sizes[key] ?? 0;
         await _forget(key);
       }
+      _usage = total;
     } catch (_) {
       // 掃不動就跳過這一輪, 額度下次再收
+    } finally {
+      _evicting = false;
     }
   }
 
   Future<void> close() async {
     _closed = true;
+    _report();
     _targets.clear();
     _metaWork.clear();
     _http.close();
