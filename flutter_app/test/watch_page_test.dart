@@ -1097,6 +1097,26 @@ void main() {
     expect(notified, greaterThan(0), reason: '離開播放頁之後, 觀看紀錄要看得到最新進度');
   });
 
+  testWidgets('跳轉到一半播放器壞掉: 一樣自己重開, 而且落在要去的位置', (tester) async {
+    // 播放器報錯的那一刻剛好在跳轉: 當下不能處理 (跳轉還沒放手), 而壞掉的
+    // 播放器不會再通知第二次 —— 跳轉那邊收尾時不接手的話, 就永遠停在那裡
+    await open(tester);
+    final creations = player.creations;
+    seek(tester, 300); // 播放器一直回報 20 秒, 所以這個跳轉會一直掛著
+    await tester.pump(const Duration(milliseconds: 150));
+    player.actual = const Duration(seconds: 300);
+    player.latest
+        .addError(PlatformException(code: 'VideoError', message: '連線中斷'));
+    for (var i = 0; i < 10; i++) {
+      await tester.pump(const Duration(milliseconds: 100));
+    }
+    expect(player.creations, creations + 1, reason: '跳轉中壞掉之後沒有重開');
+    expect(player.seeks.last.inSeconds, 300, reason: '重開之後沒有落在要去的位置');
+    expect(player.playing, isTrue, reason: '跳轉前在播, 重開之後也要接著播');
+    await tester.pumpWidget(const SizedBox());
+    await tester.pump(const Duration(seconds: 2));
+  });
+
   testWidgets('開始播之後再緩衝就只留速度, 不再把轉圈壓在畫面中央', (tester) async {
     levels.install(tester);
     addTearDown(() => levels.remove(tester));

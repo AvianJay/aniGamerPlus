@@ -1412,7 +1412,9 @@ class _WatchPageState extends State<WatchPage> with WidgetsBindingObserver {
           final actual = await active.position;
           final atTarget = actual != null &&
               (actual.inMilliseconds / 1000 - wanted).abs() <= 1.5;
-          if (atTarget) break;
+          // 壞掉的播放器也可能回報「到了」—— 那不算, 要走下面的失敗收尾,
+          // 那裡才知道要去哪裡、跳完要不要播
+          if (atTarget && !active.value.hasError) break;
           if (active.value.hasError || DateTime.now().isAfter(deadline)) {
             throw StateError('跳轉逾時，請重試或檢查網路');
           }
@@ -1428,8 +1430,16 @@ class _WatchPageState extends State<WatchPage> with WidgetsBindingObserver {
       }
     } catch (_) {
       if (mounted && workingGeneration == _sourceGeneration) {
+        final target = _pendingSeek ?? _clock.value;
         setState(() => _pendingSeek = null);
-        _flashMessage('跳轉失敗，請重試或檢查網路');
+        final value = _controller?.value;
+        if (value != null && value.hasError) {
+          // 跳到一半播放器壞掉了. 它報錯的那一刻正在跳轉, 所以當時沒處理 ——
+          // 而壞掉的播放器不會再通知第二次, 這裡不接手的話就永遠停在那裡
+          _recoverFromError(value, at: target, resume: _resumeAfterSeek);
+        } else {
+          _flashMessage('跳轉失敗，請重試或檢查網路');
+        }
       }
     } finally {
       _seekWorkerRunning = false;
@@ -3097,16 +3107,17 @@ class _WatchPageState extends State<WatchPage> with WidgetsBindingObserver {
 
   /// 播到一半原生播放器自己報錯 (連線斷了、本機快取那台被系統收掉了):
   /// 從同一個位置重開. 以前這時候畫面就停在最後一幀, 什麼提示都沒有.
-  void _recoverFromError(VideoPlayerValue value) {
-    // 在背景時出的錯, 回到前景那一步 (didChangeAppLifecycleState) 會處理
+  void _recoverFromError(VideoPlayerValue value, {double? at, bool? resume}) {
+    // 在背景時出的錯, 回到前景那一步 (didChangeAppLifecycleState) 會處理;
+    // 跳轉中出的錯, 跳轉那邊失敗收尾時會帶著目標位置再叫一次
     if (_recovering ||
         _background ||
         _pendingSeek != null ||
         _error.isNotEmpty) {
       return;
     }
-    final at = _positionNow();
-    final resume = _showsPlaying;
+    final position = at ?? _positionNow();
+    final play = resume ?? _showsPlaying;
     final now = DateTime.now().millisecondsSinceEpoch;
     // 一開就壞的片源不能無限重開: 一分鐘內第三次就停下來, 讓使用者看到原因
     if (now - _lastErrorAt > 60000) _errorRetries = 0;
@@ -3118,7 +3129,7 @@ class _WatchPageState extends State<WatchPage> with WidgetsBindingObserver {
     _errorRetries++;
     _recovering = true;
     _flashMessage('播放中斷，正在重新連線…');
-    unawaited(_openSource(seekTo: at, autoplay: resume)
+    unawaited(_openSource(seekTo: position, autoplay: play)
         .whenComplete(() => _recovering = false));
   }
 
