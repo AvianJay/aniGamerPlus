@@ -1359,25 +1359,17 @@ class _WatchPageState extends State<WatchPage> with WidgetsBindingObserver {
         }
         await active.seekTo(Duration(milliseconds: (wanted * 1000).round()));
         final deadline = DateTime.now().add(const Duration(seconds: 45));
-        // 位置到了但還在緩衝時只再寬限這麼久. 跳轉沒放手之前, 播放鍵按下去
-        // 只會改「跳完要不要續播」而不是真的播 —— 從觀看紀錄接著看的時候,
-        // 整個緩衝的過程按鈕都像壞掉. 位置對了就交還控制權, 還在讀的話畫面
-        // 中央本來就有轉圈可以說明.
-        const settleGrace = Duration(milliseconds: 1200);
-        DateTime? matchedAt;
+        // 位置一對就放手, 不等緩衝. 以前這裡還會再等「緩衝完」最多 1.2 秒才按
+        // 播放 —— 但還在緩衝時按下播放本來就是「一有資料就開始」, 多等的那段
+        // 只是白白加在每一次續播、每一次跳轉的開頭. 而且跳轉沒放手之前, 播放
+        // 鍵按下去只會改「跳完要不要續播」, 按鈕看起來像壞掉.
         while (mounted &&
             generation == _sourceGeneration &&
             _pendingSeek == wanted) {
           final actual = await active.position;
           final atTarget = actual != null &&
               (actual.inMilliseconds / 1000 - wanted).abs() <= 1.5;
-          if (atTarget) {
-            if (!active.value.isBuffering) break;
-            matchedAt ??= DateTime.now();
-            if (DateTime.now().difference(matchedAt) > settleGrace) break;
-          } else {
-            matchedAt = null;
-          }
+          if (atTarget) break;
           if (active.value.hasError || DateTime.now().isAfter(deadline)) {
             throw StateError('跳轉逾時，請重試或檢查網路');
           }
