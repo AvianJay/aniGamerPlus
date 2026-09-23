@@ -667,6 +667,10 @@
        them with apologies is what keeps the page from looking half-loaded. */
     function hideCatalog() {
         catalogDisabled = true;
+        /* 不然觀看進度一到 (agp:watched), 又會拿失敗的那一包把「片單暫時無法
+           載入」畫回剛清空的格子裡 */
+        state.lastPayload = null;
+        state.index = null;
         ++catalogToken;
         global.clearTimeout(catalogRetryTimer);
         if (catalogController) { catalogController.abort(); }
@@ -717,6 +721,7 @@
     document.addEventListener('click', onClick);
     /* 觀看進度比片單晚到 (或反過來), 到了就把看過的標上去 */
     document.addEventListener('agp:watched', function () {
+        if (catalogDisabled) { return; }
         if (state.lastPayload) { renderCatalog(state.lastPayload); }
         if (state.index) {
             renderHot();

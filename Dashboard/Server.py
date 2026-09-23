@@ -929,27 +929,36 @@ def _make_thumbnail(video_path, output_path):
     ffmpeg = _get_ffmpeg_path()
     if not ffmpeg:
         return False
-    tmp_path = output_path + '.tmp.webp'
-    # 4 分钟处通常已过 OP, 片子太短就依次往前退
-    for seek in ('240', '30', '0'):
-        try:
-            subprocess.run([ffmpeg, '-y', '-loglevel', 'error', '-ss', seek,
-                             '-i', video_path, '-frames:v', '1',
-                             '-vf', 'scale=960:-2', '-c:v', 'libwebp',
-                             '-quality', '82', '-threads', '1', tmp_path],
-                            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-                            timeout=30, check=True)
-        except BaseException:
+    # ffmpeg 只負責抽一張 PNG, 編成 WebP 交給 write_webp: 各版本 ffmpeg 的 webp
+    # muxer 行為不一 (有的在 seek 超過片長時仍寫出一個沒有畫面的檔頭), 而
+    # write_webp 會先解碼驗證過才原子地放上去.
+    tmp_path = output_path + '.tmp.png'
+    try:
+        # 4 分钟处通常已过 OP, 片子太短就依次往前退
+        for seek in ('240', '30', '0'):
             if os.path.exists(tmp_path):
                 os.remove(tmp_path)
-            err_print(0, '縮圖錯誤', traceback.format_exc(), status=1, no_sn=True, display=False)
-            return False
-        if os.path.exists(tmp_path) and os.path.getsize(tmp_path) > 0:
-            os.replace(tmp_path, output_path)
-            return True
-    if os.path.exists(tmp_path):
-        os.remove(tmp_path)
-    return False
+            try:
+                subprocess.run([ffmpeg, '-y', '-loglevel', 'error', '-ss', seek,
+                                 '-i', video_path, '-frames:v', '1',
+                                 '-vf', 'scale=960:-2', '-c:v', 'png',
+                                 '-f', 'image2', '-threads', '1', tmp_path],
+                                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                                timeout=30, check=True)
+            except BaseException:
+                err_print(0, '縮圖錯誤', traceback.format_exc(), status=1, no_sn=True, display=False)
+                return False
+            if not os.path.exists(tmp_path) or os.path.getsize(tmp_path) == 0:
+                continue  # 這個時間點之後沒有畫面, 往前退
+            try:
+                write_webp(tmp_path, output_path)
+                return True
+            except (OSError, ValueError):
+                continue  # 抽出來的不是張能解的圖, 也往前退
+        return False
+    finally:
+        if os.path.exists(tmp_path):
+            os.remove(tmp_path)
 
 
 def _anime_info_cache_path(sn):
