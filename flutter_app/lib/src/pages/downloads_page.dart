@@ -88,7 +88,8 @@ class _DownloadsPageState extends State<DownloadsPage> {
   @override
   Widget build(BuildContext context) {
     return ListenableBuilder(
-      listenable: store,
+      // 連上線 / 斷線 (state.offline) 會改到上面那顆補抓彈幕
+      listenable: Listenable.merge([store, state]),
       builder: (context, _) {
         final active = store.active;
         final finished = store.finished;

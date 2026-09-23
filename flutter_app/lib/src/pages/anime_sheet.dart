@@ -277,7 +277,9 @@ class _AnimeSheetState extends State<_AnimeSheet> {
 
     final detail = _detail!;
     return ListenableBuilder(
-      listenable: state.downloads,
+      // 收藏、權限、伺服器佇列都是 AppState 的: 一起聽 (整個 app 不再因為
+      // AppState 一動就全部重建, 這一張要的話得自己聽)
+      listenable: Listenable.merge([state.downloads, state]),
       builder: (context, _) => ListView(
         padding: const EdgeInsets.fromLTRB(18, 4, 18, 30),
         children: [
@@ -865,7 +867,7 @@ class _EpisodePickerSheetState extends State<_EpisodePickerSheet> {
         ),
         Expanded(
           child: ListenableBuilder(
-            listenable: state.downloads,
+            listenable: Listenable.merge([state.downloads, state]),
             builder: (context, _) => ListView(
               padding: const EdgeInsets.fromLTRB(18, 4, 18, 18),
               children: [

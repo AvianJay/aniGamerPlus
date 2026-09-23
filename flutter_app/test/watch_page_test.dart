@@ -1048,6 +1048,24 @@ void main() {
     await tester.pump(const Duration(seconds: 2));
   });
 
+  testWidgets('播放中記進度不驚動整個 app, 離開時才通知', (tester) async {
+    // AppState 一通知, 壓在播放頁底下的五個分頁全部要重建一次. 播放中每十秒
+    // 記一次進度, 看一集就是一百多次沒人看得到的重建.
+    var notified = 0;
+    void count() => notified++;
+    state.addListener(count);
+    addTearDown(() => state.removeListener(count));
+
+    await open(tester);
+    await tester.pump(const Duration(seconds: 1));
+    expect(state.watchTimeOf('1'), isNotNull, reason: '進度還是要記下來');
+    expect(notified, 0, reason: '播放中的例行進度把整個 app 叫起來重建');
+
+    await tester.pumpWidget(const SizedBox());
+    await tester.pump();
+    expect(notified, greaterThan(0), reason: '離開播放頁之後, 觀看紀錄要看得到最新進度');
+  });
+
   testWidgets('開始播之後再緩衝就只留速度, 不再把轉圈壓在畫面中央', (tester) async {
     levels.install(tester);
     addTearDown(() => levels.remove(tester));

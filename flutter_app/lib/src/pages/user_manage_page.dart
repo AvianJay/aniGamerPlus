@@ -46,7 +46,20 @@ class _UserManagePageState extends State<UserManagePage> {
   @override
   void initState() {
     super.initState();
+    // 「哪一個是我」看的是 AppState 的登入者: 自己聽 (整個 app 不再因為
+    // AppState 一動就全部重建)
+    state.addListener(_changed);
     _load();
+  }
+
+  void _changed() {
+    if (mounted) setState(() {});
+  }
+
+  @override
+  void dispose() {
+    state.removeListener(_changed);
+    super.dispose();
   }
 
   Future<void> _load() async {
