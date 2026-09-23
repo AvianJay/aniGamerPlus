@@ -19,6 +19,7 @@ import 'dart:async';
 import 'dart:io';
 import 'dart:math' as math;
 
+import 'package:flutter/foundation.dart' show compute;
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:screen_brightness/screen_brightness.dart';
@@ -56,6 +57,10 @@ const double kMinBrightness = 0.2;
 /// 手指按不出 mousemove, 所以控制列留得比桌面久
 const Duration kControlsIdle = Duration(milliseconds: 8000);
 const int kNextEpisodeCountdown = 8;
+
+/// 彈幕檔小於這個大小 (字元) 就直接在畫面這條執行緒上解析. 大約一千多行,
+/// 解析只要幾毫秒, 比開一個 isolate 還快.
+const int kDanmakuParseInline = 128 * 1024;
 
 /// 邊看邊下載: 先攢這麼多秒再自動開播
 const double kStreamHeadStart = 45;
@@ -928,11 +933,23 @@ class _WatchPageState extends State<WatchPage> with WidgetsBindingObserver {
       }
     }
     if (!mounted) return;
-    setState(() {
-      _danmaku = (text == null || text.trim().isEmpty)
-          ? const <DanmakuComment>[]
-          : parseAss(text);
-    });
+    final parsed = await _parseDanmaku(text);
+    if (!mounted) return;
+    setState(() => _danmaku = parsed);
+  }
+
+  /// 熱門的集數彈幕動輒上萬行, 在畫面那條執行緒上解析就是開播那一刻卡一下
+  /// —— 剛好是第一幀要出來的時候. 大的丟到背景 isolate, 小的直接做
+  /// (開一個 isolate 本身也要時間).
+  static Future<List<DanmakuComment>> _parseDanmaku(String? text) async {
+    if (text == null || text.trim().isEmpty) return const <DanmakuComment>[];
+    if (text.length < kDanmakuParseInline) return parseAss(text);
+    try {
+      return await compute(parseAss, text, debugLabel: 'parse danmaku');
+    } catch (_) {
+      // 開不了 isolate (極少見) 就還是在這裡做, 至少要有彈幕
+      return parseAss(text);
+    }
   }
 
   // =============================================================== 畫質

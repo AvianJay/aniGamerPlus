@@ -853,6 +853,37 @@ void main() {
     expect(find.byType(DanmakuOverlay), findsOneWidget);
     await tester.pumpWidget(const SizedBox());
   });
+  testWidgets('彈幕很多的集數: 在背景解析, 一條都不少', (tester) async {
+    // 熱門的集數彈幕上萬行. 大到這個程度的檔改在背景 isolate 解析, 不在開播
+    // 那一刻卡住畫面 —— 但解析出來的結果要跟原本一模一樣.
+    const lines = 4000;
+    final ass = StringBuffer('[Script Info]\nScriptType: v4.00+\n\n[Events]\n');
+    for (var i = 0; i < lines; i++) {
+      final seconds = (i * 0.3).toStringAsFixed(2).padLeft(5, '0');
+      ass.writeln('Dialogue: 0,0:00:$seconds,0:00:59.00,Roll,,0,0,0,,'
+          r'{\move(1920,50,-200,50)\1c&H4CFFFFFF}第 '
+          '$i 條彈幕');
+    }
+    expect(ass.length, greaterThan(kDanmakuParseInline),
+        reason: '測試資料要大到會走背景解析那一條');
+    await tester.runAsync(
+        () => state.downloads.writeCachedDanmaku('1', ass.toString()));
+
+    await open(tester);
+    for (var i = 0;
+        i < 100 && find.byType(DanmakuOverlay).evaluate().isEmpty;
+        i++) {
+      await tester.runAsync(
+          () => Future<void>.delayed(const Duration(milliseconds: 20)));
+      await tester.pump();
+    }
+    final overlay = tester.widget<DanmakuOverlay>(find.byType(DanmakuOverlay));
+    expect(overlay.comments.length, lines);
+    expect(overlay.comments.first.text, '第 0 條彈幕');
+    expect(overlay.comments.last.start, closeTo((lines - 1) * 0.3, 0.01));
+    await tester.pumpWidget(const SizedBox());
+  });
+
   testWidgets('a different episode cannot adopt the parked player',
       (tester) async {
     await open(tester);
