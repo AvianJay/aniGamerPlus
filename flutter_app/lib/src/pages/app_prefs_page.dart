@@ -5,12 +5,14 @@
 library;
 
 import 'dart:async';
+import 'dart:io';
 
 import 'package:flutter/material.dart';
 
 import '../state/app_state.dart';
 import '../state/downloads.dart';
 import '../state/prefs.dart';
+import '../state/updater.dart';
 import '../theme.dart';
 import '../util/format.dart';
 import '../widgets/common.dart';
@@ -213,6 +215,35 @@ class _AppPrefsPageState extends State<AppPrefsPage> {
             ],
             onPick: (value) => _save(() => state.setThemeMode(value)),
           ),
+          _group('更新'),
+          _pick<String>(
+            title: '更新通道',
+            value: prefs.updateChannel,
+            label: UpdateChannel.parse(prefs.updateChannel).label,
+            note: 'Nightly 是 master 每次推送的自動建置，可能不穩定。',
+            choices: [
+              for (final channel in UpdateChannel.values)
+                _Opt(channel.key, channel.label),
+            ],
+            onPick: (value) => _save(() => prefs.setUpdateChannel(value)),
+          ),
+          SwitchListTile(
+            title: const Text('開啟 App 時檢查更新'),
+            value: prefs.updateAutoCheck,
+            onChanged: (value) => _save(() => prefs.setUpdateAutoCheck(value)),
+          ),
+          if (Platform.isIOS)
+            _pick<String>(
+              title: 'iOS 安裝方式',
+              value: prefs.iosInstaller,
+              label: IosInstaller.parse(prefs.iosInstaller).label,
+              note: '沒有裝對應的 App 時會自動改用其他方式。',
+              choices: [
+                for (final installer in IosInstaller.values)
+                  _Opt(installer.key, installer.label),
+              ],
+              onPick: (value) => _save(() => prefs.setIosInstaller(value)),
+            ),
           _group('儲存空間'),
           ListTile(
             leading: const Icon(Icons.sd_storage_outlined),

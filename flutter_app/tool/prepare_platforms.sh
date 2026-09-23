@@ -53,6 +53,7 @@ import plistlib
 import xml.etree.ElementTree as ET
 
 ANDROID = 'http://schemas.android.com/apk/res/android'
+TOOLS = 'http://schemas.android.com/tools'
 LABEL = os.environ.get('APP_LABEL', 'aniGamerPlus')
 
 
@@ -62,6 +63,7 @@ def attr(name):
 
 def patch_manifest(path):
     ET.register_namespace('android', ANDROID)
+    ET.register_namespace('tools', TOOLS)
     tree = ET.parse(path)
     manifest = tree.getroot()
 
@@ -71,12 +73,27 @@ def patch_manifest(path):
         node.get(attr('name'))
         for node in manifest.findall('uses-permission')
     }
+    # REQUEST_INSTALL_PACKAGES: App 內更新下載完 APK 要交給系統安裝器
     for needed in ('android.permission.INTERNET',
-                   'android.permission.ACCESS_NETWORK_STATE'):
+                   'android.permission.ACCESS_NETWORK_STATE',
+                   'android.permission.REQUEST_INSTALL_PACKAGES'):
         if needed not in permissions:
             node = ET.Element('uses-permission')
             node.set(attr('name'), needed)
             manifest.insert(0, node)
+
+    # open_filex 自帶讀相簿 / 影片 / 音樂的權限, 但更新用的 APK 放在 App 自己的
+    # 快取目錄, 一個都用不到 —— 合併時拿掉, 免得安裝時多問一堆.
+    for unwanted in ('android.permission.READ_EXTERNAL_STORAGE',
+                     'android.permission.READ_MEDIA_IMAGES',
+                     'android.permission.READ_MEDIA_VIDEO',
+                     'android.permission.READ_MEDIA_AUDIO'):
+        if unwanted in permissions:
+            continue
+        node = ET.Element('uses-permission')
+        node.set(attr('name'), unwanted)
+        node.set('{%s}node' % TOOLS, 'remove')
+        manifest.insert(0, node)
 
     application = manifest.find('application')
     if application is not None:
@@ -172,7 +189,9 @@ def patch_plist(path):
     modes.add('audio')
     info['UIBackgroundModes'] = sorted(modes)
     schemes = set(info.get('LSApplicationQueriesSchemes') or [])
-    schemes.update(('http', 'https'))
+    # 後三個是側載商店 (TrollStore 借用放大鏡的 apple-magnifier),
+    # App 內更新要先 canLaunchUrl 問過裝了哪一個
+    schemes.update(('http', 'https', 'apple-magnifier', 'sidestore', 'altstore'))
     info['LSApplicationQueriesSchemes'] = sorted(schemes)
     # 播放器自己會鎖橫向, 全部方向都要開著
     info['UISupportedInterfaceOrientations'] = [

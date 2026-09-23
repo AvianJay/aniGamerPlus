@@ -5,6 +5,7 @@ library;
 import 'package:flutter/material.dart';
 
 import '../state/app_state.dart';
+import '../state/updater.dart';
 import '../theme.dart';
 import '../util/format.dart';
 import '../widgets/common.dart';
@@ -18,6 +19,7 @@ import 'register_page.dart';
 import 'settings_page.dart';
 import 'setup_page.dart';
 import 'sn_list_page.dart';
+import 'update_dialog.dart';
 import 'user_info_page.dart';
 import 'user_manage_page.dart';
 
@@ -154,6 +156,18 @@ class MeTab extends StatelessWidget {
               toast(context, state.offline ? '還是連不上伺服器。' : '已重新整理。');
             }
           },
+        ),
+        ListTile(
+          leading: const Icon(Icons.system_update_rounded),
+          title: const Text('檢查更新'),
+          subtitle: FutureBuilder<AppVersion>(
+            future: Updater.current(),
+            builder: (context, snapshot) => Text(
+              '${UpdateChannel.parse(state.prefs.updateChannel).label}'
+              '${snapshot.hasData ? ' · 目前 ${snapshot.data}' : ''}',
+            ),
+          ),
+          onTap: () => checkForUpdates(context, state.prefs),
         ),
         const ListTile(
           leading: Icon(Icons.info_outline),

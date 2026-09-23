@@ -99,3 +99,44 @@ jobs:
             DanmuTemplate.ass
             sn_list-sample.txt
             config-sample.json
+
+  # Rolls the PyInstaller builds into the `nightly` prerelease, next to the
+  # app from Flutter-build.yml. Fixed file names, so the link never changes.
+  nightly:
+    needs: [test, build]
+    if: github.event_name == 'push' && github.ref == 'refs/heads/master'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    # Shared with Flutter-build.yml: both write to the same release.
+    concurrency:
+      group: nightly-release
+      cancel-in-progress: false
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: aniGamerPlus_artifacts_*
+          path: dist
+
+      - name: Package
+        run: |
+          set -euo pipefail
+          for os in windows linux; do
+            dir=$(ls -d dist/aniGamerPlus_artifacts_${os}_*)
+            # Artifacts do not keep the executable bit.
+            [[ -f "${dir}/aniGamerPlus" ]] && chmod +x "${dir}/aniGamerPlus"
+            (cd "${dir}" && zip -qr "${GITHUB_WORKSPACE}/aniGamerPlus-nightly_${os}_64bit.zip" .)
+          done
+          ls -lh aniGamerPlus-nightly_*.zip
+
+      - name: Publish to the nightly release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          VERSION=$(grep -m1 "aniGamerPlus_version = " Config.py | sed "s/.*'\(.*\)'.*/\1/")
+          bash .github/scripts/publish-nightly.sh Server "${VERSION}" \
+            aniGamerPlus-nightly_windows_64bit.zip \
+            aniGamerPlus-nightly_linux_64bit.zip

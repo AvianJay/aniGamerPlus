@@ -175,6 +175,27 @@ class Prefs {
   String get themeMode => _sp.getString('agp-theme') ?? 'light';
   Future<void> setThemeMode(String value) => _sp.setString('agp-theme', value);
 
+  // -------------------------------------------------------------------- 更新
+
+  /// stable / nightly
+  String get updateChannel => _sp.getString('agp-update-channel') ?? 'stable';
+  Future<void> setUpdateChannel(String value) =>
+      _sp.setString('agp-update-channel', value);
+
+  bool get updateAutoCheck => _sp.getBool('agp-update-auto-check') ?? true;
+  Future<void> setUpdateAutoCheck(bool value) =>
+      _sp.setBool('agp-update-auto-check', value);
+
+  /// auto / trollstore / sidestore / altstore
+  String get iosInstaller => _sp.getString('agp-ios-installer') ?? 'auto';
+  Future<void> setIosInstaller(String value) =>
+      _sp.setString('agp-ios-installer', value);
+
+  /// 開 App 時自動檢查到的這個 build 被按了「略過這版」, 就不再自己跳出來
+  int get skippedUpdateBuild => _sp.getInt('agp-update-skip') ?? 0;
+  Future<void> setSkippedUpdateBuild(int value) =>
+      _sp.setInt('agp-update-skip', value);
+
   // -------------------------------------------------------------------- 收藏
 
   List<String> get searchHistory =>

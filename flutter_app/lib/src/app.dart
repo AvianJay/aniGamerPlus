@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 
 import 'pages/root_page.dart';
 import 'pages/setup_page.dart';
+import 'pages/update_dialog.dart';
 import 'state/app_state.dart';
 import 'theme.dart';
 
@@ -15,6 +16,8 @@ class AgpApp extends StatefulWidget {
 }
 
 class _AgpAppState extends State<AgpApp> {
+  final _navigator = GlobalKey<NavigatorState>();
+
   @override
   void initState() {
     super.initState();
@@ -25,7 +28,18 @@ class _AgpAppState extends State<AgpApp> {
       } else {
         widget.state.finishBoot();
       }
+      _checkForUpdates();
     });
+  }
+
+  /// 開 App 時靜靜地看一眼有沒有新版; 對話框要掛在 MaterialApp 底下的 context 上
+  Future<void> _checkForUpdates() async {
+    if (!widget.state.prefs.updateAutoCheck) return;
+    // 讓首頁先把片庫拉起來, 別一開 App 就被對話框擋住
+    await Future<void>.delayed(const Duration(seconds: 2));
+    final context = _navigator.currentState?.overlay?.context;
+    if (context == null || !context.mounted) return;
+    await checkForUpdates(context, widget.state.prefs, silent: true);
   }
 
   @override
@@ -34,6 +48,7 @@ class _AgpAppState extends State<AgpApp> {
       listenable: widget.state,
       builder: (context, _) {
         return MaterialApp(
+          navigatorKey: _navigator,
           title: 'aniGamerPlus',
           debugShowCheckedModeBanner: false,
           theme: buildTheme(brightness: Brightness.light),

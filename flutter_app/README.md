@@ -97,10 +97,20 @@ lib/
 `.github/workflows/Flutter-build.yml`:
 
 * `analyze` —— `flutter analyze`
-* `android` —— APK + AAB, 用 Flutter 的 debug 金鑰簽 (裝得起來, 上不了商店)
-* `ios` —— 未簽名的 IPA, 跟 `iOS-build.yml` 一樣要靠 sideloader 自己簽
+* `android` —— APK + AAB, 用 repository secrets 裡的 release 金鑰簽 (PR 沒有 secrets 時退回 debug 金鑰)
+* `ios` —— 未簽名的 IPA, 要靠 sideloader 自己簽
+* `nightly` —— master 每次推送, 把 APK / IPA 以固定檔名換進 `nightly` prerelease
 
-三個都會上傳成 artifact, 發 release 的時候 APK 跟 IPA 會自動附上去.
+都會上傳成 artifact, 發 release 的時候 APK 跟 IPA 會自動附上去.
+`Python-build.yml` 也會把伺服器執行檔放進同一個 `nightly` release.
+
+### App 內更新
+
+「我的 → 檢查更新」, 開 App 時也會自己看一次 (「App 偏好設定 → 更新」可關).
+
+* 通道: 正式版 (`releases/latest`) 或 Nightly (`releases/download/nightly/flutter-nightly.json`), 比的是 build number (= CI run number)
+* Android: 下載 APK 後交給系統安裝器. 要跟手上那一版同一把金鑰簽才蓋得過去, debug 版裝不了 release 版的更新
+* iOS: 自動偵測 TrollStore / SideStore / AltStore, 用它們的 `install?url=` 開 IPA; 都沒有就用瀏覽器下載
 
 
 ### 播放器操作與快取

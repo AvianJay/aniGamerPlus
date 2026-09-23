@@ -9,6 +9,9 @@
 # sideloader re-signs with the installer's own identity anyway. Android release
 # builds use the repository's upload keystore; pull requests without access to
 # repository secrets fall back to Flutter's debug key.
+#
+# Every push to master also refreshes the `nightly` prerelease (see the nightly
+# job), which is what the app's built-in updater follows on its nightly channel.
 
 name: aniGamerPlus Flutter App
 
@@ -228,3 +231,56 @@ jobs:
           files: flutter_app/${{ env.IPA_NAME }}
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  # Rolls the APK and IPA into the `nightly` prerelease under fixed names, next
+  # to flutter-nightly.json, which the app's updater reads to learn the build
+  # number. Only master: a pull request or a side branch must never reach the
+  # phones that follow the nightly channel.
+  nightly:
+    needs: [android, ios]
+    if: github.ref == 'refs/heads/master' && (github.event_name == 'push' || github.event_name == 'workflow_dispatch')
+    runs-on: ubuntu-latest
+    # Shared with Python-build.yml: both write to the same release.
+    concurrency:
+      group: nightly-release
+      cancel-in-progress: false
+
+    defaults:
+      run:
+        working-directory: .
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: aniGamerPlus-*
+          path: dist
+          merge-multiple: true
+
+      - name: Rename and describe the build
+        run: |
+          set -euo pipefail
+          VERSION=$(grep -m1 '^version:' flutter_app/pubspec.yaml | sed 's/version: *//; s/+.*//')
+          mv dist/aniGamerPlus-*-"${GITHUB_RUN_NUMBER}".apk dist/aniGamerPlus-nightly.apk
+          mv dist/aniGamerPlus-flutter-*-"${GITHUB_RUN_NUMBER}"-unsigned.ipa dist/aniGamerPlus-nightly-unsigned.ipa
+          # The same run number is the app's build number, see --build-number.
+          jq -n \
+            --arg version "${VERSION}" \
+            --argjson build "${GITHUB_RUN_NUMBER}" \
+            --arg commit "${GITHUB_SHA}" \
+            --arg date "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+            '{version: $version, build: $build, commit: $commit, date: $date,
+              apk: "aniGamerPlus-nightly.apk", ipa: "aniGamerPlus-nightly-unsigned.ipa"}' \
+            > dist/flutter-nightly.json
+          echo "VERSION=${VERSION}" >> "${GITHUB_ENV}"
+          ls -lh dist
+
+      - name: Publish to the nightly release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          bash .github/scripts/publish-nightly.sh App "${VERSION} (build ${GITHUB_RUN_NUMBER})" \
+            dist/aniGamerPlus-nightly.apk \
+            dist/aniGamerPlus-nightly-unsigned.ipa \
+            dist/flutter-nightly.json
