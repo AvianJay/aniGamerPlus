@@ -21,6 +21,7 @@ import 'dart:io';
 import 'dart:math' as math;
 
 import 'package:http/http.dart' as http;
+import 'package:http/io_client.dart';
 
 /// 一塊多大. 小塊比較省 (跳轉時對齊浪費的少), 但一集會生出很多檔案;
 /// 1 MB 的話 428 MB 的一集全看完大約 428 塊.
@@ -31,6 +32,21 @@ const int kCacheBudgetBytes = 1536 * 1024 * 1024;
 
 /// 速度是拿這段時間內轉手的量算的
 const Duration kSpeedWindow = Duration(milliseconds: 2500);
+
+/// 跟上游要東西時, 從連線到拿到回應標頭最多等多久.
+///
+/// 不設的話會等到天荒地老: 切過 VPN、換過 Wi-Fi 之後, 連線池裡那條舊連線
+/// 寫得進去卻永遠等不到回應, 播放器就卡在緩衝, 只能把 app 整個關掉重開.
+const Duration kUpstreamConnectTimeout = Duration(seconds: 12);
+
+/// 資料流到一半, 完全沒有東西進來多久就算這條連線死了.
+///
+/// 只算「我們在等上游」的時間. 播放器緩衝滿了不讀的那段, 上游本來就該停,
+/// 那時候計時器是停著的 (回壓會一路 pause 到這一層).
+const Duration kUpstreamStallTimeout = Duration(seconds: 10);
+
+/// 同一段連續失敗幾次就放棄, 交還給播放器自己處理
+const int kUpstreamRetries = 4;
 
 // ignore: constant_identifier_names
 const String HLS_MIME = 'application/vnd.apple.mpegurl';
@@ -80,11 +96,23 @@ class _Meta {
 }
 
 class VideoCacheServer {
-  VideoCacheServer._(this._server, this._dir);
+  VideoCacheServer._(
+    this._server,
+    this._dir, {
+    required Duration connectTimeout,
+    required Duration stallTimeout,
+  })  : _connectTimeout = connectTimeout,
+        _stallTimeout = stallTimeout,
+        _http = IOClient(HttpClient()
+          ..connectionTimeout = connectTimeout
+          // 閒置的連線別留太久: 切過網路之後, 池子裡那幾條多半已經是死的
+          ..idleTimeout = const Duration(seconds: 5));
 
   final HttpServer _server;
   final Directory _dir;
-  final http.Client _http = http.Client();
+  final Duration _connectTimeout;
+  final Duration _stallTimeout;
+  final http.Client _http;
   final Map<String, _Target> _targets = {};
   final Map<String, Future<_Meta?>> _metaWork = {};
   final List<List<int>> _samples = <List<int>>[];
@@ -93,11 +121,18 @@ class VideoCacheServer {
   bool _closed = false;
 
   /// 起一台. 起不來 (權限、沒有 loopback) 就回 null, 呼叫端退回直連.
-  static Future<VideoCacheServer?> start(Directory dir) async {
+  ///
+  /// 兩個逾時只有測試會改 —— 正式的值要等十秒, 測試不想陪著等.
+  static Future<VideoCacheServer?> start(
+    Directory dir, {
+    Duration connectTimeout = kUpstreamConnectTimeout,
+    Duration stallTimeout = kUpstreamStallTimeout,
+  }) async {
     try {
       if (!await dir.exists()) await dir.create(recursive: true);
       final server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
-      final cache = VideoCacheServer._(server, dir);
+      final cache = VideoCacheServer._(server, dir,
+          connectTimeout: connectTimeout, stallTimeout: stallTimeout);
       server.listen(cache._handle, onError: (Object _) {});
       unawaited(cache._evict());
       return cache;
@@ -264,8 +299,10 @@ class VideoCacheServer {
   /// 而 1 byte 的 Range 一定會.
   Future<_Meta?> _fetchMeta(_Target target) async {
     try {
-      final response = await _http.get(target.upstream,
-          headers: {...target.headers, 'Range': 'bytes=0-0'});
+      final response = await _open(
+          target.upstream, {...target.headers, 'Range': 'bytes=0-0'});
+      // 那一個 byte 也要讀掉, 連線才回得去池子裡
+      await response.stream.timeout(_stallTimeout).drain<void>();
       if (response.statusCode >= 400) return null;
       final range = response.headers['content-range'] ?? '';
       final total = int.tryParse(range.split('/').last.trim()) ?? 0;
@@ -321,6 +358,79 @@ class VideoCacheServer {
       if (file.existsSync()) await file.setLastModified(DateTime.now());
     } catch (_) {
       // 標不到就算了, 最壞是淘汰順序不準
+    }
+  }
+
+  // -------------------------------------------------------------------- 上游
+
+  /// 發一個 GET, 等到回應標頭為止. 等太久就把這條連線整個放掉, 不是只有不理它
+  /// —— 不斷掉的話那條死連線會一直掛在池子裡.
+  Future<http.StreamedResponse> _open(
+      Uri url, Map<String, String> headers) async {
+    final abort = Completer<void>();
+    final timer = Timer(_connectTimeout, () {
+      if (!abort.isCompleted) abort.complete();
+    });
+    try {
+      return await _http.send(
+          http.AbortableRequest('GET', url, abortTrigger: abort.future)
+            ..headers.addAll(headers));
+    } finally {
+      timer.cancel();
+    }
+  }
+
+  /// 跟上游要 [from]..[to], 中途卡住就從斷掉的地方重新要.
+  ///
+  /// 播放器那一頭的連線從頭到尾是同一條, 它只會覺得這一段慢了幾秒 —— 以前
+  /// 上游那條一死, 播放器就永遠等在那裡, 畫面上是一個掛著「1 B/s」的緩衝,
+  /// 只能把 app 關掉重開.
+  Stream<List<int>> _upstreamRange(_Target target, int from, int to) async* {
+    var at = from;
+    var failures = 0;
+    while (at <= to && !_closed) {
+      if (failures > 0) {
+        // 網路剛斷的那一下馬上重連多半也是失敗, 稍微等一下
+        await Future<void>.delayed(Duration(milliseconds: 300 * failures));
+      }
+      http.StreamedResponse response;
+      try {
+        response = await _open(
+            target.upstream, {...target.headers, 'Range': 'bytes=$at-$to'});
+      } catch (error) {
+        if (++failures > kUpstreamRetries) rethrow;
+        continue;
+      }
+      final status = response.statusCode;
+      // 200 = 伺服器不吃 Range, 回的是整個檔. 從頭開始要的那一次還用得上,
+      // 接續的那幾次就接不起來了 —— 硬接會把錯的內容寫進快取
+      if (status >= 400 || (status == 200 && at != 0)) {
+        unawaited(response.stream.drain<void>().catchError((Object _) {}));
+        throw HttpException('上游回應 $status', uri: target.upstream);
+      }
+      final before = at;
+      Object? problem;
+      try {
+        await for (final chunk in response.stream.timeout(_stallTimeout)) {
+          if (chunk.isEmpty) continue;
+          final room = to - at + 1;
+          final piece = chunk.length > room ? chunk.sublist(0, room) : chunk;
+          at += piece.length;
+          yield piece;
+          if (at > to) break;
+        }
+      } catch (error) {
+        // TimeoutException = 卡死了, 其它多半是連線被切斷. 兩種都一樣: 放掉
+        // 這條 (await for 退出時會取消訂閱, 連線跟著斷), 從 at 接著要
+        problem = error;
+      }
+      if (at > to) return;
+      // 有進度就重新算: 慢但一直有東西進來的線路不該被放棄. 上游提早收掉
+      // (沒有錯誤, 只是給得比說好的少) 也算一次失敗.
+      failures = at > before ? 1 : failures + 1;
+      if (failures > kUpstreamRetries) {
+        throw problem ?? TimeoutException('上游一直沒有資料', _stallTimeout);
+      }
     }
   }
 
@@ -438,8 +548,7 @@ class VideoCacheServer {
     }
     var ok = true;
     try {
-      final result = await _http.send(
-          http.Request('GET', upstream)..headers.addAll(target.headers));
+      final result = await _open(upstream, target.headers);
       if (result.statusCode >= 400) {
         response.statusCode = result.statusCode;
         await response.close();
@@ -449,7 +558,8 @@ class VideoCacheServer {
       response.headers.set(HttpHeaders.contentTypeHeader, 'video/mp2t');
       final length = result.contentLength;
       if (length != null) response.contentLength = length;
-      await response.addStream(result.stream.map((chunk) {
+      // 一片卡死就整片放掉 (不留半片), 播放器會自己再要一次同一片
+      await response.addStream(result.stream.timeout(_stallTimeout).map((chunk) {
         _note(chunk.length);
         sink?.add(chunk);
         return chunk;
@@ -484,13 +594,12 @@ class VideoCacheServer {
   Future<void> _relay(_Target target, Uri upstream, HttpResponse response,
       {String? mime}) async {
     try {
-      final result = await _http.send(
-          http.Request('GET', upstream)..headers.addAll(target.headers));
+      final result = await _open(upstream, target.headers);
       response.statusCode = result.statusCode;
       if (mime != null) {
         response.headers.set(HttpHeaders.contentTypeHeader, mime);
       }
-      await response.addStream(result.stream.map((chunk) {
+      await response.addStream(result.stream.timeout(_stallTimeout).map((chunk) {
         _note(chunk.length);
         return chunk;
       }));
@@ -595,17 +704,12 @@ class VideoCacheServer {
       // 建不出目錄就只是存不了, 照樣要能播
     }
 
-    try {
-      final request = http.Request('GET', target.upstream)
-        ..headers.addAll({...target.headers, 'Range': 'bytes=$aligned-$stop'});
-      final upstream = await _http.send(request);
-      if (upstream.statusCode >= 400) return false;
-
-      // 一定要走 addStream: 它會照著 socket 排空的速度回壓上游那條 stream.
-      // 手動 add() 沒有這層回壓 —— 播放器緩衝滿了就不再從 socket 讀, 但我們
-      // 還是全速把上游灌進記憶體. 慢線路上那等於「頻寬全部拿去抓沒人要的
-      // 資料」, 畫面看起來就是明明有東西卻一直在轉圈.
-      await response.addStream(upstream.stream.asyncExpand((chunk) async* {
+    // 一定要走 addStream: 它會照著 socket 排空的速度回壓上游那條 stream.
+    // 手動 add() 沒有這層回壓 —— 播放器緩衝滿了就不再從 socket 讀, 但我們
+    // 還是全速把上游灌進記憶體. 慢線路上那等於「頻寬全部拿去抓沒人要的
+    // 資料」, 畫面看起來就是明明有東西卻一直在轉圈.
+    Stream<List<int>> body() async* {
+      await for (final chunk in _upstreamRange(target, aligned, stop)) {
         _note(chunk.length);
         final chunkStart = pos;
 
@@ -624,22 +728,26 @@ class VideoCacheServer {
           }
           final blockEnd = _blockStart(block) + _blockLength(block, meta);
           final take = math.min(chunk.length - offset, blockEnd - pos);
-          sink?.add(chunk.sublist(offset, offset + take));
+          // 整包都落在同一塊裡 (幾乎每一包都是) 就不必再複製一份
+          sink?.add(offset == 0 && take == chunk.length
+              ? chunk
+              : chunk.sublist(offset, offset + take));
           offset += take;
           pos += take;
           // 一塞滿就馬上收尾, 不要等下一塊或整條 stream 結束. 這樣「播放器
           // 收到這一塊的最後一個 byte」時, 那一塊在磁碟上已經是完成品 ——
           // 中途被掐斷也不會白抓一塊.
           if (pos == blockEnd) await settle(keep: true);
-
         }
 
         // 往前對齊多要的那一小段是拿來補快取的, 不能發給播放器
-        if (pos <= start) return;
-        yield chunkStart >= start
-            ? chunk
-            : chunk.sublist(start - chunkStart);
-      }));
+        if (pos <= start) continue;
+        yield chunkStart >= start ? chunk : chunk.sublist(start - chunkStart);
+      }
+    }
+
+    try {
+      await response.addStream(body());
       await settle(keep: true);
       unawaited(_evict());
       return true;
@@ -677,14 +785,13 @@ class VideoCacheServer {
       final headers = {...target.headers};
       final range = request.headers.value(HttpHeaders.rangeHeader);
       if (range != null) headers['Range'] = range;
-      final upstream = await _http
-          .send(http.Request('GET', target.upstream)..headers.addAll(headers));
+      final upstream = await _open(target.upstream, headers);
       response.statusCode = upstream.statusCode;
       upstream.headers.forEach((name, value) {
         if (name == 'transfer-encoding' || name == 'content-encoding') return;
         response.headers.set(name, value);
       });
-      await response.addStream(upstream.stream.map((chunk) {
+      await response.addStream(upstream.stream.timeout(_stallTimeout).map((chunk) {
         _note(chunk.length);
         return chunk;
       }));
