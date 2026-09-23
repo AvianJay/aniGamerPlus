@@ -31,8 +31,21 @@ class _UserInfoPageState extends State<UserInfoPage> {
 
   AppState get state => widget.state;
 
+  // 帳號資料是 AppState 的, 在這一頁開著的時候也可能更新 —— 自己聽
+  // (整個 app 不再因為 AppState 一動就全部重建)
+  @override
+  void initState() {
+    super.initState();
+    state.addListener(_changed);
+  }
+
+  void _changed() {
+    if (mounted) setState(() {});
+  }
+
   @override
   void dispose() {
+    state.removeListener(_changed);
     _old.dispose();
     _new1.dispose();
     _new2.dispose();

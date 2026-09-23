@@ -476,6 +476,9 @@ class _WatchPageState extends State<WatchPage> with WidgetsBindingObserver {
     // 離開播放頁就把進度落盤, 不要留著那一秒的 debounce 在後面等 —— 使用者
     // 退出去之後馬上把 app 滑掉的話, 那一秒就是進度不見的那一秒.
     unawaited(state.flushWatchTimesToDisk());
+    // 播放中那幾筆進度是悄悄記的, 回到的那一頁 (繼續觀看、觀看紀錄) 這時候
+    // 才要看到最新的. 不能在 dispose 裡當場通知 —— 這時候整棵樹是鎖著的.
+    scheduleMicrotask(state.watchTimesChanged);
     unawaited(WakelockPlus.disable());
     unawaited(_releaseBrightness());
     if (_fullscreen) {
@@ -1292,6 +1295,9 @@ class _WatchPageState extends State<WatchPage> with WidgetsBindingObserver {
       // 只有真的欠著伺服器才記欠帳. 伺服器根本沒在存進度的話這筆債永遠還不掉,
       // 只會一直堆在磁碟上
       pending: state.offline && state.watchTimesAreServerBacked,
+      // 播放中每十秒那一筆不必叫整個 app 重建 —— 離開這一頁時會補一次通知.
+      // 暫停、跳轉、播完這些 (force) 照樣通知.
+      notify: force || ended,
     );
     if (force) {
       // 切到背景 / 關掉播放器時走這條, 等不了那一秒的 debounce
@@ -1892,6 +1898,9 @@ class _WatchPageState extends State<WatchPage> with WidgetsBindingObserver {
   Future<void> _toggleFavourite() async {
     final added = await state.toggleFavourite(_favouriteEntry);
     if (!mounted) return;
+    // 自己重畫那顆愛心 —— 以前是靠 AppState 一通知整個 app 跟著重建才順便
+    // 換掉的, 那個代價是播放中每十秒整頁重建一次
+    setState(() {});
     toast(context, added ? '已加入收藏。' : '已取消收藏。');
   }
 
