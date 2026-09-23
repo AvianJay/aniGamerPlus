@@ -19,8 +19,8 @@ import 'dart:async';
 import 'dart:io';
 import 'dart:math' as math;
 
+import 'package:flutter/foundation.dart' show compute;
 import 'package:flutter/material.dart';
-import 'package:flutter/scheduler.dart';
 import 'package:flutter/services.dart';
 import 'package:screen_brightness/screen_brightness.dart';
 import 'package:url_launcher/url_launcher.dart';
@@ -57,6 +57,10 @@ const double kMinBrightness = 0.2;
 /// 手指按不出 mousemove, 所以控制列留得比桌面久
 const Duration kControlsIdle = Duration(milliseconds: 8000);
 const int kNextEpisodeCountdown = 8;
+
+/// 彈幕檔小於這個大小 (字元) 就直接在畫面這條執行緒上解析. 大約一千多行,
+/// 解析只要幾毫秒, 比開一個 isolate 還快.
+const int kDanmakuParseInline = 128 * 1024;
 
 /// 邊看邊下載: 先攢這麼多秒再自動開播
 const double kStreamHeadStart = 45;
@@ -266,8 +270,7 @@ class WatchPage extends StatefulWidget {
   State<WatchPage> createState() => _WatchPageState();
 }
 
-class _WatchPageState extends State<WatchPage>
-    with SingleTickerProviderStateMixin, WidgetsBindingObserver {
+class _WatchPageState extends State<WatchPage> with WidgetsBindingObserver {
   // ------------------------------------------------------------- 依賴
   AppState get state => widget.state;
   AgpClient get client => state.client;
@@ -307,15 +310,36 @@ class _WatchPageState extends State<WatchPage>
   bool get _showsPlaying =>
       _pendingSeek != null ? _resumeAfterSeek : (_playIntent ?? _playing);
 
-  /// 位置的插值時鐘. video_player 大約半秒才回報一次, 直接餵給彈幕會一格一格跳,
-  /// 所以記下最後一次回報的位置與當下時間, 每一幀自己往前推。
+  /// 給時間、進度條看的位置. 跟著播放器的回報走 (大約一秒十次) —— 刻意不是
+  /// 每一幀: 以前這裡每一幀都改一次, 時間跟進度條就每一幀重建一次, 連控制列
+  /// 收起來看不到的時候也是.
   final ValueNotifier<double> _clock = ValueNotifier<double>(0);
 
   /// 現在的下載速度 (bytes/秒), 給轉圈底下那一行用
   final ValueNotifier<double> _netSpeed = ValueNotifier<double>(0);
-  Ticker? _ticker;
+
+  /// 取樣速度、盯著有沒有卡死的那一個. 一秒兩次, 不是每一幀.
+  Timer? _monitor;
+  static const Duration _kMonitorEvery = Duration(milliseconds: 500);
+
+  /// 卡在緩衝、而且完全沒有資料進來, 已經連續幾次 (每次 [_kMonitorEvery])
+  int _stallQuietTicks = 0;
+
+  /// 這一次卡住已經出手幾次了: 0 = 還沒, 1 = 原地重新要過, 2 以上 = 重開過播放器
+  int _stallStage = 0;
+
+  /// 播到一半原生播放器報錯之後, 自己重開過幾次. 隔一分鐘沒再出錯就歸零.
+  int _errorRetries = 0;
+  int _lastErrorAt = 0;
+  bool _recovering = false;
+
+  /// 最後一次對時: 播放器說它在 [_anchor] 秒的那一刻是 [_anchorAt].
+  /// 中間的位置照播放速度自己往前推, 見 [_positionNow].
   double _anchor = 0;
   int _anchorAt = 0;
+
+  /// 時間軸正在走嗎 (在播, 而且沒卡在緩衝)
+  bool _clockRunning = false;
 
   // ------------------------------------------------------------- 彈幕
   List<DanmakuComment> _danmaku = const [];
@@ -414,7 +438,10 @@ class _WatchPageState extends State<WatchPage>
     _autoNext = prefs.autoNext;
     _quality = prefs.playbackResolution;
     _streaming = widget.streaming;
-    _ticker = createTicker(_onFrame)..start();
+    _monitor = Timer.periodic(_kMonitorEvery, (_) {
+      _sampleSpeed();
+      _watchStall();
+    });
     unawaited(_boot());
   }
 
@@ -425,7 +452,7 @@ class _WatchPageState extends State<WatchPage>
     _flashTimer?.cancel();
     _nextTimer?.cancel();
     _streamTimer?.cancel();
-    _ticker?.dispose();
+    _monitor?.cancel();
     _sourceGeneration++;
     _preview.dispose();
     _pendingSeek = null;
@@ -454,6 +481,9 @@ class _WatchPageState extends State<WatchPage>
     // 離開播放頁就把進度落盤, 不要留著那一秒的 debounce 在後面等 —— 使用者
     // 退出去之後馬上把 app 滑掉的話, 那一秒就是進度不見的那一秒.
     unawaited(state.flushWatchTimesToDisk());
+    // 播放中那幾筆進度是悄悄記的, 回到的那一頁 (繼續觀看、觀看紀錄) 這時候
+    // 才要看到最新的. 不能在 dispose 裡當場通知 —— 這時候整棵樹是鎖著的.
+    scheduleMicrotask(state.watchTimesChanged);
     unawaited(WakelockPlus.disable());
     unawaited(_releaseBrightness());
     if (_fullscreen) {
@@ -484,8 +514,7 @@ class _WatchPageState extends State<WatchPage>
         final position = await controller.position;
         if (!mounted || _background || controller != _controller) return;
         if (_pendingSeek == null && position != null) {
-          _anchor = position.inMilliseconds / 1000;
-          _anchorAt = DateTime.now().millisecondsSinceEpoch;
+          _setAnchor(position.inMilliseconds / 1000);
           _clock.value = _anchor;
         }
         if (_resumeAfterBackground && _pendingSeek == null) {
@@ -786,8 +815,8 @@ class _WatchPageState extends State<WatchPage>
       _initialising = false;
       _error = '';
       _duration = duration > 0 ? duration : _duration;
-      _anchor = target > 1 ? target : 0;
-      _anchorAt = DateTime.now().millisecondsSinceEpoch;
+      _clockRunning = false;
+      _setAnchor(target > 1 ? target : 0);
     });
     _clock.value = _anchor;
 
@@ -836,8 +865,8 @@ class _WatchPageState extends State<WatchPage>
       _initialising = false;
       _error = '';
       _duration = duration > 0 ? duration : _duration;
-      _anchor = needsSeek ? target : resting;
-      _anchorAt = DateTime.now().millisecondsSinceEpoch;
+      _clockRunning = false;
+      _setAnchor(needsSeek ? target : resting);
       _playing = controller.value.isPlaying;
       _buffering = controller.value.isBuffering;
     });
@@ -904,11 +933,23 @@ class _WatchPageState extends State<WatchPage>
       }
     }
     if (!mounted) return;
-    setState(() {
-      _danmaku = (text == null || text.trim().isEmpty)
-          ? const <DanmakuComment>[]
-          : parseAss(text);
-    });
+    final parsed = await _parseDanmaku(text);
+    if (!mounted) return;
+    setState(() => _danmaku = parsed);
+  }
+
+  /// 熱門的集數彈幕動輒上萬行, 在畫面那條執行緒上解析就是開播那一刻卡一下
+  /// —— 剛好是第一幀要出來的時候. 大的丟到背景 isolate, 小的直接做
+  /// (開一個 isolate 本身也要時間).
+  static Future<List<DanmakuComment>> _parseDanmaku(String? text) async {
+    if (text == null || text.trim().isEmpty) return const <DanmakuComment>[];
+    if (text.length < kDanmakuParseInline) return parseAss(text);
+    try {
+      return await compute(parseAss, text, debugLabel: 'parse danmaku');
+    } catch (_) {
+      // 開不了 isolate (極少見) 就還是在這裡做, 至少要有彈幕
+      return parseAss(text);
+    }
   }
 
   // =============================================================== 畫質
@@ -1143,38 +1184,55 @@ class _WatchPageState extends State<WatchPage>
 
   // =============================================================== 時鐘
 
-  void _onFrame(Duration _) {
-    _sampleSpeed();
-    final controller = _controller;
-    if (controller == null || !controller.value.isInitialized) return;
-    if (_background || _scrubbing || _pendingSeek != null) return;
-    final value = controller.value;
+  void _setAnchor(double position) {
+    _anchor = position;
+    _anchorAt = DateTime.now().millisecondsSinceEpoch;
+  }
+
+  /// 此刻播到哪裡.
+  ///
+  /// 播放器大約 100ms 才回報一次位置, 彈幕卻每一幀都要一個 —— 所以這是算出來
+  /// 的: 最後一次對時的位置, 加上從那之後過了多久乘上播放速度. 誰要誰來問,
+  /// 不必每一幀去改一個 notifier (那會把每一個聽著它的 widget 都拖著重建).
+  double _positionNow() {
+    // 跳轉 / 拖時間軸的時候, 畫面上要的是目標位置, 不是播放器還停在哪裡
+    if (_pendingSeek != null || _scrubbing) return _clock.value;
     var position = _anchor;
-    if (value.isPlaying && !value.isBuffering) {
+    if (_clockRunning) {
       final elapsed =
           (DateTime.now().millisecondsSinceEpoch - _anchorAt) / 1000;
-      position = _anchor + elapsed * (_boosting ? 2 : _rate);
+      position += elapsed * (_boosting ? 2 : _rate);
     }
     final limit = _playableDuration;
     if (limit > 0 && position > limit) position = limit;
-    if (position < 0) position = 0;
-    if ((position - _clock.value).abs() > 0.008) _clock.value = position;
+    return position < 0 ? 0 : position;
   }
 
   void _onPlayerUpdate() {
     final controller = _controller;
     if (controller == null) return;
     final value = controller.value;
+    // 要在 isInitialized 之前看: video_player 一出錯就把整個值換成
+    // VideoPlayerValue.erroneous, 那裡面 isInitialized 是 false
+    if (value.hasError) {
+      _recoverFromError(value);
+      return;
+    }
     if (!value.isInitialized) return;
 
     final position = value.position.inMilliseconds / 1000.0;
-    if (_pendingSeek == null &&
-        !_scrubbing &&
-        ((position - _anchor).abs() > 0.05 ||
-            !value.isPlaying ||
-            value.isBuffering)) {
-      _anchor = position;
-      _anchorAt = DateTime.now().millisecondsSinceEpoch;
+    if (_pendingSeek == null && !_scrubbing) {
+      final running = value.isPlaying && !value.isBuffering;
+      // 播放器每一次回報都重新對時的話, 內插出來的時間軸會跟著它回報的
+      // 那幾十毫秒誤差一格一格抖. 只在開始 / 停下, 或是真的對不上的時候才對.
+      if (running != _clockRunning ||
+          !running ||
+          (position - _positionNow()).abs() > 0.15) {
+        _clockRunning = running;
+        _setAnchor(position);
+      }
+      final shown = _positionNow();
+      if ((shown - _clock.value).abs() > 0.008) _clock.value = shown;
     }
     final duration = value.duration.inMilliseconds / 1000.0;
 
@@ -1254,6 +1312,9 @@ class _WatchPageState extends State<WatchPage>
       // 只有真的欠著伺服器才記欠帳. 伺服器根本沒在存進度的話這筆債永遠還不掉,
       // 只會一直堆在磁碟上
       pending: state.offline && state.watchTimesAreServerBacked,
+      // 播放中每十秒那一筆不必叫整個 app 重建 —— 離開這一頁時會補一次通知.
+      // 暫停、跳轉、播完這些 (force) 照樣通知.
+      notify: force || ended,
     );
     if (force) {
       // 切到背景 / 關掉播放器時走這條, 等不了那一秒的 debounce
@@ -1341,25 +1402,19 @@ class _WatchPageState extends State<WatchPage>
         }
         await active.seekTo(Duration(milliseconds: (wanted * 1000).round()));
         final deadline = DateTime.now().add(const Duration(seconds: 45));
-        // 位置到了但還在緩衝時只再寬限這麼久. 跳轉沒放手之前, 播放鍵按下去
-        // 只會改「跳完要不要續播」而不是真的播 —— 從觀看紀錄接著看的時候,
-        // 整個緩衝的過程按鈕都像壞掉. 位置對了就交還控制權, 還在讀的話畫面
-        // 中央本來就有轉圈可以說明.
-        const settleGrace = Duration(milliseconds: 1200);
-        DateTime? matchedAt;
+        // 位置一對就放手, 不等緩衝. 以前這裡還會再等「緩衝完」最多 1.2 秒才按
+        // 播放 —— 但還在緩衝時按下播放本來就是「一有資料就開始」, 多等的那段
+        // 只是白白加在每一次續播、每一次跳轉的開頭. 而且跳轉沒放手之前, 播放
+        // 鍵按下去只會改「跳完要不要續播」, 按鈕看起來像壞掉.
         while (mounted &&
             generation == _sourceGeneration &&
             _pendingSeek == wanted) {
           final actual = await active.position;
           final atTarget = actual != null &&
               (actual.inMilliseconds / 1000 - wanted).abs() <= 1.5;
-          if (atTarget) {
-            if (!active.value.isBuffering) break;
-            matchedAt ??= DateTime.now();
-            if (DateTime.now().difference(matchedAt) > settleGrace) break;
-          } else {
-            matchedAt = null;
-          }
+          // 壞掉的播放器也可能回報「到了」—— 那不算, 要走下面的失敗收尾,
+          // 那裡才知道要去哪裡、跳完要不要播
+          if (atTarget && !active.value.hasError) break;
           if (active.value.hasError || DateTime.now().isAfter(deadline)) {
             throw StateError('跳轉逾時，請重試或檢查網路');
           }
@@ -1368,16 +1423,23 @@ class _WatchPageState extends State<WatchPage>
         if (!mounted) return;
         if (generation != _sourceGeneration || _pendingSeek != wanted) continue;
         setState(() => _pendingSeek = null);
-        _anchor = wanted;
-        _anchorAt = DateTime.now().millisecondsSinceEpoch;
+        _setAnchor(wanted);
         _clock.value = wanted;
         if (_resumeAfterSeek && !_background) await active.play();
         unawaited(_syncTime(force: true));
       }
     } catch (_) {
       if (mounted && workingGeneration == _sourceGeneration) {
+        final target = _pendingSeek ?? _clock.value;
         setState(() => _pendingSeek = null);
-        _flashMessage('跳轉失敗，請重試或檢查網路');
+        final value = _controller?.value;
+        if (value != null && value.hasError) {
+          // 跳到一半播放器壞掉了. 它報錯的那一刻正在跳轉, 所以當時沒處理 ——
+          // 而壞掉的播放器不會再通知第二次, 這裡不接手的話就永遠停在那裡
+          _recoverFromError(value, at: target, resume: _resumeAfterSeek);
+        } else {
+          _flashMessage('跳轉失敗，請重試或檢查網路');
+        }
       }
     } finally {
       _seekWorkerRunning = false;
@@ -1420,9 +1482,11 @@ class _WatchPageState extends State<WatchPage>
   }
 
   Future<void> _setRate(double rate) async {
+    // 先照舊的速度把位置結清, 再換速度 —— 反過來的話, 從上次對時到現在的
+    // 那一段會被用新的速度重算一次, 時間軸就跳一下
+    final at = _positionNow();
     setState(() => _rate = rate);
-    _anchor = _clock.value;
-    _anchorAt = DateTime.now().millisecondsSinceEpoch;
+    _setAnchor(at);
     await _controller?.setPlaybackSpeed(rate);
     await state.savePref(() => prefs.setRate(rate));
     _flashMessage('播放速度 ${rate == 1 ? '正常' : '$rate×'}');
@@ -1578,18 +1642,18 @@ class _WatchPageState extends State<WatchPage>
     final controller = _controller;
     if (controller == null || !controller.value.isPlaying) return;
     _boostFrom = _rate;
+    final at = _positionNow();
     setState(() => _boosting = true);
+    _setAnchor(at);
     unawaited(controller.setPlaybackSpeed(2));
-    _anchor = _clock.value;
-    _anchorAt = DateTime.now().millisecondsSinceEpoch;
   }
 
   void _onLongPressEnd() {
     if (!_boosting) return;
+    final at = _positionNow();
     setState(() => _boosting = false);
+    _setAnchor(at);
     unawaited(_controller?.setPlaybackSpeed(_boostFrom));
-    _anchor = _clock.value;
-    _anchorAt = DateTime.now().millisecondsSinceEpoch;
   }
 
   void _onHorizontalStart(DragStartDetails details) {
@@ -1730,7 +1794,8 @@ class _WatchPageState extends State<WatchPage>
       _controlsVisible = true;
     });
     _clock.value = 0;
-    _anchor = 0;
+    _clockRunning = false;
+    _setAnchor(0);
     await _boot();
   }
 
@@ -1786,7 +1851,8 @@ class _WatchPageState extends State<WatchPage>
       _controlsVisible = true;
     });
     _clock.value = 0;
-    _anchor = 0;
+    _clockRunning = false;
+    _setAnchor(0);
     await _boot();
   }
 
@@ -1859,6 +1925,9 @@ class _WatchPageState extends State<WatchPage>
   Future<void> _toggleFavourite() async {
     final added = await state.toggleFavourite(_favouriteEntry);
     if (!mounted) return;
+    // 自己重畫那顆愛心 —— 以前是靠 AppState 一通知整個 app 跟著重建才順便
+    // 換掉的, 那個代價是播放中每十秒整頁重建一次
+    setState(() {});
     toast(context, added ? '已加入收藏。' : '已取消收藏。');
   }
 
@@ -2193,7 +2262,8 @@ class _WatchPageState extends State<WatchPage>
                       // —— 那等於每一幀重建一次整個彈幕層
                       child: DanmakuOverlay(
                         comments: _danmaku,
-                        clock: _clock,
+                        position: _positionNow,
+                        rate: _boosting ? 2 : _rate,
                         playing: _playing &&
                             !_scrubbing &&
                             _pendingSeek == null &&
@@ -2223,7 +2293,11 @@ class _WatchPageState extends State<WatchPage>
                     duration: const Duration(milliseconds: 180),
                     child: IgnorePointer(
                       ignoring: !_controlsVisible,
-                      child: _controls(mobileInline: mobileInline),
+                      // 時間跟進度條一秒動十次. 收起來的時候 AnimatedOpacity
+                      // 不再是重畫的邊界, 沒有這一層的話那十次會一路往上把
+                      // 整個頁面拖去重畫.
+                      child: RepaintBoundary(
+                          child: _controls(mobileInline: mobileInline)),
                     ),
                   ),
                   if (!_scrubbing && (_flash.isNotEmpty || _hud.isNotEmpty))
@@ -2339,12 +2413,10 @@ class _WatchPageState extends State<WatchPage>
         child: Row(
           mainAxisSize: MainAxisSize.min,
           children: [
-            const SizedBox(
-              width: 11,
-              height: 11,
-              child: CircularProgressIndicator(strokeWidth: 1.8),
-            ),
-            const SizedBox(width: 7),
+            // 靜態的圖示, 不是轉圈: 這個徽章邊看邊下載的時候整集都掛著, 一個
+            // 一直在轉的東西等於整集每一個 vsync 都要把畫面重新合成一次
+            const Icon(Icons.downloading_rounded, size: 13, color: Colors.white),
+            const SizedBox(width: 6),
             Text(
               _downloading,
               style: const TextStyle(fontSize: 11.5, color: Colors.white),
@@ -2959,12 +3031,106 @@ class _WatchPageState extends State<WatchPage>
   /// byte 都是我們自己轉手的. 離線檔跟 HLS 一律回 0, 畫面上就不顯示.
   void _sampleSpeed() {
     final cache = state.videoCache;
-    final speed = cache == null ? 0.0 : cache.bytesPerSecond;
-    // 小數點後那一位每幀都在跳, 差得夠多才更新, 不然數字看起來在抖
+    final raw = cache == null ? 0.0 : cache.bytesPerSecond;
+    // 一秒不到 1 KB 就是沒在動 —— 顯示「緩衝中…」, 不要掛一個「1 B/s」
+    final speed = raw < 1024 ? 0.0 : raw;
     final shown = _netSpeed.value;
-    if ((speed - shown).abs() > shown * 0.08 + 16 * 1024) {
+    // 差得夠多才更新, 不然數字看起來在抖. 但掉到零一定要跟上: 以前要差
+    // 16 KB/s 才換, 斷流的時候畫面就一直掛著斷流前最後那個數字.
+    if (speed == 0 ? shown != 0 : (speed - shown).abs() > shown * 0.08) {
       _netSpeed.value = speed;
     }
+  }
+
+  /// 這一條是不是經過本機快取 —— 是的話, 有沒有資料在流是量得到的.
+  bool get _speedMeasured =>
+      _controller?.dataSource.startsWith('http://127.0.0.1:') ?? false;
+
+  /// 卡在緩衝出不來的時候自己救.
+  ///
+  /// 「1 B/s 然後就永遠卡住, 只能把 app 關掉重開」: 那是原生播放器等的那條
+  /// 連線已經死了, 它自己不會放棄. 這裡照著使用者當時會做的事做 —— 先原地
+  /// 重新要一次 (跳到同一個位置, 播放器會丟掉手上那條連線), 還不行就把播放器
+  /// 整個重開 (磁碟上的快取還在, 所以很快).
+  ///
+  /// 只有「完全沒有資料進來」才算卡: 線路慢但一直有東西在流的時候, 出手只會
+  /// 把已經在路上的那一段丟掉, 更慢.
+  void _watchStall() {
+    final controller = _controller;
+    // 沒在等緩衝 (播得動、或是使用者自己按了暫停): 這一回合結束
+    if (!_showsPlaying ||
+        (controller != null &&
+            controller.value.isInitialized &&
+            controller.value.isPlaying &&
+            !controller.value.isBuffering)) {
+      _stallQuietTicks = 0;
+      _stallStage = 0;
+      return;
+    }
+    // 正在跳轉 / 換片源 / 在背景: 先不算, 也不歸零 —— 自己出手的那一次跳轉
+    // 就會走到這裡, 歸零的話永遠等不到下一步
+    if (controller == null ||
+        !controller.value.isInitialized ||
+        !_buffering ||
+        _pendingSeek != null ||
+        _scrubbing ||
+        _background) {
+      return;
+    }
+    // 邊看邊下載追到了下載的邊緣: 那是在等伺服器, 不是卡住
+    if (_streaming && !_needsProxy && _streamReady - _clock.value < 6) {
+      _stallQuietTicks = 0;
+      return;
+    }
+    final measured = _speedMeasured;
+    if (measured && _netSpeed.value > 0) {
+      _stallQuietTicks = 0;
+      return;
+    }
+    _stallQuietTicks++;
+    // 量不到速度的那幾條 (直連、邊看邊下載) 分不出「慢」跟「死」, 多等一點
+    final quiet = _stallQuietTicks * _kMonitorEvery.inMilliseconds;
+    final nudgeAfter = measured ? 10000 : 30000;
+    final reopenAfter = measured ? 25000 : 60000;
+    if (_stallStage == 0 && quiet >= nudgeAfter) {
+      _stallStage = 1;
+      _flashMessage('連線卡住了，正在重新連線…');
+      unawaited(_seekTo(_positionNow(), resume: true));
+    } else if (_stallStage >= 1 &&
+        _stallStage <= 3 &&
+        quiet >= reopenAfter + (_stallStage - 1) * 60000) {
+      _stallStage++;
+      _flashMessage('播放器卡住了，正在重新開啟…');
+      unawaited(_openSource(seekTo: _positionNow(), autoplay: true));
+    }
+  }
+
+  /// 播到一半原生播放器自己報錯 (連線斷了、本機快取那台被系統收掉了):
+  /// 從同一個位置重開. 以前這時候畫面就停在最後一幀, 什麼提示都沒有.
+  void _recoverFromError(VideoPlayerValue value, {double? at, bool? resume}) {
+    // 在背景時出的錯, 回到前景那一步 (didChangeAppLifecycleState) 會處理;
+    // 跳轉中出的錯, 跳轉那邊失敗收尾時會帶著目標位置再叫一次
+    if (_recovering ||
+        _background ||
+        _pendingSeek != null ||
+        _error.isNotEmpty) {
+      return;
+    }
+    final position = at ?? _positionNow();
+    final play = resume ?? _showsPlaying;
+    final now = DateTime.now().millisecondsSinceEpoch;
+    // 一開就壞的片源不能無限重開: 一分鐘內第三次就停下來, 讓使用者看到原因
+    if (now - _lastErrorAt > 60000) _errorRetries = 0;
+    _lastErrorAt = now;
+    if (_errorRetries >= 2) {
+      setState(() => _error = '播放中斷: ${value.errorDescription ?? '未知錯誤'}');
+      return;
+    }
+    _errorRetries++;
+    _recovering = true;
+    _flashMessage('播放中斷，正在重新連線…');
+    unawaited(_openSource(seekTo: position, autoplay: play)
+        .whenComplete(() => _recovering = false));
   }
 
   double _bufferedSeconds() {

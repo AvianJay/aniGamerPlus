@@ -9,6 +9,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 import 'package:path_provider_platform_interface/path_provider_platform_interface.dart';
 import 'package:video_player_platform_interface/video_player_platform_interface.dart';
 import 'package:wakelock_plus_platform_interface/wakelock_plus_platform_interface.dart';
+import 'package:agp_mobile/src/api/models.dart';
 import 'package:agp_mobile/src/pages/watch_page.dart';
 import 'package:agp_mobile/src/danmaku/danmaku_overlay.dart';
 import 'package:agp_mobile/src/state/app_state.dart';
@@ -42,8 +43,14 @@ class DelayedPlayer extends VideoPlayerPlatform {
   int creations = 0;
   Uint8List? frame;
 
+  /// 跳轉之後回報「在緩衝」—— 真的播放器跳到沒載過的地方就是這樣
+  bool bufferOnSeek = false;
+
   /// 第一個播放器的那一條. 多數測試只會有這一個.
   StreamController<VideoEvent> get events => _streamFor(1);
+
+  /// 最新建起來的那一個播放器的那一條
+  StreamController<VideoEvent> get latest => _streamFor(creations);
 
   StreamController<VideoEvent> _streamFor(int id) =>
       streams.putIfAbsent(id, () => StreamController<VideoEvent>.broadcast());
@@ -90,6 +97,9 @@ class DelayedPlayer extends VideoPlayerPlatform {
   @override
   Future<void> seekTo(int id, Duration position) async {
     seeks.add(position);
+    if (bufferOnSeek) {
+      _streamFor(id).add(VideoEvent(eventType: VideoEventType.bufferingStart));
+    }
   }
 
   @override
@@ -843,6 +853,37 @@ void main() {
     expect(find.byType(DanmakuOverlay), findsOneWidget);
     await tester.pumpWidget(const SizedBox());
   });
+  testWidgets('彈幕很多的集數: 在背景解析, 一條都不少', (tester) async {
+    // 熱門的集數彈幕上萬行. 大到這個程度的檔改在背景 isolate 解析, 不在開播
+    // 那一刻卡住畫面 —— 但解析出來的結果要跟原本一模一樣.
+    const lines = 4000;
+    final ass = StringBuffer('[Script Info]\nScriptType: v4.00+\n\n[Events]\n');
+    for (var i = 0; i < lines; i++) {
+      final seconds = (i * 0.3).toStringAsFixed(2).padLeft(5, '0');
+      ass.writeln('Dialogue: 0,0:00:$seconds,0:00:59.00,Roll,,0,0,0,,'
+          r'{\move(1920,50,-200,50)\1c&H4CFFFFFF}第 '
+          '$i 條彈幕');
+    }
+    expect(ass.length, greaterThan(kDanmakuParseInline),
+        reason: '測試資料要大到會走背景解析那一條');
+    await tester.runAsync(
+        () => state.downloads.writeCachedDanmaku('1', ass.toString()));
+
+    await open(tester);
+    for (var i = 0;
+        i < 100 && find.byType(DanmakuOverlay).evaluate().isEmpty;
+        i++) {
+      await tester.runAsync(
+          () => Future<void>.delayed(const Duration(milliseconds: 20)));
+      await tester.pump();
+    }
+    final overlay = tester.widget<DanmakuOverlay>(find.byType(DanmakuOverlay));
+    expect(overlay.comments.length, lines);
+    expect(overlay.comments.first.text, '第 0 條彈幕');
+    expect(overlay.comments.last.start, closeTo((lines - 1) * 0.3, 0.01));
+    await tester.pumpWidget(const SizedBox());
+  });
+
   testWidgets('a different episode cannot adopt the parked player',
       (tester) async {
     await open(tester);
@@ -902,6 +943,180 @@ void main() {
     await tester.pumpWidget(const SizedBox());
     await tester.pump(const Duration(seconds: 1));
   });
+  // 在 120Hz 的 iPad 上, 只要有一個 ticker 在跑, 整個畫面 (連影片) 每秒就要
+  // 重新合成一百二十次. 以前播放頁一打開就掛著一個永遠不停的 ticker, 暫停著
+  // 一張靜止的畫面也照樣在燒電.
+  testWidgets('沒有東西在動的時候, 播放頁不再每一幀重新合成', (tester) async {
+    await open(tester);
+    expect(player.playing, isTrue);
+    await tester.pump(const Duration(seconds: 2));
+    expect(tester.binding.hasScheduledFrame, isFalse,
+        reason: '在播但沒有彈幕: 影片的畫面是原生那一層在送, 這一層不必每一幀重畫');
+
+    await tester.tap(find.byTooltip('暫停'));
+    await tester.pump(const Duration(milliseconds: 350));
+    expect(player.playing, isFalse);
+    // 按鈕的水波紋動畫跑完
+    await tester.pump(const Duration(seconds: 2));
+    expect(tester.binding.hasScheduledFrame, isFalse,
+        reason: '暫停著一張靜止的畫面, 卻還在每一幀重畫');
+    await tester.pumpWidget(const SizedBox());
+  });
+
+  testWidgets('有彈幕的時候, 暫停下來彈幕層也跟著停', (tester) async {
+    await tester.runAsync(() async {
+      final ass = await File('../tests/fixtures/sample.ass').readAsString();
+      await state.downloads.writeCachedDanmaku('1', ass);
+    });
+    await open(tester);
+    for (var i = 0;
+        i < 10 && find.byType(DanmakuOverlay).evaluate().isEmpty;
+        i++) {
+      await tester.runAsync(
+          () => Future<void>.delayed(const Duration(milliseconds: 20)));
+      await tester.pump();
+    }
+    expect(find.byType(DanmakuOverlay), findsOneWidget);
+
+    await tester.tap(find.byTooltip('暫停'));
+    await tester.pump(const Duration(milliseconds: 350));
+    await tester.pump(const Duration(seconds: 2));
+    expect(tester.binding.hasScheduledFrame, isFalse,
+        reason: '暫停了, 彈幕層的 ticker 還在空轉');
+    await tester.pumpWidget(const SizedBox());
+  });
+
+  testWidgets('續播: 跳到上次的位置就按播放, 不先等緩衝完', (tester) async {
+    // 從觀看紀錄接著看: 開起來先跳到上次的位置. 那裡還沒載過, 播放器一定在
+    // 緩衝 —— 以前還要再等「緩衝完」(最多 1.2 秒) 才肯按播放, 每一次續播的
+    // 開頭都白白多等那一段.
+    state.noteWatchTime(
+        '1', WatchTime(time: 300, duration: 600, timestamp: 1));
+    player.actual = const Duration(seconds: 300);
+    player.bufferOnSeek = true;
+    await open(tester);
+    expect(player.seeks.last.inSeconds, 300);
+    expect(player.playing, isTrue, reason: '位置已經到了, 卻還在等緩衝完才按播放');
+    await tester.pumpWidget(const SizedBox());
+    await tester.pump(const Duration(seconds: 1));
+  });
+
+  // 「1 B/s 然後就永遠卡住, 只能把 app 關掉重開」. 原生播放器等的那條連線
+  // 死了, 它自己不會放棄 —— 播放頁要替使用者做他本來會做的事.
+  testWidgets('卡在緩衝出不來: 先原地重新要, 再不行就把播放器重開', (tester) async {
+    await open(tester);
+    expect(player.playing, isTrue);
+    final creations = player.creations;
+    player.events.add(VideoEvent(eventType: VideoEventType.bufferingStart));
+
+    await tester.pump(const Duration(seconds: 10));
+    expect(player.seeks, isEmpty, reason: '才卡十秒, 還不該出手 (可能只是慢)');
+
+    // 這一條量不到速度 (沒走本機快取), 分不出慢跟死, 所以等半分鐘
+    await tester.pump(const Duration(seconds: 22));
+    expect(player.seeks, isNotEmpty, reason: '卡了半分鐘還在乾等');
+    expect(player.seeks.last.inSeconds, 20, reason: '要在原地重新要, 不是跳走');
+    expect(player.creations, creations, reason: '第一步只是原地重新要');
+
+    // 原地重新要也沒用 (事件裡一直沒有 bufferingEnd): 整個重開
+    await tester.pump(const Duration(seconds: 30));
+    expect(player.creations, creations + 1, reason: '卡了一分鐘還是沒重開播放器');
+    // 重開之後從同一個位置接著播
+    for (var i = 0; i < 8; i++) {
+      await tester.pump(const Duration(milliseconds: 100));
+    }
+    expect(player.seeks.last.inSeconds, 20);
+    expect(player.playing, isTrue);
+
+    await tester.pumpWidget(const SizedBox());
+    await tester.pump(const Duration(seconds: 2));
+  });
+
+  testWidgets('緩衝一下就好了的話什麼都不做', (tester) async {
+    await open(tester);
+    final creations = player.creations;
+    player.events.add(VideoEvent(eventType: VideoEventType.bufferingStart));
+    await tester.pump(const Duration(seconds: 20));
+    player.events.add(VideoEvent(eventType: VideoEventType.bufferingEnd));
+    await tester.pump(const Duration(seconds: 1));
+    // 之後又卡, 要重新計時, 不是接著上一次的算
+    player.events.add(VideoEvent(eventType: VideoEventType.bufferingStart));
+    await tester.pump(const Duration(seconds: 20));
+    expect(player.seeks, isEmpty);
+    expect(player.creations, creations);
+    await tester.pumpWidget(const SizedBox());
+    await tester.pump(const Duration(seconds: 2));
+  });
+
+  testWidgets('播到一半原生播放器報錯: 從同一個位置自己重開, 一直壞才放棄',
+      (tester) async {
+    await open(tester);
+    final creations = player.creations;
+
+    Future<void> fail() async {
+      player.latest.addError(
+          PlatformException(code: 'VideoError', message: '連線中斷'));
+      for (var i = 0; i < 10; i++) {
+        await tester.pump(const Duration(milliseconds: 100));
+      }
+    }
+
+    await fail();
+    expect(player.creations, creations + 1, reason: '報錯之後畫面就停在那裡');
+    expect(player.seeks.last.inSeconds, 20, reason: '重開之後沒有回到原來的位置');
+    expect(find.textContaining('播放中斷:'), findsNothing);
+
+    await fail();
+    expect(player.creations, creations + 2);
+
+    // 一分鐘內第三次: 這個片源多半真的壞了, 不要無限重開下去
+    await fail();
+    expect(player.creations, creations + 2);
+    expect(find.textContaining('播放中斷:'), findsOneWidget);
+    expect(find.text('重試'), findsOneWidget);
+
+    await tester.pumpWidget(const SizedBox());
+    await tester.pump(const Duration(seconds: 2));
+  });
+
+  testWidgets('播放中記進度不驚動整個 app, 離開時才通知', (tester) async {
+    // AppState 一通知, 壓在播放頁底下的五個分頁全部要重建一次. 播放中每十秒
+    // 記一次進度, 看一集就是一百多次沒人看得到的重建.
+    var notified = 0;
+    void count() => notified++;
+    state.addListener(count);
+    addTearDown(() => state.removeListener(count));
+
+    await open(tester);
+    await tester.pump(const Duration(seconds: 1));
+    expect(state.watchTimeOf('1'), isNotNull, reason: '進度還是要記下來');
+    expect(notified, 0, reason: '播放中的例行進度把整個 app 叫起來重建');
+
+    await tester.pumpWidget(const SizedBox());
+    await tester.pump();
+    expect(notified, greaterThan(0), reason: '離開播放頁之後, 觀看紀錄要看得到最新進度');
+  });
+
+  testWidgets('跳轉到一半播放器壞掉: 一樣自己重開, 而且落在要去的位置', (tester) async {
+    // 播放器報錯的那一刻剛好在跳轉: 當下不能處理 (跳轉還沒放手), 而壞掉的
+    // 播放器不會再通知第二次 —— 跳轉那邊收尾時不接手的話, 就永遠停在那裡
+    await open(tester);
+    final creations = player.creations;
+    seek(tester, 300); // 播放器一直回報 20 秒, 所以這個跳轉會一直掛著
+    await tester.pump(const Duration(milliseconds: 150));
+    player.actual = const Duration(seconds: 300);
+    player.latest
+        .addError(PlatformException(code: 'VideoError', message: '連線中斷'));
+    for (var i = 0; i < 10; i++) {
+      await tester.pump(const Duration(milliseconds: 100));
+    }
+    expect(player.creations, creations + 1, reason: '跳轉中壞掉之後沒有重開');
+    expect(player.seeks.last.inSeconds, 300, reason: '重開之後沒有落在要去的位置');
+    expect(player.playing, isTrue, reason: '跳轉前在播, 重開之後也要接著播');
+    await tester.pumpWidget(const SizedBox());
+    await tester.pump(const Duration(seconds: 2));
+  });
+
   testWidgets('開始播之後再緩衝就只留速度, 不再把轉圈壓在畫面中央', (tester) async {
     levels.install(tester);
     addTearDown(() => levels.remove(tester));

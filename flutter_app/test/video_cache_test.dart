@@ -4,6 +4,7 @@ library;
 
 import 'dart:async';
 import 'dart:io';
+import 'dart:isolate';
 
 import 'package:flutter_test/flutter_test.dart';
 import 'package:agp_mobile/src/state/video_cache.dart';
@@ -33,12 +34,23 @@ class Upstream {
   /// 分片被跟上游要了幾次
   int segmentHits = 0;
 
+  /// 接下來這幾個請求連回應標頭都不給, 就這樣掛著 —— 切過網路之後, 連線池
+  /// 裡那條死連線就是這個樣子
+  int hang = 0;
+
+  /// 送到這個位移就不動了 (連線還開著, 只是再也沒有資料). 只發生一次.
+  int? stallAt;
+
   static Future<Upstream> start(int total) async {
     final server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
     final upstream = Upstream(server, body(total));
     server.listen((request) async {
       upstream.requests++;
       final response = request.response;
+      if (upstream.hang > 0) {
+        upstream.hang--;
+        await Completer<void>().future;
+      }
       if (upstream.refuse) {
         response.statusCode = HttpStatus.internalServerError;
         await response.close();
@@ -86,6 +98,11 @@ class Upstream {
       const step = 64 * 1024;
       Stream<List<int>> pieces() async* {
         for (var at = start; at <= end; at += step) {
+          final stall = upstream.stallAt;
+          if (stall != null && at >= stall) {
+            upstream.stallAt = null;
+            await Completer<void>().future;
+          }
           final stop = (at + step - 1) > end ? end : at + step - 1;
           upstream.served += stop - at + 1;
           yield data.sublist(at, stop + 1);
@@ -129,6 +146,23 @@ Future<List<int>> fetch(Uri url, {String? range}) async {
   }
 }
 
+/// 在另一個 isolate 裡等 [after] 之後再抓 (假裝是播放器), 回傳
+/// [抓到幾個 byte, 開始抓的時間, 抓完的時間].
+///
+/// 放在最外層: 寫在測試裡面的話, closure 會連同整個測試的變數 (包括上游那台
+/// HttpServer) 一起被搬過去, 而那是搬不過去的.
+Future<List<int>> fetchElsewhere(Uri url, String range, Duration after) =>
+    Isolate.run(() async {
+      await Future<void>.delayed(after);
+      final started = DateTime.now().millisecondsSinceEpoch;
+      final bytes = await fetch(url, range: range);
+      return <int>[
+        bytes.length,
+        started,
+        DateTime.now().millisecondsSinceEpoch,
+      ];
+    });
+
 void main() {
   late Directory temp;
   late Upstream upstream;
@@ -137,12 +171,22 @@ void main() {
   // 頭尾加起來要小於 total, 中間才會空出一段必須跟上游要的
   const total = 8 * 1024 * 1024;
 
+  // 正式的逾時要等十秒, 測試不陪著等. 設短一點也順便證明: 播放器緩衝滿了不讀
+  // 的那段時間 (下面那個回壓測試停了三秒) 不會被誤判成上游卡死.
+  const connectTimeout = Duration(milliseconds: 800);
+  const stallTimeout = Duration(milliseconds: 600);
+
+  Future<VideoCacheServer> startCache() async {
+    final server = await VideoCacheServer.start(temp,
+        connectTimeout: connectTimeout, stallTimeout: stallTimeout);
+    expect(server, isNotNull);
+    return server!;
+  }
+
   setUp(() async {
     temp = await Directory.systemTemp.createTemp('agp-cache-test-');
     upstream = await Upstream.start(total);
-    final server = await VideoCacheServer.start(temp);
-    expect(server, isNotNull);
-    cache = server!;
+    cache = await startCache();
   });
 
   tearDown(() async {
@@ -256,9 +300,7 @@ void main() {
     await fetch(url, range: 'bytes=$from-$to');
     await cache.close();
 
-    final second = await VideoCacheServer.start(temp);
-    expect(second, isNotNull);
-    cache = second!;
+    cache = await startCache();
     upstream.requests = 0;
     url = wrap();
 
@@ -330,8 +372,7 @@ void main() {
 
     // app 關掉再開, 分片還在
     await cache.close();
-    final second = await VideoCacheServer.start(temp);
-    cache = second!;
+    cache = await startCache();
     url = cache.wrapHls(
         playlist: upstream.playlist, headers: const {}, key: 's1-720');
     upstream.refuse = true;
@@ -389,6 +430,74 @@ void main() {
       client.close(force: true);
     }
   }, timeout: const Timeout(Duration(minutes: 2)));
+
+  // 下面三個是「緩衝卡在 1 B/s, 只能把 app 關掉重開」那個 bug. 上游那條連線
+  // 一死 (切 VPN、換 Wi-Fi, 對面不會送 RST 過來), 代理以前會永遠等下去, 播放器
+  // 就永遠等著代理.
+
+  test('上游送到一半就不動了: 從斷掉的地方自己接回去', () async {
+    final url = wrap();
+    const to = 2 * kCacheBlockBytes - 1;
+    // 送了 192 KB 之後連線還開著, 但再也沒有資料
+    upstream.stallAt = 3 * 64 * 1024;
+    final bytes = await fetch(url, range: 'bytes=0-$to')
+        .timeout(const Duration(seconds: 20));
+    expect(bytes.length, to + 1, reason: '卡住之後沒有接回去');
+    expect(bytes, equals(upstream.data.sublist(0, to + 1)),
+        reason: '接回去的地方錯位了');
+
+    // 接回去的那一段也要照樣存起來
+    upstream.refuse = true;
+    final again = await fetch(url, range: 'bytes=0-$to');
+    expect(again, equals(upstream.data.sublist(0, to + 1)));
+  });
+
+  test('上游連回應標頭都不給: 換一條連線重要', () async {
+    final url = wrap();
+    // 先讓驗證那一個 byte 走完, 下一個請求才是真的要資料的那個
+    await fetch(url, range: 'bytes=0-0');
+    upstream.hang = 1;
+    const from = 3 * kCacheBlockBytes;
+    final bytes = await fetch(url, range: 'bytes=$from-${from + 65535}')
+        .timeout(const Duration(seconds: 20));
+    expect(bytes, equals(upstream.data.sublist(from, from + 65536)));
+  });
+
+  test('開播那一個驗證請求卡住也不會永遠等下去', () async {
+    // 問長度的那一個 byte 就掛著不回: 以前每一個請求都等在它後面, 整集播不出來
+    upstream.hang = 1;
+    final url = wrap();
+    final bytes = await fetch(url, range: 'bytes=0-65535')
+        .timeout(const Duration(seconds: 20));
+    expect(bytes, equals(upstream.data.sublist(0, 65536)));
+  });
+
+  test('畫面那條執行緒被佔住的時候, 快取照樣在發資料', () async {
+    // 以前代理跟畫面擠在同一個 isolate: 播放器一口氣緩衝的時候, 每一個 byte
+    // 的複製、落盤都在跟彈幕搶同一條執行緒. 反過來也一樣 —— 畫面一忙, 播放器
+    // 就拿不到資料. 這裡把主 isolate 整個佔住, 看播放器 (另一個 isolate) 還
+    // 拿不拿得到東西.
+    final url = wrap();
+    const to = kCacheBlockBytes - 1;
+    await fetch(url, range: 'bytes=0-$to'); // 先存進快取, 之後不必問上游 (它也在主 isolate 上)
+
+    // 播放器那一頭在主 isolate 忙到一半的時候才開口要
+    final done = fetchElsewhere(
+        url, 'bytes=0-$to', const Duration(milliseconds: 900));
+    await Future<void>.delayed(const Duration(milliseconds: 300));
+    final busyFrom = DateTime.now().millisecondsSinceEpoch;
+    final busyUntil = DateTime.now().add(const Duration(milliseconds: 2000));
+    while (DateTime.now().isBefore(busyUntil)) {
+      // 畫面卡住了
+    }
+    final freedAt = DateTime.now().millisecondsSinceEpoch;
+    final result = await done;
+    expect(result[0], to + 1);
+    expect(result[1], greaterThan(busyFrom),
+        reason: '測試本身沒排好: 播放器應該是在主 isolate 忙的時候才開口要');
+    expect(result[2], lessThan(freedAt),
+        reason: '主 isolate 一忙, 播放器就拿不到資料');
+  });
 
   test('轉手過的量算得出速度, 從磁碟讀的不算', () async {
     final url = wrap();

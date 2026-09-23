@@ -101,16 +101,21 @@ class _SearchPageState extends State<SearchPage> {
       ),
       body: SafeArea(
           top: false,
-          child: _query.isEmpty
-              ? _suggestions()
-              : AllTab(
-                  state: state,
-                  query: _query,
-                  searchMode: true,
-                  onResultOpened: () {
-                    _focus.unfocus();
-                    _remember();
-                  })),
+          // 熱門 / 本季清單可能在這一頁開著的時候才載完: 自己聽 AppState
+          // (整個 app 不再因為 AppState 一動就全部重建)
+          child: ListenableBuilder(
+            listenable: state,
+            builder: (context, _) => _query.isEmpty
+                ? _suggestions()
+                : AllTab(
+                    state: state,
+                    query: _query,
+                    searchMode: true,
+                    onResultOpened: () {
+                      _focus.unfocus();
+                      _remember();
+                    }),
+          )),
     );
   }
 

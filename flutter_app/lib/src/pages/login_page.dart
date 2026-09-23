@@ -31,8 +31,21 @@ class _LoginPageState extends State<LoginPage> {
 
   AppState get state => widget.state;
 
+  // 「能不能註冊」要等伺服器資訊回來才知道, 可能在這一頁開著的時候才到 ——
+  // 自己聽 (整個 app 不再因為 AppState 一動就全部重建)
+  @override
+  void initState() {
+    super.initState();
+    state.addListener(_changed);
+  }
+
+  void _changed() {
+    if (mounted) setState(() {});
+  }
+
   @override
   void dispose() {
+    state.removeListener(_changed);
     _username.dispose();
     _password.dispose();
     _passwordFocus.dispose();

@@ -561,7 +561,13 @@ class AppState extends ChangeNotifier {
   ///
   /// pending = 伺服器還沒收到這一筆 (離線, 或送出去失敗), 之後 flushPending
   /// WatchTimes() 要補送.
-  void noteWatchTime(String sn, WatchTime value, {bool pending = false}) {
+  ///
+  /// notify = false 只給播放中每十秒那一筆用: 那時候畫面上只有播放頁, 而
+  /// AppState 一通知, 壓在底下的首頁、片庫、紀錄五個分頁全部要重建一次 ——
+  /// 看一集就是一百多次沒人看得到的重建. 離開播放頁時再用
+  /// [watchTimesChanged] 補一次通知.
+  void noteWatchTime(String sn, WatchTime value,
+      {bool pending = false, bool notify = true}) {
     final next = Map<String, WatchTime>.from(watchTimes);
     next[sn] = value;
     watchTimes = next;
@@ -571,8 +577,11 @@ class AppState extends ChangeNotifier {
       _pendingWatchTimes.remove(sn);
     }
     _scheduleWatchTimesSave();
-    notifyListeners();
+    if (notify) notifyListeners();
   }
+
+  /// 之前用 notify: false 記的進度, 現在讓其它頁面知道
+  void watchTimesChanged() => notifyListeners();
 
   Future<void> forgetWatchTime(String sn) async {
     try {
