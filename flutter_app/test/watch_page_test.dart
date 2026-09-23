@@ -49,6 +49,9 @@ class DelayedPlayer extends VideoPlayerPlatform {
   /// 第一個播放器的那一條. 多數測試只會有這一個.
   StreamController<VideoEvent> get events => _streamFor(1);
 
+  /// 最新建起來的那一個播放器的那一條
+  StreamController<VideoEvent> get latest => _streamFor(creations);
+
   StreamController<VideoEvent> _streamFor(int id) =>
       streams.putIfAbsent(id, () => StreamController<VideoEvent>.broadcast());
 
@@ -965,6 +968,84 @@ void main() {
     expect(player.playing, isTrue, reason: '位置已經到了, 卻還在等緩衝完才按播放');
     await tester.pumpWidget(const SizedBox());
     await tester.pump(const Duration(seconds: 1));
+  });
+
+  // 「1 B/s 然後就永遠卡住, 只能把 app 關掉重開」. 原生播放器等的那條連線
+  // 死了, 它自己不會放棄 —— 播放頁要替使用者做他本來會做的事.
+  testWidgets('卡在緩衝出不來: 先原地重新要, 再不行就把播放器重開', (tester) async {
+    await open(tester);
+    expect(player.playing, isTrue);
+    final creations = player.creations;
+    player.events.add(VideoEvent(eventType: VideoEventType.bufferingStart));
+
+    await tester.pump(const Duration(seconds: 10));
+    expect(player.seeks, isEmpty, reason: '才卡十秒, 還不該出手 (可能只是慢)');
+
+    // 這一條量不到速度 (沒走本機快取), 分不出慢跟死, 所以等半分鐘
+    await tester.pump(const Duration(seconds: 22));
+    expect(player.seeks, isNotEmpty, reason: '卡了半分鐘還在乾等');
+    expect(player.seeks.last.inSeconds, 20, reason: '要在原地重新要, 不是跳走');
+    expect(player.creations, creations, reason: '第一步只是原地重新要');
+
+    // 原地重新要也沒用 (事件裡一直沒有 bufferingEnd): 整個重開
+    await tester.pump(const Duration(seconds: 30));
+    expect(player.creations, creations + 1, reason: '卡了一分鐘還是沒重開播放器');
+    // 重開之後從同一個位置接著播
+    for (var i = 0; i < 8; i++) {
+      await tester.pump(const Duration(milliseconds: 100));
+    }
+    expect(player.seeks.last.inSeconds, 20);
+    expect(player.playing, isTrue);
+
+    await tester.pumpWidget(const SizedBox());
+    await tester.pump(const Duration(seconds: 2));
+  });
+
+  testWidgets('緩衝一下就好了的話什麼都不做', (tester) async {
+    await open(tester);
+    final creations = player.creations;
+    player.events.add(VideoEvent(eventType: VideoEventType.bufferingStart));
+    await tester.pump(const Duration(seconds: 20));
+    player.events.add(VideoEvent(eventType: VideoEventType.bufferingEnd));
+    await tester.pump(const Duration(seconds: 1));
+    // 之後又卡, 要重新計時, 不是接著上一次的算
+    player.events.add(VideoEvent(eventType: VideoEventType.bufferingStart));
+    await tester.pump(const Duration(seconds: 20));
+    expect(player.seeks, isEmpty);
+    expect(player.creations, creations);
+    await tester.pumpWidget(const SizedBox());
+    await tester.pump(const Duration(seconds: 2));
+  });
+
+  testWidgets('播到一半原生播放器報錯: 從同一個位置自己重開, 一直壞才放棄',
+      (tester) async {
+    await open(tester);
+    final creations = player.creations;
+
+    Future<void> fail() async {
+      player.latest.addError(
+          PlatformException(code: 'VideoError', message: '連線中斷'));
+      for (var i = 0; i < 10; i++) {
+        await tester.pump(const Duration(milliseconds: 100));
+      }
+    }
+
+    await fail();
+    expect(player.creations, creations + 1, reason: '報錯之後畫面就停在那裡');
+    expect(player.seeks.last.inSeconds, 20, reason: '重開之後沒有回到原來的位置');
+    expect(find.textContaining('播放中斷:'), findsNothing);
+
+    await fail();
+    expect(player.creations, creations + 2);
+
+    // 一分鐘內第三次: 這個片源多半真的壞了, 不要無限重開下去
+    await fail();
+    expect(player.creations, creations + 2);
+    expect(find.textContaining('播放中斷:'), findsOneWidget);
+    expect(find.text('重試'), findsOneWidget);
+
+    await tester.pumpWidget(const SizedBox());
+    await tester.pump(const Duration(seconds: 2));
   });
 
   testWidgets('開始播之後再緩衝就只留速度, 不再把轉圈壓在畫面中央', (tester) async {
