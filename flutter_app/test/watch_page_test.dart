@@ -902,6 +902,49 @@ void main() {
     await tester.pumpWidget(const SizedBox());
     await tester.pump(const Duration(seconds: 1));
   });
+  // 在 120Hz 的 iPad 上, 只要有一個 ticker 在跑, 整個畫面 (連影片) 每秒就要
+  // 重新合成一百二十次. 以前播放頁一打開就掛著一個永遠不停的 ticker, 暫停著
+  // 一張靜止的畫面也照樣在燒電.
+  testWidgets('沒有東西在動的時候, 播放頁不再每一幀重新合成', (tester) async {
+    await open(tester);
+    expect(player.playing, isTrue);
+    await tester.pump(const Duration(seconds: 2));
+    expect(tester.binding.hasScheduledFrame, isFalse,
+        reason: '在播但沒有彈幕: 影片的畫面是原生那一層在送, 這一層不必每一幀重畫');
+
+    await tester.tap(find.byTooltip('暫停'));
+    await tester.pump(const Duration(milliseconds: 350));
+    expect(player.playing, isFalse);
+    // 按鈕的水波紋動畫跑完
+    await tester.pump(const Duration(seconds: 2));
+    expect(tester.binding.hasScheduledFrame, isFalse,
+        reason: '暫停著一張靜止的畫面, 卻還在每一幀重畫');
+    await tester.pumpWidget(const SizedBox());
+  });
+
+  testWidgets('有彈幕的時候, 暫停下來彈幕層也跟著停', (tester) async {
+    await tester.runAsync(() async {
+      final ass = await File('../tests/fixtures/sample.ass').readAsString();
+      await state.downloads.writeCachedDanmaku('1', ass);
+    });
+    await open(tester);
+    for (var i = 0;
+        i < 10 && find.byType(DanmakuOverlay).evaluate().isEmpty;
+        i++) {
+      await tester.runAsync(
+          () => Future<void>.delayed(const Duration(milliseconds: 20)));
+      await tester.pump();
+    }
+    expect(find.byType(DanmakuOverlay), findsOneWidget);
+
+    await tester.tap(find.byTooltip('暫停'));
+    await tester.pump(const Duration(milliseconds: 350));
+    await tester.pump(const Duration(seconds: 2));
+    expect(tester.binding.hasScheduledFrame, isFalse,
+        reason: '暫停了, 彈幕層的 ticker 還在空轉');
+    await tester.pumpWidget(const SizedBox());
+  });
+
   testWidgets('開始播之後再緩衝就只留速度, 不再把轉圈壓在畫面中央', (tester) async {
     levels.install(tester);
     addTearDown(() => levels.remove(tester));
