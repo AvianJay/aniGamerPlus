@@ -677,6 +677,11 @@ body.agp-body img { max-width: 100%; }
   overflow: hidden;
 }
 
+.agp-poster-watched {
+  color: var(--agp-accent);
+  font-weight: 600;
+}
+
 .agp-poster-foot small {
   color: var(--agp-fg-faint);
   display: block;

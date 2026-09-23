@@ -33,7 +33,8 @@
         expanded: {},
         synopsis: false,
         details: {},
-        queued: {}
+        queued: {},
+        lastPayload: null
     };
 
     function el(id) {
@@ -89,14 +90,22 @@
             '</a>';
     }
 
+    /* home.js 認得觀看紀錄; 看過的作品把「看到第幾集」放在說明那一行 */
+    function watchedLabel(item) {
+        return AGP.watchedLabel ? AGP.watchedLabel(item.title) : '';
+    }
+
     function catalogPoster(item, rank) {
+        var watched = watchedLabel(item);
         return '<a class="agp-poster"' + cardAttrs(item) + '>' +
             '<span class="agp-poster-art">' + coverArt(item) +
             (rank ? '<span class="agp-poster-rank">' + rank + '</span>' : '') +
             '</span>' +
             '<span class="agp-poster-foot"><strong>' + AGP.escapeHtml(item.title) + '</strong>' +
-            '<small>' + AGP.escapeHtml(item.info || item.volume || '') +
-            (item.popular ? ' · ' + AGP.escapeHtml(item.popular) : '') + '</small>' +
+            '<small>' + (watched
+                ? '<b class="agp-poster-watched">' + AGP.escapeHtml(watched) + '</b>'
+                : AGP.escapeHtml(item.info || item.volume || '') +
+                    (item.popular ? ' · ' + AGP.escapeHtml(item.popular) : '')) + '</small>' +
             '</span></a>';
     }
 
@@ -254,6 +263,7 @@
         state.page = payload.page || 1;
         state.pages = payload.pages || 1;
         state.total = payload.total || 0;
+        state.lastPayload = payload;
         renderCatalog(payload);
         if (payload.loading || payload.retryAfter) {
             catalogRetryTimer = global.setTimeout(loadCatalog,
@@ -705,6 +715,14 @@
     }
 
     document.addEventListener('click', onClick);
+    /* 觀看進度比片單晚到 (或反過來), 到了就把看過的標上去 */
+    document.addEventListener('agp:watched', function () {
+        if (state.lastPayload) { renderCatalog(state.lastPayload); }
+        if (state.index) {
+            renderHot();
+            renderNewAdded();
+        }
+    });
     global.addEventListener('popstate', syncSheetToHash);
     document.addEventListener('keydown', function (event) {
         if (event.key === 'Escape' && state.sheetSn) { dismissSheet(); }

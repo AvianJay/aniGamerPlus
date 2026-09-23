@@ -138,6 +138,7 @@ class _AllTabState extends State<AllTab> {
             (video: null, item: item),
     ];
     final showingRemote = searching || !libraryOnly;
+    final watched = state.lastWatchedByAnime;
     return LayoutBuilder(builder: (context, constraints) {
       final delegate = posterGridDelegate(constraints.maxWidth,
           textScale: MediaQuery.textScalerOf(context).scale(14) / 14);
@@ -258,14 +259,16 @@ class _AllTabState extends State<AllTab> {
                         ));
                         if (mounted) setState(() {});
                       },
-                      subtitle: video != null
-                          ? '${state.episodesOf(video.displayName).length} 集'
-                          : [
-                              if (item!.info.isNotEmpty)
-                                item.info
-                              else
-                                item.volume,
-                            ].where((s) => s.isNotEmpty).join(' · '),
+                      subtitle: [
+                        if (video != null)
+                          '${state.episodesOf(video.displayName).length} 集'
+                        else if (item!.info.isNotEmpty)
+                          item.info
+                        else
+                          item.volume,
+                        _watchedLabel(watched[
+                            (video?.displayName ?? item!.title).toLowerCase()]),
+                      ].where((s) => s.isNotEmpty).join(' · '),
                       onTap: () {
                         widget.onResultOpened?.call();
                         if (video != null) {
@@ -287,6 +290,12 @@ class _AllTabState extends State<AllTab> {
         ),
       );
     });
+  }
+
+  /// 「看到第 3 集」/「看完第 3 集」; 沒看過就是空字串
+  String _watchedLabel(LastWatched? last) {
+    if (last == null) return '';
+    return '${last.time.ended ? '看完' : '看到'}${episodeLabel(last.episode)}';
   }
 
   void _openLibrary(VideoItem video) {

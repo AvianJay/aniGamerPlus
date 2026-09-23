@@ -683,18 +683,50 @@ class AppState extends ChangeNotifier {
     return heads;
   }
 
-  /// 首頁的「繼續觀看」
-  List<VideoItem> get continueWatching {
-    final rows = <MapEntry<VideoItem, WatchTime>>[];
+  /// 每部作品最後看的是哪一集, 鍵是小寫的作品名.
+  ///
+  /// 片庫裡的集數直接認; 片庫以外的靠觀看紀錄頁存下來的 history-names
+  /// (sn -> 作品名 / 集數), 所以線上看過、沒下載的作品在「所有動畫」也標得出來.
+  Map<String, LastWatched> get lastWatchedByAnime {
+    final names = prefs.readCachedJson('history-names');
+    final result = <String, LastWatched>{};
     for (final entry in watchTimes.entries) {
       final video = videoOf(entry.key);
-      if (video == null) continue;
-      if (entry.value.ended) continue;
-      if (entry.value.time <= 0) continue;
-      rows.add(MapEntry(video, entry.value));
+      String name;
+      String episode;
+      if (video != null) {
+        name = video.displayName;
+        episode = video.episode;
+      } else if (names is Map && names[entry.key] is Map) {
+        final remote = names[entry.key] as Map;
+        name = '${remote['name'] ?? ''}';
+        episode = '${remote['episode'] ?? ''}';
+      } else {
+        continue;
+      }
+      final key = name.trim().toLowerCase();
+      if (key.isEmpty) continue;
+      final mine = result[key];
+      if (mine != null && mine.time.timestamp >= entry.value.timestamp) continue;
+      result[key] = LastWatched(
+          sn: entry.key, episode: episode, time: entry.value, video: video);
     }
-    rows.sort((a, b) => b.value.timestamp.compareTo(a.value.timestamp));
-    return rows.map((e) => e.key).toList();
+    return result;
+  }
+
+  /// 首頁的「繼續觀看」—— 一部作品一格, 只放最後看的那一集.
+  /// 最後那一集已經看完的作品就不列 (不能拿更早之前沒看完的某一集來頂替,
+  /// 那只會把人帶回已經跳過的地方).
+  List<VideoItem> get continueWatching {
+    final rows = <LastWatched>[];
+    for (final last in lastWatchedByAnime.values) {
+      if (last.video == null) continue;
+      if (last.time.ended) continue;
+      if (last.time.time <= 0) continue;
+      rows.add(last);
+    }
+    rows.sort((a, b) => b.time.timestamp.compareTo(a.time.timestamp));
+    return rows.map((e) => e.video!).toList();
   }
 
   Future<void> addSeriesToSnList(String sn) async {
@@ -719,4 +751,15 @@ class AppState extends ChangeNotifier {
       thread: thread,
     );
   }
+}
+
+/// 某部作品最後看的一集. video 只有在那一集在片庫裡時才有.
+class LastWatched {
+  const LastWatched(
+      {required this.sn, required this.episode, required this.time, this.video});
+
+  final String sn;
+  final String episode;
+  final WatchTime time;
+  final VideoItem? video;
 }

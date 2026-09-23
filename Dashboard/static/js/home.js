@@ -81,6 +81,45 @@
         };
     }
 
+    /* 每部作品最後看的是哪一集, 鍵是小寫的作品名. 片庫以外的集數靠觀看紀錄
+       頁問回來的 state.remote 認, 所以線上看過、沒下載的作品在所有動畫裡也標得出來. */
+    function lastWatchedByAnime() {
+        var result = {};
+        Object.keys(state.times).forEach(function (sn) {
+            var entry = state.times[sn];
+            if (!entry) { return; }
+            var video = state.bySn[String(sn)];
+            var remote = video ? null : state.remote[String(sn)];
+            if (!video && !remote) { return; }
+            var name = video ? animeKey(video) : remote.name;
+            var key = String(name || '').trim().toLowerCase();
+            if (!key) { return; }
+            var updated = Number(entry.timestamp) || 0;
+            if (result[key] && result[key].updated >= updated) { return; }
+            result[key] = {
+                video: video || null,
+                episode: video ? video.episode : remote.episode,
+                ended: !!entry.ended,
+                updated: updated
+            };
+        });
+        return result;
+    }
+
+    /* 「看到第 3 集」/「看完第 3 集」; 沒看過就是空字串 */
+    function watchedLabel(name) {
+        var last = lastWatchedByAnime()[String(name || '').trim().toLowerCase()];
+        if (!last) { return ''; }
+        return (last.ended ? '看完' : '看到') + episodeLabel({ episode: last.episode });
+    }
+
+    /* catalog.js 的卡片也要標, 它拿不到這裡的 state */
+    AGP.watchedLabel = watchedLabel;
+
+    function notifyWatched() {
+        document.dispatchEvent(new CustomEvent('agp:watched'));
+    }
+
     /* --- markup ------------------------------------------------------------ */
 
     function artStyle(name) {
@@ -164,7 +203,8 @@
             (rank ? '<span class="agp-poster-rank">' + rank + '</span>' : '') +
             '</span>' +
             '<span class="agp-poster-foot"><strong>' + AGP.escapeHtml(anime.name) + '</strong>' +
-            '<small>共 ' + anime.videos.length + ' 集 · 更新至 ' + AGP.escapeHtml(episodeLabel(latest)) + '</small>' +
+            '<small>' + AGP.escapeHtml(watchedLabel(anime.name) ||
+                ('共 ' + anime.videos.length + ' 集 · 更新至 ' + episodeLabel(latest))) + '</small>' +
             '</span></a>';
     }
 
@@ -183,8 +223,13 @@
         var host = document.getElementById('homeContinue');
         if (!host) { return; }
 
-        var items = state.videos
-            .map(function (video) { return { video: video, progress: progressOf(video) }; })
+        /* 一部作品一格, 只放最後看的那一集. 最後那一集已經看完就不列 ——
+           拿更早之前沒看完的某一集來頂替, 只會把人帶回已經跳過的地方. */
+        var latest = lastWatchedByAnime();
+        var items = Object.keys(latest)
+            .map(function (key) { return latest[key]; })
+            .filter(function (last) { return last.video; })
+            .map(function (last) { return { video: last.video, progress: progressOf(last.video) }; })
             .filter(function (item) { return item.progress && !item.progress.done; })
             .sort(function (a, b) { return b.progress.updated - a.progress.updated; })
             .slice(0, 20);
@@ -511,7 +556,9 @@
            日期跟進度本來就知道, 沒必要讓整頁等網路 */
         if (rows.some(function (row) { return !describeRow(row); })) {
             resolveHistory(rows).then(function (found) {
-                if (found) { renderSection('homeHistory', renderHistory); }
+                if (!found) { return; }
+                renderSection('homeHistory', renderHistory);
+                notifyWatched();
             });
         }
     }
@@ -716,6 +763,9 @@
         times.then(function (positions) {
             state.times = positions;
             renderSection('homeContinue', renderContinue);
+            renderSection('homeLibrary', renderLibrary);
+            renderSection('homeHot', renderHot);
+            notifyWatched();
             renderSection('homeTimetable', renderTimetable);
             renderSection('homeHistory', renderHistory);
             renderSection('homeAccount', renderAccount);
