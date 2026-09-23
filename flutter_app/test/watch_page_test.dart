@@ -9,6 +9,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 import 'package:path_provider_platform_interface/path_provider_platform_interface.dart';
 import 'package:video_player_platform_interface/video_player_platform_interface.dart';
 import 'package:wakelock_plus_platform_interface/wakelock_plus_platform_interface.dart';
+import 'package:agp_mobile/src/api/models.dart';
 import 'package:agp_mobile/src/pages/watch_page.dart';
 import 'package:agp_mobile/src/danmaku/danmaku_overlay.dart';
 import 'package:agp_mobile/src/state/app_state.dart';
@@ -41,6 +42,9 @@ class DelayedPlayer extends VideoPlayerPlatform {
   double speed = 1;
   int creations = 0;
   Uint8List? frame;
+
+  /// 跳轉之後回報「在緩衝」—— 真的播放器跳到沒載過的地方就是這樣
+  bool bufferOnSeek = false;
 
   /// 第一個播放器的那一條. 多數測試只會有這一個.
   StreamController<VideoEvent> get events => _streamFor(1);
@@ -90,6 +94,9 @@ class DelayedPlayer extends VideoPlayerPlatform {
   @override
   Future<void> seekTo(int id, Duration position) async {
     seeks.add(position);
+    if (bufferOnSeek) {
+      _streamFor(id).add(VideoEvent(eventType: VideoEventType.bufferingStart));
+    }
   }
 
   @override
@@ -943,6 +950,21 @@ void main() {
     expect(tester.binding.hasScheduledFrame, isFalse,
         reason: '暫停了, 彈幕層的 ticker 還在空轉');
     await tester.pumpWidget(const SizedBox());
+  });
+
+  testWidgets('續播: 跳到上次的位置就按播放, 不先等緩衝完', (tester) async {
+    // 從觀看紀錄接著看: 開起來先跳到上次的位置. 那裡還沒載過, 播放器一定在
+    // 緩衝 —— 以前還要再等「緩衝完」(最多 1.2 秒) 才肯按播放, 每一次續播的
+    // 開頭都白白多等那一段.
+    state.noteWatchTime(
+        '1', WatchTime(time: 300, duration: 600, timestamp: 1));
+    player.actual = const Duration(seconds: 300);
+    player.bufferOnSeek = true;
+    await open(tester);
+    expect(player.seeks.last.inSeconds, 300);
+    expect(player.playing, isTrue, reason: '位置已經到了, 卻還在等緩衝完才按播放');
+    await tester.pumpWidget(const SizedBox());
+    await tester.pump(const Duration(seconds: 1));
   });
 
   testWidgets('開始播之後再緩衝就只留速度, 不再把轉圈壓在畫面中央', (tester) async {
