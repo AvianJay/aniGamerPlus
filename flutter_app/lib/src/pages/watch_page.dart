@@ -20,7 +20,6 @@ import 'dart:io';
 import 'dart:math' as math;
 
 import 'package:flutter/material.dart';
-import 'package:flutter/scheduler.dart';
 import 'package:flutter/services.dart';
 import 'package:screen_brightness/screen_brightness.dart';
 import 'package:url_launcher/url_launcher.dart';
@@ -266,8 +265,7 @@ class WatchPage extends StatefulWidget {
   State<WatchPage> createState() => _WatchPageState();
 }
 
-class _WatchPageState extends State<WatchPage>
-    with SingleTickerProviderStateMixin, WidgetsBindingObserver {
+class _WatchPageState extends State<WatchPage> with WidgetsBindingObserver {
   // ------------------------------------------------------------- 依賴
   AppState get state => widget.state;
   AgpClient get client => state.client;
@@ -307,15 +305,24 @@ class _WatchPageState extends State<WatchPage>
   bool get _showsPlaying =>
       _pendingSeek != null ? _resumeAfterSeek : (_playIntent ?? _playing);
 
-  /// 位置的插值時鐘. video_player 大約半秒才回報一次, 直接餵給彈幕會一格一格跳,
-  /// 所以記下最後一次回報的位置與當下時間, 每一幀自己往前推。
+  /// 給時間、進度條看的位置. 跟著播放器的回報走 (大約一秒十次) —— 刻意不是
+  /// 每一幀: 以前這裡每一幀都改一次, 時間跟進度條就每一幀重建一次, 連控制列
+  /// 收起來看不到的時候也是.
   final ValueNotifier<double> _clock = ValueNotifier<double>(0);
 
   /// 現在的下載速度 (bytes/秒), 給轉圈底下那一行用
   final ValueNotifier<double> _netSpeed = ValueNotifier<double>(0);
-  Ticker? _ticker;
+
+  /// 取樣速度的那一個. 一秒兩次, 不是每一幀.
+  Timer? _monitor;
+
+  /// 最後一次對時: 播放器說它在 [_anchor] 秒的那一刻是 [_anchorAt].
+  /// 中間的位置照播放速度自己往前推, 見 [_positionNow].
   double _anchor = 0;
   int _anchorAt = 0;
+
+  /// 時間軸正在走嗎 (在播, 而且沒卡在緩衝)
+  bool _clockRunning = false;
 
   // ------------------------------------------------------------- 彈幕
   List<DanmakuComment> _danmaku = const [];
@@ -414,7 +421,8 @@ class _WatchPageState extends State<WatchPage>
     _autoNext = prefs.autoNext;
     _quality = prefs.playbackResolution;
     _streaming = widget.streaming;
-    _ticker = createTicker(_onFrame)..start();
+    _monitor = Timer.periodic(
+        const Duration(milliseconds: 500), (_) => _sampleSpeed());
     unawaited(_boot());
   }
 
@@ -425,7 +433,7 @@ class _WatchPageState extends State<WatchPage>
     _flashTimer?.cancel();
     _nextTimer?.cancel();
     _streamTimer?.cancel();
-    _ticker?.dispose();
+    _monitor?.cancel();
     _sourceGeneration++;
     _preview.dispose();
     _pendingSeek = null;
@@ -484,8 +492,7 @@ class _WatchPageState extends State<WatchPage>
         final position = await controller.position;
         if (!mounted || _background || controller != _controller) return;
         if (_pendingSeek == null && position != null) {
-          _anchor = position.inMilliseconds / 1000;
-          _anchorAt = DateTime.now().millisecondsSinceEpoch;
+          _setAnchor(position.inMilliseconds / 1000);
           _clock.value = _anchor;
         }
         if (_resumeAfterBackground && _pendingSeek == null) {
@@ -786,8 +793,8 @@ class _WatchPageState extends State<WatchPage>
       _initialising = false;
       _error = '';
       _duration = duration > 0 ? duration : _duration;
-      _anchor = target > 1 ? target : 0;
-      _anchorAt = DateTime.now().millisecondsSinceEpoch;
+      _clockRunning = false;
+      _setAnchor(target > 1 ? target : 0);
     });
     _clock.value = _anchor;
 
@@ -836,8 +843,8 @@ class _WatchPageState extends State<WatchPage>
       _initialising = false;
       _error = '';
       _duration = duration > 0 ? duration : _duration;
-      _anchor = needsSeek ? target : resting;
-      _anchorAt = DateTime.now().millisecondsSinceEpoch;
+      _clockRunning = false;
+      _setAnchor(needsSeek ? target : resting);
       _playing = controller.value.isPlaying;
       _buffering = controller.value.isBuffering;
     });
@@ -1143,22 +1150,28 @@ class _WatchPageState extends State<WatchPage>
 
   // =============================================================== 時鐘
 
-  void _onFrame(Duration _) {
-    _sampleSpeed();
-    final controller = _controller;
-    if (controller == null || !controller.value.isInitialized) return;
-    if (_background || _scrubbing || _pendingSeek != null) return;
-    final value = controller.value;
+  void _setAnchor(double position) {
+    _anchor = position;
+    _anchorAt = DateTime.now().millisecondsSinceEpoch;
+  }
+
+  /// 此刻播到哪裡.
+  ///
+  /// 播放器大約 100ms 才回報一次位置, 彈幕卻每一幀都要一個 —— 所以這是算出來
+  /// 的: 最後一次對時的位置, 加上從那之後過了多久乘上播放速度. 誰要誰來問,
+  /// 不必每一幀去改一個 notifier (那會把每一個聽著它的 widget 都拖著重建).
+  double _positionNow() {
+    // 跳轉 / 拖時間軸的時候, 畫面上要的是目標位置, 不是播放器還停在哪裡
+    if (_pendingSeek != null || _scrubbing) return _clock.value;
     var position = _anchor;
-    if (value.isPlaying && !value.isBuffering) {
+    if (_clockRunning) {
       final elapsed =
           (DateTime.now().millisecondsSinceEpoch - _anchorAt) / 1000;
-      position = _anchor + elapsed * (_boosting ? 2 : _rate);
+      position += elapsed * (_boosting ? 2 : _rate);
     }
     final limit = _playableDuration;
     if (limit > 0 && position > limit) position = limit;
-    if (position < 0) position = 0;
-    if ((position - _clock.value).abs() > 0.008) _clock.value = position;
+    return position < 0 ? 0 : position;
   }
 
   void _onPlayerUpdate() {
@@ -1168,13 +1181,18 @@ class _WatchPageState extends State<WatchPage>
     if (!value.isInitialized) return;
 
     final position = value.position.inMilliseconds / 1000.0;
-    if (_pendingSeek == null &&
-        !_scrubbing &&
-        ((position - _anchor).abs() > 0.05 ||
-            !value.isPlaying ||
-            value.isBuffering)) {
-      _anchor = position;
-      _anchorAt = DateTime.now().millisecondsSinceEpoch;
+    if (_pendingSeek == null && !_scrubbing) {
+      final running = value.isPlaying && !value.isBuffering;
+      // 播放器每一次回報都重新對時的話, 內插出來的時間軸會跟著它回報的
+      // 那幾十毫秒誤差一格一格抖. 只在開始 / 停下, 或是真的對不上的時候才對.
+      if (running != _clockRunning ||
+          !running ||
+          (position - _positionNow()).abs() > 0.15) {
+        _clockRunning = running;
+        _setAnchor(position);
+      }
+      final shown = _positionNow();
+      if ((shown - _clock.value).abs() > 0.008) _clock.value = shown;
     }
     final duration = value.duration.inMilliseconds / 1000.0;
 
@@ -1368,8 +1386,7 @@ class _WatchPageState extends State<WatchPage>
         if (!mounted) return;
         if (generation != _sourceGeneration || _pendingSeek != wanted) continue;
         setState(() => _pendingSeek = null);
-        _anchor = wanted;
-        _anchorAt = DateTime.now().millisecondsSinceEpoch;
+        _setAnchor(wanted);
         _clock.value = wanted;
         if (_resumeAfterSeek && !_background) await active.play();
         unawaited(_syncTime(force: true));
@@ -1420,9 +1437,11 @@ class _WatchPageState extends State<WatchPage>
   }
 
   Future<void> _setRate(double rate) async {
+    // 先照舊的速度把位置結清, 再換速度 —— 反過來的話, 從上次對時到現在的
+    // 那一段會被用新的速度重算一次, 時間軸就跳一下
+    final at = _positionNow();
     setState(() => _rate = rate);
-    _anchor = _clock.value;
-    _anchorAt = DateTime.now().millisecondsSinceEpoch;
+    _setAnchor(at);
     await _controller?.setPlaybackSpeed(rate);
     await state.savePref(() => prefs.setRate(rate));
     _flashMessage('播放速度 ${rate == 1 ? '正常' : '$rate×'}');
@@ -1578,18 +1597,18 @@ class _WatchPageState extends State<WatchPage>
     final controller = _controller;
     if (controller == null || !controller.value.isPlaying) return;
     _boostFrom = _rate;
+    final at = _positionNow();
     setState(() => _boosting = true);
+    _setAnchor(at);
     unawaited(controller.setPlaybackSpeed(2));
-    _anchor = _clock.value;
-    _anchorAt = DateTime.now().millisecondsSinceEpoch;
   }
 
   void _onLongPressEnd() {
     if (!_boosting) return;
+    final at = _positionNow();
     setState(() => _boosting = false);
+    _setAnchor(at);
     unawaited(_controller?.setPlaybackSpeed(_boostFrom));
-    _anchor = _clock.value;
-    _anchorAt = DateTime.now().millisecondsSinceEpoch;
   }
 
   void _onHorizontalStart(DragStartDetails details) {
@@ -1730,7 +1749,8 @@ class _WatchPageState extends State<WatchPage>
       _controlsVisible = true;
     });
     _clock.value = 0;
-    _anchor = 0;
+    _clockRunning = false;
+    _setAnchor(0);
     await _boot();
   }
 
@@ -1786,7 +1806,8 @@ class _WatchPageState extends State<WatchPage>
       _controlsVisible = true;
     });
     _clock.value = 0;
-    _anchor = 0;
+    _clockRunning = false;
+    _setAnchor(0);
     await _boot();
   }
 
@@ -2193,7 +2214,8 @@ class _WatchPageState extends State<WatchPage>
                       // —— 那等於每一幀重建一次整個彈幕層
                       child: DanmakuOverlay(
                         comments: _danmaku,
-                        clock: _clock,
+                        position: _positionNow,
+                        rate: _boosting ? 2 : _rate,
                         playing: _playing &&
                             !_scrubbing &&
                             _pendingSeek == null &&
@@ -2223,7 +2245,11 @@ class _WatchPageState extends State<WatchPage>
                     duration: const Duration(milliseconds: 180),
                     child: IgnorePointer(
                       ignoring: !_controlsVisible,
-                      child: _controls(mobileInline: mobileInline),
+                      // 時間跟進度條一秒動十次. 收起來的時候 AnimatedOpacity
+                      // 不再是重畫的邊界, 沒有這一層的話那十次會一路往上把
+                      // 整個頁面拖去重畫.
+                      child: RepaintBoundary(
+                          child: _controls(mobileInline: mobileInline)),
                     ),
                   ),
                   if (!_scrubbing && (_flash.isNotEmpty || _hud.isNotEmpty))
@@ -2339,12 +2365,10 @@ class _WatchPageState extends State<WatchPage>
         child: Row(
           mainAxisSize: MainAxisSize.min,
           children: [
-            const SizedBox(
-              width: 11,
-              height: 11,
-              child: CircularProgressIndicator(strokeWidth: 1.8),
-            ),
-            const SizedBox(width: 7),
+            // 靜態的圖示, 不是轉圈: 這個徽章邊看邊下載的時候整集都掛著, 一個
+            // 一直在轉的東西等於整集每一個 vsync 都要把畫面重新合成一次
+            const Icon(Icons.downloading_rounded, size: 13, color: Colors.white),
+            const SizedBox(width: 6),
             Text(
               _downloading,
               style: const TextStyle(fontSize: 11.5, color: Colors.white),

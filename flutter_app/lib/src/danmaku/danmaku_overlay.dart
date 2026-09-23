@@ -6,19 +6,22 @@
 ///
 /// 效能上有幾件事是刻意這樣寫的, 改之前先看一下:
 ///
-/// * 不用 ValueListenableBuilder 包在外面. 播放器的時鐘每一幀都在動, 那樣寫
-///   等於每一幀都重跑一次 build + LayoutBuilder + layout, 只為了換幾個座標.
-///   這裡改成把時鐘交給 CustomPainter 的 repaint, 只重畫不重建.
+/// * 時間軸是一個「問了才算」的函式, 不是每一幀都在變的 notifier. 那樣的話
+///   每一個聽著它的東西都得每一幀重建一次 —— 以前播放頁的時間跟進度條就是
+///   這樣, 連控制列收起來的時候都在一秒重建一百二十次.
+/// * Ticker 只在真的有東西要動的時候跑. 它一跑, 每一個 vsync 就要把整個
+///   畫面 (連影片) 重新合成一次; 暫停、卡住、或是下一條彈幕還要好幾秒才出現
+///   的時候, 它是停著的.
 /// * 外面包一層 RepaintBoundary. 沒有的話彈幕每動一次, 同一個 Stack 裡的
-///   控制列、轉圈圈、右上角的徽章全部要跟著重新光柵化 —— 網路慢的時候那圈
-///   spinner 一直在轉, 剛好把這筆帳放到最大.
+///   控制列、轉圈圈、右上角的徽章全部要跟著重新光柵化.
 /// * 透明度直接調進文字顏色裡, 不套 Opacity. Opacity 會 saveLayer, 等於每一幀
 ///   替整個播放區開一張離屏圖.
 /// * 同時在畫面上的條數有上限, 而且真的完全沒動的那一幀不會發出重畫通知.
 library;
 
-// ValueListenable 不在 material 的 re-export 名單裡, 時鐘那個欄位要用它
-import 'package:flutter/foundation.dart';
+import 'dart:async';
+import 'dart:math' as math;
+
 import 'package:flutter/material.dart';
 import 'package:flutter/scheduler.dart';
 
@@ -70,8 +73,9 @@ class DanmakuOverlay extends StatefulWidget {
   const DanmakuOverlay({
     super.key,
     required this.comments,
-    required this.clock,
+    required this.position,
     required this.playing,
+    this.rate = 1.0,
     this.buffering = false,
     this.enabled = true,
     this.opacity = 1.0,
@@ -82,8 +86,12 @@ class DanmakuOverlay extends StatefulWidget {
 
   final List<DanmakuComment> comments;
 
-  /// 播放器目前的秒數. 直接吃 notifier, 不要在外面包 builder.
-  final ValueListenable<double> clock;
+  /// 此刻播到第幾秒. 每一幀都會來問一次.
+  final ValueGetter<double> position;
+
+  /// 播放速度. 彈幕的時間軸照這個往前推 —— 兩倍速時字也要跑兩倍快, 不然
+  /// 跟播放器的落差每幾秒就大到得整排瞬移一次.
+  final double rate;
 
   /// 真的在播 (沒暫停、沒拖時間軸、也沒在等緩衝)
   final bool playing;
@@ -115,8 +123,11 @@ class _DanmakuOverlayState extends State<DanmakuOverlay>
   /// 不用重新光柵化.
   final ValueNotifier<int> _repaint = ValueNotifier<int>(0);
 
-  Ticker? _ticker;
+  late final Ticker _ticker;
   Duration _tickAt = Duration.zero;
+
+  /// 下一條彈幕還要好一陣子才出現時, 到時候叫醒 ticker 的那一個
+  Timer? _wake;
 
   /// 畫面上的時間軸. 跟播放器的時鐘不一定一樣, 見 [_advance].
   double _shown = 0;
@@ -130,16 +141,31 @@ class _DanmakuOverlayState extends State<DanmakuOverlay>
   @override
   void initState() {
     super.initState();
-    _shown = widget.clock.value;
+    _shown = widget.position();
     _ticker = createTicker(_onTick);
-    if (widget.enabled) _ticker!.start();
+    _resume();
   }
 
   @override
   void dispose() {
-    _ticker?.dispose();
+    _wake?.cancel();
+    _ticker.dispose();
     _repaint.dispose();
     super.dispose();
+  }
+
+  /// 讓 ticker 跑起來 (已經在跑就什麼都不做). 真的沒事做的話它下一幀自己
+  /// 會停, 所以任何「可能有變化」的時候都可以放心叫.
+  void _resume() {
+    _wake?.cancel();
+    _wake = null;
+    if (!widget.enabled || widget.comments.isEmpty || _ticker.isActive) return;
+    _tickAt = Duration.zero;
+    _ticker.start();
+  }
+
+  void _rest() {
+    if (_ticker.isActive) _ticker.stop();
   }
 
   @override
@@ -147,11 +173,10 @@ class _DanmakuOverlayState extends State<DanmakuOverlay>
     super.didUpdateWidget(oldWidget);
     if (oldWidget.enabled != widget.enabled) {
       if (widget.enabled) {
-        _tickAt = Duration.zero;
-        _shown = widget.clock.value;
-        if (!(_ticker?.isActive ?? false)) _ticker?.start();
+        _shown = widget.position();
       } else {
-        if (_ticker?.isActive ?? false) _ticker!.stop();
+        _wake?.cancel();
+        _rest();
         _reset();
       }
     }
@@ -170,6 +195,8 @@ class _DanmakuOverlayState extends State<DanmakuOverlay>
       }
       _repaint.value++;
     }
+    // 開始播、跳轉完、換速度都會讓外面重建一次 —— 正好是 ticker 該醒來的時候
+    _resume();
   }
 
   void _reset() {
@@ -186,7 +213,8 @@ class _DanmakuOverlayState extends State<DanmakuOverlay>
 
   void _onTick(Duration elapsed) {
     if (!widget.enabled || _size == Size.zero) {
-      _tickAt = elapsed;
+      // 還沒量到大小: 先停, build 量到了會再叫醒
+      _rest();
       return;
     }
     // 第一幀跟 app 回到前景那一下 dt 會很大, 夾住免得彈幕一口氣衝出去
@@ -197,27 +225,50 @@ class _DanmakuOverlayState extends State<DanmakuOverlay>
 
     final moved = _advance(dt);
     final spawned = _sync(_shown);
-    if (!moved && !spawned) return;
-    _scene.now = _shown;
-    _repaint.value++;
+    if (moved || spawned) {
+      _scene.now = _shown;
+      _repaint.value++;
+    }
+    if (!widget.playing && !moved && !spawned) {
+      // 暫停了, 或是卡住而且已經滑到頭了: 停下來, 不要每一幀空轉
+      _rest();
+    } else if (widget.playing && _scene.live.isEmpty) {
+      _idleUntilNext();
+    }
+  }
+
+  /// 畫面上一條都沒有, 下一條又還要好一陣子: 先睡, 快到了再醒.
+  void _idleUntilNext() {
+    if (_cursor >= widget.comments.length) {
+      _rest(); // 這一集後面沒有了
+      return;
+    }
+    final gap = widget.comments[_cursor].start - _shown;
+    if (gap < 1.0) return;
+    _rest();
+    final rate = widget.rate > 0 ? widget.rate : 1.0;
+    _wake = Timer(Duration(milliseconds: ((gap - 0.5) / rate * 1000).round()),
+        _resume);
   }
 
   /// 把畫面上的時間軸往前推一格, 回傳有沒有真的動.
   bool _advance(double dt) {
-    final target = widget.clock.value;
+    final target = widget.position();
     final before = _shown;
     final drift = target - _shown;
 
-    if (drift.abs() > kDanmakuCoast + 0.5) {
-      // 換集、拉時間軸、或是卡太久追不回來了: 直接對上
+    if (_scene.live.isEmpty || drift.abs() > kDanmakuCoast + 0.5) {
+      // 畫面上沒東西 (剛醒來、剛開始), 或是換集、拉時間軸、卡太久追不回來了:
+      // 直接對上
       _shown = target;
     } else if (widget.playing) {
-      // 跟著真實時間走, 順便用 ±60% 的速度把那幾十毫秒的落差磨掉.
-      // 直接把值指過去會看到一整排字瞬移.
-      _shown += dt * (1 + drift).clamp(0.4, 1.6);
+      // 照播放速度往前走, 再把跟播放器之間那幾十毫秒的落差慢慢磨掉.
+      // 直接把值指過去會看到一整排字每 100ms 抖一下.
+      _shown += dt * widget.rate;
+      _shown += (target - _shown) * math.min(1.0, dt * 4);
     } else if (widget.buffering && drift > -kDanmakuCoast) {
       // 只是卡一下, 先自己滑過去
-      _shown += dt;
+      _shown += dt * widget.rate;
     }
     // 真的按了暫停就不動
 
@@ -377,6 +428,7 @@ class _DanmakuOverlayState extends State<DanmakuOverlay>
         if (size != _size) {
           _size = size;
           _reset();
+          _resume();
         }
         // 這裡不再呼叫 _sync —— 那是 ticker 的事. build 只負責量大小,
         // 之後每一幀都只走 repaint 那條路.
