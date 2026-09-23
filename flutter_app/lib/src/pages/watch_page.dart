@@ -313,8 +313,20 @@ class _WatchPageState extends State<WatchPage> with WidgetsBindingObserver {
   /// 現在的下載速度 (bytes/秒), 給轉圈底下那一行用
   final ValueNotifier<double> _netSpeed = ValueNotifier<double>(0);
 
-  /// 取樣速度的那一個. 一秒兩次, 不是每一幀.
+  /// 取樣速度、盯著有沒有卡死的那一個. 一秒兩次, 不是每一幀.
   Timer? _monitor;
+  static const Duration _kMonitorEvery = Duration(milliseconds: 500);
+
+  /// 卡在緩衝、而且完全沒有資料進來, 已經連續幾次 (每次 [_kMonitorEvery])
+  int _stallQuietTicks = 0;
+
+  /// 這一次卡住已經出手幾次了: 0 = 還沒, 1 = 原地重新要過, 2 以上 = 重開過播放器
+  int _stallStage = 0;
+
+  /// 播到一半原生播放器報錯之後, 自己重開過幾次. 隔一分鐘沒再出錯就歸零.
+  int _errorRetries = 0;
+  int _lastErrorAt = 0;
+  bool _recovering = false;
 
   /// 最後一次對時: 播放器說它在 [_anchor] 秒的那一刻是 [_anchorAt].
   /// 中間的位置照播放速度自己往前推, 見 [_positionNow].
@@ -421,8 +433,10 @@ class _WatchPageState extends State<WatchPage> with WidgetsBindingObserver {
     _autoNext = prefs.autoNext;
     _quality = prefs.playbackResolution;
     _streaming = widget.streaming;
-    _monitor = Timer.periodic(
-        const Duration(milliseconds: 500), (_) => _sampleSpeed());
+    _monitor = Timer.periodic(_kMonitorEvery, (_) {
+      _sampleSpeed();
+      _watchStall();
+    });
     unawaited(_boot());
   }
 
@@ -1178,6 +1192,12 @@ class _WatchPageState extends State<WatchPage> with WidgetsBindingObserver {
     final controller = _controller;
     if (controller == null) return;
     final value = controller.value;
+    // 要在 isInitialized 之前看: video_player 一出錯就把整個值換成
+    // VideoPlayerValue.erroneous, 那裡面 isInitialized 是 false
+    if (value.hasError) {
+      _recoverFromError(value);
+      return;
+    }
     if (!value.isInitialized) return;
 
     final position = value.position.inMilliseconds / 1000.0;
@@ -2975,12 +2995,105 @@ class _WatchPageState extends State<WatchPage> with WidgetsBindingObserver {
   /// byte 都是我們自己轉手的. 離線檔跟 HLS 一律回 0, 畫面上就不顯示.
   void _sampleSpeed() {
     final cache = state.videoCache;
-    final speed = cache == null ? 0.0 : cache.bytesPerSecond;
-    // 小數點後那一位每幀都在跳, 差得夠多才更新, 不然數字看起來在抖
+    final raw = cache == null ? 0.0 : cache.bytesPerSecond;
+    // 一秒不到 1 KB 就是沒在動 —— 顯示「緩衝中…」, 不要掛一個「1 B/s」
+    final speed = raw < 1024 ? 0.0 : raw;
     final shown = _netSpeed.value;
-    if ((speed - shown).abs() > shown * 0.08 + 16 * 1024) {
+    // 差得夠多才更新, 不然數字看起來在抖. 但掉到零一定要跟上: 以前要差
+    // 16 KB/s 才換, 斷流的時候畫面就一直掛著斷流前最後那個數字.
+    if (speed == 0 ? shown != 0 : (speed - shown).abs() > shown * 0.08) {
       _netSpeed.value = speed;
     }
+  }
+
+  /// 這一條是不是經過本機快取 —— 是的話, 有沒有資料在流是量得到的.
+  bool get _speedMeasured =>
+      _controller?.dataSource.startsWith('http://127.0.0.1:') ?? false;
+
+  /// 卡在緩衝出不來的時候自己救.
+  ///
+  /// 「1 B/s 然後就永遠卡住, 只能把 app 關掉重開」: 那是原生播放器等的那條
+  /// 連線已經死了, 它自己不會放棄. 這裡照著使用者當時會做的事做 —— 先原地
+  /// 重新要一次 (跳到同一個位置, 播放器會丟掉手上那條連線), 還不行就把播放器
+  /// 整個重開 (磁碟上的快取還在, 所以很快).
+  ///
+  /// 只有「完全沒有資料進來」才算卡: 線路慢但一直有東西在流的時候, 出手只會
+  /// 把已經在路上的那一段丟掉, 更慢.
+  void _watchStall() {
+    final controller = _controller;
+    // 沒在等緩衝 (播得動、或是使用者自己按了暫停): 這一回合結束
+    if (!_showsPlaying ||
+        (controller != null &&
+            controller.value.isInitialized &&
+            controller.value.isPlaying &&
+            !controller.value.isBuffering)) {
+      _stallQuietTicks = 0;
+      _stallStage = 0;
+      return;
+    }
+    // 正在跳轉 / 換片源 / 在背景: 先不算, 也不歸零 —— 自己出手的那一次跳轉
+    // 就會走到這裡, 歸零的話永遠等不到下一步
+    if (controller == null ||
+        !controller.value.isInitialized ||
+        !_buffering ||
+        _pendingSeek != null ||
+        _scrubbing ||
+        _background) {
+      return;
+    }
+    // 邊看邊下載追到了下載的邊緣: 那是在等伺服器, 不是卡住
+    if (_streaming && !_needsProxy && _streamReady - _clock.value < 6) {
+      _stallQuietTicks = 0;
+      return;
+    }
+    final measured = _speedMeasured;
+    if (measured && _netSpeed.value > 0) {
+      _stallQuietTicks = 0;
+      return;
+    }
+    _stallQuietTicks++;
+    // 量不到速度的那幾條 (直連、邊看邊下載) 分不出「慢」跟「死」, 多等一點
+    final quiet = _stallQuietTicks * _kMonitorEvery.inMilliseconds;
+    final nudgeAfter = measured ? 10000 : 30000;
+    final reopenAfter = measured ? 25000 : 60000;
+    if (_stallStage == 0 && quiet >= nudgeAfter) {
+      _stallStage = 1;
+      _flashMessage('連線卡住了，正在重新連線…');
+      unawaited(_seekTo(_positionNow(), resume: true));
+    } else if (_stallStage >= 1 &&
+        _stallStage <= 3 &&
+        quiet >= reopenAfter + (_stallStage - 1) * 60000) {
+      _stallStage++;
+      _flashMessage('播放器卡住了，正在重新開啟…');
+      unawaited(_openSource(seekTo: _positionNow(), autoplay: true));
+    }
+  }
+
+  /// 播到一半原生播放器自己報錯 (連線斷了、本機快取那台被系統收掉了):
+  /// 從同一個位置重開. 以前這時候畫面就停在最後一幀, 什麼提示都沒有.
+  void _recoverFromError(VideoPlayerValue value) {
+    // 在背景時出的錯, 回到前景那一步 (didChangeAppLifecycleState) 會處理
+    if (_recovering ||
+        _background ||
+        _pendingSeek != null ||
+        _error.isNotEmpty) {
+      return;
+    }
+    final at = _positionNow();
+    final resume = _showsPlaying;
+    final now = DateTime.now().millisecondsSinceEpoch;
+    // 一開就壞的片源不能無限重開: 一分鐘內第三次就停下來, 讓使用者看到原因
+    if (now - _lastErrorAt > 60000) _errorRetries = 0;
+    _lastErrorAt = now;
+    if (_errorRetries >= 2) {
+      setState(() => _error = '播放中斷: ${value.errorDescription ?? '未知錯誤'}');
+      return;
+    }
+    _errorRetries++;
+    _recovering = true;
+    _flashMessage('播放中斷，正在重新連線…');
+    unawaited(_openSource(seekTo: at, autoplay: resume)
+        .whenComplete(() => _recovering = false));
   }
 
   double _bufferedSeconds() {
