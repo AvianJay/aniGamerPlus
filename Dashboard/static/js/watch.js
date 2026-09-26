@@ -148,10 +148,24 @@ async function getAllTimes() {
 
 var lastSetTime = 0;
 
+/* Which episode the throttle belongs to. Two things made the ten seconds a
+   trap: it was measured from the last *write* rather than the last *position*,
+   and it carried across episodes -- watching eight seconds of episode 5 and
+   then switching to 6 meant neither one was ever recorded. Reset on every
+   episode change so a new episode starts its own window. */
+var lastSetSn = '';
+
+function resetSetTime(sn) {
+    if (String(sn) === lastSetSn) { return; }
+    lastSetSn = String(sn);
+    lastSetTime = 0;
+}
+
 /* The duration rides along so the home page can draw a real progress bar
    instead of guessing against a nominal episode length. */
 async function setTime(sn, time, ended, duration, force) {
     var now = Date.now();
+    if (force) { lastSetSn = String(sn); }
     if (!force && now - lastSetTime < 10000) { return; }
     lastSetTime = now;
     if (!isLoggedIn()) { return; }
@@ -161,6 +175,19 @@ async function setTime(sn, time, ended, duration, force) {
     try {
         await fetch(query);
     } catch (error) { /* a lost position is not worth interrupting playback */ }
+}
+
+/* Leaving the page is the one moment the position must not be lost: everything
+   watched since the last ten-second write is otherwise gone. beforeunload is
+   unreliable on mobile Safari and does not fire when the page is put into the
+   back/forward cache at all, so pagehide and a hidden visibilitychange carry
+   the same write. setTime() is idempotent, so firing all three is harmless. */
+function flushTimeOnLeave(player) {
+    var video = player && player.video;
+    if (!video || !player.videoData) { return; }
+    if (!(video.currentTime > 0) || video.ended) { return; }
+    setTime(player.videoData.sn, video.currentTime, false,
+        player.playableDuration ? player.playableDuration() : video.duration, true);
 }
 
 var videoListCache = null;
@@ -346,6 +373,9 @@ function parseDanmakuList(assText) {
 function AgpPlayer(shell, options) {
     this.shell = shell;
     this.videoData = options.videoData;
+    /* 每一集自己算自己的十秒窗 —— 上一集留下的時間戳會讓新的一集開頭幾秒
+       記不下去 */
+    resetSetTime(this.videoData && this.videoData.sn);
     this.series = options.series || [];
     this.onTimeUpdate = options.onTimeUpdate || function () { };
     this.onDanmakuLoaded = options.onDanmakuLoaded || function () { };
@@ -906,6 +936,15 @@ AgpPlayer.prototype.wire = function () {
         if (video.currentTime > 0 && !video.ended) {
             setTime(self.videoData.sn, video.currentTime, false, video.duration, true);
         }
+    });
+
+    /* beforeunload does not fire when the page goes into the back/forward cache
+       (iOS Safari, and any in-app browser that swipes back), and it never fires
+       for a tab that is merely backgrounded. Both of those are how people
+       actually leave a video, so the last position is written here too. */
+    window.addEventListener('pagehide', function () { flushTimeOnLeave(self); });
+    document.addEventListener('visibilitychange', function () {
+        if (document.visibilityState === 'hidden') { flushTimeOnLeave(self); }
     });
 };
 
@@ -2509,6 +2548,9 @@ async function main() {
     seriesInfo.then(function (info) {
         if (!info) { return; }
         page.info = info;
+        /* 這一部作品的名字交給下一頁: 進度表裡只有 sn, 沒有這一步, 首頁的
+           「繼續觀看」跟作品資訊就認不出看過的是哪一部 */
+        AGP.rememberNames(AGP.namesFromSeries(info));
         renderTitleBar(video, page.series, info);
         renderEpisodeGrid(video, page.series, page.times, info);
         renderInfoCard(video, page.series, info);

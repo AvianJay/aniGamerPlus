@@ -111,7 +111,11 @@ class HomeTab extends StatelessWidget {
     final items = state.continueWatching.take(20).toList();
     if (items.isEmpty) {
       return [
-        const SectionHeader(title: '繼續觀看'),
+        SectionHeader(
+          title: '繼續觀看',
+          actionLabel: '所有動畫',
+          onAction: onSeeAll,
+        ),
         Padding(
           padding: const EdgeInsets.symmetric(horizontal: 16),
           child: Text(
@@ -127,7 +131,11 @@ class HomeTab extends StatelessWidget {
     }
 
     return [
-      const SectionHeader(title: '繼續觀看'),
+      SectionHeader(
+        title: '繼續觀看',
+        actionLabel: '所有動畫',
+        onAction: onSeeAll,
+      ),
       Rail(
         height: 208 * 9 / 16 +
             11 +
@@ -135,32 +143,38 @@ class HomeTab extends StatelessWidget {
         itemWidth: 208,
         itemCount: items.length,
         itemBuilder: (context, index) {
-          final video = items[index];
-          final watched = state.watchTimeOf(video.sn);
-          final remaining = watched != null && watched.duration > 0
-              ? '剩餘 ${(watched.duration - watched.time) ~/ 60 + 1} 分'
-              : '已看到 ${formatClock(watched?.time ?? 0)}';
-          final next = _nextEpisode(video);
+          final last = items[index];
+          final video = last.cardVideo!;
+          final next = _nextEpisode(last);
+          final local = state.downloads.isDownloaded(last.sn);
 
           return EpisodeCard(
             video: video,
             state: state,
-            detail: remaining,
-            onNext: next == null ? null : () => _watch(context, next.sn),
-            onTap: () => _watch(context, video.sn),
-            onLongPress: () => _libraryMenu(context, video),
+            detail: last.remainingLabel,
+            onNext: next == null ? null : () => _openNext(context, next),
+            // 片庫 (或手機) 裡有這一集就直接播; 沒有的話這一格代表的是「線上看過
+            // 但還沒下載」, 點下去該看到的是作品資訊 —— 那裡才有邊看邊下載
+            onTap: () => last.local || local
+                ? _watch(context, last.sn)
+                : _openAnimeByName(context, last.name),
+            onLongPress:
+                last.local ? () => _libraryMenu(context, video) : null,
           );
         },
       ),
     ];
   }
 
-  VideoItem? _nextEpisode(VideoItem video) {
-    final current = double.tryParse(video.episode);
+  /// 繼續觀看那一格的「下一集」. 片庫裡的那一份靠 sn 排序; 線上看的作品只有在
+  /// 手上已經有它的集數表時才給得出來, 那時走作品資訊.
+  VideoItem? _nextEpisode(LastWatched last) {
+    if (last.video == null) return null;
+    final current = double.tryParse(last.video!.episode);
     if (current == null) return null;
     VideoItem? best;
     double? bestNumber;
-    for (final candidate in state.episodesOf(video.animeName)) {
+    for (final candidate in state.episodesOf(last.video!.animeName)) {
       final number = double.tryParse(candidate.episode);
       if (number == null || number <= current) continue;
       if (bestNumber == null || number < bestNumber) {
@@ -169,6 +183,13 @@ class HomeTab extends StatelessWidget {
       }
     }
     return best;
+  }
+
+  void _openNext(BuildContext context, VideoItem video) =>
+      _watch(context, video.sn);
+
+  void _openAnimeByName(BuildContext context, String name) {
+    showAnimeSheet(context, state, title: name);
   }
 
   // ---------------------------------------------------------------- 本季新番

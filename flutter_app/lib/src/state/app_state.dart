@@ -13,6 +13,7 @@ import 'package:path_provider/path_provider.dart';
 
 import '../api/client.dart';
 import '../api/models.dart';
+import '../util/format.dart';
 import 'downloads.dart';
 import 'download_network.dart';
 import 'prefs.dart';
@@ -679,6 +680,140 @@ class AppState extends ChangeNotifier {
     return list;
   }
 
+  // ------------------------------------------------------- 這一集是誰 (名稱表)
+  //
+  // 片庫裡沒有的集數 (線上看過、還沒下載的) 手上一開始只有 sn: 進度表裡就只是一
+  // 個數字, 作品名跟集數都得另外記. 以前這份只在「紀錄」那一頁解析完才寫下來,
+  // 所以看了一整晚的線上動畫, 只要沒去開紀錄頁, 首頁的繼續觀看就永遠是空的.
+  //
+  // 現在它是一個共用的表: 播放頁一拿到作品資訊就整份寫進來, 紀錄頁與作品資訊
+  // 兩邊都往同一個地方讀. 鍵名沿用舊版的 history-names, 舊資料直接接得上.
+
+  static const String _kWatchNamesKey = 'history-names';
+
+  final Map<String, WatchName> _watchNames = {};
+
+  /// 問過但查不到的 sn. 之後別再重問 (紀錄頁一次最多問八部, 這些會把名額吃光)
+  final Set<String> _watchNameMisses = <String>{};
+  bool _watchNamesLoaded = false;
+  Timer? _watchNamesWrite;
+
+  /// 磁碟那份先撿回記憶體. 同步讀 —— 它只是一份名稱表, 不值得為它多轉一次
+  /// 事件圈, 而且 lastWatchedByAnime 是在 build 裡被叫的.
+  void _loadWatchNames() {
+    if (_watchNamesLoaded) return;
+    _watchNamesLoaded = true;
+    final raw = prefs.readCachedJson(_kWatchNamesKey);
+    if (raw is! Map) return;
+    raw.forEach((key, value) {
+      if (value is! Map) return;
+      final entry = WatchName.fromJson(value.cast<String, dynamic>());
+      if (entry.name.isEmpty) return;
+      _watchNames[key.toString()] = entry;
+    });
+  }
+
+  WatchName? watchNameOf(String sn) {
+    _loadWatchNames();
+    return _watchNames[sn];
+  }
+
+  /// 這一集問過了沒有 (認出來的算問過, 認不出來而標記過的也算)
+  bool watchNameAsked(String sn) {
+    _loadWatchNames();
+    return _watchNames.containsKey(sn) || _watchNameMisses.contains(sn);
+  }
+
+  void rememberWatchName(String sn, WatchName entry) {
+    if (sn.isEmpty || entry.name.isEmpty) return;
+    _loadWatchNames();
+    final mine = _watchNames[sn];
+    if (mine != null &&
+        mine.name == entry.name &&
+        mine.episode == entry.episode &&
+        mine.cover == entry.cover) {
+      return;
+    }
+    _watchNames[sn] = entry;
+    _watchNameMisses.remove(sn);
+    _scheduleWatchNamesSave();
+  }
+
+  /// 一拿到整份集數表就整批記下來 —— 一部作品的其他集數之後就看得到了.
+  ///
+  /// 刻意不 notifyListeners(): 這是查表用的快取, 不是畫面狀態. 播放頁一開就在
+  /// initState 那條路上叫它, 這時候通知會去戳到底下那五個分頁; 而且看一集就是
+  /// 幾百筆, 沒必要為每一筆把整個 app 叫起來重建. 真的需要重讀的時機是「離開
+  /// 播放頁」與「開啟作品資訊」, 前者走 watchTimesChanged(), 後者本來就會重建.
+  void rememberSeriesNames(
+    SeriesInfo info, {
+    String? fallbackSn,
+    String? fallbackEpisode,
+  }) {
+    _loadWatchNames();
+    var changed = false;
+    for (final episode in info.allEpisodes) {
+      if (episode.videoSn.isEmpty || info.title.isEmpty) continue;
+      final entry = WatchName(
+        name: info.title,
+        episode: episode.episode,
+        cover: info.cover.isNotEmpty ? info.cover : episode.cover,
+      );
+      final mine = _watchNames[episode.videoSn];
+      if (mine != null &&
+          mine.name == entry.name &&
+          mine.episode == entry.episode &&
+          mine.cover == entry.cover) {
+        continue;
+      }
+      _watchNames[episode.videoSn] = entry;
+      _watchNameMisses.remove(episode.videoSn);
+      changed = true;
+    }
+    // 手上這一集在集數表裡找不到 (舊版伺服器的集數表可能不完整) 時,
+    // 至少把它自己記下來
+    final sn = fallbackSn ?? '';
+    if (sn.isNotEmpty && info.title.isNotEmpty && !_watchNames.containsKey(sn)) {
+      _watchNames[sn] = WatchName(
+        name: info.title,
+        episode: fallbackEpisode ?? '',
+        cover: info.cover,
+      );
+      _watchNameMisses.remove(sn);
+      changed = true;
+    }
+    if (changed) _scheduleWatchNamesSave();
+  }
+
+  /// 認不出來 —— 記著別再重問, 但不要寫進磁碟 (下次連得上時還要再試一次)
+  void markWatchNameUnknown(String sn) {
+    if (sn.isEmpty) return;
+    _loadWatchNames();
+    _watchNameMisses.add(sn);
+  }
+
+  /// 名稱表只在記憶體裡改, 落盤合併成一秒一次 —— 一開一部作品就是幾百筆
+  void _scheduleWatchNamesSave() {
+    _watchNamesWrite?.cancel();
+    _watchNamesWrite = Timer(const Duration(seconds: 1), () {
+      unawaited(_saveWatchNames());
+    });
+  }
+
+  Future<void> _saveWatchNames() async {
+    _watchNamesWrite?.cancel();
+    _watchNamesWrite = null;
+    final payload = <String, dynamic>{};
+    _watchNames.forEach((sn, entry) => payload[sn] = entry.toJson());
+    await prefs.cacheJson(_kWatchNamesKey, payload);
+  }
+
+  /// 立刻落盤. 播放頁離開時走這條, 不等那一秒的 debounce
+  Future<void> flushWatchNames() async {
+    if (_watchNamesWrite == null) return;
+    await _saveWatchNames();
+  }
+
   /// 片庫裡有幾部作品 (首頁那幾個區塊都是以「部」為單位)
   List<VideoItem> get animeHeads {
     final seen = <String>{};
@@ -694,48 +829,55 @@ class AppState extends ChangeNotifier {
 
   /// 每部作品最後看的是哪一集, 鍵是小寫的作品名.
   ///
-  /// 片庫裡的集數直接認; 片庫以外的靠觀看紀錄頁存下來的 history-names
-  /// (sn -> 作品名 / 集數), 所以線上看過、沒下載的作品在「所有動畫」也標得出來.
+  /// 片庫裡的集數直接認; 片庫以外的靠名稱表 (sn -> 作品名 / 集數), 那份是播放頁
+  /// 一拿到作品資訊就整批寫下來的, 紀錄頁也會補. 以前它只在紀錄頁解析過之後才
+  /// 存在, 所以線上看了一整晚、沒去開紀錄頁的話, 這裡一部都認不出來.
   Map<String, LastWatched> get lastWatchedByAnime {
-    final names = prefs.readCachedJson('history-names');
+    _loadWatchNames();
     final result = <String, LastWatched>{};
     for (final entry in watchTimes.entries) {
       final video = videoOf(entry.key);
-      String name;
-      String episode;
-      if (video != null) {
-        name = video.displayName;
-        episode = video.episode;
-      } else if (names is Map && names[entry.key] is Map) {
-        final remote = names[entry.key] as Map;
-        name = '${remote['name'] ?? ''}';
-        episode = '${remote['episode'] ?? ''}';
-      } else {
-        continue;
-      }
+      final name = video != null
+          ? video.displayName
+          : (_watchNames[entry.key]?.name ?? '');
+      if (name.isEmpty) continue;
       final key = name.trim().toLowerCase();
       if (key.isEmpty) continue;
       final mine = result[key];
       if (mine != null && mine.time.timestamp >= entry.value.timestamp) continue;
       result[key] = LastWatched(
-          sn: entry.key, episode: episode, time: entry.value, video: video);
+        sn: entry.key,
+        name: name,
+        episode: video?.episode ?? _watchNames[entry.key]?.episode ?? '',
+        time: entry.value,
+        video: video,
+        cover: _watchNames[entry.key]?.cover ?? '',
+      );
     }
     return result;
+  }
+
+  /// 某部作品最後看的那一集. 名稱表跟片庫都認不出名字時就是 null.
+  LastWatched? lastWatchedOf(String name) {
+    if (name.trim().isEmpty) return null;
+    return lastWatchedByAnime[name.trim().toLowerCase()];
   }
 
   /// 首頁的「繼續觀看」—— 一部作品一格, 只放最後看的那一集.
   /// 最後那一集已經看完的作品就不列 (不能拿更早之前沒看完的某一集來頂替,
   /// 那只會把人帶回已經跳過的地方).
-  List<VideoItem> get continueWatching {
+  ///
+  /// 片庫裡沒有的集數也列 —— 那正是「線上看」最常見的形狀: 作品根本還沒下載,
+  /// 以前這裡一律跳過, 於是繼續觀看永遠是空的.
+  List<LastWatched> get continueWatching {
     final rows = <LastWatched>[];
     for (final last in lastWatchedByAnime.values) {
-      if (last.video == null) continue;
       if (last.time.ended) continue;
       if (last.time.time <= 0) continue;
       rows.add(last);
     }
     rows.sort((a, b) => b.time.timestamp.compareTo(a.time.timestamp));
-    return rows.map((e) => e.video!).toList();
+    return rows;
   }
 
   Future<void> addSeriesToSnList(String sn) async {
@@ -762,13 +904,75 @@ class AppState extends ChangeNotifier {
   }
 }
 
-/// 某部作品最後看的一集. video 只有在那一集在片庫裡時才有.
+/// 某部作品最後看的一集.
+///
+/// [video] 只有在那一集已經在片庫裡時才有 —— 線上看過、還沒下載的作品這裡是
+/// null, 就要靠 [name] / [episode] / [cover] 才畫得出那一格.
 class LastWatched {
-  const LastWatched(
-      {required this.sn, required this.episode, required this.time, this.video});
+  const LastWatched({
+    required this.sn,
+    required this.name,
+    required this.episode,
+    required this.time,
+    this.video,
+    this.cover = '',
+  });
 
   final String sn;
+  final String name;
   final String episode;
   final WatchTime time;
   final VideoItem? video;
+  final String cover;
+
+  /// 這一集在片庫裡嗎 (決定點下去是直接播還是先開作品資訊)
+  bool get local => video != null;
+
+  /// 卡片要的形狀. 片庫沒有的集數就自己湊一個 —— 名稱表已經知道它是誰了.
+  VideoItem? get cardVideo =>
+      video ??
+      (name.isEmpty
+          ? null
+          : VideoItem(
+              sn: sn,
+              animeName: name,
+              title: name,
+              episode: episode,
+            ));
+
+  /// 依片長算出來的進度, 沒有片長就沒有 (跟網頁版一樣, 不用名目長度去猜)
+  double? get progress {
+    if (time.ended) return 1;
+    if (time.duration <= 0) return null;
+    final value = time.time / time.duration;
+    if (value.isNaN || value <= 0) return 0;
+    return value > 1 ? 1 : value;
+  }
+
+  /// 「剩餘 12 分」/「已看到 3:20」
+  String get remainingLabel {
+    if (time.duration > 0) {
+      final left = time.duration - time.time;
+      return '剩餘 ${left <= 0 ? 1 : (left / 60).ceil()} 分';
+    }
+    return '已看到 ${formatClock(time.time)}';
+  }
+}
+
+/// 這一集是誰 —— 片庫裡沒有的集數只有靠它才認得出來
+class WatchName {
+  const WatchName({required this.name, this.episode = '', this.cover = ''});
+
+  final String name;
+  final String episode;
+  final String cover;
+
+  factory WatchName.fromJson(Map<String, dynamic> json) => WatchName(
+        name: '${json['name'] ?? ''}',
+        episode: '${json['episode'] ?? ''}',
+        cover: '${json['cover'] ?? ''}',
+      );
+
+  Map<String, dynamic> toJson() =>
+      {'name': name, 'episode': episode, 'cover': cover};
 }

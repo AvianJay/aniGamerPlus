@@ -279,6 +279,70 @@
         } catch (error) { /* 無痕模式寫不進去, 收藏丟了也不該弄壞整頁 */ }
     }
 
+    /* --- 這一集是誰 (sn -> 作品名 / 集數 / 封面) ---------------------------
+
+       播放頁跟首頁是兩份文件, 中間只隔著一次導覽 —— 播放頁拿到的官方集數表
+       在換頁之後就沒了. 進度表裡只有 sn, 所以首頁的「繼續觀看」、所有動畫的
+       卡片、作品資訊的「看到第幾集」都需要這份對照才認得出看過的是哪一部.
+
+       以前這份表只在首頁的觀看紀錄那一區解析完才存在, 於是線上看了一整晚、
+       沒去開紀錄的話, 繼續觀看永遠是空的. 現在播放頁一拿到集數表就整批寫進來,
+       兩邊讀同一份. */
+    var NAMES_KEY = 'agp-watch-names';
+
+    function nameMap() {
+        try {
+            var raw = JSON.parse(readStore(NAMES_KEY, '{}'));
+            return raw && typeof raw === 'object' ? raw : {};
+        } catch (error) {
+            return {};
+        }
+    }
+
+    function watchName(sn) {
+        var entry = nameMap()[String(sn)];
+        return entry && entry.name ? entry : null;
+    }
+
+    /* 整批寫入: 一部作品的集數表一次幾百筆, 逐筆 JSON.parse 太浪費 */
+    function rememberNames(entries) {
+        var map = nameMap();
+        var changed = false;
+        Object.keys(entries || {}).forEach(function (sn) {
+            var entry = entries[sn];
+            if (!sn || !entry || !entry.name) { return; }
+            var mine = map[sn];
+            if (mine && mine.name === entry.name && mine.episode === entry.episode &&
+                mine.cover === entry.cover) {
+                return;
+            }
+            map[sn] = {
+                name: String(entry.name),
+                episode: entry.episode === undefined ? '' : String(entry.episode),
+                cover: entry.cover || ''
+            };
+            changed = true;
+        });
+        if (changed) { writeStore(NAMES_KEY, JSON.stringify(map)); }
+    }
+
+    /* 一份 /watch/series.json 或 /catalog/anime.json 的集數表 -> 名稱表的形狀 */
+    function namesFromSeries(detail) {
+        var entries = {};
+        if (!detail || !detail.title) { return entries; }
+        (detail.groups || []).forEach(function (group) {
+            (group.episodes || []).forEach(function (episode) {
+                if (!episode.videoSn) { return; }
+                entries[String(episode.videoSn)] = {
+                    name: detail.title,
+                    episode: episode.episode,
+                    cover: detail.cover || episode.cover || ''
+                };
+            });
+        });
+        return entries;
+    }
+
     function favList() {
         var list;
         try {
@@ -445,6 +509,9 @@
         sectionHtml: sectionHtml,
         readStore: readStore,
         writeStore: writeStore,
+        watchName: watchName,
+        rememberNames: rememberNames,
+        namesFromSeries: namesFromSeries,
         favourites: {
             list: favList,
             has: favHas,

@@ -174,6 +174,38 @@ def test_home_continue_watching_shows_real_progress(page, server):
     expect(item.locator('.agp-continue-next')).to_contain_text('下一集')
 
 
+def test_continue_watching_includes_a_title_that_is_not_downloaded(page, server):
+    """線上看過、片庫裡沒有的作品也要進繼續觀看.
+
+    This is the shape most people are actually in: they watch from 所有動畫 and
+    never download anything. The rail used to filter on ``state.bySn`` alone, so
+    it stayed empty no matter how much they watched.
+    """
+    title = CATALOG_ALL[3]['title']
+    watched_sn = str(int(CATALOG_ALL[3]['videoSn']) + 6)  # 第 7 集
+    # The watch page writes this table; here it stands in for "已經看過了".
+    page.add_init_script(
+        "localStorage.setItem('agp-watch-names', JSON.stringify({"
+        "'%s': {name: '%s', episode: '7', cover: ''}}));" % (watched_sn, title))
+    page.route('**/watch/time?type=get', lambda route: route.fulfill(
+        json={watched_sn: {'time': 420, 'ended': False, 'duration': 1440,
+                           'timestamp': 1790000000}}))
+
+    page.goto(server.url)
+    page.wait_for_selector('#homeContinue .agp-continue-item')
+
+    item = page.locator('#homeContinue .agp-continue-item').first
+    expect(item.locator('.agp-card-title')).to_have_text(title)
+    expect(item.locator('.agp-card-meta')).to_contain_text('還沒下載')
+    expect(item.locator('.agp-card-badge')).to_contain_text('剩餘')
+    bar = item.locator('.agp-card-progress i')
+    assert 25 < float(bar.evaluate('(el) => el.style.width').rstrip('%')) < 34
+    # 片庫裡沒有這一集, 直接連去播放頁只會拿到「找不到」—— 所以連到作品資訊
+    assert '/watch?id=' not in item.locator('.agp-card').get_attribute('href')
+    assert '#anime-' in item.locator('.agp-card').get_attribute('href')
+    assert page.errors == []
+
+
 def test_home_search_filters_the_library(page, server):
     page.goto(server.url)
     open_tab(page, 'all')
@@ -526,22 +558,64 @@ def test_catalog_sheet_plays_what_is_local_and_queues_what_is_not(page, server):
     assert sheet.locator('.agp-sheet-hint').count() == 0
     # Episode 2 being on disk says nothing about episode 1, which is what the
     # sheet landed on and what the button would stream -- so it stays offered.
-    expect(sheet.locator('button[data-stream]')).to_have_attribute(
+    # 只看動作列那一顆: 有觀看紀錄時「繼續觀看」那張也會排下載.
+    expect(sheet.locator('.agp-sheet-actions button[data-stream]')).to_have_attribute(
         'data-stream', CATALOG_ALL[0]['videoSn'])
 
     # When the landing episode itself is the downloaded one, streaming it would
     # only mean fetching a second copy of a file that is already here.
     on_disk = open_sheet(page, server, CATALOG_LANDING_LOCAL_SN)
     expect(on_disk.locator('.agp-ep.is-local')).to_have_text(re.compile(r'\b1\b'))
-    assert on_disk.locator('button[data-stream]').count() == 0
+    assert on_disk.locator('.agp-sheet-actions button[data-stream]').count() == 0
 
     # Nothing on disk is no longer a dead end: the download can be watched
     # while it runs, and 動畫瘋 itself stays as the way out.
     remote = open_sheet(page, server, CATALOG_ALL[3]['animeSn'])
     expect(remote.locator('.agp-sheet-hint')).to_contain_text('還沒有下載到片庫')
-    expect(remote.locator('button[data-stream]')).to_contain_text('邊看邊下載')
+    expect(remote.locator('.agp-sheet-actions button[data-stream]')).to_contain_text('邊看邊下載')
     expect(remote.locator('a[href^="https://ani.gamer.com.tw/animeVideo.php"]')).to_be_visible()
     assert remote.locator('.agp-ep.is-local').count() == 0
+    assert page.errors == []
+
+
+def test_catalog_sheet_shows_where_the_viewer_left_off(page, server):
+    """所有動畫 → 點進一部作品, 要說得出「看到第 N 集」並接著播.
+
+    The sheet used to be purely editorial: cover, synopsis, episode grid. Where
+    you were in the series was something you had to remember yourself.
+    """
+    title = CATALOG_ALL[5]['title']
+    watched_sn = str(int(CATALOG_ALL[5]['videoSn']) + 2)  # 第 3 集
+    page.add_init_script(
+        "localStorage.setItem('agp-watch-names', JSON.stringify({"
+        "'%s': {name: '%s', episode: '3', cover: ''}}));" % (watched_sn, title))
+    page.route('**/watch/time?type=get', lambda route: route.fulfill(
+        json={watched_sn: {'time': 720, 'ended': False, 'duration': 1440,
+                           'timestamp': 1790000000}}))
+
+    sheet = open_sheet(page, server, CATALOG_ALL[5]['animeSn'])
+
+    card = sheet.locator('.agp-continue-card')
+    expect(card).to_be_visible()
+    expect(card.locator('.agp-continue-head strong')).to_contain_text('看到 第 3 集')
+    expect(card.locator('.agp-continue-head em')).to_contain_text('剩餘')
+    # 720 of 1440 = 50%
+    bar = card.locator('.agp-continue-bar i')
+    assert 45 < float(bar.evaluate('(el) => el.style.width').rstrip('%')) < 55
+    # 這一集不在片庫裡, 所以按鈕走的是「先排下載再進播放器」那條路
+    expect(card.locator('button[data-stream]')).to_have_attribute(
+        'data-stream', watched_sn)
+
+    # 集數格子也標出上次看到的那一格
+    expect(sheet.locator('.agp-ep.is-here')).to_have_count(1)
+    assert page.errors == []
+
+
+def test_catalog_sheet_has_no_continue_card_before_anything_is_watched(page, server):
+    # 沒看過就不該多一張空卡片
+    sheet = open_sheet(page, server, CATALOG_ALL[9]['animeSn'])
+    assert sheet.locator('.agp-continue-card').count() == 0
+    assert sheet.locator('.agp-ep.is-here').count() == 0
     assert page.errors == []
 
 
@@ -973,6 +1047,26 @@ def test_watch_position_is_reported_with_duration(page, server):
         return r.json();
     }""" % FIRST_SN)
     assert stored['duration'] > 0
+
+
+def test_watch_position_survives_leaving_the_page_early(page, server):
+    """看幾秒就離開, 那幾秒也要留下來.
+
+    The ten-second throttle used to be the only writer, so a viewer who watched
+    eight seconds and swiped back had never watched anything: no progress bar,
+    nothing in 繼續觀看. pagehide/visibilitychange now carry that last write --
+    beforeunload alone never fires for a page going into the back/forward cache.
+    """
+    goto_watch(page, server)
+    page.evaluate("""() => {
+        const v = document.querySelector('#playerShell video');
+        v.currentTime = 6;
+    }""")
+    with page.expect_request(re.compile(r'/watch/time\?type=set')) as caught:
+        page.evaluate("() => window.dispatchEvent(new Event('pagehide'))")
+    assert 'time=6' in caught.value.url
+    # 這一筆是測試製造出來的, 收乾淨 —— 後面的測試看的是同一份 WATCH_TIMES
+    page.request.get('%s/watch/time?type=del&sn=%s' % (server.url, FIRST_SN))
 
 
 def test_fullscreen_prefers_the_real_thing(page, server):
@@ -1500,9 +1594,12 @@ def test_the_catalog_starts_a_download_and_goes_straight_to_the_player(page, ser
     del MANUAL_TASKS[:]
     sheet = open_sheet(page, server, CATALOG_SEASON[0]['animeSn'])
 
-    expect(sheet.locator('button[data-stream]')).to_contain_text('邊看邊下載')
+    # 這一部有觀看紀錄, 所以畫面上會有兩顆排下載的按鈕: 繼續觀看那一顆, 以及
+    # 動作列那一顆. 這裡要的是動作列那一顆.
+    stream = sheet.locator('.agp-sheet-actions button[data-stream]')
+    expect(stream).to_contain_text('邊看邊下載')
     expect(sheet.locator('.agp-sheet-hint')).to_contain_text('在背景繼續下載')
-    sheet.locator('button[data-stream]').click()
+    stream.click()
 
     page.wait_for_url(lambda url: 'streaming=1' in url, timeout=15000)
     page.wait_for_selector('#playerShell.is-custom-player')

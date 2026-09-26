@@ -4,6 +4,8 @@
 /// 「邊看邊下載」是先排一個 single 任務再跳進播放器.
 library;
 
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:url_launcher/url_launcher.dart';
 
@@ -91,6 +93,10 @@ class _AnimeSheetState extends State<_AnimeSheet> {
   Future<void> _load() async {
     final cached = _detailCache[_cacheKey];
     if (cached != null) {
+      // 集數表本身就是一份 sn -> 作品名 / 集數 的對照. 先記下來, 這一張 sheet
+      // 才認得出「上次看到第幾集」—— 那筆進度可能是在別台裝置上看出來的,
+      // 這支手機從來沒播過它, 名稱表裡本來沒有這一部
+      _remember(cached);
       setState(() {
         _detail = cached;
         _loading = false;
@@ -102,6 +108,7 @@ class _AnimeSheetState extends State<_AnimeSheet> {
           ? await state.client.catalogAnime(widget.animeSn)
           : await state.client.series(widget.videoSn);
       _detailCache[_cacheKey] = detail;
+      _remember(detail);
       if (!mounted) return;
       setState(() {
         _detail = detail;
@@ -285,6 +292,7 @@ class _AnimeSheetState extends State<_AnimeSheet> {
         children: [
           _hero(detail),
           const SizedBox(height: 16),
+          _continueCard(detail),
           _actions(detail),
           if (detail.content.isNotEmpty) ...[
             const SizedBox(height: 18),
@@ -374,6 +382,115 @@ class _AnimeSheetState extends State<_AnimeSheet> {
           ),
         ),
       ],
+    );
+  }
+
+  // ------------------------------------------------------- 看到哪裡 / 繼續觀看
+
+  /// 把這份集數表交給 AppState 保管, 然後立刻落盤.
+  ///
+  /// 落盤不等那一秒的 debounce: 這一張 sheet 隨時會被關掉, 留一個 Timer 在後面
+  /// 等於讓「記住了」跟關閉時間點賽跑 (widget test 也會直接判它失敗).
+  void _remember(SeriesInfo detail) {
+    state.rememberSeriesNames(detail);
+    unawaited(state.flushWatchNames());
+  }
+
+  /// 這一部作品最後看的那一集. 片庫裡沒有的也算 —— 名稱表認得出它是誰.
+  LastWatched? get _lastWatched {
+    final title = _detail?.title ?? widget.fallbackTitle;
+    if (title.isEmpty) return null;
+    return state.lastWatchedOf(title);
+  }
+
+  /// 上次看到一半的那一集. 看完了 (或根本沒看過) 就是 null.
+  LastWatched? get _resume {
+    final last = _lastWatched;
+    if (last == null) return null;
+    if (last.time.ended) return null;
+    if (last.time.time <= 0) return null;
+    return last;
+  }
+
+  /// 「繼續觀看」—— 卡片上那條進度與一句話, 以及一顆接著播的按鈕.
+  ///
+  /// 這一格是「所有動畫 → 點進一部作品」之後最想知道的東西: 這部我上次看到哪,
+  /// 按下去要從哪裡接. 以前這張 sheet 完全沒有這個資訊, 只能自己回想.
+  Widget _continueCard(SeriesInfo detail) {
+    final last = _resume;
+    if (last == null) return const SizedBox.shrink();
+
+    final ratio = last.progress;
+    // 這一集在片庫 (或手機) 裡就直接播; 沒有的話跟下面那顆「邊看邊下載」走同一
+    // 條路 —— 先排一個 single 任務, 再進播放器等分片
+    final local = detail.episodeOf(last.sn)?.local ?? false;
+    final downloaded = state.downloads.isDownloaded(last.sn);
+    final playable = local || downloaded;
+
+    return Padding(
+      padding: const EdgeInsets.only(top: 16),
+      child: Container(
+        padding: const EdgeInsets.fromLTRB(14, 12, 12, 12),
+        decoration: BoxDecoration(
+          color: AgpColors.accentSoft,
+          borderRadius: BorderRadius.circular(kRadius),
+          border: Border.all(color: AgpColors.accent.withValues(alpha: 0.35)),
+        ),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Row(
+              children: [
+                const Icon(Icons.play_circle_outline_rounded,
+                    size: 17, color: AgpColors.accent),
+                const SizedBox(width: 7),
+                Expanded(
+                  child: Text(
+                    '看到 ${episodeLabel(last.episode)}',
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: const TextStyle(
+                        fontSize: 14, fontWeight: FontWeight.w800),
+                  ),
+                ),
+                Text(
+                  last.remainingLabel,
+                  style: TextStyle(
+                      fontSize: 11.5,
+                      color: Theme.of(context).colorScheme.onSurfaceVariant),
+                ),
+              ],
+            ),
+            if (ratio != null) ...[
+              const SizedBox(height: 9),
+              ClipRRect(
+                borderRadius: BorderRadius.circular(999),
+                child: LinearProgressIndicator(
+                  value: ratio,
+                  minHeight: 4,
+                  backgroundColor: const Color(0x33FFFFFF),
+                  color: AgpColors.accent,
+                ),
+              ),
+            ],
+            const SizedBox(height: 10),
+            SizedBox(
+              width: double.infinity,
+              child: FilledButton.icon(
+                onPressed: () {
+                  if (playable) {
+                    _openWatch(last.sn);
+                  } else {
+                    _stream(last.sn);
+                  }
+                },
+                icon: const Icon(Icons.play_arrow_rounded, size: 20),
+                label: Text('繼續觀看 ${episodeLabel(last.episode)}'),
+              ),
+            ),
+          ],
+        ),
+      ),
     );
   }
 
@@ -554,6 +671,8 @@ class _AnimeSheetState extends State<_AnimeSheet> {
     final label = episode.episode.isNotEmpty ? episode.episode : '?';
     final onPhone = state.downloads.isDownloaded(episode.videoSn);
     final queued = state.queued.contains(episode.videoSn);
+    // 上次看到的那一格標出來 —— 不必在一百多格裡自己找
+    final here = _resume?.sn == episode.videoSn;
 
     Color background;
     Color foreground = Theme.of(context).colorScheme.onSurface;
@@ -589,9 +708,12 @@ class _AnimeSheetState extends State<_AnimeSheet> {
           color: background,
           borderRadius: BorderRadius.circular(kRadiusSmall),
           border: Border.all(
-            color: episode.local
-                ? AgpColors.accent.withValues(alpha: 0.5)
-                : Theme.of(context).dividerColor,
+            color: here
+                ? AgpColors.accent
+                : (episode.local
+                    ? AgpColors.accent.withValues(alpha: 0.5)
+                    : Theme.of(context).dividerColor),
+            width: here ? 1.6 : 1,
           ),
         ),
         child: Row(
@@ -606,6 +728,11 @@ class _AnimeSheetState extends State<_AnimeSheet> {
               style: TextStyle(
                   fontSize: 13, fontWeight: FontWeight.w600, color: foreground),
             ),
+            if (here) ...[
+              const SizedBox(width: 4),
+              const Icon(Icons.play_arrow_rounded,
+                  size: 12, color: AgpColors.accent),
+            ],
           ],
         ),
       ),

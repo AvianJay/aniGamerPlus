@@ -51,9 +51,14 @@
     }
 
     function episodeLabel(video) {
-        var value = String(video.episode === undefined || video.episode === null ? '' : video.episode).trim();
-        if (!value) { return '單集'; }
-        return /^[0-9.]+$/.test(value) ? '第 ' + value + ' 集' : value;
+        return episodeText(video ? video.episode : '');
+    }
+
+    /* 集數的原始值 -> 顯示字. 有些地方手上只有那個值, 沒有整個 video 物件 */
+    function episodeText(value) {
+        var text = String(value === undefined || value === null ? '' : value).trim();
+        if (!text) { return '單集'; }
+        return /^[0-9.]+$/.test(text) ? '第 ' + text + ' 集' : text;
     }
 
     function watchUrl(video) {
@@ -89,7 +94,9 @@
             var entry = state.times[sn];
             if (!entry) { return; }
             var video = state.bySn[String(sn)];
-            var remote = video ? null : state.remote[String(sn)];
+            /* 片庫以外的: 先看這一份紀錄頁問回來的, 再看播放頁留下的名稱表 ——
+               後者才是不必先開紀錄頁就認得出來的那一份 */
+            var remote = video ? null : (state.remote[String(sn)] || AGP.watchName(sn));
             if (!video && !remote) { return; }
             var name = video ? animeKey(video) : remote.name;
             var key = String(name || '').trim().toLowerCase();
@@ -98,9 +105,13 @@
             if (result[key] && result[key].updated >= updated) { return; }
             result[key] = {
                 video: video || null,
+                sn: String(sn),
+                name: name,
                 episode: video ? video.episode : remote.episode,
                 ended: !!entry.ended,
-                updated: updated
+                updated: updated,
+                time: Number(entry.time) || 0,
+                duration: Number(entry.duration) || 0
             };
         });
         return result;
@@ -110,11 +121,34 @@
     function watchedLabel(name) {
         var last = lastWatchedByAnime()[String(name || '').trim().toLowerCase()];
         if (!last) { return ''; }
-        return (last.ended ? '看完' : '看到') + episodeLabel({ episode: last.episode });
+        return (last.ended ? '看完' : '看到') + episodeLabel(last.episode);
+    }
+
+    /* 作品資訊那一頁要的不只是「看到第幾集」, 還要進度條、剩餘時間, 以及按下去
+       要接哪一集. 那張 sheet 在 catalog.js, 拿不到這裡的 state, 所以連同
+       progressOf() 的算法一起交出去 */
+    function lastWatchedFor(name) {
+        var last = lastWatchedByAnime()[String(name || '').trim().toLowerCase()];
+        if (!last) { return null; }
+        var progress = last.ended
+            ? { seconds: 0, ratio: 1, done: true, remaining: 0 }
+            : progressOf({ sn: last.sn });
+        return {
+            sn: last.sn,
+            name: last.name,
+            episode: last.episode,
+            ended: last.ended,
+            local: !!last.video,
+            updated: last.updated,
+            progress: progress
+        };
     }
 
     /* catalog.js 的卡片也要標, 它拿不到這裡的 state */
     AGP.watchedLabel = watchedLabel;
+    AGP.lastWatchedFor = lastWatchedFor;
+    /* catalog.js 是另一個 closure, 沒有這一支. 「看到第 3 集」要跟首頁寫法一致 */
+    AGP.episodeLabel = episodeText;
 
     function notifyWatched() {
         document.dispatchEvent(new CustomEvent('agp:watched'));
@@ -224,14 +258,23 @@
         if (!host) { return; }
 
         /* 一部作品一格, 只放最後看的那一集. 最後那一集已經看完就不列 ——
-           拿更早之前沒看完的某一集來頂替, 只會把人帶回已經跳過的地方. */
+           拿更早之前沒看完的某一集來頂替, 只會把人帶回已經跳過的地方.
+
+           片庫裡沒有的集數也列: 那正是「線上看」最常見的形狀 —— 作品根本還沒
+           下載. 以前這裡只認 state.bySn, 所以整晚線上看的作品一部都不會出現,
+           繼續觀看永遠是空的. */
         var latest = lastWatchedByAnime();
         var items = Object.keys(latest)
             .map(function (key) { return latest[key]; })
-            .filter(function (last) { return last.video; })
-            .map(function (last) { return { video: last.video, progress: progressOf(last.video) }; })
-            .filter(function (item) { return item.progress && !item.progress.done; })
-            .sort(function (a, b) { return b.progress.updated - a.progress.updated; })
+            .map(function (last) {
+                return {
+                    last: last,
+                    video: last.video || remoteVideo(last),
+                    progress: last.ended ? { done: true } : progressOf({ sn: last.sn })
+                };
+            })
+            .filter(function (item) { return item.video && item.progress && !item.progress.done; })
+            .sort(function (a, b) { return b.last.updated - a.last.updated; })
             .slice(0, 20);
 
         /* The tab strip always links to #continue, so the section has to exist
@@ -240,14 +283,15 @@
             host.innerHTML = sectionHtml('continue', '繼續觀看',
                 '<p class="agp-empty">' + (isLoggedIn()
                     ? '還沒有看到一半的影片。'
-                    : '登入後即可跨裝置同步觀看進度。') + '</p>');
+                    : '登入後即可跨裝置同步觀看進度。') + '</p>',
+                './?tab=all', '所有動畫');
             return;
         }
 
         var cards = items.map(function (item) {
             var video = item.video;
             var progress = item.progress;
-            var remaining = progress.remaining !== null
+            var remaining = (progress.remaining !== null && progress.remaining !== undefined)
                 ? '剩餘 ' + Math.max(1, Math.round(progress.remaining / 60)) + ' 分'
                 : '已看到 ' + AGP.formatClock(progress.seconds);
             var anime = state.byAnime[animeKey(video)];
@@ -255,15 +299,66 @@
                 return episodeNumber(candidate) > episodeNumber(video);
             }).sort(function (a, b) { return episodeNumber(a) - episodeNumber(b); })[0];
 
-            return '<div class="agp-continue-item">' +
-                episodeCard(video, { progress: progress, badge: remaining }) +
+            /* 片庫沒有的那一集直接連去播放頁只會拿到「找不到」—— 播放頁要的是
+               一個伺服器上真的有的檔. 這種情況連到作品資訊, 那裡才有邊看邊下載 */
+            var card = item.last.local
+                ? episodeCard(video, { progress: progress, badge: remaining })
+                : '<a class="agp-card" href="' +
+                    AGP.escapeHtml(animeHref(video.anime_name)) + '">' +
+                    '<span class="agp-card-art">' +
+                    plate(video, animeKey(video)) +
+                    '<span class="agp-card-ep">' + AGP.escapeHtml(episodeLabel(video)) + '</span>' +
+                    '<span class="agp-card-badge">' + AGP.escapeHtml(remaining) + '</span>' +
+                    ((progress.ratio !== null && progress.ratio !== undefined)
+                        ? '<span class="agp-card-progress"><i style="width:' +
+                            (progress.ratio * 100).toFixed(1) + '%"></i></span>'
+                        : '') +
+                    '</span>' +
+                    '<span class="agp-card-title">' + AGP.escapeHtml(animeKey(video)) + '</span>' +
+                    '<span class="agp-card-meta"><span>線上看 · 還沒下載</span></span>' +
+                    '</a>';
+
+            return '<div class="agp-continue-item">' + card +
                 (next ? '<a class="agp-continue-next" href="' + AGP.escapeHtml(watchUrl(next)) + '">下一集 ' +
-                    AGP.icon('play', 12) + '</a>' : '') +
-                '</div>';
+                    AGP.icon('play', 12) + '</a>' : '') + '</div>';
         }).join('');
 
-        host.innerHTML = sectionHtml('continue', '繼續觀看', railHtml(cards, 'railContinue'));
+        host.innerHTML = sectionHtml('continue', '繼續觀看', railHtml(cards, 'railContinue'),
+            './?tab=all', '所有動畫');
         host.querySelectorAll('.agp-rail-wrap').forEach(AGP.wireRail);
+    }
+
+    /* 片庫沒有的那一集: 名稱表知道它是誰, 但沒有檔案可以播. 湊一個卡片認得的
+       形狀出來, 差別只在點下去連到作品資訊而不是播放頁. */
+    function remoteVideo(last) {
+        if (!last.name) { return null; }
+        return {
+            sn: last.sn,
+            anime_name: last.name,
+            title: last.name,
+            episode: last.episode
+        };
+    }
+
+    /* 作品資訊的網址吃 animeSn, 而名稱表裡只有 videoSn —— 片單裡找得到就用它的 */
+    function animeHref(name) {
+        var item = catalogItemFor(name);
+        return './#anime-' + encodeURIComponent(item ? item.animeSn : name);
+    }
+
+    function catalogItemFor(name) {
+        var key = String(name || '').trim().toLowerCase();
+        if (!key) { return null; }
+        var index = state.index || {};
+        var pools = [index.season || [], index.hot || [], index.newAdded || []];
+        for (var p = 0; p < pools.length; p++) {
+            for (var i = 0; i < pools[p].length; i++) {
+                if (String(pools[p][i].title || '').trim().toLowerCase() === key) {
+                    return pools[p][i];
+                }
+            }
+        }
+        return null;
     }
 
     function renderTimetable() {
@@ -435,6 +530,8 @@
                 };
             });
         });
+        /* 也留一份給下一頁 (作品資訊那一張 sheet 在 catalog.js, 換頁之後才開) */
+        AGP.rememberNames(AGP.namesFromSeries(detail));
     }
 
     async function resolveHistory(rows) {

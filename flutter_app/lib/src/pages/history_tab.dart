@@ -2,6 +2,9 @@
 ///
 /// 片庫裡沒有的集數只認得出 sn, 所以會去問 /watch/series.json 把作品名補回來;
 /// 一次最多問 8 部, 免得紀錄裡有幾十部沒下載的作品時打出幾十個請求.
+///
+/// 認出來的名字交給 AppState 保管 (它才是那份表的主人) —— 首頁的繼續觀看、所有
+/// 動畫的卡片、作品資訊的「看到第幾集」讀的都是同一份.
 library;
 
 import 'dart:async';
@@ -19,56 +22,6 @@ import 'watch_page.dart';
 
 const int kHistoryLookups = 8;
 const int kHistoryRows = 200;
-
-class _Remote {
-  const _Remote(
-      {required this.name, required this.episode, required this.cover});
-
-  final String name;
-  final String episode;
-  final String cover;
-
-  factory _Remote.fromJson(Map<String, dynamic> json) => _Remote(
-        name: (json['name'] ?? '').toString(),
-        episode: (json['episode'] ?? '').toString(),
-        cover: (json['cover'] ?? '').toString(),
-      );
-
-  Map<String, dynamic> toJson() =>
-      {'name': name, 'episode': episode, 'cover': cover};
-}
-
-/// 問過的作品留著, 換分頁再回來不用重問
-final Map<String, _Remote?> _remote = {};
-
-/// 落盤那一份的鍵. 認得出來的名字存起來, 下次開 app 這一頁就不必再打
-/// 八次 /watch/series.json —— 那是每次冷啟動之後最先塞住連線的一批請求.
-const String _kNameCacheKey = 'history-names';
-bool _nameCacheLoaded = false;
-
-void _loadNameCache(AppState state) {
-  if (_nameCacheLoaded) return;
-  _nameCacheLoaded = true;
-  final raw = state.prefs.readCachedJson(_kNameCacheKey);
-  if (raw is! Map) return;
-  raw.forEach((key, value) {
-    if (value is Map) {
-      _remote.putIfAbsent(key.toString(),
-          () => _Remote.fromJson(value.cast<String, dynamic>()));
-    }
-  });
-}
-
-/// 只存真的認出來的那些. 認不出來的下次還是要再試一次 —— 那多半是當時
-/// 連不上, 不是這一集永遠查不到.
-Future<void> _saveNameCache(AppState state) {
-  final known = <String, dynamic>{};
-  for (final entry in _remote.entries) {
-    final value = entry.value;
-    if (value != null) known[entry.key] = value.toJson();
-  }
-  return state.prefs.cacheJson(_kNameCacheKey, known);
-}
 
 class HistoryTab extends StatefulWidget {
   const HistoryTab({super.key, required this.state});
@@ -90,6 +43,10 @@ class _HistoryTabState extends State<HistoryTab> {
     return rows.take(kHistoryRows).toList();
   }
 
+  /// 這一集認出來了沒有 (片庫裡有, 或名稱表認得)
+  bool _known(String sn) =>
+      state.videoOf(sn) != null || state.watchNameOf(sn) != null;
+
   Future<void> _resolve(List<MapEntry<String, WatchTime>> rows) async {
     if (_resolving) return;
     _resolving = true;
@@ -99,7 +56,7 @@ class _HistoryTabState extends State<HistoryTab> {
       while (tries < kHistoryLookups) {
         String? pending;
         for (final row in rows) {
-          if (state.videoOf(row.key) == null && !_remote.containsKey(row.key)) {
+          if (!_known(row.key) && !state.watchNameAsked(row.key)) {
             pending = row.key;
             break;
           }
@@ -108,34 +65,19 @@ class _HistoryTabState extends State<HistoryTab> {
         tries++;
         try {
           final detail = await state.loadSeries(pending);
-          for (final group in detail.groups) {
-            for (final episode in group.episodes) {
-              _remote[episode.videoSn] = _Remote(
-                name: detail.title,
-                episode: episode.episode,
-                cover: detail.cover.isNotEmpty ? detail.cover : episode.cover,
-              );
-            }
-          }
+          state.rememberSeriesNames(detail);
           found = true;
         } catch (_) {
           // 認不出來就認不出來, 那一列還是列得出日期
         }
         // 問過了就標記, 不然這一集永遠排在隊伍最前面把次數用光
-        _remote.putIfAbsent(pending, () => null);
+        state.markWatchNameUnknown(pending);
       }
     } finally {
       _resolving = false;
     }
     if (!found) return;
-    unawaited(_saveNameCache(state));
     if (mounted) setState(() {});
-  }
-
-  @override
-  void initState() {
-    super.initState();
-    _loadNameCache(state);
   }
 
   @override
@@ -169,8 +111,7 @@ class _HistoryTabState extends State<HistoryTab> {
       );
     }
 
-    if (rows.any((row) =>
-        state.videoOf(row.key) == null && !_remote.containsKey(row.key))) {
+    if (rows.any((row) => !_known(row.key) && !state.watchNameAsked(row.key))) {
       WidgetsBinding.instance.addPostFrameCallback((_) => _resolve(rows));
     }
 
@@ -219,10 +160,10 @@ class _HistoryTabState extends State<HistoryTab> {
 
   Widget _row(String sn, WatchTime entry) {
     final video = state.videoOf(sn);
-    final remote = _remote[sn];
+    final named = state.watchNameOf(sn);
     final local = video != null;
-    final name = video?.displayName ?? remote?.name ?? '未知作品';
-    final episode = video?.episode ?? remote?.episode ?? '';
+    final name = video?.displayName ?? named?.name ?? '未知作品';
+    final episode = video?.episode ?? named?.episode ?? '';
 
     final ratio = entry.ended
         ? 1.0
@@ -240,7 +181,7 @@ class _HistoryTabState extends State<HistoryTab> {
       title: name,
       subtitle: '${stamp.isEmpty ? '' : '$stamp '}$where',
       coverFile: state.downloads.localThumb(sn),
-      cover: remote?.cover.isNotEmpty == true ? remote!.cover : null,
+      cover: named?.cover.isNotEmpty == true ? named!.cover : null,
       cache: state.thumbnails,
       sn: sn,
       headers: state.client.authHeaders,

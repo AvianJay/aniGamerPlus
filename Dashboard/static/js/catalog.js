@@ -30,6 +30,8 @@
         sheetSn: '',
         pushed: false,
         detail: null,
+        /* 上次看到的那一集的 sn, 集數格子要用它標出「看到這裡」 */
+        resumeSn: '',
         expanded: {},
         synopsis: false,
         details: {},
@@ -93,6 +95,56 @@
     /* home.js 認得觀看紀錄; 看過的作品把「看到第幾集」放在說明那一行 */
     function watchedLabel(item) {
         return AGP.watchedLabel ? AGP.watchedLabel(item.title) : '';
+    }
+
+    /* home.js 的 episodeLabel(): 純數字就是「第 N 集」, 有字就照原樣.
+       這支是另一個 closure, 沒拿到就用同樣的規則自己算一份 */
+    function episodeLabel(value) {
+        if (AGP.episodeLabel) { return AGP.episodeLabel(value); }
+        var text = String(value === undefined || value === null ? '' : value).trim();
+        if (!text) { return '單集'; }
+        return /^[0-9.]+$/.test(text) ? '第 ' + text + ' 集' : text;
+    }
+
+    /* 這一部作品上次看到哪裡. 片庫裡沒有的也算 —— home.js 的名稱表認得出它是誰 */
+    function lastWatched(item) {
+        return AGP.lastWatchedFor ? AGP.lastWatchedFor(item.title) : null;
+    }
+
+    /* 「看到第 3 集」+ 進度條 + 一顆接著播的按鈕.
+       這是「所有動畫 → 點進一部作品」之後最想知道的東西: 這部我上次看到哪,
+       按下去要從哪裡接. 以前這張 sheet 完全沒有這個資訊, 只能自己回想. */
+    function continueHtml(detail) {
+        var last = lastWatched(detail);
+        if (!last || last.ended || !last.progress || last.progress.done) { return ''; }
+
+        var ratio = last.progress.ratio;
+        var label = episodeLabel(last.episode);
+        var remaining = (last.progress.remaining !== null && last.progress.remaining !== undefined)
+            ? '剩餘 ' + Math.max(1, Math.round(last.progress.remaining / 60)) + ' 分'
+            : '已看到 ' + AGP.formatClock(last.progress.seconds);
+
+        /* 這一集在片庫裡就是一條連結; 沒有的話跟下面那顆「邊看邊下載」走同一條
+           路 —— 先排一個 single 任務再進播放器, 不然只會拿到一個 404 */
+        var episode = episodeBySn(detail, last.sn);
+        var playable = !!(episode && episode.local);
+        var action = playable
+            ? '<a class="agp-btn agp-continue-play" href="./watch?id=' +
+                AGP.escapeHtml(encodeURIComponent(last.sn)) + '">' +
+                AGP.icon('play', 16) + ' 繼續觀看 ' + AGP.escapeHtml(label) + '</a>'
+            : '<button class="agp-btn agp-continue-play" type="button" data-stream="' +
+                AGP.escapeHtml(last.sn) + '">' +
+                AGP.icon('play', 16) + ' 繼續觀看 ' + AGP.escapeHtml(label) + '</button>';
+
+        return '<div class="agp-continue-card">' +
+            '<div class="agp-continue-head">' + AGP.icon('play', 15) +
+            '<strong>看到 ' + AGP.escapeHtml(label) + '</strong>' +
+            '<em>' + AGP.escapeHtml(remaining) + '</em></div>' +
+            (ratio !== null && ratio !== undefined
+                ? '<span class="agp-continue-bar"><i style="width:' +
+                    (ratio * 100).toFixed(1) + '%"></i></span>'
+                : '') +
+            action + '</div>';
     }
 
     function catalogPoster(item, rank) {
@@ -319,22 +371,25 @@
 
     function episodeHtml(episode) {
         var label = episode.episode || '?';
+        /* 上次看到的那一格標出來 —— 不必在一百多格裡自己找 */
+        var here = state.resumeSn && String(state.resumeSn) === String(episode.videoSn);
+        var mark = here ? AGP.icon('play', 11) : '';
         if (episode.local) {
-            return '<a class="agp-ep is-local" href="./watch?id=' +
+            return '<a class="agp-ep is-local' + (here ? ' is-here' : '') + '" href="./watch?id=' +
                 AGP.escapeHtml(encodeURIComponent(episode.videoSn)) + '">' +
-                AGP.icon('check', 12) + AGP.escapeHtml(label) + '</a>';
+                AGP.icon('check', 12) + AGP.escapeHtml(label) + mark + '</a>';
         }
         var queued = state.queued[episode.videoSn];
         if (queued) {
             /* 排進去的那一刻就能看了, 沒有理由讓它繼續是一個按不動的灰格子.
                streaming=1 是給 /watch 的憑據 —— 任務剛送出去、進度紀錄還沒建立的
                那幾秒, 有它播放頁才會擺出播放器等分片, 而不是回一句找不到 */
-            return '<a class="agp-ep is-queued" title="邊看邊下載" href="./watch?id=' +
+            return '<a class="agp-ep is-queued' + (here ? ' is-here' : '') + '" title="邊看邊下載" href="./watch?id=' +
                 AGP.escapeHtml(encodeURIComponent(episode.videoSn)) + '&streaming=1">' +
-                AGP.icon('play', 12) + AGP.escapeHtml(label) + '</a>';
+                AGP.icon('play', 12) + AGP.escapeHtml(label) + mark + '</a>';
         }
-        return '<button class="agp-ep" type="button" data-episode="' +
-            AGP.escapeHtml(episode.videoSn) + '">' + AGP.escapeHtml(label) + '</button>';
+        return '<button class="agp-ep' + (here ? ' is-here' : '') + '" type="button" data-episode="' +
+            AGP.escapeHtml(episode.videoSn) + '">' + AGP.escapeHtml(label) + mark + '</button>';
     }
 
     function groupHtml(group, index) {
@@ -417,6 +472,7 @@
                 detail.tags.map(function (tag) { return chip('', tag); }).join('') + '</div>' : '') +
             actionsHtml(detail) +
             '</div></div>' +
+            continueHtml(detail) +
             synopsisHtml(detail.content) +
             (detail.groups || []).map(groupHtml).join('');
     }
@@ -435,6 +491,7 @@
     async function loadDetail(animeSn) {
         if (state.details[animeSn]) {
             state.detail = state.details[animeSn];
+            state.resumeSn = resumeSnOf(state.detail);
             renderSheet();
             return;
         }
@@ -458,7 +515,18 @@
         }
         state.details[animeSn] = detail;
         state.detail = detail;
+        state.resumeSn = resumeSnOf(detail);
+        /* 這一部作品的名字留一份給下一頁 —— 作品資訊本身就是一份集數表 */
+        AGP.rememberNames(AGP.namesFromSeries(detail));
         renderSheet();
+    }
+
+    /* 這一部作品上次看到哪一集. 片庫裡沒有的也算 —— home.js 的名稱表認得出它 */
+    function resumeSnOf(detail) {
+        if (!detail || !detail.title) { return ''; }
+        var last = lastWatched(detail);
+        if (!last || last.ended || !last.progress || last.progress.done) { return ''; }
+        return last.sn;
     }
 
     function openSheet(animeSn) {
@@ -468,6 +536,7 @@
         state.expanded = {};
         state.synopsis = false;
         state.detail = state.details[animeSn] || null;
+        state.resumeSn = resumeSnOf(state.detail);
         host.hidden = false;
         document.body.classList.add('agp-sheet-open');
         renderSheet();
@@ -726,6 +795,12 @@
         if (state.index) {
             renderHot();
             renderNewAdded();
+        }
+        /* 開著的那一張 sheet 也要跟上: 「看到第幾集」那一格是進度回來才畫得
+           出來的, 而 sheet 常常比 /watch/time 早開 */
+        if (state.detail) {
+            state.resumeSn = resumeSnOf(state.detail);
+            renderSheet();
         }
     });
     global.addEventListener('popstate', syncSheetToHash);

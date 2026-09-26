@@ -410,9 +410,6 @@ class _WatchPageState extends State<WatchPage> with WidgetsBindingObserver {
   String _downloading = '';
   int _lastStallFlash = 0;
 
-  // ------------------------------------------------------------- 進度同步
-  int _lastSync = 0;
-
   // ------------------------------------------------------------- 下一集
   SeriesEpisode? _nextOffer;
   int _nextCountdown = 0;
@@ -456,6 +453,9 @@ class _WatchPageState extends State<WatchPage> with WidgetsBindingObserver {
     _sourceGeneration++;
     _preview.dispose();
     _pendingSeek = null;
+    // 最後一筆進度要在把 _clock 收掉之前記. _syncTime() 的前半段是同步的,
+    // noteWatchTime() 當場就跑完, 所以下面的 flush 與通知都看得到它.
+    _noteFinalPosition();
     final controller = _controller;
     _controller = null;
     controller?.removeListener(_onPlayerUpdate);
@@ -890,15 +890,30 @@ class _WatchPageState extends State<WatchPage> with WidgetsBindingObserver {
     final cached = state.cachedSeries(_sn);
     if (cached != null && mounted) {
       setState(() => _series = cached);
+      // 名字先記下來 —— 這一份就足以讓「繼續觀看」認出這一集是誰
+      _rememberNames(cached);
     }
     if (state.offline) return;
     try {
       final info = await state.loadSeries(_sn);
       if (!mounted) return;
       setState(() => _series = info);
+      _rememberNames(info);
     } catch (_) {
       // 舊版伺服器沒有 /watch/series.json, 下面會退回本機片庫湊選集
     }
+  }
+
+  /// 把這一部作品的名字交給 AppState 保管.
+  ///
+  /// 片庫裡沒有的集數, 進度表裡只是一個 sn; 沒有這一步, 首頁的「繼續觀看」跟
+  /// 所有動畫的卡片就永遠認不出看過的是哪一部.
+  void _rememberNames(SeriesInfo info) {
+    state.rememberSeriesNames(
+      info,
+      fallbackSn: _sn,
+      fallbackEpisode: _video?.episode,
+    );
   }
 
   Future<void> _loadDanmaku() async {
@@ -1291,14 +1306,49 @@ class _WatchPageState extends State<WatchPage> with WidgetsBindingObserver {
 
   // =============================================================== 進度同步
 
-  Future<void> _syncTime({bool ended = false, bool force = false}) async {
-    if (_pendingSeek != null || _scrubbing) return;
+  /// 進度有兩種節奏, 刻意分開:
+  ///
+  ///  - **本機**那份 [kLocalSyncEvery]: 畫面上的「繼續觀看」、觀看紀錄、所有動畫
+  ///    卡片讀的都是它, 寫下去只是一個 Map 加一次 debounce 落盤, 很便宜.
+  ///  - **伺服器**那份 [kRemoteSyncEvery]: 每一筆都是一個 POST, 以前跟本機綁在
+  ///    同一個十秒節奏上.
+  ///
+  /// 以前兩者是同一個閘, 而且那十秒是以「上一次送出去」為準 —— 開一集看八秒就
+  /// 退出去, 這一集等於完全沒看過; 開頭那十秒也是空的. 這也是「更新觀看時間感覺
+  /// 不容易觸發」的原因. 現在本機那份三秒就記一次, 而且離開播放頁一定補一筆.
+  static const Duration kLocalSyncEvery = Duration(seconds: 3);
+  static const Duration kRemoteSyncEvery = Duration(seconds: 10);
+
+  int _lastNote = 0;
+  int _lastSync = 0;
+
+  /// 離開 / 換集時要立刻寫一筆, 不要等那三秒
+  bool _forceNote = false;
+
+  Future<void> _syncTime(
+      {bool ended = false, bool force = false, bool? notify}) async {
+    if (_pendingSeek != null || _scrubbing) {
+      // 跳轉中的位置是中間狀態, 記下來只會把人帶回一個他沒有要停的地方.
+      // 但「一定要記」的那幾次不能就這樣放掉 —— 掛著等跳轉結束再補.
+      if (force) _forceNote = true;
+      return;
+    }
     final now = DateTime.now().millisecondsSinceEpoch;
-    if (!force && now - _lastSync < 10000) return;
-    _lastSync = now;
+    // 要送伺服器的那一次一定要先寫本機: 兩邊的位置與 timestamp 才會對得上, 不然
+    // 下次合併時伺服器那份會被當成更新的
+    final remoteDue = force ||
+        ended ||
+        now - _lastSync >= kRemoteSyncEvery.inMilliseconds;
+    final localDue = remoteDue ||
+        _forceNote ||
+        now - _lastNote >= kLocalSyncEvery.inMilliseconds;
+    if (!localDue) return;
 
     final seconds = ended ? 0 : _clock.value.round();
     final duration = _duration.round();
+
+    _lastNote = now;
+    _forceNote = false;
     // 離線就先記成「還欠伺服器」, 回到線上時 flushPendingWatchTimes() 會補送.
     // 以前這裡是直接 return, 所以飛航模式下看的進度既沒落盤也沒上傳.
     state.noteWatchTime(
@@ -1312,14 +1362,18 @@ class _WatchPageState extends State<WatchPage> with WidgetsBindingObserver {
       // 只有真的欠著伺服器才記欠帳. 伺服器根本沒在存進度的話這筆債永遠還不掉,
       // 只會一直堆在磁碟上
       pending: state.offline && state.watchTimesAreServerBacked,
-      // 播放中每十秒那一筆不必叫整個 app 重建 —— 離開這一頁時會補一次通知.
+      // 播放中每幾秒那一筆不必叫整個 app 重建 —— 離開這一頁時會補一次通知.
       // 暫停、跳轉、播完這些 (force) 照樣通知.
-      notify: force || ended,
+      notify: notify ?? (force || ended),
     );
     if (force) {
       // 切到背景 / 關掉播放器時走這條, 等不了那一秒的 debounce
       await state.flushWatchTimesToDisk();
+      await state.flushWatchNames();
     }
+
+    if (!remoteDue) return;
+    _lastSync = now;
     // 沒登入 / 伺服器沒開帳號系統的話, 本機那份就是唯一的一份, 不必再送出去
     if (!state.canSyncWatchTimes) return;
     try {
@@ -1333,6 +1387,21 @@ class _WatchPageState extends State<WatchPage> with WidgetsBindingObserver {
       // 斷線了, 這一筆要記著, 等下次連上補送
       state.markWatchTimePending(_sn);
     }
+  }
+
+  /// 離開播放頁前的最後一筆.
+  ///
+  /// 以前 dispose 只落盤、不記位置, 所以「看九分鐘, 在第十秒前退出」會少掉最後
+  /// 這一段. 這裡同步做完 noteWatchTime (整個 app 都看得到新位置), 後面那幾個
+  /// await 交給事件圈.
+  void _noteFinalPosition() {
+    if (_clock.value <= 0 && !_ended) return;
+    // 拖時間軸拖到一半就退出去: 畫面上那個位置就是他挑的, 當成停在那裡.
+    // 不放掉 _scrubbing 的話 _syncTime() 會直接跳過這一筆, 最後那一段就沒了.
+    _scrubbing = false;
+    // notify 明說不要: 這一頁正在被拆掉, AppState 一通知就會去戳到它, 通知交給
+    // dispose 尾巴那個 microtask.
+    unawaited(_syncTime(force: true, notify: false));
   }
 
   // =============================================================== 播放控制
@@ -1757,6 +1826,16 @@ class _WatchPageState extends State<WatchPage> with WidgetsBindingObserver {
     unawaited(_switchTo(next));
   }
 
+  /// 換了一集就把進度的節奏歸零.
+  ///
+  /// 那兩個時間戳是「上一次記下來」的意思, 跟著上一集走的話, 新的一集要等舊的
+  /// 那個窗口過完才會記第一筆 —— 一集開頭那幾秒就是這樣不見的.
+  void _resetSyncClock() {
+    _lastNote = 0;
+    _lastSync = 0;
+    _forceNote = false;
+  }
+
   Future<void> _switchTo(SeriesEpisode episode) async {
     if (episode.videoSn == _sn) return;
     final downloaded = store.isDownloaded(episode.videoSn);
@@ -1796,6 +1875,7 @@ class _WatchPageState extends State<WatchPage> with WidgetsBindingObserver {
     _clock.value = 0;
     _clockRunning = false;
     _setAnchor(0);
+    _resetSyncClock();
     await _boot();
   }
 
@@ -1853,6 +1933,7 @@ class _WatchPageState extends State<WatchPage> with WidgetsBindingObserver {
     _clock.value = 0;
     _clockRunning = false;
     _setAnchor(0);
+    _resetSyncClock();
     await _boot();
   }
 

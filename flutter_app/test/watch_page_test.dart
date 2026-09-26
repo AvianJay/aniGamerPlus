@@ -1097,6 +1097,61 @@ void main() {
     expect(notified, greaterThan(0), reason: '離開播放頁之後, 觀看紀錄要看得到最新進度');
   });
 
+  testWidgets('看幾秒就退出去, 這一集也要留下進度', (tester) async {
+    // 「更新觀看時間感覺不容易觸發」就是這一條: 以前本機那份跟伺服器那份綁在同
+    // 一個十秒閘上, 而且 dispose 只落盤、不記位置 —— 開一集看八秒退出去, 這一集
+    // 等於完全沒看過, 首頁的繼續觀看當然是空的.
+    await open(tester);
+    await tester.pump(const Duration(milliseconds: 100));
+    player.actual = const Duration(seconds: 8);
+    // 讓播放器回報一次新位置, 但遠不到十秒
+    player.events.add(VideoEvent(
+        eventType: VideoEventType.isPlayingStateUpdate, isPlaying: true));
+    await tester.pump(const Duration(milliseconds: 200));
+
+    await tester.pumpWidget(const SizedBox());
+    await tester.pump();
+
+    final saved = state.watchTimeOf('1');
+    expect(saved, isNotNull, reason: '離開時一定要留下一筆');
+    expect(saved!.time, greaterThanOrEqualTo(3),
+        reason: '最後那幾秒不該因為十秒閘而消失');
+  });
+
+  testWidgets('每一集自己算自己的十秒窗, 換集不會吃掉新一集的開頭', (tester) async {
+    // 上一集留下的時間戳如果跟著過來, 新的一集要等舊窗口過完才會記第一筆 ——
+    // 一集開頭那幾秒就是這樣不見的.
+    state.client.seedSeriesJson('1', {
+      'videoSn': '1',
+      'title': '換集進度測試',
+      'groups': [
+        {
+          'name': '',
+          'episodes': [
+            {'videoSn': '1', 'episode': '1', 'local': true},
+            {'videoSn': '2', 'episode': '2', 'local': true},
+          ],
+        },
+      ],
+    });
+    await open(tester);
+    await tester.pump(const Duration(seconds: 1));
+    expect(state.watchTimeOf('1'), isNotNull);
+
+    await tester.tap(find.byKey(const ValueKey('episode-2')));
+    await tester.pump(const Duration(milliseconds: 300));
+    for (var i = 0; i < 4; i++) {
+      await tester.pump(const Duration(milliseconds: 100));
+    }
+
+    // 舊行為: 上一集那個時間戳還在, 新的一集要等窗口過完才會記第一筆, 所以這裡
+    // 會是 null. 這一筆存不存在就是「換集有沒有歸零」的分界.
+    expect(state.watchTimeOf('2'), isNotNull,
+        reason: '換集之後新的一集也要立刻開始記進度');
+    await tester.pumpWidget(const SizedBox());
+    await tester.pump(const Duration(seconds: 1));
+  });
+
   testWidgets('跳轉到一半播放器壞掉: 一樣自己重開, 而且落在要去的位置', (tester) async {
     // 播放器報錯的那一刻剛好在跳轉: 當下不能處理 (跳轉還沒放手), 而壞掉的
     // 播放器不會再通知第二次 —— 跳轉那邊收尾時不接手的話, 就永遠停在那裡
