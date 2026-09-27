@@ -651,16 +651,16 @@ body.player-pseudo-fullscreen { overflow: hidden; }
 .player-next .is-ghost { background: rgb(255 255 255 / 12%); color: #fff; }
 
 .player-skip-intro {
-  background: rgb(8 8 10 / 88%);
-  border: 1px solid rgb(255 255 255 / 48%);
-  border-radius: 6px;
-  bottom: calc(var(--controls-block, 67px) + 14px);
+  background: rgb(16 16 20 / 80%);
+  border: 1px solid rgb(255 255 255 / 70%);
+  border-radius: 4px;
+  bottom: clamp(152px, 24%, 250px);
   color: #fff;
   cursor: pointer;
-  font-size: 13px;
+  font-size: 12px;
   font-weight: 700;
-  min-height: 38px;
-  padding: 7px 13px;
+  min-height: 34px;
+  padding: 7px 12px;
   pointer-events: auto;
   position: absolute;
   right: 16px;
@@ -668,8 +668,22 @@ body.player-pseudo-fullscreen { overflow: hidden; }
 }
 .player-skip-intro[hidden] { display: none; }
 .player-skip-intro:hover, .player-skip-intro:focus-visible {
-  background: rgb(45 45 50 / 96%);
+  background: rgb(45 45 50 / 92%);
   outline: 2px solid #fff;
+}
+
+@container (max-width: 560px) {
+  .player-skip-intro {
+    bottom: auto;
+    min-height: 30px;
+    padding: 5px 10px;
+    right: 8px;
+    top: 2px;
+  }
+}
+@container (max-width: 360px) {
+  .player-skip-intro { font-size: 0; padding: 5px 3px; right: 0; }
+  .player-skip-intro::after { content: '跳過'; font-size: 11px; }
 }
 
 /* --- Touch player --------------------------------------------------------- */
@@ -720,6 +734,11 @@ body.player-pseudo-fullscreen { overflow: hidden; }
 @container (max-width: 560px) {
   .player-shell.controls-visible .touch-player-center {
     top: calc(50% - var(--controls-block, 83px) / 2);
+  }
+}
+@container (min-width: 361px) and (max-width: 560px) {
+  .player-shell.controls-visible:has(.player-skip-intro:not([hidden])) .touch-player-center {
+    top: calc(50% - var(--controls-block, 83px) / 2 + 12px);
   }
 }
 

@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:convert';
 import 'dart:io';
 import 'dart:ui' as ui;
 import 'package:flutter/rendering.dart';
@@ -10,10 +11,13 @@ import 'package:path_provider_platform_interface/path_provider_platform_interfac
 import 'package:video_player_platform_interface/video_player_platform_interface.dart';
 import 'package:wakelock_plus_platform_interface/wakelock_plus_platform_interface.dart';
 import 'package:agp_mobile/src/api/models.dart';
+import 'package:agp_mobile/src/api/client.dart';
 import 'package:agp_mobile/src/pages/watch_page.dart';
 import 'package:agp_mobile/src/danmaku/danmaku_overlay.dart';
 import 'package:agp_mobile/src/state/app_state.dart';
 import 'package:agp_mobile/src/theme.dart';
+import 'package:http/http.dart' as http;
+import 'package:http/testing.dart';
 
 import 'support/temp_dir.dart';
 import 'support/ui_capture.dart';
@@ -36,6 +40,7 @@ class DelayedPlayer extends VideoPlayerPlatform {
   // video_player 內部的 '!initializingCompleter.isCompleted'.
   final Map<int, StreamController<VideoEvent>> streams = {};
   Duration actual = const Duration(seconds: 20);
+  Duration duration = const Duration(seconds: 600);
   final seeks = <Duration>[];
   double volume = 1;
   bool playing = false;
@@ -76,7 +81,7 @@ class DelayedPlayer extends VideoPlayerPlatform {
       if (stream.isClosed) return;
       stream.add(VideoEvent(
           eventType: VideoEventType.initialized,
-          duration: const Duration(seconds: 600),
+          duration: duration,
           size: const Size(1920, 1080)));
     });
     return stream.stream;
@@ -237,6 +242,112 @@ void main() {
     slider.onChanged!(target);
     slider.onChangeEnd!(target);
   }
+
+  testWidgets('skip intro stays compact above tablet, phone and fullscreen controls',
+      (tester) async {
+    http.Response reply(Object data) =>
+        http.Response.bytes(utf8.encode(jsonEncode(data)), 200);
+    final api = AgpClient(
+      baseUrl: 'http://localhost:12345',
+      httpClient: MockClient((request) async {
+        switch (request.url.host) {
+          case 'api.bgm.tv':
+            return reply({
+              'data': [
+                {
+                  'name': '転生王女と天才令嬢の魔法革命',
+                  'name_cn': '转生公主与天才千金的魔法革命',
+                  'date': '2023-01-04',
+                }
+              ]
+            });
+          case 'graphql.anilist.co':
+            return reply({
+              'data': {
+                'Page': {
+                  'media': [
+                    {
+                      'idMal': 52736,
+                      'title': {'native': '転生王女と天才令嬢の魔法革命'},
+                      'startDate': {'year': 2023},
+                    }
+                  ]
+                }
+              }
+            });
+          case 'api.aniskip.com':
+            return reply({
+              'found': true,
+              'results': [
+                {
+                  'skipType': 'op',
+                  'episodeLength': 1420,
+                  'interval': {'startTime': 160.776, 'endTime': 250.776},
+                }
+              ]
+            });
+        }
+        return http.Response('', 404);
+      }),
+    );
+    addTearDown(api.close);
+    state = (await tester.runAsync(() => AppState.boot(client: api)))!;
+    state.offline = true;
+    state.client.seedSeriesJson('1', {
+      'videoSn': '1',
+      'title': '轉生公主與天才千金的魔法革命',
+      'seasonStart': '2023/01/04',
+      'groups': [
+        {
+          'name': '',
+          'episodes': [
+            {'videoSn': '1', 'episode': '10', 'local': true},
+          ],
+        }
+      ],
+    });
+    state.noteWatchTime('1', WatchTime(time: 162, duration: 1420),
+        notify: false);
+    player.duration = const Duration(seconds: 1420);
+    player.actual = const Duration(seconds: 162);
+    await open(tester);
+    await resizeViewport(tester, const Size(1280, 882));
+    for (var i = 0;
+        i < 20 && find.byKey(const ValueKey('skip-intro')).evaluate().isEmpty;
+        i++) {
+      await tester.pump(const Duration(milliseconds: 100));
+    }
+    final skip = find.byKey(const ValueKey('skip-intro'));
+    expect(skip, findsOneWidget);
+    var bounds = tester.getRect(skip);
+    var forward = tester.getRect(find.byTooltip('快轉 10 秒'));
+    expect(bounds.width, lessThan(130));
+    expect(bounds.height, lessThanOrEqualTo(40));
+    expect(bounds.bottom, lessThan(forward.top - 12));
+
+    await resizeViewport(tester, const Size(390, 844));
+    await tester.pump(const Duration(milliseconds: 350));
+    bounds = tester.getRect(skip);
+    forward = tester.getRect(find.byTooltip('快轉 10 秒'));
+    expect(bounds.bottom, lessThan(forward.top - 12));
+    expect(bounds.top, greaterThanOrEqualTo(
+        tester.getTopLeft(find.byKey(const ValueKey('player-surface'))).dy));
+
+    await resizeViewport(tester, const Size(1280, 882));
+    await tester.pump(const Duration(milliseconds: 350));
+
+    await tester.tap(find.byTooltip('全螢幕'));
+    await tester.pump(const Duration(milliseconds: 350));
+    bounds = tester.getRect(skip);
+    forward = tester.getRect(find.byTooltip('快轉 10 秒'));
+    expect(bounds.bottom, lessThan(forward.top - 12));
+    await tester.tap(skip);
+    player.actual = const Duration(milliseconds: 250776);
+    await tester.pump(const Duration(milliseconds: 350));
+    expect(find.byKey(const ValueKey('skip-intro')), findsNothing);
+    expect(player.seeks.last.inMilliseconds, 250776);
+    await tester.pumpWidget(const SizedBox());
+  });
 
   testWidgets(
       'old native positions cannot undo a pending seek; latest drag wins',

@@ -2569,29 +2569,6 @@ class _WatchPageState extends State<WatchPage> with WidgetsBindingObserver {
                     else
                       Center(child: _PlayerSpinner(size: 32, speed: _netSpeed)),
                   if (_downloading.isNotEmpty) _downloadBadge(),
-                  if (!_skipDismissed && _effectiveIntro != null)
-                    Positioned(
-                      right: 14,
-                      bottom: mobileInline ? 18 : 86,
-                      child: ValueListenableBuilder<double>(
-                        valueListenable: _clock,
-                        builder: (context, position, _) {
-                          final intro = _effectiveIntro;
-                          if (intro == null || !intro.visibleAt(position)) {
-                            return const SizedBox.shrink();
-                          }
-                          return FilledButton.icon(
-                            key: const ValueKey('skip-intro'),
-                            onPressed: () {
-                              setState(() => _skipDismissed = true);
-                              unawaited(_seekTo(intro.end));
-                            },
-                            icon: const Icon(Icons.skip_next_rounded, size: 18),
-                            label: Text('跳過片頭 · ${intro.source}'),
-                          );
-                        },
-                      ),
-                    ),
                   AnimatedOpacity(
                     opacity: _controlsVisible ? 1 : 0,
                     duration: const Duration(milliseconds: 180),
@@ -2604,6 +2581,60 @@ class _WatchPageState extends State<WatchPage> with WidgetsBindingObserver {
                           child: _controls(mobileInline: mobileInline)),
                     ),
                   ),
+                  if (!_skipDismissed && _effectiveIntro != null)
+                    Positioned(
+                      right: 16,
+                      top: mobileInline ? 12 : null,
+                      bottom: mobileInline
+                          ? null
+                          : math.min(
+                              math.max(176.0, size.height * .24) +
+                                  (_fullscreen
+                                      ? MediaQuery.paddingOf(context).bottom
+                                      : 0),
+                              size.height - 48),
+                      child: ValueListenableBuilder<double>(
+                        valueListenable: _clock,
+                        builder: (context, position, _) {
+                          final intro = _effectiveIntro;
+                          if (intro == null || !intro.visibleAt(position)) {
+                            return const SizedBox.shrink();
+                          }
+                          void skipOpening() {
+                            setState(() => _skipDismissed = true);
+                            unawaited(_seekTo(intro.end));
+                          }
+                          return Semantics(
+                            button: true,
+                            label: '跳過片頭 · ${intro.source}',
+                            onTap: skipOpening,
+                            child: Material(
+                              color: const Color(0xCC101014),
+                              shape: RoundedRectangleBorder(
+                                borderRadius: BorderRadius.circular(4),
+                                side:
+                                    const BorderSide(color: Color(0xB3FFFFFF)),
+                              ),
+                              child: InkWell(
+                                key: const ValueKey('skip-intro'),
+                                borderRadius: BorderRadius.circular(4),
+                                excludeFromSemantics: true,
+                                onTap: skipOpening,
+                                child: const Padding(
+                                  padding: EdgeInsets.symmetric(
+                                      horizontal: 12, vertical: 8),
+                                  child: Text('跳過片頭',
+                                      style: TextStyle(
+                                          color: Colors.white,
+                                          fontSize: 12.5,
+                                          fontWeight: FontWeight.w700)),
+                                ),
+                              ),
+                            ),
+                          );
+                        },
+                      ),
+                    ),
                   if (!_scrubbing && (_flash.isNotEmpty || _hud.isNotEmpty))
                     _hudChip(),
                   if (_boosting)

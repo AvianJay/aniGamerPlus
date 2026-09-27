@@ -1679,7 +1679,10 @@ AgpPlayer.prototype.syncSkipButton = function () {
     var at = this.video ? this.video.currentTime : 0;
     var ready = intro && (!this.streaming || intro.end <= this.seekableDuration());
     this.skipButton.hidden = !ready || at < Math.max(0, intro.start - 3) || at >= intro.end - 5;
-    if (ready) { this.skipButton.textContent = '跳過片頭 · ' + intro.source; }
+    if (ready) {
+        this.skipButton.textContent = '跳過片頭';
+        this.skipButton.setAttribute('aria-label', '跳過片頭 · ' + intro.source);
+    }
 };
 
 AgpPlayer.prototype.skipOpening = function () {

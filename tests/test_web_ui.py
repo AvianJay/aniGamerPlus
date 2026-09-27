@@ -937,7 +937,12 @@ def test_aniskip_button_is_manual_and_skip_setting_persists(page, server):
     page.evaluate('() => { window.page.player.video.currentTime = 40; window.page.player.updateProgress(); }')
     button = page.locator('#skipIntro')
     expect(button).to_be_visible()
-    expect(button).to_have_text('跳過片頭 · AniSkip')
+    expect(button).to_have_text('跳過片頭')
+    expect(button).to_have_attribute('aria-label', '跳過片頭 · AniSkip')
+    bounds = button.bounding_box()
+    controls = page.locator('#playerControls').bounding_box()
+    assert bounds['width'] < 130 and bounds['height'] <= 40
+    assert bounds['y'] + bounds['height'] < controls['y']
     button.click()
     assert page.evaluate('() => window.page.player.video.currentTime') == 90
     expect(button).to_be_hidden()
@@ -984,7 +989,8 @@ def test_danmaku_skip_rejects_end_jump_and_needs_distinct_votes(page, server):
         body=ass([(10, '空降 01:30'), (19, '跳過片頭 01:31'),
                   (30, 'OP結束 01:32')]), content_type='text/plain'))
     page.evaluate('() => window.page.player.loadDanmaku()')
-    expect(page.locator('#skipIntro')).to_have_text('跳過片頭 · 彈幕')
+    expect(page.locator('#skipIntro')).to_have_text('跳過片頭')
+    expect(page.locator('#skipIntro')).to_have_attribute('aria-label', '跳過片頭 · 彈幕')
     expect(page.locator('#skipIntro')).to_be_visible()
     assert page.errors == []
 
@@ -1000,15 +1006,15 @@ def test_skip_source_priority_changes_the_button(page, server):
     goto_watch(page, server)
     _mock_full_episode(page)
     page.evaluate('() => { window.page.player.video.currentTime = 45; window.page.player.updateProgress(); }')
-    expect(page.locator('#skipIntro')).to_have_text('跳過片頭 · AniSkip')
+    expect(page.locator('#skipIntro')).to_have_attribute('aria-label', '跳過片頭 · AniSkip')
 
     page.locator('#settingsToggle').click()
     page.locator('#settingsMenu [data-view="opening-skip"]').click()
     page.locator('#settingsMenu [data-value="danmaku-first"]').click()
-    expect(page.locator('#skipIntro')).to_have_text('跳過片頭 · 彈幕')
+    expect(page.locator('#skipIntro')).to_have_attribute('aria-label', '跳過片頭 · 彈幕')
     page.locator('#settingsMenu [data-view="opening-skip"]').click()
     page.locator('#settingsMenu [data-value="aniskip-first"]').click()
-    expect(page.locator('#skipIntro')).to_have_text('跳過片頭 · AniSkip')
+    expect(page.locator('#skipIntro')).to_have_attribute('aria-label', '跳過片頭 · AniSkip')
     assert page.errors == []
 
 
@@ -1031,10 +1037,33 @@ def test_client_aniskip_shows_button_at_242_for_episode_10(page, server):
         player.video.currentTime = 162;
         player.updateProgress();
     }''')
-    expect(page.locator('#skipIntro')).to_have_text('跳過片頭 · AniSkip')
+    expect(page.locator('#skipIntro')).to_have_text('跳過片頭')
+    expect(page.locator('#skipIntro')).to_have_attribute('aria-label', '跳過片頭 · AniSkip')
     expect(page.locator('#skipIntro')).to_be_visible()
     assert any('/12345/10?' in url for url in requested)
     assert page.errors == []
+
+
+def test_touch_skip_stays_above_playback_controls(phone, server):
+    _mock_client_aniskip(phone)
+    goto_watch(phone, server)
+    _mock_full_episode(phone)
+    phone.evaluate('() => { window.page.player.video.currentTime = 40; window.page.player.updateProgress(); }')
+    button = phone.locator('#skipIntro')
+    expect(button).to_be_visible()
+    for width, height in ((390, 844), (375, 667), (320, 568)):
+        phone.set_viewport_size({'width': width, 'height': height})
+        bounds = button.bounding_box()
+        controls = phone.locator('#playerControls').bounding_box()
+        forward = phone.locator('#touchCenter [data-action="forward"]').bounding_box()
+        play = phone.locator('#touchCenter .touch-player-play').bounding_box()
+        assert bounds['width'] < 130 and bounds['height'] <= 40
+        assert bounds['y'] + bounds['height'] < controls['y']
+        assert bounds['y'] + bounds['height'] <= forward['y'] or bounds['x'] >= forward['x'] + forward['width']
+        assert play['y'] + play['height'] < controls['y']
+    button.click()
+    assert phone.evaluate('() => window.page.player.video.currentTime') == 90
+    assert phone.errors == []
 
 
 def test_pip_preference_and_mobile_menu_entry(phone, server):
