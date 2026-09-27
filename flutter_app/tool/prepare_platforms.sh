@@ -194,9 +194,10 @@ def patch_plist(path):
     modes.add('audio')
     info['UIBackgroundModes'] = sorted(modes)
     schemes = set(info.get('LSApplicationQueriesSchemes') or [])
-    # 後三個是側載商店 (TrollStore 借用放大鏡的 apple-magnifier),
+    # 側載商店 (TrollStore 借用放大鏡的 apple-magnifier),
     # App 內更新要先 canLaunchUrl 問過裝了哪一個
-    schemes.update(('http', 'https', 'apple-magnifier', 'sidestore', 'altstore'))
+    schemes.update(('http', 'https', 'apple-magnifier', 'sidestore',
+                    'altstore', 'loadcontroller'))
     info['LSApplicationQueriesSchemes'] = sorted(schemes)
     # 播放器自己會鎖橫向, 全部方向都要開著
     info['UISupportedInterfaceOrientations'] = [

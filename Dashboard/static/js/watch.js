@@ -323,6 +323,145 @@ function episodeNumber(video) {
     return isNaN(value) ? 0 : value;
 }
 
+/* Bahamut SNs are not MAL IDs. Match the Chinese series title at Bangumi,
+   verify its original title and year at AniList, then query AniSkip. */
+var openingCharactersPromise = null;
+var openingMalIds = new Map();
+function openingCharacters() {
+    if (!openingCharactersPromise) {
+        openingCharactersPromise = fetch('./static/data/opening_t2s.json?v=1')
+            .then(function (response) {
+                if (!response.ok) { throw new Error('title map ' + response.status); }
+                return response.json();
+            }).catch(function (error) {
+                openingCharactersPromise = null;
+                throw error;
+            });
+    }
+    return openingCharactersPromise;
+}
+function openingPlain(value, chars) {
+    return Array.from(String(value || '').toLowerCase().replace(/[^\p{L}\p{N}]/gu, ''))
+        .map(function (char) { return chars[char] || char; }).join('');
+}
+function openingSeason(value) {
+    var match = String(value || '').match(/第\s*([一二三四五六七八九十\d]+)\s*季/);
+    var numbers = { 一: '1', 二: '2', 三: '3', 四: '4', 五: '5', 六: '6',
+        七: '7', 八: '8', 九: '9', 十: '10' };
+    return match ? (numbers[match[1]] || match[1]) : '';
+}
+function openingSimilarity(left, right) {
+    if (left === right) { return 1; }
+    var a = Array.from(left), b = Array.from(right);
+    if (!a.length || !b.length) { return 0; }
+    var previous = Array.from({ length: b.length + 1 }, function (_, i) { return i; });
+    for (var i = 1; i <= a.length; i += 1) {
+        var next = [i];
+        for (var j = 1; j <= b.length; j += 1) {
+            next[j] = Math.min(next[j - 1] + 1, previous[j] + 1,
+                previous[j - 1] + (a[i - 1] === b[j - 1] ? 0 : 1));
+        }
+        previous = next;
+    }
+    return 1 - previous[b.length] / Math.max(a.length, b.length);
+}
+function openingSubjectScore(title, subject, chars) {
+    var candidates = [subject.name_cn, subject.name];
+    (subject.infobox || []).forEach(function (item) {
+        if (['别名', '別名', '中文名'].indexOf(item.key) < 0) { return; }
+        if (Array.isArray(item.value)) {
+            item.value.forEach(function (alias) { candidates.push(alias && alias.v); });
+        } else { candidates.push(item.value); }
+    });
+    var wantedSeason = openingSeason(title);
+    var left = openingPlain(title.replace(/第\s*[一二三四五六七八九十\d]+\s*季/g, ''), chars);
+    return candidates.reduce(function (best, candidate) {
+        if (!candidate || openingSeason(candidate) !== wantedSeason) { return best; }
+        var right = openingPlain(String(candidate).replace(/第\s*[一二三四五六七八九十\d]+\s*季/g, ''), chars);
+        return Math.max(best, openingSimilarity(left, right));
+    }, 0);
+}
+function openingYear(value) {
+    var match = String(value || '').match(/^\s*(\d{4})/);
+    return match ? match[1] : '';
+}
+function openingEpisode(value) {
+    var match = String(value || '').match(/^\s*(?:第\s*)?(\d{1,3})(?:\s*集)?\s*$/);
+    var number = match ? Number(match[1]) : 0;
+    return number >= 1 && number <= 999 ? number : 0;
+}
+async function openingMalId(title, seasonStart) {
+    var key = title + '\0' + seasonStart;
+    if (openingMalIds.has(key)) { return openingMalIds.get(key); }
+    var work = (async function () {
+        var chars = await openingCharacters();
+        var response = await fetch('https://api.bgm.tv/v0/search/subjects', {
+            method: 'POST', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ keyword: title, filter: { type: [2] }, limit: 20 })
+        });
+        if (!response.ok) { throw new Error('Bangumi ' + response.status); }
+        var data = await response.json();
+        var scored = (data.data || []).map(function (row) {
+            return { row: row, score: openingSubjectScore(title, row, chars) };
+        }).sort(function (a, b) { return b.score - a.score; });
+        if (!scored.length || scored[0].score < 0.84 ||
+            (scored.length > 1 && scored[0].score - scored[1].score < 0.06)) { return null; }
+        var subject = scored[0].row;
+        var original = subject.name;
+        var year = openingYear(subject.date);
+        if (!original || (year && openingYear(seasonStart) && year !== openingYear(seasonStart))) {
+            return null;
+        }
+        response = await fetch('https://graphql.anilist.co', {
+            method: 'POST', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                query: 'query($s:String){Page(perPage:10){media(search:$s,type:ANIME){idMal title{native} startDate{year}}}}',
+                variables: { s: original }
+            })
+        });
+        if (!response.ok) { throw new Error('AniList ' + response.status); }
+        data = await response.json();
+        var media = (((data || {}).data || {}).Page || {}).media || [];
+        var matches = media.filter(function (row) {
+            return Number.isInteger(row.idMal) && row.idMal > 0 &&
+                openingPlain((row.title || {}).native, chars) === openingPlain(original, chars) &&
+                (!year || String((row.startDate || {}).year) === year);
+        });
+        return matches.length === 1 ? matches[0].idMal : null;
+    }());
+    openingMalIds.set(key, work);
+    try { return await work; } catch (error) { openingMalIds.delete(key); throw error; }
+}
+async function clientOpeningSkip(title, seasonStart, episode, duration) {
+    var number = openingEpisode(episode);
+    if (!title || !number || !isFinite(duration) || duration < 600 || duration > 7200) {
+        return null;
+    }
+    var malId = await openingMalId(title, seasonStart);
+    if (!malId) { return null; }
+    var url = 'https://api.aniskip.com/v2/skip-times/' + malId + '/' + number +
+        '?types=op&episodeLength=' + Math.round(duration);
+    var response = await fetch(url);
+    if (response.status === 404) { return null; }
+    if (!response.ok) { throw new Error('AniSkip ' + response.status); }
+    var payload = await response.json();
+    if (!payload.found || !Array.isArray(payload.results)) { return null; }
+    var valid = payload.results.filter(function (row) {
+        if (!row || row.skipType !== 'op' || !row.interval) { return false; }
+        var start = Number(row.interval.startTime), end = Number(row.interval.endTime);
+        var length = row.episodeLength == null ? duration : Number(row.episodeLength);
+        return isFinite(start) && isFinite(end) && isFinite(length) &&
+            start >= 0 && end > start && end <= Math.min(420, duration * .4) &&
+            end - start >= 40 && end - start <= 210 && end <= duration - 300 &&
+            Math.abs(length - duration) <= Math.max(60, duration * .1);
+    }).sort(function (a, b) {
+        return (b.interval.endTime - b.interval.startTime) -
+            (a.interval.endTime - a.interval.startTime);
+    });
+    return valid.length ? [Number(valid[0].interval.startTime),
+        Number(valid[0].interval.endTime)] : null;
+}
+
 function episodeLabel(video) {
     var value = String(video && video.episode !== undefined && video.episode !== null ? video.episode : '').trim();
     if (!value) { return '單集'; }
@@ -413,6 +552,7 @@ function danmakuOpening(rows, duration) {
 function AgpPlayer(shell, options) {
     this.shell = shell;
     this.videoData = options.videoData;
+    this.seriesInfo = options.seriesInfo || null;
     /* 每一集自己算自己的十秒窗 —— 上一集留下的時間戳會讓新的一集開頭幾秒
        記不下去 */
     resetSetTime(this.videoData && this.videoData.sn);
@@ -442,6 +582,7 @@ function AgpPlayer(shell, options) {
     this.aniskipIntro = null;
     this.skipDurationKey = 0;
     this.skipRequestKey = '';
+    this.skipRetryAfter = 0;
     /* Native reports what the screen is actually at, so the first drag starts
        from what the viewer is looking at rather than from a number the browser
        build had to remember for itself. */
@@ -1496,21 +1637,30 @@ AgpPlayer.prototype.loadOpeningSkip = function () {
         this.danmakuIntro = danmakuOpening(this.danmakuRows, duration);
     }
     if (this.skipMode === 'off' || this.skipMode === 'danmaku-only') { return; }
-    var key = this.videoData.sn + ':' + rounded;
+    var info = this.seriesInfo;
+    var title = (info && info.title) || this.videoData.anime_name || '';
+    var seasonStart = (info && info.seasonStart) || '';
+    var here = officialEpisode(info, this.videoData.sn);
+    var episode = (here && here.episode) || this.videoData.episode || '';
+    if (!title || !openingEpisode(episode)) { return; }
+    var key = this.videoData.sn + ':' + rounded + ':' + title + ':' + seasonStart + ':' + episode;
     if (key === this.skipRequestKey) { return; }
+    if (Date.now() < this.skipRetryAfter) { return; }
     this.skipRequestKey = key;
+    this.aniskipIntro = null;
+    this.syncSkipButton();
     var self = this;
-    fetch('./watch/skip.json?id=' + encodeURIComponent(this.videoData.sn) + '&duration=' + rounded)
-        .then(function (response) { return response.ok ? response.json() : null; })
-        .then(function (payload) {
-            if (self.skipRequestKey !== key || !payload || !Array.isArray(payload.interval)) { return; }
-            var start = Number(payload.interval[0]);
-            var end = Number(payload.interval[1]);
-            if (!isFinite(start) || !isFinite(end) || start < 0 || end <= start + 40 ||
-                end >= duration - 300 || end > 420) { return; }
-            self.aniskipIntro = { start: start, end: end, source: 'AniSkip' };
+    clientOpeningSkip(title, seasonStart, episode, duration)
+        .then(function (interval) {
+            if (self.skipRequestKey !== key || !interval) { return; }
+            self.aniskipIntro = { start: interval[0], end: interval[1], source: 'AniSkip' };
             self.syncSkipButton();
-        }).catch(function () { /* the danmaku vote can still provide a suggestion */ });
+        }).catch(function () {
+            if (self.skipRequestKey === key) {
+                self.skipRequestKey = '';
+                self.skipRetryAfter = Date.now() + 30000;
+            }
+        });
 };
 
 AgpPlayer.prototype.selectedOpening = function () {
@@ -2726,6 +2876,10 @@ async function main() {
     seriesInfo.then(function (info) {
         if (!info) { return; }
         page.info = info;
+        if (page.player) {
+            page.player.seriesInfo = info;
+            page.player.loadOpeningSkip();
+        }
         /* 這一部作品的名字交給下一頁: 進度表裡只有 sn, 沒有這一步, 首頁的
            「繼續觀看」跟作品資訊就認不出看過的是哪一部 */
         AGP.rememberNames(AGP.namesFromSeries(info));
@@ -2737,6 +2891,7 @@ async function main() {
     var shell = document.getElementById('playerShell');
     page.player = new AgpPlayer(shell, {
         videoData: video,
+        seriesInfo: page.info,
         series: series,
         onTimeUpdate: function (currentTime) { syncDanmakuList(currentTime); },
         onDanmakuLoaded: function (rows) {

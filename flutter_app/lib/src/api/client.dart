@@ -13,6 +13,7 @@ import 'package:web_socket_channel/io.dart';
 import 'package:web_socket_channel/web_socket_channel.dart';
 
 import 'models.dart';
+import 'opening_skip.dart';
 
 class ApiException implements Exception {
   final int statusCode;
@@ -45,6 +46,7 @@ class AgpClient {
   String? token;
 
   final http.Client _http;
+  late final OpeningSkipLookup _openingSkip = OpeningSkipLookup(_http);
 
   /// 劇集表跟可選畫質在一次觀看裡會被問很多次: 開播放頁一次, 換一集再一次,
   /// 觀看紀錄那一頁又一次. 內容幾乎不會在這段時間裡變, 伺服器端也已經在快取,
@@ -299,25 +301,17 @@ class AgpClient {
     return utf8.decode(response.bodyBytes, allowMalformed: true);
   }
 
-  Future<List<double>?> openingSkip(String sn, double duration) async {
-    final response = await _get('/watch/skip.json', {
-      'id': sn,
-      'duration': duration.round(),
-    });
-    if (response.statusCode == 404) return null; // older server or no episode
-    if (response.statusCode >= 400) {
-      _fail(response);
-    }
-    final data = jsonDecode(utf8.decode(response.bodyBytes));
-    final interval = data is Map ? data['interval'] : null;
-    if (interval is! List ||
-        interval.length != 2 ||
-        interval[0] is! num ||
-        interval[1] is! num) {
-      return null;
-    }
-    return [(interval[0] as num).toDouble(), (interval[1] as num).toDouble()];
-  }
+  Future<List<double>?> openingSkip({
+    required String title,
+    required String seasonStart,
+    required String episode,
+    required double duration,
+  }) =>
+      _openingSkip.find(
+          title: title,
+          seasonStart: seasonStart,
+          episode: episode,
+          duration: duration);
 
   // -------------------------------------------------------------------- 片單
 

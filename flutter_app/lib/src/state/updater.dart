@@ -9,8 +9,8 @@
 /// 兩條通道的 build number 都是同一個 workflow 的 run number, 所以可以直接比大小.
 ///
 /// 安裝: Android 下載 APK 後丟給系統安裝器 (同一把簽章才蓋得過去);
-/// iOS 沒有這種門, 只能把 IPA 網址交給側載商店 (TrollStore / SideStore / AltStore)
-/// 讓它自己下載、簽名、安裝.
+/// iOS 把 IPA 網址交給 TrollStore / SideStore / AltStore / LCSign.
+/// LCSign 只匯入 IPA，使用者還要在 LCSign 完成簽名與安裝.
 library;
 
 import 'dart:async';
@@ -45,24 +45,30 @@ enum IosInstaller {
   auto('auto', '自動偵測', ''),
   trollStore('trollstore', 'TrollStore', 'apple-magnifier'),
   sideStore('sidestore', 'SideStore', 'sidestore'),
-  altStore('altstore', 'AltStore', 'altstore');
+  altStore('altstore', 'AltStore', 'altstore'),
+  lcSign('lcsign', 'LCSign', 'loadcontroller');
 
   const IosInstaller(this.key, this.label, this.scheme);
   final String key;
   final String label;
 
-  /// 三家都吃 `<scheme>://install?url=<IPA 網址>`.
-  /// TrollStore 借的是「放大鏡」的 scheme, 名字看起來跟它毫無關係.
+  /// LCSign uses `loadcontroller://import?url=...`; the other three use
+  /// `<scheme>://install?url=...`. TrollStore borrows apple-magnifier.
   final String scheme;
 
   static IosInstaller parse(String? key) =>
       values.firstWhere((i) => i.key == key, orElse: () => auto);
 
   /// 自動偵測時的優先順序: TrollStore 不用重簽、不會七天過期, 排第一.
-  static const List<IosInstaller> stores = [trollStore, sideStore, altStore];
+  static const List<IosInstaller> stores = [
+    trollStore,
+    sideStore,
+    altStore,
+    lcSign
+  ];
 
-  Uri installUri(String ipaUrl) =>
-      Uri.parse('$scheme://install?url=${Uri.encodeComponent(ipaUrl)}');
+  Uri installUri(String ipaUrl) => Uri.parse(
+      '$scheme://${this == lcSign ? 'import' : 'install'}?url=${Uri.encodeComponent(ipaUrl)}');
 }
 
 class AppVersion {

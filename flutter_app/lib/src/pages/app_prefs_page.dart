@@ -263,7 +263,7 @@ class _AppPrefsPageState extends State<AppPrefsPage> {
               title: 'iOS 安裝方式',
               value: prefs.iosInstaller,
               label: IosInstaller.parse(prefs.iosInstaller).label,
-              note: '沒有裝對應的 App 時會自動改用其他方式。',
+              note: '沒有裝對應的 App 時會自動改用其他方式。LCSign 匯入後需自行簽名與安裝。',
               choices: [
                 for (final installer in IosInstaller.values)
                   _Opt(installer.key, installer.label),

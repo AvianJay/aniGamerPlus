@@ -893,7 +893,45 @@ def _mock_full_episode(page):
     }""")
 
 
+def _mock_client_aniskip(page, start=40, end=90):
+    requested = []
+    cors = {
+        'access-control-allow-origin': '*',
+        'access-control-allow-methods': 'GET, POST, OPTIONS',
+        'access-control-allow-headers': 'content-type',
+    }
+
+    def answer(route, payload):
+        if route.request.method == 'OPTIONS':
+            route.fulfill(status=204, headers=cors)
+        else:
+            route.fulfill(json=payload, headers=cors)
+
+    page.route('https://api.bgm.tv/v0/search/subjects', lambda route: answer(route, {
+        'data': [{'name': 'テストアニメ', 'name_cn': FIRST_ANIME,
+                  'date': '2026-07-03'}]
+    }))
+    page.route('https://graphql.anilist.co/**', lambda route: answer(route, {
+        'data': {'Page': {'media': [
+            {'idMal': 12345, 'title': {'native': 'テストアニメ'},
+             'startDate': {'year': 2026}}
+        ]}}
+    }))
+
+    def skip(route):
+        if route.request.method != 'OPTIONS':
+            requested.append(route.request.url)
+        length = int(route.request.url.split('episodeLength=')[-1].split('&')[0])
+        answer(route, {'found': True, 'results': [
+            {'skipType': 'op', 'episodeLength': length,
+             'interval': {'startTime': start, 'endTime': end}}
+        ]})
+    page.route('https://api.aniskip.com/v2/skip-times/**', skip)
+    return requested
+
+
 def test_aniskip_button_is_manual_and_skip_setting_persists(page, server):
+    _mock_client_aniskip(page)
     goto_watch(page, server)
     _mock_full_episode(page)
     page.evaluate('() => { window.page.player.video.currentTime = 40; window.page.player.updateProgress(); }')
@@ -916,7 +954,7 @@ def test_aniskip_button_is_manual_and_skip_setting_persists(page, server):
 
 
 def test_danmaku_skip_rejects_end_jump_and_needs_distinct_votes(page, server):
-    page.route('**/watch/skip.json*', lambda route: route.fulfill(json={'interval': None}))
+    _mock_client_aniskip(page)
     goto_watch(page, server)
     _mock_full_episode(page)
     page.locator('#settingsToggle').click()
@@ -952,6 +990,7 @@ def test_danmaku_skip_rejects_end_jump_and_needs_distinct_votes(page, server):
 
 
 def test_skip_source_priority_changes_the_button(page, server):
+    _mock_client_aniskip(page)
     comments = '\n'.join(
         'Dialogue: 0,0:00:%02d.00,0:00:%02d.00,Default,,0,0,0,,%s' %
         (at, at + 4, text) for at, text in
@@ -970,6 +1009,31 @@ def test_skip_source_priority_changes_the_button(page, server):
     page.locator('#settingsMenu [data-view="opening-skip"]').click()
     page.locator('#settingsMenu [data-value="aniskip-first"]').click()
     expect(page.locator('#skipIntro')).to_have_text('跳過片頭 · AniSkip')
+    assert page.errors == []
+
+
+def test_client_aniskip_shows_button_at_242_for_episode_10(page, server):
+    requested = _mock_client_aniskip(page, start=160.776, end=250.776)
+    goto_watch(page, server)
+    _mock_full_episode(page)
+    page.wait_for_function('window.page.info && window.page.player')
+    page.evaluate('''() => {
+        const player = window.page.player;
+        for (const group of player.seriesInfo.groups) {
+            for (const episode of group.episodes) {
+                if (String(episode.videoSn) === String(player.videoData.sn)) {
+                    episode.episode = '10';
+                }
+            }
+        }
+        player.videoData.episode = '10';
+        player.skipRequestKey = '';
+        player.video.currentTime = 162;
+        player.updateProgress();
+    }''')
+    expect(page.locator('#skipIntro')).to_have_text('跳過片頭 · AniSkip')
+    expect(page.locator('#skipIntro')).to_be_visible()
+    assert any('/12345/10?' in url for url in requested)
     assert page.errors == []
 
 

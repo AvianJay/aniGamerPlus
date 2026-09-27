@@ -348,6 +348,7 @@ class _WatchPageState extends State<WatchPage> with WidgetsBindingObserver {
   IntroSkip? _aniskipIntro;
   IntroSkip? _danmakuIntro;
   String _skipRequestKey = '';
+  Timer? _skipRetryTimer;
   bool _skipDismissed = false;
   StreamSubscription<bool>? _pipSubscription;
   bool _pipActive = false;
@@ -463,8 +464,10 @@ class _WatchPageState extends State<WatchPage> with WidgetsBindingObserver {
         // Restoring PiP briefly passes through inactive. Give the app time to
         // resume before treating a closed PiP window as background playback.
         unawaited(Future<void>.delayed(const Duration(milliseconds: 500), () {
-          if (!mounted || _pipActive ||
-              WidgetsBinding.instance.lifecycleState == AppLifecycleState.resumed) {
+          if (!mounted ||
+              _pipActive ||
+              WidgetsBinding.instance.lifecycleState ==
+                  AppLifecycleState.resumed) {
             return;
           }
           _background = true;
@@ -487,6 +490,7 @@ class _WatchPageState extends State<WatchPage> with WidgetsBindingObserver {
     _flashTimer?.cancel();
     _nextTimer?.cancel();
     _streamTimer?.cancel();
+    _skipRetryTimer?.cancel();
     _monitor?.cancel();
     unawaited(_pipSubscription?.cancel());
     if (_pipActive) unawaited(VideoPlayerPip.exitPipMode());
@@ -606,6 +610,7 @@ class _WatchPageState extends State<WatchPage> with WidgetsBindingObserver {
       _aniskipIntro = null;
       _danmakuIntro = null;
       _skipRequestKey = '';
+      _skipRetryTimer?.cancel();
       _skipDismissed = false;
     });
     _qualities.value = const [];
@@ -1043,18 +1048,32 @@ class _WatchPageState extends State<WatchPage> with WidgetsBindingObserver {
         setState(() => _danmakuIntro = suggestion);
       }
     }
-    if (state.offline ||
-        prefs.openingSkipMode == 'off' ||
+    if (prefs.openingSkipMode == 'off' ||
         prefs.openingSkipMode == 'danmaku-only') {
       return;
     }
-    final key = '$_sn:${duration.round()}';
+    final title = _series?.title.isNotEmpty == true
+        ? _series!.title
+        : (_video?.animeName ?? '');
+    final seasonStart = _series?.seasonStart ?? '';
+    final episode = _currentEpisode?.episode ?? _video?.episode ?? '';
+    if (title.isEmpty || episode.isEmpty) return;
+    final key = '$_sn:${duration.round()}:$title:$seasonStart:$episode';
     if (_skipRequestKey == key) return;
     _skipRequestKey = key;
+    if (_aniskipIntro != null) {
+      setState(() => _aniskipIntro = null);
+    }
     final sn = _sn;
     try {
-      final interval = await client.openingSkip(sn, duration);
-      if (!mounted || _sn != sn || interval == null) return;
+      final interval = await client.openingSkip(
+          title: title,
+          seasonStart: seasonStart,
+          episode: episode,
+          duration: duration);
+      if (!mounted || _sn != sn || _skipRequestKey != key || interval == null) {
+        return;
+      }
       final start = interval[0];
       final end = interval[1];
       if (start >= 0 &&
@@ -1064,6 +1083,15 @@ class _WatchPageState extends State<WatchPage> with WidgetsBindingObserver {
         setState(() => _aniskipIntro = IntroSkip(start, end, 'AniSkip'));
       }
     } catch (_) {
+      if (mounted && _sn == sn && _skipRequestKey == key) {
+        _skipRequestKey = ''; // transient API failures may be retried
+        _skipRetryTimer?.cancel();
+        _skipRetryTimer = Timer(const Duration(seconds: 30), () {
+          if (mounted && _sn == sn && _skipRequestKey.isEmpty) {
+            unawaited(_loadOpeningSkip());
+          }
+        });
+      }
       // No AniSkip match or no network: the conservative danmaku vote still
       // works with the downloaded ASS file.
     }

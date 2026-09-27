@@ -41,8 +41,8 @@ Dashboard 的 HTTP API, 所以多了一件網頁做不到的事: **把整集下�
 「伺服器設定」改的是伺服器上的 `config.json`; 「App 偏好設定」只存在這支手機的
 `shared_preferences` 裡, 兩者互不影響.
 
-只有一個網頁有、App 沒有的東西: 播放器的**子母畫面**. iOS 跟 Android 的 PiP 各自
-要寫原生層, 這一版先跳過, 其餘都在.
+播放器支援 iOS / Android 子母畫面。片頭跳過會由手機直接查 Bangumi、AniList、
+AniSkip；查不到時依設定使用彈幕建議。
 
 ### 離線下載怎麼運作
 
@@ -110,7 +110,7 @@ lib/
 
 * 通道: 正式版 (`releases/latest`) 或 Nightly (`releases/download/nightly/flutter-nightly.json`), 比的是 build number (= CI run number)
 * Android: 下載 APK 後交給系統安裝器. 要跟手上那一版同一把金鑰簽才蓋得過去, debug 版裝不了 release 版的更新
-* iOS: 自動偵測 TrollStore / SideStore / AltStore, 用它們的 `install?url=` 開 IPA; 都沒有就用瀏覽器下載
+* iOS: 自動偵測 TrollStore / SideStore / AltStore / LCSign；LCSign 用 `loadcontroller://import?url=` 匯入 IPA，需在 LCSign 完成簽名與安裝；都沒有就用瀏覽器下載
 
 
 ### 播放器操作與快取

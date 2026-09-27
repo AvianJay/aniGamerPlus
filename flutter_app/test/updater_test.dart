@@ -140,6 +140,14 @@ void main() {
       'apple-magnifier://install?url=https%3A%2F%2Fx.test%2Fa%20b.ipa',
     );
     expect(IosInstaller.parse('sidestore'), IosInstaller.sideStore);
+    expect(IosInstaller.parse('lcsign'), IosInstaller.lcSign);
+    expect(IosInstaller.stores, contains(IosInstaller.lcSign));
+    expect(
+      IosInstaller.lcSign
+          .installUri('https://x.test/a b.ipa?x=1&y=2')
+          .toString(),
+      'loadcontroller://import?url=https%3A%2F%2Fx.test%2Fa%20b.ipa%3Fx%3D1%26y%3D2',
+    );
     expect(IosInstaller.parse('bogus'), IosInstaller.auto);
     expect(UpdateChannel.parse('nightly'), UpdateChannel.nightly);
   });

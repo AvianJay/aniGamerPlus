@@ -86,8 +86,13 @@ class _UpdateDialogState extends State<_UpdateDialog> {
         final used = await Updater.installIpa(
             info, IosInstaller.parse(widget.prefs.iosInstaller));
         if (!mounted) return;
-        toast(context,
-            used == null ? '已用瀏覽器開啟 IPA 下載。' : '已交給 ${used.label} 安裝。');
+        toast(
+            context,
+            used == null
+                ? '已用瀏覽器開啟 IPA 下載。'
+                : used == IosInstaller.lcSign
+                    ? '已交給 LCSign 匯入 IPA，請在 LCSign 完成簽名與安裝。'
+                    : '已交給 ${used.label} 安裝。');
         Navigator.of(context).pop();
         return;
       }
@@ -142,7 +147,8 @@ class _UpdateDialogState extends State<_UpdateDialog> {
             if (Platform.isIOS) ...[
               const SizedBox(height: 8),
               Text(
-                '會把 IPA 交給 TrollStore / SideStore / AltStore 安裝，'
+                '會把 IPA 交給 TrollStore / SideStore / AltStore，'
+                '或交給 LCSign 匯入後由你完成簽名與安裝。'
                 '都沒有裝的話改用瀏覽器下載。',
                 style: TextStyle(fontSize: 12.5, color: muted),
               ),
