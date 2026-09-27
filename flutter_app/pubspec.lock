@@ -800,10 +800,9 @@ packages:
   video_player_pip:
     dependency: "direct main"
     description:
-      name: video_player_pip
-      sha256: bb724168bdeb3a033749c68cb70e153759afde709ad41af8457b38fd6c2bcf6a
-      url: "https://pub.dev"
-    source: hosted
+      path: "packages/video_player_pip"
+      relative: true
+    source: path
     version: "0.0.10"
   video_player_platform_interface:
     dependency: "direct dev"

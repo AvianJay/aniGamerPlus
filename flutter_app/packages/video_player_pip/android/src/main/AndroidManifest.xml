@@ -1,0 +1,20 @@
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+  package="uz.flutterwithakmaljon.video_player_pip">
+    <!-- Required for PiP support on Android 8.0+ -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    
+    <!--
+    NOTE TO PACKAGE USERS:
+    You must add the following to your app's AndroidManifest.xml activity tag:
+    
+    android:supportsPictureInPicture="true"
+    android:configChanges="screenSize|smallestScreenSize|screenLayout|orientation"
+    
+    For example:
+    <activity
+        android:name=".MainActivity"
+        android:supportsPictureInPicture="true"
+        android:configChanges="screenSize|smallestScreenSize|screenLayout|orientation"
+        ... />
+    -->
+</manifest>

@@ -2,6 +2,7 @@
 # 剛好把這個 App 的原始碼整個吃掉. 這裡收回來 —— 收的是目錄本身,
 # git 對被排除的目錄不會往下走, 只 unignore 裡面的檔案沒有用.
 !/lib/
+!/packages/video_player_pip/lib/
 
 # Flutter / Dart
 .dart_tool/

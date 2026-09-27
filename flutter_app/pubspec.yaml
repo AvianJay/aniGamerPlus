@@ -25,7 +25,8 @@ dependencies:
 
   # 播放器 (mp4 + HLS 邊看邊下載)
   video_player: ">=2.8.0 <3.0.0"
-  video_player_pip: ^0.0.10
+  video_player_pip:
+    path: packages/video_player_pip
   video_thumbnail:
     path: packages/video_thumbnail
   connectivity_plus: ^7.0.0
