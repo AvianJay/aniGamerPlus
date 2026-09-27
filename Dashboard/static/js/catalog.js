@@ -26,6 +26,8 @@
         pages: 1,
         total: 0,
         query: '',
+        tag: '',
+        sort: 'relevance',
         weekday: 1,
         sheetSn: '',
         pushed: false,
@@ -268,8 +270,8 @@
         } else if (payload.error || (payload.retryAfter && !payload.items.length)) {
             body = '<p class="agp-empty" role="status">片單暫時無法載入，稍後會自動重試。</p>';
         } else if (!payload.items.length) {
-            body = '<p class="agp-empty">' + (query
-                ? '找不到符合「' + AGP.escapeHtml(query) + '」的作品。'
+            body = '<p class="agp-empty">' + (query || state.tag
+                ? '找不到符合篩選條件的作品。'
                 : '目前拿不到動畫瘋的片單。') + '</p>';
         } else {
             body = '<p class="agp-count">' + (query ? '找到 ' : '共 ') + state.total + ' 部作品</p>' +
@@ -277,7 +279,7 @@
         }
 
         host.classList.remove('is-loading');
-        host.innerHTML = AGP.sectionHtml('all', query ? '搜尋結果' : '所有動畫', body);
+        host.innerHTML = AGP.sectionHtml('all', query || state.tag ? '搜尋結果' : '所有動畫', body);
         if (payload) { host.dataset.filled = '1'; }
     }
 
@@ -300,7 +302,9 @@
         var token = ++catalogToken;
         renderCatalog(null);
         var url = './catalog/all.json?page=' + state.page +
-            (state.query.trim() ? '&q=' + encodeURIComponent(state.query.trim()) : '');
+            (state.query.trim() ? '&q=' + encodeURIComponent(state.query.trim()) : '') +
+            (state.tag ? '&tag=' + encodeURIComponent(state.tag) : '') +
+            '&sort=' + encodeURIComponent(state.sort);
         var payload;
         try {
             var response = await fetch(url, { signal: catalogController.signal });
@@ -731,6 +735,36 @@
         });
     }
 
+    function wireFilters() {
+        var tag = el('catalogTag');
+        var sort = el('catalogSort');
+        if (!tag || !sort) { return; }
+        tag.addEventListener('change', function () {
+            state.tag = tag.value;
+            state.page = 1;
+            loadCatalog();
+        });
+        sort.addEventListener('change', function () {
+            state.sort = sort.value;
+            state.page = 1;
+            loadCatalog();
+        });
+    }
+
+    async function loadTags() {
+        try {
+            var payload = await getJson('./catalog/tags.json');
+            if (catalogDisabled || !Array.isArray(payload.tags)) { return; }
+            var tag = el('catalogTag');
+            payload.tags.forEach(function (name) {
+                var option = document.createElement('option');
+                option.value = String(name);
+                option.textContent = String(name);
+                tag.appendChild(option);
+            });
+        } catch (error) { /* catalogue still works without the tag list */ }
+    }
+
     /* Nothing here can run without the routes, which exist only when
        dashboard.online_watch is on. Leaving the hosts empty rather than filling
        them with apologies is what keeps the page from looking half-loaded. */
@@ -773,6 +807,7 @@
         // These are independent: a slow index must not delay search or a shared
         // detail link, and a cold full-catalogue crawl must not delay the index.
         loadCatalog();
+        loadTags();
         syncSheetToHash();
         try {
             state.index = await getJson('./catalog/index.json');
@@ -810,6 +845,7 @@
 
     document.addEventListener('DOMContentLoaded', function () {
         wireSearch();
+        wireFilters();
         boot();
     });
 }(window));

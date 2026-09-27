@@ -30,6 +30,13 @@ var ASPECT_MODES = [
     { key: 'cover', label: '裁切填滿' },
     { key: 'fill', label: '完整填滿' }
 ];
+var OPENING_SKIP_MODES = [
+    { value: 'aniskip-first', label: 'AniSkip 優先' },
+    { value: 'danmaku-first', label: '彈幕優先' },
+    { value: 'aniskip-only', label: '只用 AniSkip' },
+    { value: 'danmaku-only', label: '只用彈幕' },
+    { value: 'off', label: '關閉' }
+];
 var TOUCH_PLAYER_QUERY = '(hover: none) and (pointer: coarse)';
 var SKIP_SECONDS = 10;
 var GESTURE_LOCK_PX = 12;          /* travel before an axis is committed */
@@ -368,6 +375,39 @@ function parseDanmakuList(assText) {
     return rows;
 }
 
+/* ASS has no author IDs. Use several differently worded, time-separated votes
+   near the start; a single "空降 23:45" or copied spam must never skip an OP. */
+function danmakuOpening(rows, duration) {
+    if (duration < 600) { return null; }
+    var jump = /(?:空降|跳(?:過|过)?(?:片頭|片头|op)|(?:op|片頭|片头)\s*(?:結束|结束))\s*(?:到|至|在|:|：|->|→)?\s*(\d{1,2}):(\d{2})(?!\d)/i;
+    var votes = [];
+    rows.forEach(function (row) {
+        if (row.time < 0 || row.time > 240) { return; }
+        var match = jump.exec(row.text);
+        if (!match || Number(match[2]) >= 60) { return; }
+        var target = Number(match[1]) * 60 + Number(match[2]);
+        if (target < 45 || target > Math.min(360, duration * 0.25) ||
+            target > duration - 300 || row.time > target + 15) { return; }
+        votes.push({ target: target, time: row.time, text: row.text.trim().toLowerCase() });
+    });
+    if (votes.length < 3) { return null; }
+    votes.sort(function (a, b) { return a.target - b.target; });
+    var bestStart = 0;
+    var bestLength = 0;
+    var right = 0;
+    for (var i = 0; i < votes.length; i += 1) {
+        if (right < i) { right = i; }
+        while (right < votes.length && votes[right].target - votes[i].target <= 7) { right += 1; }
+        if (right - i > bestLength) { bestStart = i; bestLength = right - i; }
+    }
+    var best = votes.slice(bestStart, bestStart + bestLength);
+    if (best.length < 3 || new Set(best.map(function (v) { return v.text; })).size < 2 ||
+        new Set(best.map(function (v) { return Math.floor(v.time / 8); })).size < 2) {
+        return null;
+    }
+    return { start: 0, end: best[Math.floor(best.length / 2)].target, source: '彈幕' };
+}
+
 /* --- player -------------------------------------------------------------- */
 
 function AgpPlayer(shell, options) {
@@ -392,6 +432,16 @@ function AgpPlayer(shell, options) {
     this.aspectMode = readStore('agp-aspect', 'contain');
     this.pseudoFullscreen = false;
     this.autoNext = readStore('agp-auto-next', '1') === '1';
+    this.skipMode = readStore('agp-opening-skip', 'aniskip-first');
+    if (!OPENING_SKIP_MODES.some(function (mode) { return mode.value === this.skipMode; }, this)) {
+        this.skipMode = 'aniskip-first';
+    }
+    this.pipEnabled = readStore('agp-pip-enabled', '1') === '1';
+    this.danmakuRows = [];
+    this.danmakuIntro = null;
+    this.aniskipIntro = null;
+    this.skipDurationKey = 0;
+    this.skipRequestKey = '';
     /* Native reports what the screen is actually at, so the first drag starts
        from what the viewer is looking at rather than from a number the browser
        build had to remember for itself. */
@@ -433,6 +483,7 @@ AgpPlayer.prototype.build = function () {
         '</div>' +
         '<div class="player-next" id="playerNext" hidden></div>' +
         '<div class="player-downloading" id="playerDownloading" hidden></div>' +
+        '<button class="player-skip-intro" id="skipIntro" type="button" data-action="skip-intro" hidden></button>' +
         '<div class="desktop-player-menu settings-menu" id="settingsMenu" hidden></div>' +
         '<div class="desktop-player-menu chapter-menu" id="episodeMenu" hidden></div>' +
         '<div class="desktop-player-controls" id="playerControls">' +
@@ -489,6 +540,7 @@ AgpPlayer.prototype.build = function () {
     this.dim = shell.querySelector('#playerDim');
     this.episodeChipLabel = shell.querySelector('#episodeChipLabel');
     this.downloadBadge = shell.querySelector('#playerDownloading');
+    this.skipButton = shell.querySelector('#skipIntro');
 
     /* 邊看邊下載: 這一集還在下載, 要走 HLS 而不是完成檔. 串流讀的全是本機磁碟上
        已經下好的分片, 不會為了播放再跟動畫瘋多要一份影片 */
@@ -513,6 +565,7 @@ AgpPlayer.prototype.build = function () {
     this.applyBrightness();
     this.applyDanmakuStyle();
     this.syncDanmakuButton();
+    this.syncPipButton();
     this.episodeChipLabel.textContent = episodeLabel(this.videoData) + ' · ' + this.videoData.anime_name;
 
     this.wire();
@@ -957,6 +1010,7 @@ AgpPlayer.prototype.handleAction = function (action) {
         case 'danmaku': this.setDanmaku(!this.danmakuEnabled); break;
         case 'settings': this.toggleSettings(); break;
         case 'pip': this.togglePip(); break;
+        case 'skip-intro': this.skipOpening(); break;
         case 'fullscreen': this.toggleFullscreen(); break;
         case 'prev': this.goRelative(-1); break;
         case 'next': this.goRelative(1); break;
@@ -1040,6 +1094,8 @@ AgpPlayer.prototype.updateProgress = function () {
     }
     if (total) { this.timeTotal.textContent = AGP.formatClock(total); }
     this.paintSeek();
+    this.loadOpeningSkip();
+    this.syncSkipButton();
 };
 
 AgpPlayer.prototype.showSeekTip = function (seconds) {
@@ -1400,6 +1456,9 @@ AgpPlayer.prototype.hideBar = function () {
 
 AgpPlayer.prototype.loadDanmaku = async function () {
     if (!this.videoData.danmu) {
+        this.danmakuRows = [];
+        this.danmakuIntro = null;
+        this.syncSkipButton();
         this.onDanmakuLoaded([]);
         return;
     }
@@ -1411,15 +1470,73 @@ AgpPlayer.prototype.loadDanmaku = async function () {
             var text = await response.text();
             this.danmakuText = text;
             this.mountAss(text);
-            this.onDanmakuLoaded(parseDanmakuList(text));
+            this.danmakuRows = parseDanmakuList(text);
+            this.danmakuIntro = danmakuOpening(this.danmakuRows, this.playableDuration());
+            this.syncSkipButton();
+            this.onDanmakuLoaded(this.danmakuRows);
             return;
         } catch (error) {
             if (attempt === 2) {
                 console.warn('彈幕載入失敗：', error);
+                this.danmakuRows = [];
+                this.danmakuIntro = null;
+                this.syncSkipButton();
                 this.onDanmakuLoaded([]);
             }
         }
     }
+};
+
+AgpPlayer.prototype.loadOpeningSkip = function () {
+    var duration = this.playableDuration();
+    if (!isFinite(duration) || duration < 600) { return; }
+    var rounded = Math.round(duration);
+    if (rounded !== this.skipDurationKey) {
+        this.skipDurationKey = rounded;
+        this.danmakuIntro = danmakuOpening(this.danmakuRows, duration);
+    }
+    if (this.skipMode === 'off' || this.skipMode === 'danmaku-only') { return; }
+    var key = this.videoData.sn + ':' + rounded;
+    if (key === this.skipRequestKey) { return; }
+    this.skipRequestKey = key;
+    var self = this;
+    fetch('./watch/skip.json?id=' + encodeURIComponent(this.videoData.sn) + '&duration=' + rounded)
+        .then(function (response) { return response.ok ? response.json() : null; })
+        .then(function (payload) {
+            if (self.skipRequestKey !== key || !payload || !Array.isArray(payload.interval)) { return; }
+            var start = Number(payload.interval[0]);
+            var end = Number(payload.interval[1]);
+            if (!isFinite(start) || !isFinite(end) || start < 0 || end <= start + 40 ||
+                end >= duration - 300 || end > 420) { return; }
+            self.aniskipIntro = { start: start, end: end, source: 'AniSkip' };
+            self.syncSkipButton();
+        }).catch(function () { /* the danmaku vote can still provide a suggestion */ });
+};
+
+AgpPlayer.prototype.selectedOpening = function () {
+    switch (this.skipMode) {
+        case 'off': return null;
+        case 'danmaku-only': return this.danmakuIntro;
+        case 'aniskip-only': return this.aniskipIntro;
+        case 'danmaku-first': return this.danmakuIntro || this.aniskipIntro;
+        default: return this.aniskipIntro || this.danmakuIntro;
+    }
+};
+
+AgpPlayer.prototype.syncSkipButton = function () {
+    if (!this.skipButton) { return; }
+    var intro = this.selectedOpening();
+    var at = this.video ? this.video.currentTime : 0;
+    var ready = intro && (!this.streaming || intro.end <= this.seekableDuration());
+    this.skipButton.hidden = !ready || at < Math.max(0, intro.start - 3) || at >= intro.end - 5;
+    if (ready) { this.skipButton.textContent = '跳過片頭 · ' + intro.source; }
+};
+
+AgpPlayer.prototype.skipOpening = function () {
+    var intro = this.selectedOpening();
+    if (!intro || this.skipButton.hidden) { return; }
+    this.video.currentTime = this.clampSeek(intro.end);
+    this.syncSkipButton();
 };
 
 AgpPlayer.prototype.mountAss = function (text) {
@@ -1532,19 +1649,33 @@ AgpPlayer.prototype.syncFullscreenButton = function () {
 };
 
 AgpPlayer.prototype.togglePip = async function () {
-    if (!document.pictureInPictureEnabled) {
+    if (!this.pipEnabled) { this.flash('子母畫面已關閉'); return; }
+    var standardPip = document.pictureInPictureEnabled &&
+        typeof this.video.requestPictureInPicture === 'function';
+    var webkitPip = typeof this.video.webkitSupportsPresentationMode === 'function' &&
+        typeof this.video.webkitSetPresentationMode === 'function' &&
+        this.video.webkitSupportsPresentationMode('picture-in-picture');
+    if (!standardPip && !webkitPip) {
         this.flash('此瀏覽器不支援子母畫面');
         return;
     }
     try {
         if (document.pictureInPictureElement) {
             await document.exitPictureInPicture();
-        } else {
+        } else if (standardPip) {
             await this.video.requestPictureInPicture();
+        } else {
+            this.video.webkitSetPresentationMode(
+                this.video.webkitPresentationMode === 'picture-in-picture' ? 'inline' : 'picture-in-picture');
         }
     } catch (error) {
         this.flash('無法開啟子母畫面');
     }
+};
+
+AgpPlayer.prototype.syncPipButton = function () {
+    var button = this.shell.querySelector('#pipToggle');
+    if (button) { button.hidden = !this.pipEnabled; }
 };
 
 /* --- menus ---------------------------------------------------------------- */
@@ -1557,6 +1688,8 @@ var MENU_TITLES = {
     'danmaku-opacity': '彈幕透明度',
     'danmaku-area': '彈幕顯示區域',
     aspect: '畫面比例',
+    'opening-skip': '跳過片頭',
+    pip: '子母畫面',
     shortcuts: '鍵盤快速鍵'
 };
 
@@ -1567,6 +1700,8 @@ var MENU_PARENTS = {
     'danmaku-opacity': 'main',
     'danmaku-area': 'main',
     aspect: 'main',
+    'opening-skip': 'main',
+    pip: 'main',
     shortcuts: 'main'
 };
 
@@ -1604,6 +1739,12 @@ AgpPlayer.prototype.openSettings = function (view) {
     this.settingsMenu.querySelectorAll('[data-set]').forEach(function (button) {
         button.addEventListener('click', function () {
             self.applySetting(button.dataset.set, button.dataset.value);
+        });
+    });
+    this.settingsMenu.querySelectorAll('[data-menu-action]').forEach(function (button) {
+        button.addEventListener('click', function () {
+            self.togglePip();
+            self.closeMenus();
         });
     });
 
@@ -1646,6 +1787,10 @@ AgpPlayer.prototype.renderMenu = function (view) {
         rows += row('畫面比例', (ASPECT_MODES.filter(function (mode) {
             return mode.key === self.aspectMode;
         })[0] || ASPECT_MODES[0]).label, 'data-view="aspect"');
+        rows += row('跳過片頭', (OPENING_SKIP_MODES.filter(function (mode) {
+            return mode.value === self.skipMode;
+        })[0] || OPENING_SKIP_MODES[0]).label, 'data-view="opening-skip"');
+        rows += row('子母畫面', this.pipEnabled ? '開啟' : '關閉', 'data-view="pip"');
         rows += row(BRIGHTNESS_LABEL, Math.round(this.brightness * 100) + '%', 'data-view="brightness"');
         rows += row('鍵盤快速鍵', '', 'data-view="shortcuts"');
     } else if (view === 'speed') {
@@ -1684,6 +1829,23 @@ AgpPlayer.prototype.renderMenu = function (view) {
             return choice(mode.label, self.aspectMode === mode.key,
                 'data-set="aspect" data-value="' + mode.key + '"');
         }).join('');
+    } else if (view === 'opening-skip') {
+        rows = OPENING_SKIP_MODES.map(function (mode) {
+            return choice(mode.label, self.skipMode === mode.value,
+                'data-set="opening-skip" data-value="' + mode.value + '"');
+        }).join('');
+        rows += '<p class="desktop-player-menu-note">彈幕需有多則相近且不同時間的留言才會提供跳過建議。</p>';
+    } else if (view === 'pip') {
+        rows = [true, false].map(function (enabled) {
+            return choice(enabled ? '開啟' : '關閉', self.pipEnabled === enabled,
+                'data-set="pip" data-value="' + (enabled ? '1' : '0') + '"');
+        }).join('');
+        if (this.pipEnabled) {
+            rows += '<button type="button" data-menu-action="pip"><span>' +
+                (document.pictureInPictureElement === this.video ||
+                    this.video.webkitPresentationMode === 'picture-in-picture'
+                    ? '離開子母畫面' : '進入子母畫面') + '</span></button>';
+        }
     } else if (view === 'shortcuts') {
         rows = '<dl>' + SHORTCUTS.map(function (item) {
             return '<dt>' + item.keys.map(function (key) {
@@ -1727,6 +1889,22 @@ AgpPlayer.prototype.applySetting = function (key, value) {
             this.aspectMode = value;
             this.applyAspect();
             this.flash((ASPECT_MODES.filter(function (mode) { return mode.key === value; })[0] || {}).label || '');
+            break;
+        case 'opening-skip':
+            this.skipMode = value;
+            writeStore('agp-opening-skip', value);
+            this.loadOpeningSkip();
+            this.syncSkipButton();
+            break;
+        case 'pip':
+            this.pipEnabled = value === '1';
+            writeStore('agp-pip-enabled', value);
+            this.syncPipButton();
+            if (!this.pipEnabled && document.pictureInPictureElement === this.video) {
+                document.exitPictureInPicture().catch(function () { });
+            } else if (!this.pipEnabled && this.video.webkitPresentationMode === 'picture-in-picture') {
+                this.video.webkitSetPresentationMode('inline');
+            }
             break;
         default: break;
     }

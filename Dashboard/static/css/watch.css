@@ -318,6 +318,7 @@ body.player-pseudo-fullscreen { overflow: hidden; }
 }
 
 .desktop-player-icon-button svg { height: 23px; stroke-width: 2.2; width: 23px; }
+.desktop-player-icon-button[hidden] { display: none; }
 
 /* The red rule under an icon is the only "on" state the bar shows — it has to
    survive a bright frame, so it never dims with the icon. */
@@ -648,6 +649,28 @@ body.player-pseudo-fullscreen { overflow: hidden; }
 }
 .player-next .is-primary { background: #ff0033; color: #fff; }
 .player-next .is-ghost { background: rgb(255 255 255 / 12%); color: #fff; }
+
+.player-skip-intro {
+  background: rgb(8 8 10 / 88%);
+  border: 1px solid rgb(255 255 255 / 48%);
+  border-radius: 6px;
+  bottom: calc(var(--controls-block, 67px) + 14px);
+  color: #fff;
+  cursor: pointer;
+  font-size: 13px;
+  font-weight: 700;
+  min-height: 38px;
+  padding: 7px 13px;
+  pointer-events: auto;
+  position: absolute;
+  right: 16px;
+  z-index: 6;
+}
+.player-skip-intro[hidden] { display: none; }
+.player-skip-intro:hover, .player-skip-intro:focus-visible {
+  background: rgb(45 45 50 / 96%);
+  outline: 2px solid #fff;
+}
 
 /* --- Touch player --------------------------------------------------------- */
 .player-shell.is-touch-player:not(.controls-visible) { cursor: auto; }

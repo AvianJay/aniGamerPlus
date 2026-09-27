@@ -107,6 +107,29 @@ a.agp-slot:hover { background: var(--agp-bg-card-hover); }
 
 /* --- 所有動畫 ------------------------------------------------------------ */
 
+.agp-catalog-filters {
+  align-items: center;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin: 8px 0 18px;
+}
+
+.agp-catalog-filters label { color: var(--agp-fg-dim); font-size: 13px; font-weight: 700; }
+.agp-catalog-filters select {
+  background: var(--agp-bg-card);
+  border: 1px solid var(--agp-line);
+  border-radius: 7px;
+  color: var(--agp-fg);
+  font: inherit;
+  font-size: 13px;
+  min-height: 38px;
+  padding: 0 10px;
+}
+.agp-catalog-filters select + label { margin-left: 10px; }
+.agp-catalog-filters select:focus-visible { outline: 2px solid var(--agp-accent); }
+body.agp-no-catalog .agp-catalog-filters { display: none; }
+
 .agp-count {
   color: var(--agp-fg-faint);
   font-size: 12px;

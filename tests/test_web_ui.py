@@ -412,6 +412,24 @@ def test_catalog_search_reaches_past_the_library(page, server):
     assert page.errors == []
 
 
+def test_catalog_tag_and_sort_filters_use_the_server(page, server):
+    open_home(page, server)
+    expect(page.locator('#catalogTag option')).to_have_count(4)
+    page.locator('#catalogTag').select_option('異世界')
+    expect(page.locator('#homeCatalog .agp-count')).to_have_text('共 23 部作品')
+    expect(page.locator('#homeCatalog .agp-poster')).to_have_count(23)
+    tagged = [item for item in CATALOG_ALL if int(item['animeSn']) % 3 == 0]
+    assert tagged[0]['title'] in page.locator('#homeCatalog .agp-poster').first.inner_text()
+
+    page.locator('#catalogSort').select_option('popular')
+    popular = max(tagged, key=lambda item: float(item['popular'].rstrip('萬')))
+    assert popular['title'] in page.locator('#homeCatalog .agp-poster').first.inner_text()
+    page.fill('#homeSearch', '所有動畫 1')
+    expect(page.locator('#homeCatalog .agp-count')).to_have_text('找到 3 部作品')
+    assert page.locator('#catalogTag').input_value() == '異世界'
+    assert page.errors == []
+
+
 def test_searching_does_not_walk_the_page_up_and_down(page, server):
     """An iPad screenshot: one character typed, and 片庫熱門 had jumped to the top
     of the screen. The page used to scroll the results into view -- on a tablet
@@ -845,7 +863,8 @@ def test_settings_menu_nests_and_applies(page, server):
     expect(menu).to_be_visible()
     expect(menu.locator('header strong')).to_have_text('設定')
 
-    for label in ['播放速度', '彈幕', '畫面比例', '畫面亮度', '鍵盤快速鍵']:
+    for label in ['播放速度', '彈幕', '畫面比例', '畫面亮度', '跳過片頭',
+                  '子母畫面', '鍵盤快速鍵']:
         expect(menu.locator('button', has_text=label).first).to_be_visible()
 
     page.locator('#settingsMenu button[data-view="speed"]').click()
@@ -860,6 +879,119 @@ def test_settings_menu_nests_and_applies(page, server):
     expect(menu.locator('dl kbd').first).to_be_visible()
     page.locator('#settingsMenu .desktop-player-menu-back').click()
     expect(menu.locator('header strong')).to_have_text('設定')
+
+
+def _mock_full_episode(page):
+    page.evaluate("""() => {
+        const player = window.page.player;
+        Object.defineProperty(player.video, 'currentTime', {
+            configurable: true, writable: true, value: 0
+        });
+        player.playableDuration = () => 1440;
+        player.seekableDuration = () => 1440;
+        player.updateProgress();
+    }""")
+
+
+def test_aniskip_button_is_manual_and_skip_setting_persists(page, server):
+    goto_watch(page, server)
+    _mock_full_episode(page)
+    page.evaluate('() => { window.page.player.video.currentTime = 40; window.page.player.updateProgress(); }')
+    button = page.locator('#skipIntro')
+    expect(button).to_be_visible()
+    expect(button).to_have_text('跳過片頭 · AniSkip')
+    button.click()
+    assert page.evaluate('() => window.page.player.video.currentTime') == 90
+    expect(button).to_be_hidden()
+
+    page.locator('#settingsToggle').click()
+    page.locator('#settingsMenu [data-view="opening-skip"]').click()
+    page.locator('#settingsMenu [data-set="opening-skip"][data-value="off"]').click()
+    assert page.evaluate("() => localStorage.getItem('agp-opening-skip')") == 'off'
+    page.reload()
+    page.wait_for_selector('#playerShell.is-custom-player')
+    _mock_full_episode(page)
+    expect(page.locator('#skipIntro')).to_be_hidden()
+    assert page.errors == []
+
+
+def test_danmaku_skip_rejects_end_jump_and_needs_distinct_votes(page, server):
+    page.route('**/watch/skip.json*', lambda route: route.fulfill(json={'interval': None}))
+    goto_watch(page, server)
+    _mock_full_episode(page)
+    page.locator('#settingsToggle').click()
+    page.locator('#settingsMenu [data-view="opening-skip"]').click()
+    page.locator('#settingsMenu [data-set="opening-skip"][data-value="danmaku-only"]').click()
+
+    def ass(rows):
+        return '[Events]\n' + '\n'.join(
+            'Dialogue: 0,0:00:%02d.00,0:00:%02d.00,Default,,0,0,0,,%s' %
+            (at, at + 4, text) for at, text in rows)
+
+    page.route('**/get_danmu.ass*', lambda route: route.fulfill(
+        body=ass([(10, '空降 23:45'), (19, '跳過片頭 23:45'),
+                  (30, 'OP結束 23:45')]), content_type='text/plain'))
+    page.evaluate('() => window.page.player.loadDanmaku()')
+    expect(page.locator('#skipIntro')).to_be_hidden()
+
+    page.unroute('**/get_danmu.ass*')
+    page.route('**/get_danmu.ass*', lambda route: route.fulfill(
+        body=ass([(10, '空降 01:30'), (19, '空降 01:30'),
+                  (30, '空降 01:30')]), content_type='text/plain'))
+    page.evaluate('() => window.page.player.loadDanmaku()')
+    expect(page.locator('#skipIntro')).to_be_hidden()
+
+    page.unroute('**/get_danmu.ass*')
+    page.route('**/get_danmu.ass*', lambda route: route.fulfill(
+        body=ass([(10, '空降 01:30'), (19, '跳過片頭 01:31'),
+                  (30, 'OP結束 01:32')]), content_type='text/plain'))
+    page.evaluate('() => window.page.player.loadDanmaku()')
+    expect(page.locator('#skipIntro')).to_have_text('跳過片頭 · 彈幕')
+    expect(page.locator('#skipIntro')).to_be_visible()
+    assert page.errors == []
+
+
+def test_skip_source_priority_changes_the_button(page, server):
+    comments = '\n'.join(
+        'Dialogue: 0,0:00:%02d.00,0:00:%02d.00,Default,,0,0,0,,%s' %
+        (at, at + 4, text) for at, text in
+        [(10, '空降 01:32'), (19, '跳過片頭 01:33'), (30, 'OP結束 01:34')])
+    page.route('**/get_danmu.ass*', lambda route: route.fulfill(
+        body='[Events]\n' + comments, content_type='text/plain'))
+    goto_watch(page, server)
+    _mock_full_episode(page)
+    page.evaluate('() => { window.page.player.video.currentTime = 45; window.page.player.updateProgress(); }')
+    expect(page.locator('#skipIntro')).to_have_text('跳過片頭 · AniSkip')
+
+    page.locator('#settingsToggle').click()
+    page.locator('#settingsMenu [data-view="opening-skip"]').click()
+    page.locator('#settingsMenu [data-value="danmaku-first"]').click()
+    expect(page.locator('#skipIntro')).to_have_text('跳過片頭 · 彈幕')
+    page.locator('#settingsMenu [data-view="opening-skip"]').click()
+    page.locator('#settingsMenu [data-value="aniskip-first"]').click()
+    expect(page.locator('#skipIntro')).to_have_text('跳過片頭 · AniSkip')
+    assert page.errors == []
+
+
+def test_pip_preference_and_mobile_menu_entry(phone, server):
+    goto_watch(phone, server)
+    phone.locator('#settingsToggle').click()
+    phone.locator('#settingsMenu [data-view="pip"]').click()
+    phone.locator('#settingsMenu [data-set="pip"][data-value="0"]').click()
+    expect(phone.locator('#pipToggle')).to_be_hidden()
+    assert phone.evaluate("() => localStorage.getItem('agp-pip-enabled')") == '0'
+
+    phone.locator('#settingsMenu [data-view="pip"]').click()
+    phone.locator('#settingsMenu [data-set="pip"][data-value="1"]').click()
+    phone.evaluate("""() => {
+        window.__pipCalls = 0;
+        Object.defineProperty(document, 'pictureInPictureEnabled', {value: true, configurable: true});
+        window.page.player.video.requestPictureInPicture = async () => { window.__pipCalls++; };
+    }""")
+    phone.locator('#settingsMenu [data-view="pip"]').click()
+    phone.locator('#settingsMenu [data-menu-action="pip"]').click()
+    assert phone.evaluate('() => window.__pipCalls') == 1
+    assert phone.errors == []
 
 
 def test_the_episode_list_is_the_whole_series_not_the_downloads(page, server):

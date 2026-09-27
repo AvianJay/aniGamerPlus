@@ -137,6 +137,7 @@ CATALOG_NEW_ADDED = [catalog_card(70 + i, '最新上架 %02d' % i) for i in rang
 # 70 titles is three pages at the real server's page size, which is what makes
 # 上一頁/下一頁 and the "第 N / M 頁" readout worth asserting on.
 CATALOG_ALL = [catalog_card(100 + i, '所有動畫 %02d' % i) for i in range(1, 71)]
+CATALOG_TAGS = ('動作', '奇幻', '異世界')
 
 
 def build_catalog_schedule():
@@ -640,7 +641,25 @@ def create_app(logged_in=True, catalog=True, hls=True, proxy=None):
         @app.get('/catalog/all.json')
         def catalog_all(request: Request):
             query = (request.query_params.get('q') or '').strip().lower()
+            tag = (request.query_params.get('tag') or '').strip()
+            order = (request.query_params.get('sort') or 'relevance').strip()
+            if tag and tag not in CATALOG_TAGS:
+                return JSONResponse({'error': 'unsupported tag'}, status_code=400)
+            if order not in ('relevance', 'popular', 'default'):
+                return JSONResponse({'error': 'unsupported sort'}, status_code=400)
             items = [item for item in CATALOG_ALL if query in item['title'].lower()]
+            if tag:
+                divisor = {'動作': 2, '奇幻': 5, '異世界': 3}[tag]
+                items = [item for item in items if int(item['animeSn']) % divisor == 0]
+            if order == 'popular':
+                items = sorted(items, key=lambda item: float(item['popular'].rstrip('萬')),
+                               reverse=True)
+            elif order == 'relevance' and query:
+                items = sorted(items, key=lambda item: (
+                    item['title'].lower() == query,
+                    item['title'].lower().startswith(query),
+                    -item['title'].lower().find(query),
+                    float(item['popular'].rstrip('萬'))), reverse=True)
             try:
                 page = max(1, int(request.query_params.get('page') or 1))
             except ValueError:
@@ -654,6 +673,10 @@ def create_app(logged_in=True, catalog=True, hls=True, proxy=None):
                 'pages': pages,
                 'total': len(items),
             })
+
+        @app.get('/catalog/tags.json')
+        def catalog_tags():
+            return JSONResponse({'tags': CATALOG_TAGS})
 
         @app.get('/catalog/anime.json')
         def catalog_anime(request: Request):
@@ -794,6 +817,12 @@ def create_app(logged_in=True, catalog=True, hls=True, proxy=None):
         response = FileResponse(os.path.join(FIXTURES, 'sample.ass'))
         response.headers['Content-Type'] = 'text/plain; charset=utf-8'
         return response
+
+    @app.get('/watch/skip.json')
+    def watch_skip(request: Request):
+        sn = str(request.query_params.get('id') or '')
+        duration = int(request.query_params.get('duration') or 0)
+        return JSONResponse({'interval': [40, 90] if sn == FIRST_SN and duration >= 600 else None})
 
     @app.get('/manifest.webmanifest')
     def manifest():
