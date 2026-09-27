@@ -213,6 +213,16 @@ def patch_plist(path):
 def patch_ios_deployment(podfile_path, project_path):
     # video_player_pip's podspec requires iOS 15. The Flutter scaffold still
     # targets iOS 13, which makes CocoaPods reject the plugin during CI builds.
+    # Newer flutter create releases delay creating Podfile until the first iOS
+    # build. Seed it from this toolchain's own template before changing it.
+    if not os.path.exists(podfile_path):
+        import shutil
+        flutter_exe = os.path.realpath(shutil.which('flutter') or '')
+        flutter_root = os.environ.get('FLUTTER_ROOT') or os.path.dirname(
+            os.path.dirname(flutter_exe))
+        template = os.path.join(flutter_root, 'packages', 'flutter_tools',
+                                'templates', 'cocoapods', 'Podfile-ios')
+        shutil.copyfile(template, podfile_path)
     with open(podfile_path, encoding='utf-8') as handle:
         podfile = handle.read()
     podfile = "platform :ios, '15.0'\n" + podfile
