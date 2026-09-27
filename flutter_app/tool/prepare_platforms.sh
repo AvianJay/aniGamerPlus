@@ -101,6 +101,11 @@ def patch_manifest(path):
         # 2. 自架的伺服器多半是區網 http://192.168.x.x:5000, 沒有憑證可言
         application.set(attr('usesCleartextTraffic'), 'true')
 
+    # video_player_pip uses the Activity's system PiP window on Android.
+    activity = application.find('activity') if application is not None else None
+    if activity is not None:
+        activity.set(attr('supportsPictureInPicture'), 'true')
+
     # 3. url_launcher 在 API 30 以上要先宣告想問哪些 scheme,
     #    不然「在動畫瘋開啟」會靜靜地什麼都不做.
     queries = manifest.find('queries')
@@ -205,9 +210,32 @@ def patch_plist(path):
     print('  patched', path)
 
 
+def patch_ios_deployment(podfile_path, project_path):
+    # video_player_pip's podspec requires iOS 15. The Flutter scaffold still
+    # targets iOS 13, which makes CocoaPods reject the plugin during CI builds.
+    with open(podfile_path, encoding='utf-8') as handle:
+        podfile = handle.read()
+    podfile = "platform :ios, '15.0'\n" + podfile
+    with open(podfile_path, 'w', encoding='utf-8', newline='') as handle:
+        handle.write(podfile)
+    with open(project_path, encoding='utf-8') as handle:
+        project = handle.read()
+    import re
+    project, count = re.subn(r'IPHONEOS_DEPLOYMENT_TARGET = [\d.]+;',
+                             'IPHONEOS_DEPLOYMENT_TARGET = 15.0;', project)
+    if count == 0:
+        raise RuntimeError(f'unexpected iOS deployment target in {project_path}')
+    with open(project_path, 'w', encoding='utf-8', newline='') as handle:
+        handle.write(project)
+    print('  patched', podfile_path)
+    print('  patched', project_path)
+
+
 patch_manifest(os.path.join('android', 'app', 'src', 'main', 'AndroidManifest.xml'))
 patch_android_signing(os.path.join('android', 'app', 'build.gradle.kts'))
 patch_plist(os.path.join('ios', 'Runner', 'Info.plist'))
+patch_ios_deployment(os.path.join('ios', 'Podfile'),
+                     os.path.join('ios', 'Runner.xcodeproj', 'project.pbxproj'))
 PYTHON
 
 echo "==> flutter pub get"

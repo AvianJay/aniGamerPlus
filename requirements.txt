@@ -13,6 +13,7 @@ pysocks==1.7.1
 lxml==4.9.4
 markupsafe~=2.1.2
 curl_cffi>=0.7.0
+opencc-python-reimplemented>=0.1.7
 yt-dlp
 selenium-recaptcha-solver~=1.9.0
 webdriver-manager

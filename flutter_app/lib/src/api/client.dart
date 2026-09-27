@@ -163,7 +163,9 @@ class AgpClient {
 
   Future<dynamic> _json(String path, [Map<String, dynamic>? query]) async {
     final response = await _get(path, query);
-    if (response.statusCode >= 400) _fail(response);
+    if (response.statusCode >= 400) {
+      _fail(response);
+    }
     if (response.bodyBytes.isEmpty) return null;
     return jsonDecode(utf8.decode(response.bodyBytes));
   }
@@ -297,6 +299,26 @@ class AgpClient {
     return utf8.decode(response.bodyBytes, allowMalformed: true);
   }
 
+  Future<List<double>?> openingSkip(String sn, double duration) async {
+    final response = await _get('/watch/skip.json', {
+      'id': sn,
+      'duration': duration.round(),
+    });
+    if (response.statusCode == 404) return null; // older server or no episode
+    if (response.statusCode >= 400) {
+      _fail(response);
+    }
+    final data = jsonDecode(utf8.decode(response.bodyBytes));
+    final interval = data is Map ? data['interval'] : null;
+    if (interval is! List ||
+        interval.length != 2 ||
+        interval[0] is! num ||
+        interval[1] is! num) {
+      return null;
+    }
+    return [(interval[0] as num).toDouble(), (interval[1] as num).toDouble()];
+  }
+
   // -------------------------------------------------------------------- 片單
 
   Future<CatalogIndex> catalogIndex() async =>
@@ -307,9 +329,15 @@ class AgpClient {
     return (data as Map).cast<String, dynamic>();
   }
 
-  Future<CatalogPage> catalogAll({String query = '', int page = 1}) async {
+  Future<CatalogPage> catalogAll(
+      {String query = '',
+      String tag = '',
+      String sort = 'relevance',
+      int page = 1}) async {
     final data = await _catalogJson('/catalog/all.json', {
       if (query.isNotEmpty) 'q': query,
+      if (tag.isNotEmpty) 'tag': tag,
+      'sort': sort,
       'page': page,
     });
     return CatalogPage.fromJson((data as Map).cast<String, dynamic>());
@@ -365,7 +393,8 @@ class AgpClient {
     final result = <String, WatchTime>{};
     data.forEach((key, value) {
       if (value is Map) {
-        result[key.toString()] = WatchTime.fromJson(value.cast<String, dynamic>());
+        result[key.toString()] =
+            WatchTime.fromJson(value.cast<String, dynamic>());
       }
     });
     return result;
@@ -414,7 +443,8 @@ class AgpClient {
   Future<String> login(String username, String password) async {
     final request = http.Request('POST', uri('/login'))
       ..followRedirects = false
-      ..headers['Content-Type'] = 'application/x-www-form-urlencoded; charset=utf-8'
+      ..headers['Content-Type'] =
+          'application/x-www-form-urlencoded; charset=utf-8'
       ..bodyFields = {'username': username, 'password': password};
 
     final streamed = await _http.send(request);
@@ -455,7 +485,8 @@ class AgpClient {
   Future<void> register(String username, String pw1, String pw2) async {
     final request = http.Request('POST', uri('/register'))
       ..followRedirects = false
-      ..headers['Content-Type'] = 'application/x-www-form-urlencoded; charset=utf-8'
+      ..headers['Content-Type'] =
+          'application/x-www-form-urlencoded; charset=utf-8'
       ..bodyFields = {'username': username, 'pw1': pw1, 'pw2': pw2};
 
     final streamed = await _http.send(request);
@@ -488,7 +519,8 @@ class AgpClient {
     return null;
   }
 
-  Future<String> changePassword(String oldPw, String newPw1, String newPw2) async {
+  Future<String> changePassword(
+      String oldPw, String newPw1, String newPw2) async {
     final data = await _postJson('/userinfo', {
       'action': 'changepassword',
       'original_password': oldPw,

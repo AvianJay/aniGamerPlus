@@ -25,11 +25,15 @@ class AllTab extends StatefulWidget {
       {super.key,
       required this.state,
       required this.query,
+      this.tag = '',
+      this.sort = 'relevance',
       this.searchMode = false,
       this.onResultOpened});
 
   final AppState state;
   final String query;
+  final String tag;
+  final String sort;
   final bool searchMode;
   final VoidCallback? onResultOpened;
 
@@ -57,7 +61,9 @@ class _AllTabState extends State<AllTab> {
   @override
   void didUpdateWidget(covariant AllTab oldWidget) {
     super.didUpdateWidget(oldWidget);
-    if (oldWidget.query != widget.query) {
+    if (oldWidget.query != widget.query ||
+        oldWidget.tag != widget.tag ||
+        oldWidget.sort != widget.sort) {
       _debounce?.cancel();
       _token++;
       _page = null;
@@ -90,8 +96,11 @@ class _AllTabState extends State<AllTab> {
     });
     CatalogPage result;
     try {
-      result =
-          await state.client.catalogAll(query: widget.query.trim(), page: page);
+      result = await state.client.catalogAll(
+          query: widget.query.trim(),
+          tag: widget.tag,
+          sort: widget.sort,
+          page: page);
     } catch (_) {
       if (mounted && token == _token) _error = '暫時無法取得動畫瘋片單，請重試。';
       result = CatalogPage();
@@ -123,21 +132,40 @@ class _AllTabState extends State<AllTab> {
   @override
   Widget build(BuildContext context) {
     final query = widget.query.trim();
-    final searching = widget.searchMode || query.isNotEmpty;
+    final searching =
+        widget.searchMode || query.isNotEmpty || widget.tag.isNotEmpty;
     final libraryOnly = _libraryOnly || state.offline;
-    final matches = _libraryMatches;
+    // Search results follow the server's relevance/popularity order. A locally
+    // stored title keeps its library action at that same catalog position.
+    final matches = widget.tag.isNotEmpty && state.offline
+        ? <VideoItem>[]
+        : _libraryMatches;
     final page = _page;
     final remote = page?.items ?? const <CatalogItem>[];
-    final localNames = matches.map((v) => v.displayName.toLowerCase()).toSet();
+    final localByName = {
+      for (final video in matches) video.displayName.toLowerCase(): video,
+    };
+    final catalogNames = remote.map((item) => item.title.toLowerCase()).toSet();
     final cards = <({VideoItem? video, CatalogItem? item})>[
-      if (searching || libraryOnly)
+      if (libraryOnly)
         for (final video in matches) (video: video, item: null),
-      if (searching || !libraryOnly)
+      if (!libraryOnly)
         for (final item in remote)
-          if (!searching || !localNames.contains(item.title.toLowerCase()))
-            (video: null, item: item),
+          (
+            video: searching ? localByName[item.title.toLowerCase()] : null,
+            item: item
+          ),
+      // Keep imported titles searchable. They have no catalog popularity or
+      // tag data, so place them after the ranked results on the first page.
+      if (!libraryOnly &&
+          query.isNotEmpty &&
+          widget.tag.isEmpty &&
+          page?.pages == 1)
+        for (final video in matches)
+          if (!catalogNames.contains(video.displayName.toLowerCase()))
+            (video: video, item: null),
     ];
-    final showingRemote = searching || !libraryOnly;
+    final showingRemote = !libraryOnly;
     final watched = state.lastWatchedByAnime;
     return LayoutBuilder(builder: (context, constraints) {
       final delegate = posterGridDelegate(constraints.maxWidth,
@@ -159,7 +187,12 @@ class _AllTabState extends State<AllTab> {
               child: searching
                   ? Row(children: [
                       Expanded(
-                          child: Text('搜尋「$query」',
+                          child: Text(
+                              widget.tag.isEmpty
+                                  ? '搜尋「$query」'
+                                  : query.isEmpty
+                                      ? '標籤：${widget.tag}'
+                                      : '搜尋「$query」 · ${widget.tag}',
                               maxLines: 2,
                               style: const TextStyle(
                                   fontWeight: FontWeight.w700, fontSize: 16))),

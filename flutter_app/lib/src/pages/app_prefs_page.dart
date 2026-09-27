@@ -118,6 +118,32 @@ class _AppPrefsPageState extends State<AppPrefsPage> {
             value: prefs.autoNext,
             onChanged: (value) => _save(() => prefs.setAutoNext(value)),
           ),
+          _pick<String>(
+            title: '跳過片頭',
+            value: prefs.openingSkipMode,
+            label: switch (prefs.openingSkipMode) {
+              'danmaku-first' => '彈幕優先',
+              'aniskip-only' => '只用 AniSkip',
+              'danmaku-only' => '只用彈幕',
+              'off' => '關閉',
+              _ => 'AniSkip 優先',
+            },
+            note: '顯示跳過按鈕；彈幕結果須有多則相近留言才採用。',
+            choices: const [
+              _Opt('aniskip-first', 'AniSkip 優先'),
+              _Opt('danmaku-first', '彈幕優先'),
+              _Opt('aniskip-only', '只用 AniSkip'),
+              _Opt('danmaku-only', '只用彈幕'),
+              _Opt('off', '關閉'),
+            ],
+            onPick: (value) => _save(() => prefs.setOpeningSkipMode(value)),
+          ),
+          SwitchListTile(
+            title: const Text('子母畫面'),
+            subtitle: const Text('在播放器選單中開啟系統子母畫面'),
+            value: prefs.pipEnabled,
+            onChanged: (value) => _save(() => prefs.setPipEnabled(value)),
+          ),
           _group('彈幕'),
           SwitchListTile(
             title: const Text('預設開啟彈幕'),

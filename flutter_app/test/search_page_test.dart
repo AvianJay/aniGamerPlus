@@ -39,6 +39,7 @@ void main() {
   late AppState state;
   late Directory temp;
   final requests = <String>[];
+  final searchUrls = <Uri>[];
   final titles = [
     '相反的你和我 第二季',
     '我的英雄學院 FINAL SEASON',
@@ -71,6 +72,7 @@ void main() {
     PathProviderPlatform.instance = _Paths(temp.path);
     SharedPreferences.setMockInitialValues({});
     requests.clear();
+    searchUrls.clear();
     delayed = null;
     catalog = [
       for (var i = 0; i < titles.length; i++)
@@ -81,6 +83,7 @@ void main() {
           'cover': 'https://posters.example.test/$i.jpg',
           'info': '2026 / 07 · 共 12 集',
           'popular': '${20 + i} 萬觀看',
+          'tags': i < 4 ? ['異世界'] : ['戀愛'],
         }
     ];
     final client = AgpClient(
@@ -112,12 +115,22 @@ void main() {
           if (request.url.path == '/catalog/all.json') {
             final query = request.url.queryParameters['q'] ?? '';
             requests.add(query);
+            searchUrls.add(request.url);
             if (query == 'old' && delayed != null) return delayed!.future;
-            final matches = query.isEmpty
+            var matches = query.isEmpty
                 ? catalog
                 : catalog
                     .where((e) => (e['title'] as String).contains(query))
                     .toList();
+            final tag = request.url.queryParameters['tag'];
+            if (tag != null) {
+              matches = matches
+                  .where((e) => (e['tags'] as List).contains(tag))
+                  .toList();
+            }
+            if (request.url.queryParameters['sort'] == 'popular') {
+              matches = matches.reversed.toList();
+            }
             return http.Response(
                 jsonEncode({
                   'items': matches,
@@ -237,6 +250,28 @@ void main() {
     await capture(tester, 'catalog-tablet');
   });
 
+  testWidgets('tag and popularity filters reach the catalog API together',
+      (tester) async {
+    state.library = [VideoItem(sn: 'local-0', title: titles.first)];
+    await open(tester, SearchPage(state: state));
+    await tester.tap(find.widgetWithText(ActionChip, '異世界').first);
+    await tester.pumpAndSettle();
+    expect(searchUrls.last.queryParameters['tag'], '異世界');
+    expect(find.byType(PosterCard), findsWidgets);
+    await tester.tap(find.byKey(const ValueKey('anime-sort')));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('人氣最高').last);
+    await tester.pumpAndSettle();
+    expect(searchUrls.last.queryParameters['sort'], 'popular');
+    expect(searchUrls.last.queryParameters['tag'], '異世界');
+    final ordered = tester
+        .widgetList<PosterCard>(find.byType(PosterCard))
+        .map((card) => card.title)
+        .toList();
+    expect(ordered, [titles[3], titles[2], titles[1], titles[0]]);
+    expect(tester.takeException(), isNull);
+  });
+
   testWidgets('phone cards fit at large text sizes', (tester) async {
     await open(tester, Scaffold(body: AllTab(state: state, query: '')),
         mode: Brightness.dark, size: const Size(320, 740), scale: 1.5);
@@ -248,6 +283,15 @@ void main() {
             .crossAxisCount,
         2);
     await capture(tester, 'catalog-phone');
+  });
+
+  testWidgets('search filters fit a narrow phone with enlarged text',
+      (tester) async {
+    await open(tester, SearchPage(state: state),
+        size: const Size(320, 740), scale: 1.5);
+    expect(find.byKey(const ValueKey('anime-tag-filter')), findsOneWidget);
+    expect(find.byKey(const ValueKey('anime-sort')), findsOneWidget);
+    expect(tester.takeException(), isNull);
   });
 
   testWidgets(

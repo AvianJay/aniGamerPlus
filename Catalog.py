@@ -11,6 +11,7 @@ animeList.php 一页页爬.
 """
 
 import re
+from urllib.parse import urlencode
 
 INDEX_API = 'https://api.gamer.com.tw/mobile_app/anime/v3/index.php'
 LIST_URL = 'https://ani.gamer.com.tw/animeList.php'
@@ -27,6 +28,14 @@ _TIME = re.compile(r"<p class='theme-time'>([^<]*)</p>")
 _NUMBER = re.compile(r"<span class='theme-number'>\s*([^<]*?)\s*</span>")
 _VIEWS = re.compile(r"<div class='show-view-number'>.*?<p>([^<]*)</p>", re.S)
 _PAGE_NO = re.compile(r"\?page=(\d+)")
+
+# animeList.php exposes these as its own filter choices. Keep the allow-list on
+# the server so a client cannot turn the catalogue crawler into an arbitrary URL.
+TAGS = ('動作', '冒險', '奇幻', '異世界', '魔法', '超能力', '科幻', '機甲',
+        '校園', '喜劇', '戀愛', '青春', '勵志', '溫馨', '悠閒', '料理',
+        '親情', '感人', '運動', '競技', '偶像', '音樂', '職場', '推理',
+        '懸疑', '時間穿越', '歷史', '戰爭', '血腥暴力', '靈異神怪',
+        '黑暗', '特攝', 'BL', 'GL')
 
 
 def _first(pattern, text, default=''):
@@ -63,8 +72,23 @@ def total_pages(html):
     return max(pages) if pages else 1
 
 
-def list_page_url(page):
+def list_page_url(page, tag=''):
+    if tag:
+        if tag not in TAGS:
+            raise ValueError('unsupported anime tag')
+        return LIST_URL + '?' + urlencode({
+            'page': int(page), 'tags': tag, 'category': '全部',
+            'target': '全部', 'sort': 1,
+        })
     return LIST_URL + '?page=' + str(int(page)) + '&c=0&sort=1'
+
+
+def popularity(raw):
+    """Sort the site's 142.8萬 and plain-count labels numerically."""
+    match = re.search(r'(\d+(?:\.\d+)?)\s*([億萬千]?)', str(raw or '').replace(',', ''))
+    if not match:
+        return 0
+    return float(match.group(1)) * {'億': 1e8, '萬': 1e4, '千': 1e3}.get(match.group(2), 1)
 
 
 WEEKDAYS = ('週一', '週二', '週三', '週四', '週五', '週六', '週日')

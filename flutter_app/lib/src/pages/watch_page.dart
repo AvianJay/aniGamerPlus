@@ -11,8 +11,7 @@
 ///   2. 邊看邊下載的 HLS EVENT 播放清單 (/hls/playlist.m3u8)
 ///   3. 伺服器片庫的完整 mp4 (/get_video.mp4)
 ///
-/// 網頁版有子母畫面 (I 鍵), 手機這邊沒有對應的實作 —— iOS/Android 的 PiP 得
-/// 各自寫原生層, 這個版本先略過, 其餘功能都在。
+/// 子母畫面使用 video_player_pip 的原生播放器檢視。
 library;
 
 import 'dart:async';
@@ -25,6 +24,8 @@ import 'package:flutter/services.dart';
 import 'package:screen_brightness/screen_brightness.dart';
 import 'package:url_launcher/url_launcher.dart';
 import 'package:video_player/video_player.dart';
+import 'package:video_player_pip/index.dart'
+    show VideoPlayerPip, VideoPlayerPipPlatform;
 import 'package:volume_controller/volume_controller.dart';
 import 'package:wakelock_plus/wakelock_plus.dart';
 
@@ -36,6 +37,7 @@ import '../state/app_state.dart';
 import '../state/downloads.dart';
 import '../state/prefs.dart';
 import '../state/seek_preview.dart';
+import '../state/intro_skip.dart';
 import '../theme.dart';
 import '../util/format.dart';
 import '../widgets/common.dart';
@@ -343,6 +345,21 @@ class _WatchPageState extends State<WatchPage> with WidgetsBindingObserver {
 
   // ------------------------------------------------------------- 彈幕
   List<DanmakuComment> _danmaku = const [];
+  IntroSkip? _aniskipIntro;
+  IntroSkip? _danmakuIntro;
+  String _skipRequestKey = '';
+  bool _skipDismissed = false;
+  StreamSubscription<bool>? _pipSubscription;
+  bool _pipActive = false;
+  bool _pipRequested = false;
+
+  IntroSkip? get _effectiveIntro => switch (prefs.openingSkipMode) {
+        'off' => null,
+        'aniskip-only' => _aniskipIntro,
+        'danmaku-only' => _danmakuIntro,
+        'danmaku-first' => _danmakuIntro ?? _aniskipIntro,
+        _ => _aniskipIntro ?? _danmakuIntro,
+      };
 
   // ------------------------------------------------------------- 設定
   double _rate = 1;
@@ -435,6 +452,27 @@ class _WatchPageState extends State<WatchPage> with WidgetsBindingObserver {
     _autoNext = prefs.autoNext;
     _quality = prefs.playbackResolution;
     _streaming = widget.streaming;
+    _pipSubscription =
+        VideoPlayerPip.instance.onPipModeChanged.listen((active) {
+      if (!mounted) return;
+      setState(() {
+        _pipActive = active;
+        _pipRequested = active;
+      });
+      if (!active) {
+        // Restoring PiP briefly passes through inactive. Give the app time to
+        // resume before treating a closed PiP window as background playback.
+        unawaited(Future<void>.delayed(const Duration(milliseconds: 500), () {
+          if (!mounted || _pipActive ||
+              WidgetsBinding.instance.lifecycleState == AppLifecycleState.resumed) {
+            return;
+          }
+          _background = true;
+          unawaited(_controller?.pause());
+          unawaited(_syncTime(force: true));
+        }));
+      }
+    });
     _monitor = Timer.periodic(_kMonitorEvery, (_) {
       _sampleSpeed();
       _watchStall();
@@ -450,6 +488,8 @@ class _WatchPageState extends State<WatchPage> with WidgetsBindingObserver {
     _nextTimer?.cancel();
     _streamTimer?.cancel();
     _monitor?.cancel();
+    unawaited(_pipSubscription?.cancel());
+    if (_pipActive) unawaited(VideoPlayerPip.exitPipMode());
     _sourceGeneration++;
     _preview.dispose();
     _pendingSeek = null;
@@ -497,6 +537,10 @@ class _WatchPageState extends State<WatchPage> with WidgetsBindingObserver {
   @override
   void didChangeAppLifecycleState(AppLifecycleState lifecycle) {
     if (lifecycle == AppLifecycleState.resumed) {
+      if (_pipActive || _pipRequested) {
+        _background = false;
+        return;
+      }
       if (!_background) return;
       _background = false;
       _lifecycleWork = _lifecycleWork.then((_) async {
@@ -528,6 +572,7 @@ class _WatchPageState extends State<WatchPage> with WidgetsBindingObserver {
       });
       return;
     }
+    if (_pipActive || _pipRequested) return;
     if (_background) return;
     _background = true;
     final controller = _controller;
@@ -558,6 +603,10 @@ class _WatchPageState extends State<WatchPage> with WidgetsBindingObserver {
       // 換一集就重來: 上一集挑的畫質不該讓這一集直接放棄手機裡那份離線檔
       _qualityPicked = false;
       _streamResolution = 0;
+      _aniskipIntro = null;
+      _danmakuIntro = null;
+      _skipRequestKey = '';
+      _skipDismissed = false;
     });
     _qualities.value = const [];
 
@@ -748,16 +797,24 @@ class _WatchPageState extends State<WatchPage> with WidgetsBindingObserver {
         cached,
         httpHeaders: client.authHeaders,
         videoPlayerOptions: VideoPlayerOptions(allowBackgroundPlayback: true),
+        viewType: prefs.pipEnabled
+            ? VideoViewType.platformView
+            : VideoViewType.textureView,
       );
     } else if (local != null) {
       controller = VideoPlayerController.file(local,
-          videoPlayerOptions:
-              VideoPlayerOptions(allowBackgroundPlayback: true));
+          videoPlayerOptions: VideoPlayerOptions(allowBackgroundPlayback: true),
+          viewType: prefs.pipEnabled
+              ? VideoViewType.platformView
+              : VideoViewType.textureView);
     } else if (_streaming) {
       controller = VideoPlayerController.networkUrl(
         client.hlsPlaylistUrl(_sn),
         httpHeaders: client.authHeaders,
         videoPlayerOptions: VideoPlayerOptions(allowBackgroundPlayback: true),
+        viewType: prefs.pipEnabled
+            ? VideoViewType.platformView
+            : VideoViewType.textureView,
       );
     } else {
       final res = _video?.resolution ?? 0;
@@ -771,6 +828,9 @@ class _WatchPageState extends State<WatchPage> with WidgetsBindingObserver {
         cached,
         httpHeaders: client.authHeaders,
         videoPlayerOptions: VideoPlayerOptions(allowBackgroundPlayback: true),
+        viewType: prefs.pipEnabled
+            ? VideoViewType.platformView
+            : VideoViewType.textureView,
       );
     }
 
@@ -819,6 +879,7 @@ class _WatchPageState extends State<WatchPage> with WidgetsBindingObserver {
       _setAnchor(target > 1 ? target : 0);
     });
     _clock.value = _anchor;
+    unawaited(_loadOpeningSkip());
 
     if (autoplay && _background) _resumeAfterBackground = true;
     if (target > 1) {
@@ -871,6 +932,7 @@ class _WatchPageState extends State<WatchPage> with WidgetsBindingObserver {
       _buffering = controller.value.isBuffering;
     });
     _clock.value = _anchor;
+    unawaited(_loadOpeningSkip());
 
     if (autoplay && _background) _resumeAfterBackground = true;
     if (needsSeek) {
@@ -890,6 +952,7 @@ class _WatchPageState extends State<WatchPage> with WidgetsBindingObserver {
     final cached = state.cachedSeries(_sn);
     if (cached != null && mounted) {
       setState(() => _series = cached);
+      unawaited(_loadOpeningSkip());
       // 名字先記下來 —— 這一份就足以讓「繼續觀看」認出這一集是誰
       _rememberNames(cached);
     }
@@ -898,6 +961,7 @@ class _WatchPageState extends State<WatchPage> with WidgetsBindingObserver {
       final info = await state.loadSeries(_sn);
       if (!mounted) return;
       setState(() => _series = info);
+      unawaited(_loadOpeningSkip());
       _rememberNames(info);
     } catch (_) {
       // 舊版伺服器沒有 /watch/series.json, 下面會退回本機片庫湊選集
@@ -950,7 +1014,10 @@ class _WatchPageState extends State<WatchPage> with WidgetsBindingObserver {
     if (!mounted) return;
     final parsed = await _parseDanmaku(text);
     if (!mounted) return;
-    setState(() => _danmaku = parsed);
+    setState(() {
+      _danmaku = parsed;
+      _danmakuIntro = danmakuIntro(parsed, _playableDuration);
+    });
   }
 
   /// 熱門的集數彈幕動輒上萬行, 在畫面那條執行緒上解析就是開播那一刻卡一下
@@ -964,6 +1031,87 @@ class _WatchPageState extends State<WatchPage> with WidgetsBindingObserver {
     } catch (_) {
       // 開不了 isolate (極少見) 就還是在這裡做, 至少要有彈幕
       return parseAss(text);
+    }
+  }
+
+  Future<void> _loadOpeningSkip() async {
+    final duration = _playableDuration;
+    if (duration < 600 || !mounted) return;
+    if (_danmaku.isNotEmpty) {
+      final suggestion = danmakuIntro(_danmaku, duration);
+      if (suggestion != _danmakuIntro) {
+        setState(() => _danmakuIntro = suggestion);
+      }
+    }
+    if (state.offline ||
+        prefs.openingSkipMode == 'off' ||
+        prefs.openingSkipMode == 'danmaku-only') {
+      return;
+    }
+    final key = '$_sn:${duration.round()}';
+    if (_skipRequestKey == key) return;
+    _skipRequestKey = key;
+    final sn = _sn;
+    try {
+      final interval = await client.openingSkip(sn, duration);
+      if (!mounted || _sn != sn || interval == null) return;
+      final start = interval[0];
+      final end = interval[1];
+      if (start >= 0 &&
+          end > start + 40 &&
+          end < duration - 300 &&
+          end <= 420) {
+        setState(() => _aniskipIntro = IntroSkip(start, end, 'AniSkip'));
+      }
+    } catch (_) {
+      // No AniSkip match or no network: the conservative danmaku vote still
+      // works with the downloaded ASS file.
+    }
+  }
+
+  Future<void> _enterPip() async {
+    final controller = _controller;
+    if (!prefs.pipEnabled ||
+        controller == null ||
+        !controller.value.isInitialized ||
+        _pipActive ||
+        _pipRequested) {
+      return;
+    }
+    try {
+      if (!await VideoPlayerPip.isPipSupported()) {
+        _flashMessage('這台裝置不支援子母畫面');
+        return;
+      }
+      _pipRequested = true;
+      if (_fullscreen) await _setFullscreen(false);
+      if (!controller.value.isPlaying) await controller.play();
+      final size = controller.value.size;
+      final ratio = size.height > 0 ? size.width / size.height : 16 / 9;
+      final ok = await VideoPlayerPipPlatform.instance.enterPipMode(
+          // video_player_pip bundles an obsolete copy of video_player. Its native
+          // channel only needs the ID from our current controller.
+          // ignore: invalid_use_of_visible_for_testing_member
+          controller.playerId,
+          width: 320,
+          height: (320 / ratio).round().clamp(140, 320));
+      if (!mounted) return;
+      if (!ok) {
+        _pipRequested = false;
+        _flashMessage('子母畫面無法開啟');
+      } else {
+        unawaited(Future<void>.delayed(const Duration(seconds: 3), () async {
+          if (!mounted || _pipActive || !_pipRequested) return;
+          try {
+            if (await VideoPlayerPip.isInPipMode()) return;
+          } catch (_) {}
+          _pipRequested = false;
+          if (mounted) _flashMessage('子母畫面未能啟動');
+        }));
+      }
+    } catch (_) {
+      _pipRequested = false;
+      if (mounted) _flashMessage('子母畫面無法開啟');
     }
   }
 
@@ -1336,9 +1484,8 @@ class _WatchPageState extends State<WatchPage> with WidgetsBindingObserver {
     final now = DateTime.now().millisecondsSinceEpoch;
     // 要送伺服器的那一次一定要先寫本機: 兩邊的位置與 timestamp 才會對得上, 不然
     // 下次合併時伺服器那份會被當成更新的
-    final remoteDue = force ||
-        ended ||
-        now - _lastSync >= kRemoteSyncEvery.inMilliseconds;
+    final remoteDue =
+        force || ended || now - _lastSync >= kRemoteSyncEvery.inMilliseconds;
     final localDue = remoteDue ||
         _forceNote ||
         now - _lastNote >= kLocalSyncEvery.inMilliseconds;
@@ -2055,105 +2202,111 @@ class _WatchPageState extends State<WatchPage> with WidgetsBindingObserver {
       },
       child: Scaffold(
         backgroundColor: _fullscreen ? Colors.black : null,
-        body: _fullscreen
+        body: _pipActive
             ? _playerSurface()
-            : SafeArea(
-                bottom: false,
-                child: Column(children: [
-                  _titleBar(),
-                  Expanded(child: LayoutBuilder(
-                    builder: (context, constraints) {
-                      if (constraints.maxWidth >= 560 &&
-                          constraints.maxHeight < 420) {
-                        final panelWidth =
-                            (constraints.maxWidth * .32).clamp(240.0, 300.0);
-                        return Row(children: [
-                          Expanded(
-                            child: Column(children: [
+            : _fullscreen
+                ? _playerSurface()
+                : SafeArea(
+                    bottom: false,
+                    child: Column(children: [
+                      _titleBar(),
+                      Expanded(child: LayoutBuilder(
+                        builder: (context, constraints) {
+                          if (constraints.maxWidth >= 560 &&
+                              constraints.maxHeight < 420) {
+                            final panelWidth = (constraints.maxWidth * .32)
+                                .clamp(240.0, 300.0);
+                            return Row(children: [
                               Expanded(
-                                  child: _playerSurface(mobileInline: true)),
-                              _mobilePlayerTools(),
-                            ]),
-                          ),
-                          SizedBox(width: panelWidth, child: _mobilePageBody()),
-                        ]);
-                      }
-                      if (constraints.maxWidth < 600) {
-                        return Column(children: [
-                          AspectRatio(
-                            aspectRatio: 16 / 9,
-                            child: _playerSurface(mobileInline: true),
-                          ),
-                          _mobilePlayerTools(),
-                          Expanded(child: _mobilePageBody()),
-                        ]);
-                      }
-                      // 平板橫著拿的時候, 整片 16:9 會把螢幕吃光, 底下的作品資訊
-                      // 跟選集一格都露不出來. 播放器最多只能佔這麼高, 超過就
-                      // 連寬度一起縮, 維持 16:9 置中, 兩側留黑.
-                      final height = _inlinePlayerHeight(
-                          constraints.maxWidth, constraints.maxHeight);
-                      final width = math.min(
-                        constraints.maxWidth,
-                        height * 16 / 9,
-                      );
-                      if (constraints.maxWidth >= 1000 &&
-                          constraints.maxHeight >= 480) {
-                        // 動畫瘋的右欄是一整條貼齊螢幕邊的面板, 不是一張留了
-                        // 邊界又有圓角的卡片. 影片那一側也一路貼到左邊.
-                        final panelWidth =
-                            (constraints.maxWidth * .27).clamp(300.0, 360.0);
-                        final videoWidth = constraints.maxWidth - panelWidth;
-                        return Row(
-                          crossAxisAlignment: CrossAxisAlignment.stretch,
-                          children: [
-                            Expanded(
                                 child: Column(children: [
-                              SizedBox(
-                                  height: _inlinePlayerHeight(
-                                      videoWidth, constraints.maxHeight),
-                                  width: videoWidth,
-                                  child: _playerSurface()),
-                              Expanded(child: _pageBody(includeInfo: false)),
-                            ])),
-                            SizedBox(
-                              width: panelWidth,
-                              child: ColoredBox(
-                                // 跟著主題走: 這個 app 有淺色模式, 寫死深色
-                                // 的話那邊會變成一條黑柱
-                                color: Theme.of(context)
-                                    .colorScheme
-                                    .surfaceContainerLow,
-                                child: SingleChildScrollView(
-                                    child: _infoCard(flush: true)),
+                                  Expanded(
+                                      child:
+                                          _playerSurface(mobileInline: true)),
+                                  _mobilePlayerTools(),
+                                ]),
                               ),
-                            ),
-                          ],
-                        );
-                      }
-                      return Column(
-                        children: [
-                          SizedBox(
-                            height: height,
-                            width: constraints.maxWidth,
-                            child: ColoredBox(
-                              color: Colors.black,
-                              child: Center(
-                                child: SizedBox(
-                                  width: width,
-                                  height: height,
-                                  child: _playerSurface(),
+                              SizedBox(
+                                  width: panelWidth, child: _mobilePageBody()),
+                            ]);
+                          }
+                          if (constraints.maxWidth < 600) {
+                            return Column(children: [
+                              AspectRatio(
+                                aspectRatio: 16 / 9,
+                                child: _playerSurface(mobileInline: true),
+                              ),
+                              _mobilePlayerTools(),
+                              Expanded(child: _mobilePageBody()),
+                            ]);
+                          }
+                          // 平板橫著拿的時候, 整片 16:9 會把螢幕吃光, 底下的作品資訊
+                          // 跟選集一格都露不出來. 播放器最多只能佔這麼高, 超過就
+                          // 連寬度一起縮, 維持 16:9 置中, 兩側留黑.
+                          final height = _inlinePlayerHeight(
+                              constraints.maxWidth, constraints.maxHeight);
+                          final width = math.min(
+                            constraints.maxWidth,
+                            height * 16 / 9,
+                          );
+                          if (constraints.maxWidth >= 1000 &&
+                              constraints.maxHeight >= 480) {
+                            // 動畫瘋的右欄是一整條貼齊螢幕邊的面板, 不是一張留了
+                            // 邊界又有圓角的卡片. 影片那一側也一路貼到左邊.
+                            final panelWidth = (constraints.maxWidth * .27)
+                                .clamp(300.0, 360.0);
+                            final videoWidth =
+                                constraints.maxWidth - panelWidth;
+                            return Row(
+                              crossAxisAlignment: CrossAxisAlignment.stretch,
+                              children: [
+                                Expanded(
+                                    child: Column(children: [
+                                  SizedBox(
+                                      height: _inlinePlayerHeight(
+                                          videoWidth, constraints.maxHeight),
+                                      width: videoWidth,
+                                      child: _playerSurface()),
+                                  Expanded(
+                                      child: _pageBody(includeInfo: false)),
+                                ])),
+                                SizedBox(
+                                  width: panelWidth,
+                                  child: ColoredBox(
+                                    // 跟著主題走: 這個 app 有淺色模式, 寫死深色
+                                    // 的話那邊會變成一條黑柱
+                                    color: Theme.of(context)
+                                        .colorScheme
+                                        .surfaceContainerLow,
+                                    child: SingleChildScrollView(
+                                        child: _infoCard(flush: true)),
+                                  ),
+                                ),
+                              ],
+                            );
+                          }
+                          return Column(
+                            children: [
+                              SizedBox(
+                                height: height,
+                                width: constraints.maxWidth,
+                                child: ColoredBox(
+                                  color: Colors.black,
+                                  child: Center(
+                                    child: SizedBox(
+                                      width: width,
+                                      height: height,
+                                      child: _playerSurface(),
+                                    ),
+                                  ),
                                 ),
                               ),
-                            ),
-                          ),
-                          Expanded(child: _pageBody()),
-                        ],
-                      );
-                    },
-                  )),
-                ]),
-              ),
+                              Expanded(child: _pageBody()),
+                            ],
+                          );
+                        },
+                      )),
+                    ]),
+                  ),
       ),
     );
   }
@@ -2245,9 +2398,22 @@ class _WatchPageState extends State<WatchPage> with WidgetsBindingObserver {
                 unawaited(_forgetProgress());
               } else if (value == 'reload') {
                 unawaited(_boot());
+              } else if (value == 'pip') {
+                unawaited(_enterPip());
               }
             },
             itemBuilder: (context) => [
+              if (prefs.pipEnabled)
+                const PopupMenuItem(
+                  value: 'pip',
+                  child: ListTile(
+                    dense: true,
+                    contentPadding: EdgeInsets.zero,
+                    leading:
+                        Icon(Icons.picture_in_picture_alt_rounded, size: 20),
+                    title: Text('子母畫面'),
+                  ),
+                ),
               const PopupMenuItem(
                 value: 'phone',
                 child: ListTile(
@@ -2330,6 +2496,12 @@ class _WatchPageState extends State<WatchPage> with WidgetsBindingObserver {
         final controller = _controller;
         final ready = controller != null && controller.value.isInitialized;
 
+        if (_pipActive) {
+          return ColoredBox(
+              color: Colors.black,
+              child: ready ? _fitted(controller) : const SizedBox.shrink());
+        }
+
         return ColoredBox(
           color: Colors.black,
           child: _gestureLayer(size,
@@ -2369,6 +2541,29 @@ class _WatchPageState extends State<WatchPage> with WidgetsBindingObserver {
                     else
                       Center(child: _PlayerSpinner(size: 32, speed: _netSpeed)),
                   if (_downloading.isNotEmpty) _downloadBadge(),
+                  if (!_skipDismissed && _effectiveIntro != null)
+                    Positioned(
+                      right: 14,
+                      bottom: mobileInline ? 18 : 86,
+                      child: ValueListenableBuilder<double>(
+                        valueListenable: _clock,
+                        builder: (context, position, _) {
+                          final intro = _effectiveIntro;
+                          if (intro == null || !intro.visibleAt(position)) {
+                            return const SizedBox.shrink();
+                          }
+                          return FilledButton.icon(
+                            key: const ValueKey('skip-intro'),
+                            onPressed: () {
+                              setState(() => _skipDismissed = true);
+                              unawaited(_seekTo(intro.end));
+                            },
+                            icon: const Icon(Icons.skip_next_rounded, size: 18),
+                            label: Text('跳過片頭 · ${intro.source}'),
+                          );
+                        },
+                      ),
+                    ),
                   AnimatedOpacity(
                     opacity: _controlsVisible ? 1 : 0,
                     duration: const Duration(milliseconds: 180),
@@ -2496,7 +2691,8 @@ class _WatchPageState extends State<WatchPage> with WidgetsBindingObserver {
           children: [
             // 靜態的圖示, 不是轉圈: 這個徽章邊看邊下載的時候整集都掛著, 一個
             // 一直在轉的東西等於整集每一個 vsync 都要把畫面重新合成一次
-            const Icon(Icons.downloading_rounded, size: 13, color: Colors.white),
+            const Icon(Icons.downloading_rounded,
+                size: 13, color: Colors.white),
             const SizedBox(width: 6),
             Text(
               _downloading,
@@ -2995,6 +3191,9 @@ class _WatchPageState extends State<WatchPage> with WidgetsBindingObserver {
                   () => unawaited(_setDanmaku(!_danmakuOn)),
                   active: _danmakuOn),
               _barButton(Icons.settings_outlined, '設定', _openSettingsSheet),
+              if (prefs.pipEnabled)
+                _barButton(Icons.picture_in_picture_alt_rounded, '子母畫面',
+                    () => unawaited(_enterPip())),
               if (_fullscreen)
                 _barButton(Icons.fit_screen_outlined, '畫面比例', () {
                   final index =
@@ -3693,6 +3892,39 @@ class _WatchPageState extends State<WatchPage> with WidgetsBindingObserver {
                     onChanged: (value) =>
                         refresh(() => unawaited(_setDanmaku(value))),
                   ),
+                  _pickerTile<String>(
+                    '跳過片頭',
+                    switch (prefs.openingSkipMode) {
+                      'danmaku-first' => '彈幕優先',
+                      'aniskip-only' => '只用 AniSkip',
+                      'danmaku-only' => '只用彈幕',
+                      'off' => '關閉',
+                      _ => 'AniSkip 優先',
+                    },
+                    const [
+                      PlayerChoice('aniskip-first', 'AniSkip 優先'),
+                      PlayerChoice('danmaku-first', '彈幕優先'),
+                      PlayerChoice('aniskip-only', '只用 AniSkip'),
+                      PlayerChoice('danmaku-only', '只用彈幕'),
+                      PlayerChoice('off', '關閉'),
+                    ],
+                    prefs.openingSkipMode,
+                    (value) => refresh(() {
+                      unawaited(state
+                          .savePref(() => prefs.setOpeningSkipMode(value))
+                          .then((_) => _loadOpeningSkip()));
+                    }),
+                  ),
+                  if (prefs.pipEnabled)
+                    ListTile(
+                      dense: true,
+                      leading: const Icon(Icons.picture_in_picture_alt_rounded),
+                      title: const Text('開啟子母畫面'),
+                      onTap: () {
+                        Navigator.of(sheetContext).pop();
+                        unawaited(_enterPip());
+                      },
+                    ),
                   _pickerTile<int>(
                     '彈幕透明度',
                     '$_danmakuOpacity%',

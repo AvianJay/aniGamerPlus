@@ -111,6 +111,16 @@ class Prefs {
   bool get danmakuOn => _sp.getBool('agp-danmaku') ?? true;
   Future<void> setDanmakuOn(bool value) => _sp.setBool('agp-danmaku', value);
 
+  /// aniskip-first / danmaku-first / aniskip-only / danmaku-only / off
+  String get openingSkipMode =>
+      _sp.getString('agp-opening-skip') ?? 'aniskip-first';
+  Future<void> setOpeningSkipMode(String value) =>
+      _sp.setString('agp-opening-skip', value);
+
+  bool get pipEnabled => _sp.getBool('agp-pip-enabled') ?? true;
+  Future<void> setPipEnabled(bool value) =>
+      _sp.setBool('agp-pip-enabled', value);
+
   /// 100 / 75 / 50 / 25
   int get danmakuOpacity => _sp.getInt('agp-danmaku-opacity') ?? 100;
   Future<void> setDanmakuOpacity(int value) =>

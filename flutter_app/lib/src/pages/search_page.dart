@@ -4,6 +4,43 @@ import '../state/app_state.dart';
 import '../theme.dart';
 import 'all_tab.dart';
 
+const kAnimeTags = [
+  '動作',
+  '冒險',
+  '奇幻',
+  '異世界',
+  '魔法',
+  '超能力',
+  '科幻',
+  '機甲',
+  '校園',
+  '喜劇',
+  '戀愛',
+  '青春',
+  '勵志',
+  '溫馨',
+  '悠閒',
+  '料理',
+  '親情',
+  '感人',
+  '運動',
+  '競技',
+  '偶像',
+  '音樂',
+  '職場',
+  '推理',
+  '懸疑',
+  '時間穿越',
+  '歷史',
+  '戰爭',
+  '血腥暴力',
+  '靈異神怪',
+  '黑暗',
+  '特攝',
+  'BL',
+  'GL',
+];
+
 class SearchPage extends StatefulWidget {
   const SearchPage({super.key, required this.state});
   final AppState state;
@@ -16,6 +53,8 @@ class _SearchPageState extends State<SearchPage> {
   final _search = TextEditingController();
   final _focus = FocusNode();
   String _query = '';
+  String _tag = '';
+  String _sort = 'relevance';
 
   AppState get state => widget.state;
 
@@ -103,19 +142,61 @@ class _SearchPageState extends State<SearchPage> {
           top: false,
           // 熱門 / 本季清單可能在這一頁開著的時候才載完: 自己聽 AppState
           // (整個 app 不再因為 AppState 一動就全部重建)
-          child: ListenableBuilder(
-            listenable: state,
-            builder: (context, _) => _query.isEmpty
-                ? _suggestions()
-                : AllTab(
-                    state: state,
-                    query: _query,
-                    searchMode: true,
-                    onResultOpened: () {
-                      _focus.unfocus();
-                      _remember();
-                    }),
-          )),
+          child: Column(children: [
+            Padding(
+              padding: const EdgeInsets.fromLTRB(16, 8, 16, 4),
+              child: Row(children: [
+                OutlinedButton.icon(
+                  key: const ValueKey('anime-tag-filter'),
+                  onPressed: _chooseTag,
+                  icon: const Icon(Icons.sell_outlined, size: 18),
+                  label: Text(_tag.isEmpty ? '選擇標籤' : _tag),
+                ),
+                const SizedBox(width: 8),
+                PopupMenuButton<String>(
+                  key: const ValueKey('anime-sort'),
+                  tooltip: '排序方式',
+                  initialValue: _sort,
+                  onSelected: (value) => setState(() => _sort = value),
+                  itemBuilder: (_) => const [
+                    PopupMenuItem(value: 'relevance', child: Text('最相關')),
+                    PopupMenuItem(value: 'popular', child: Text('人氣最高')),
+                    PopupMenuItem(value: 'default', child: Text('片單順序')),
+                  ],
+                  child: Padding(
+                    padding: const EdgeInsets.symmetric(horizontal: 8),
+                    child: Row(children: [
+                      const Icon(Icons.sort_rounded, size: 18),
+                      const SizedBox(width: 4),
+                      Text(switch (_sort) {
+                        'popular' => '人氣最高',
+                        'default' => '片單順序',
+                        _ => '最相關',
+                      }),
+                      const Icon(Icons.arrow_drop_down_rounded),
+                    ]),
+                  ),
+                ),
+              ]),
+            ),
+            Expanded(
+                child: ListenableBuilder(
+              listenable: state,
+              builder: (context, _) =>
+                  _query.isEmpty && _tag.isEmpty && _sort == 'relevance'
+                      ? _suggestions()
+                      : AllTab(
+                          state: state,
+                          query: _query,
+                          tag: _tag,
+                          sort: _sort,
+                          searchMode: true,
+                          onResultOpened: () {
+                            _focus.unfocus();
+                            _remember();
+                          }),
+            )),
+          ])),
     );
   }
 
@@ -139,6 +220,14 @@ class _SearchPageState extends State<SearchPage> {
       keyboardDismissBehavior: ScrollViewKeyboardDismissBehavior.onDrag,
       padding: const EdgeInsets.fromLTRB(20, 20, 20, 32),
       children: [
+        const Text('依標籤探索', style: TextStyle(fontWeight: FontWeight.w700)),
+        const SizedBox(height: 12),
+        Wrap(spacing: 8, runSpacing: 4, children: [
+          for (final tag in kAnimeTags.take(12))
+            ActionChip(
+                label: Text(tag), onPressed: () => setState(() => _tag = tag)),
+        ]),
+        const SizedBox(height: 24),
         Row(children: [
           const Icon(Icons.history_rounded, size: 20),
           const SizedBox(width: 8),
@@ -199,5 +288,30 @@ class _SearchPageState extends State<SearchPage> {
         ],
       ],
     );
+  }
+
+  Future<void> _chooseTag() async {
+    final picked = await showModalBottomSheet<String>(
+      context: context,
+      isScrollControlled: true,
+      builder: (sheetContext) => SafeArea(
+          child: FractionallySizedBox(
+        heightFactor: 0.7,
+        child: ListView(padding: const EdgeInsets.all(16), children: [
+          const Text('動畫標籤',
+              style: TextStyle(fontSize: 18, fontWeight: FontWeight.w700)),
+          const SizedBox(height: 12),
+          Wrap(spacing: 8, runSpacing: 8, children: [
+            for (final tag in ['', ...kAnimeTags])
+              ChoiceChip(
+                label: Text(tag.isEmpty ? '全部' : tag),
+                selected: _tag == tag,
+                onSelected: (_) => Navigator.of(sheetContext).pop(tag),
+              ),
+          ]),
+        ]),
+      )),
+    );
+    if (picked != null && mounted) setState(() => _tag = picked);
   }
 }

@@ -617,6 +617,47 @@ def test_catalog_index_and_search(client, autouse_settings, monkeypatch):
     assert paged['page'] == 1 and paged['total'] == 2
 
 
+def test_catalog_tag_and_sort_are_server_side(client, autouse_settings, monkeypatch):
+    items = [
+        {'animeSn': '1', 'title': 'Alpha world', 'popular': '2.1萬'},
+        {'animeSn': '2', 'title': 'World Alpha', 'popular': '72萬'},
+        {'animeSn': '3', 'title': 'Alpha', 'popular': '1430'},
+    ]
+    monkeypatch.setattr(server, '_get_catalog_tag', lambda tag: items)
+    response = client.get('/catalog/all.json?tag=異世界&q=Alpha&sort=popular')
+    assert response.status_code == 200
+    assert [item['animeSn'] for item in response.json()['items']] == ['2', '1', '3']
+    response = client.get('/catalog/all.json?tag=異世界&q=Alpha&sort=relevance')
+    assert [item['animeSn'] for item in response.json()['items']] == ['3', '1', '2']
+    assert client.get('/catalog/all.json?tag=not-a-tag').status_code == 400
+    assert '異世界' in client.get('/catalog/tags.json').json()['tags']
+
+
+def test_watch_skip_only_for_known_regular_episodes(client, autouse_settings, monkeypatch):
+    info = {'anime': {'title': '進擊的巨人 [1]', 'seasonStart': '2013/04/07',
+                      'episodes': {'0': [{'videoSn': '123', 'episode': 1}]}},
+            'video': {}}
+    monkeypatch.setattr(server, '_find_video_entry',
+                        lambda sn: {'sn': sn, 'source': server.BAHAMUT_SOURCE}
+                        if sn == '123' else None)
+    monkeypatch.setattr(server, '_episode_owners', lambda: {})
+    monkeypatch.setattr(server, '_get_anime_info', lambda sn: info)
+    monkeypatch.setattr(server, '_read_catalog_cache', lambda name, ttl: None)
+    monkeypatch.setattr(server, '_write_catalog_cache', lambda name, payload: None)
+    monkeypatch.setattr(server.OpeningSkip, 'resolve_mal_id',
+                        lambda title, season: 16498)
+    monkeypatch.setattr(server.OpeningSkip, 'aniskip_op',
+                        lambda mal, episode, duration: (128.4, 218.4))
+    assert client.get('/watch/skip.json?id=123&duration=1440').json() == {
+        'interval': [128.4, 218.4]}
+    assert client.get('/watch/skip.json?id=999&duration=1440').status_code == 404
+    assert client.get('/watch/skip.json?id=123&duration=0').status_code == 400
+    monkeypatch.setattr(server, '_find_video_entry',
+                        lambda sn: {'sn': sn, 'source': 'local import'})
+    assert client.get('/watch/skip.json?id=123&duration=1440').json() == {
+        'interval': None}
+
+
 def test_catalog_requires_login_when_configured(client, autouse_settings, settings, userdata):
     settings['dashboard']['online_watch_requires_login'] = True
     assert client.get('/catalog/index.json').status_code == 403

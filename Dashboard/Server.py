@@ -34,6 +34,7 @@ from aniGamerPlus import Config
 from aniGamerPlus import __cui as cui
 from aniGamerPlus import __get_danmu_only
 import Catalog
+import OpeningSkip
 import logging
 from ColorPrint import err_print
 from logging.handlers import TimedRotatingFileHandler
@@ -1140,12 +1141,12 @@ def _refresh_catalog_index():
         return payload
 
 
-def _fetch_list_html(page):
+def _fetch_list_html(page, tag=''):
     """animeList.php 的一页. 吃到 429 就退一步再来."""
     status = 0
     delay = 1.0
     for attempt in range(3):
-        resp = _bahamut_get(Catalog.list_page_url(page), timeout=15)
+        resp = _bahamut_get(Catalog.list_page_url(page, tag), timeout=15)
         status = resp.status_code
         if status == 200:
             return resp.text
@@ -1156,21 +1157,21 @@ def _fetch_list_html(page):
     raise IOError('animeList.php page %d: HTTP %s' % (page, status))
 
 
-def _crawl_catalog_all():
+def _crawl_catalog_all(tag=''):
     """全站片单, 一页 28 部, 六十几页.
 
     顺着一页页爬而不是并发抓: 并发翻页会被巴哈整片 429 挡掉, 而被挡掉的页
     如果当空页收下, 存进缓存的就是一份缺了几百部的片单 —— 还顶着一天的有效
     期, 比慢一点难受得多. 所以缺页要记下来, 交给上面决定这份能不能久留.
     """
-    html = _fetch_list_html(1)
+    html = _fetch_list_html(1, tag)
     items = Catalog.parse_list_page(html)
     total = Catalog.total_pages(html)
     missing = []
     for page in range(2, total + 1):
         time.sleep(CATALOG_CRAWL_DELAY)
         try:
-            items.extend(Catalog.parse_list_page(_fetch_list_html(page)))
+            items.extend(Catalog.parse_list_page(_fetch_list_html(page, tag)))
         except BaseException:
             missing.append(page)
 
@@ -1186,11 +1187,11 @@ def _crawl_catalog_all():
     return {'items': unique, 'complete': not missing, 'totalPages': total}
 
 
-def _catalog_all_is_fresh(payload):
+def _catalog_all_is_fresh(payload, name='all'):
     # 缺页的那份只当短期货, 到点就再爬一次
     if not payload:
         return False
-    age = time.time() - os.path.getmtime(_catalog_cache_path('all'))
+    age = time.time() - os.path.getmtime(_catalog_cache_path(name))
     return age < (CATALOG_ALL_TTL if payload.get('complete') else CATALOG_PARTIAL_TTL)
 
 
@@ -1217,6 +1218,35 @@ def _get_catalog_all():
     if _catalog_all_is_fresh(cached):
         return cached.get('items') or []
     _schedule_catalog_refresh('all', _refresh_catalog_all)
+    return (cached or {}).get('items') or []
+
+
+def _tag_cache_name(tag):
+    return 'tag_' + hashlib.sha256(tag.encode('utf-8')).hexdigest()[:16]
+
+
+def _refresh_catalog_tag(tag):
+    name = _tag_cache_name(tag)
+    with _keyed_lock('catalog-' + name):
+        cached = _read_catalog_cache(name, 0)
+        if _catalog_all_is_fresh(cached, name):
+            return cached
+        try:
+            payload = _crawl_catalog_all(tag)
+        except BaseException:
+            logger.exception('Could not refresh anime tag %s', tag)
+            return cached
+        if payload['items']:
+            _write_catalog_cache(name, payload)
+        return payload
+
+
+def _get_catalog_tag(tag):
+    name = _tag_cache_name(tag)
+    cached = _read_catalog_cache(name, 0)
+    if _catalog_all_is_fresh(cached, name):
+        return cached.get('items') or []
+    _schedule_catalog_refresh(name, lambda: _refresh_catalog_tag(tag))
     return (cached or {}).get('items') or []
 
 
@@ -2530,17 +2560,32 @@ def catalog_all(request: Request):
     if denied is not None:
         return denied
 
-    items = _get_catalog_all()
-    loading = _catalog_refreshing('all')
+    tag = (request.query_params.get('tag') or '').strip()
+    if tag and tag not in Catalog.TAGS:
+        return JSONResponse({'error': 'unsupported tag'}, status_code=400)
+    cache_name = _tag_cache_name(tag) if tag else 'all'
+    items = _get_catalog_tag(tag) if tag else _get_catalog_all()
+    loading = _catalog_refreshing(cache_name)
     # A worker may have published the first cache between the two reads.
     if not items and not loading:
-        items = (_read_catalog_cache('all', 0) or {}).get('items') or []
+        items = (_read_catalog_cache(cache_name, 0) or {}).get('items') or []
     available = bool(items)
     keyword = (request.query_params.get('q') or '').strip()
     if keyword:
         # 全站一千八百多部都已经在本地了, 搜个片名没必要再去问巴哈
         keyword = keyword.lower()
         items = [item for item in items if keyword in item['title'].lower()]
+    order = (request.query_params.get('sort') or 'relevance').strip()
+    if order not in ('relevance', 'popular', 'default'):
+        return JSONResponse({'error': 'unsupported sort'}, status_code=400)
+    if order == 'popular':
+        items = sorted(items, key=lambda item: Catalog.popularity(item.get('popular')), reverse=True)
+    elif order == 'relevance' and keyword:
+        def relevance(item):
+            title = item['title'].lower()
+            return (title == keyword, title.startswith(keyword),
+                    -title.find(keyword), Catalog.popularity(item.get('popular')))
+        items = sorted(items, key=relevance, reverse=True)
     try:
         page = max(1, int(request.query_params.get('page') or 1))
     except BaseException:
@@ -2559,6 +2604,86 @@ def catalog_all(request: Request):
         resp.headers['Retry-After'] = str(2 if loading else CATALOG_REFRESH_RETRY)
         return resp
     return _apply_cache_headers(resp, current_settings, 600)
+
+
+@app.get('/watch/skip.json')
+def watch_skip(request: Request):
+    """An AniSkip OP for a real library/queued episode, if IDs match safely."""
+    current_settings = _get_current_settings()
+    gated = _online_watch_gate(current_settings)
+    if gated is not None:
+        return gated
+    denied = _catalog_login_error(current_settings, request)
+    if denied is not None:
+        return denied
+    sn = (request.query_params.get('id') or '').strip()
+    try:
+        duration = int(request.query_params.get('duration') or 0)
+    except (TypeError, ValueError):
+        duration = 0
+    if not sn.isdigit() or not 300 <= duration <= 7200:
+        return JSONResponse({'error': 'invalid episode or duration'}, status_code=400)
+    entry = _find_video_entry(sn)
+    if entry is not None and entry.get('source') != BAHAMUT_SOURCE:
+        return JSONResponse({'interval': None},
+                            headers={'Cache-Control': 'private, max-age=600'})
+    if ((entry is not None and entry.get('source') == BAHAMUT_SOURCE) or
+            _hls_task(sn) is not None):
+        source_sn = sn
+    else:
+        source_sn = _episode_owners().get(sn)
+    if not source_sn:
+        return JSONResponse({'error': 'video not found'}, status_code=404)
+    info = _get_anime_info(source_sn)
+    anime = (info or {}).get('anime') or {}
+    episode = 0
+    # Only regular series episodes have AniSkip episode numbers. Never apply a
+    # series OP to a film, special, dub, or an episode from another season.
+    for row in (anime.get('episodes') or {}).get('0') or []:
+        if str(row.get('videoSn')) == sn:
+            try:
+                episode = int(row.get('episode'))
+            except (TypeError, ValueError):
+                pass
+            break
+    if not 1 <= episode <= 999:
+        return JSONResponse({'interval': None}, headers={'Cache-Control': 'private, max-age=600'})
+    title = Catalog.series_title(anime.get('title'))
+    season_start = anime.get('seasonStart') or ''
+    cache_name = 'skip_' + hashlib.sha256(
+        f'{title}|{season_start}|{episode}|{round(duration / 10)}'.encode('utf-8')
+    ).hexdigest()[:20]
+    cached = _read_catalog_cache(cache_name, 7 * 24 * 3600)
+    if cached is not None:
+        return JSONResponse(cached, headers={'Cache-Control': 'private, max-age=600'})
+    mal_cache_name = 'mal_' + hashlib.sha256(
+        f'{title}|{season_start}'.encode('utf-8')).hexdigest()[:20]
+    try:
+        mal_cache = _read_catalog_cache(mal_cache_name, 30 * 24 * 3600)
+        if mal_cache is None:
+            mal_id = OpeningSkip.resolve_mal_id(title, season_start)
+            _write_catalog_cache(mal_cache_name, {'id': mal_id})
+        else:
+            mal_id = mal_cache.get('id')
+        interval = OpeningSkip.aniskip_op(mal_id, episode, duration) if mal_id else None
+    except Exception:
+        logger.exception('AniSkip lookup failed for %s', sn)
+        return JSONResponse({'interval': None}, headers={'Cache-Control': 'no-store'})
+    payload = {'interval': list(interval) if interval else None}
+    _write_catalog_cache(cache_name, payload)
+    return JSONResponse(payload, headers={'Cache-Control': 'private, max-age=600'})
+
+
+@app.get('/catalog/tags.json')
+def catalog_tags(request: Request):
+    current_settings = _get_current_settings()
+    gated = _online_watch_gate(current_settings)
+    if gated is not None:
+        return gated
+    denied = _catalog_login_error(current_settings, request)
+    if denied is not None:
+        return denied
+    return _apply_cache_headers(JSONResponse({'tags': Catalog.TAGS}), current_settings, 3600)
 
 
 @app.get('/catalog/anime.json')
