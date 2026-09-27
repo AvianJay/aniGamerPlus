@@ -423,7 +423,7 @@ def test_catalog_tag_and_sort_filters_use_the_server(page, server):
 
     page.locator('#catalogSort').select_option('popular')
     popular = max(tagged, key=lambda item: float(item['popular'].rstrip('萬')))
-    assert popular['title'] in page.locator('#homeCatalog .agp-poster').first.inner_text()
+    expect(page.locator('#homeCatalog .agp-poster').first).to_contain_text(popular['title'])
     page.fill('#homeSearch', '所有動畫 1')
     expect(page.locator('#homeCatalog .agp-count')).to_have_text('找到 3 部作品')
     assert page.locator('#catalogTag').input_value() == '異世界'
