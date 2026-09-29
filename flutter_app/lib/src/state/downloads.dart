@@ -3,13 +3,19 @@
 /// 這是網頁版沒有的功能, 但它沒有繞過伺服器: 抓的就是 /get_video.mp4 那一支,
 /// 用 Range 續傳, 彈幕跟封面一起收在旁邊. 播放時只要本機有檔, 播放器就改讀
 /// file://, 完全不碰網路.
+///
+/// iOS 上影片檔本身不是 Dart 在抓: App 退到背景幾秒之後就會被系統暫停, Dart
+/// 跟著停. 那邊改交給系統的背景 URLSession ([NativeTransfer]), 這裡只管排隊、
+/// 狀態跟收尾 (封面、彈幕). 見 [_runNative].
 library;
 
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 
+import 'package:background_download/background_download.dart';
 import 'package:flutter/foundation.dart';
+import 'package:flutter/services.dart' show PlatformException;
 import 'package:http/http.dart' as http;
 import 'package:path_provider/path_provider.dart';
 
@@ -164,10 +170,23 @@ class DownloadEntry {
 }
 
 class DownloadStore extends ChangeNotifier {
-  DownloadStore(this._client);
+  /// [native] 給了就由它抓影片檔 (iOS 的背景 URLSession), 否則 Dart 自己抓.
+  DownloadStore(this._client, {NativeTransfer? native}) : _native = native;
 
   AgpClient _client;
   set client(AgpClient value) => _client = value;
+
+  final NativeTransfer? _native;
+  final Map<String, Completer<TransferResult>> _nativeWaiters = {};
+  final List<StreamSubscription<Object>> _nativeSubscriptions = [];
+
+  /// App 在背景: 原生傳輸的話把排隊的全部交出去 —— App 被暫停之後就沒人
+  /// 能再開下一集了, 由系統自己排.
+  bool _backgrounded = false;
+
+  /// 「只用 Wi-Fi」關著的時候才准用行動網路. 原生傳輸要在請求上標好,
+  /// App 被暫停之後換了網路也不會偷用行動數據. 見 [DownloadNetwork].
+  bool cellularAllowed = true;
 
   Directory? _dir;
   final Map<String, DownloadEntry> _entries = {};
@@ -261,7 +280,8 @@ class DownloadStore extends ChangeNotifier {
           for (final raw in list.whereType<Map>()) {
             final entry = DownloadEntry.fromJson(raw.cast<String, dynamic>());
             if (entry.sn.isEmpty) continue;
-            // 上一輪是被系統殺掉的, 不會有人幫它把狀態寫回去
+            // 上一輪是被系統殺掉的, 不會有人幫它把狀態寫回去.
+            // 原生傳輸的話可能其實還在背景跑, _attachNative 會再把它接回來.
             if (entry.status == DownloadStatus.running) {
               entry.status = DownloadStatus.paused;
             }
@@ -273,6 +293,7 @@ class DownloadStore extends ChangeNotifier {
       }
     }
     await _reconcile();
+    if (_native != null) await _attachNative();
     _ready = true;
     notifyListeners();
     unawaited(_pump());
@@ -481,6 +502,10 @@ class DownloadStore extends ChangeNotifier {
         }
       }
     }
+    // 暫停時原生那邊留的續傳資料 (抓到一半的那一段在系統手上, 不在 .part 裡)
+    if (entry != null && _native != null) {
+      unawaited(_native.discard(entry.videoFileName).catchError((Object _) {}));
+    }
     await _save();
     notifyListeners();
     _syncWaitingTimer();
@@ -595,16 +620,43 @@ class DownloadStore extends ChangeNotifier {
   void dispose() {
     _disposed = true;
     for (final job in _jobs.values) {
-      job.cancel();
+      // 原生傳輸不叫停: 那是系統在抓, 這個 store 不在了, 下次起來還接得回去
+      if (_native == null) {
+        job.cancel();
+      } else {
+        job.cancelled = true;
+      }
+    }
+    for (final waiter in _nativeWaiters.values) {
+      if (!waiter.isCompleted) {
+        waiter.complete(
+            const TransferResult(sn: '', status: TransferStatus.cancelled));
+      }
+    }
+    for (final subscription in _nativeSubscriptions) {
+      unawaited(subscription.cancel());
     }
     _waitingTimer?.cancel();
     _waitingTimer = null;
     super.dispose();
   }
 
+  /// App 進 / 出背景. 見 [_backgrounded].
+  void setBackgrounded(bool value) {
+    if (value == _backgrounded) return;
+    _backgrounded = value;
+    if (value) unawaited(_pump());
+  }
+
+  /// 同時開幾集. 原生傳輸又在背景的話不設限: 全部交給系統排.
+  int get _slots =>
+      _native != null && _backgrounded && _concurrency > 0
+          ? _entries.length
+          : _concurrency;
+
   Future<void> _pump() async {
     if (_disposed || !_networkAllowed || _dir == null) return;
-    while (runningCount < concurrency) {
+    while (runningCount < _slots) {
       DownloadEntry? next;
       for (final entry in entries.reversed) {
         // 同一個 sn 已經有 job 在跑就跳過 —— 就算它已經被 cancel 了.
@@ -630,6 +682,7 @@ class DownloadStore extends ChangeNotifier {
   }
 
   Future<void> _run(_Job job) async {
+    if (_native != null) return _runNative(job);
     final entry = job.entry;
     final part = partFile(entry);
     final target = videoFile(entry);
@@ -745,6 +798,236 @@ class DownloadStore extends ChangeNotifier {
       job.finish();
       unawaited(_pump());
     }
+  }
+
+  // ------------------------------------------------------- 原生傳輸 (iOS)
+  //
+  // 影片檔交給系統的背景 URLSession, 這邊等它回報. 續傳還是 .part: 起點是
+  // .part 的長度, 原生那邊抓完把剩下的接上去再改名, 所以做完的時候檔案已經在
+  // videoFile() 了. 暫停的時候系統另外留一份續傳資料, 下次同一個檔名接著抓.
+  //
+  // App 被系統收掉的話, 這裡的 job 跟 Future 都沒了, 但系統還在抓. 下次起來
+  // _attachNative 問一次: 還在跑的接回來, 已經做完的 (結果原生那邊有落盤) 照做.
+
+  /// [attach]: 原生那邊本來就在跑 (App 重開), 只要等它的結果.
+  Future<void> _runNative(_Job job, {bool attach = false}) async {
+    final native = _native!;
+    final entry = job.entry;
+    final waiter = Completer<TransferResult>();
+    _nativeWaiters[entry.sn] = waiter;
+    var started = Future<void>.value();
+    job.onCancel = () async {
+      // start 還在路上的話, 原生那邊還沒有東西可以停: 等它建好再停
+      try {
+        await started;
+      } catch (_) {}
+      bool found;
+      try {
+        found = await native.cancel(entry.sn);
+      } catch (_) {
+        found = false;
+      }
+      // 沒停到東西就不會有結果回來, 自己把這一輪結束掉
+      if (!found && !waiter.isCompleted) {
+        waiter.complete(TransferResult(
+          sn: entry.sn,
+          status: TransferStatus.cancelled,
+          received: entry.received,
+        ));
+      }
+    };
+
+    try {
+      if (!attach) {
+        final part = partFile(entry);
+        var start = 0;
+        if (await part.exists()) start = await part.length();
+        if (entry.received < start) entry.received = start;
+        if (job.cancelled || _disposed) return;
+        started = native.start(
+          sn: entry.sn,
+          url: _client.videoUrl(
+            entry.sn,
+            resolution: entry.resolution > 0 ? entry.resolution : null,
+          ),
+          headers: _client.authHeaders,
+          directory: directory.path,
+          fileName: entry.videoFileName,
+          offset: start,
+          allowCellular: cellularAllowed,
+          label: '${entry.displayName} ${entry.episode}'.trim(),
+        );
+        await started;
+      }
+      final result = await waiter.future;
+      if (_disposed) return;
+      await _applyNative(job, entry, result);
+    } catch (error) {
+      if (!job.cancelled && !_disposed) {
+        entry.status = DownloadStatus.failed;
+        entry.error = error is PlatformException
+            ? (error.message ?? error.code)
+            : error.toString();
+        await _save();
+        notifyListeners();
+      }
+    } finally {
+      if (identical(_nativeWaiters[entry.sn], waiter)) {
+        _nativeWaiters.remove(entry.sn);
+      }
+      job.client.close();
+      if (identical(_jobs[entry.sn], job)) _jobs.remove(entry.sn);
+      job.finish();
+      unawaited(_pump());
+    }
+  }
+
+  Future<void> _applyNative(
+    _Job job,
+    DownloadEntry entry,
+    TransferResult result,
+  ) async {
+    switch (result.status) {
+      case TransferStatus.done:
+        // 就算剛好在這時候按了暫停: 檔案已經完整躺在那裡了
+        final size = result.total > 0 ? result.total : result.received;
+        entry.received = size;
+        entry.total = size;
+        await _finish(job, entry);
+      case TransferStatus.notFound:
+        // 同 _run 的 404: 還沒輪到, 退回去等
+        entry.status = DownloadStatus.waiting;
+        entry.error = '';
+        await _save();
+        notifyListeners();
+        _syncWaitingTimer();
+      case TransferStatus.failed:
+        if (!job.cancelled) {
+          entry.status = DownloadStatus.failed;
+          entry.error = result.error.isEmpty ? '下載失敗' : result.error;
+          await _save();
+          notifyListeners();
+        }
+      case TransferStatus.cancelled:
+        // 抓到一半的那一段在系統的續傳資料裡, 不在 .part 裡 —— 進度照原生報的
+        if (result.received > entry.received) entry.received = result.received;
+        if (identical(_jobs[entry.sn], job) &&
+            entry.status == DownloadStatus.running) {
+          entry.status = DownloadStatus.paused;
+        }
+        await _save();
+        notifyListeners();
+    }
+    if (result.status != TransferStatus.cancelled) {
+      unawaited(_native!.ack(entry.sn).catchError((Object _) {}));
+    }
+  }
+
+  Future<void> _attachNative() async {
+    final native = _native!;
+    _nativeSubscriptions
+      ..add(native.progress.listen(_onNativeProgress))
+      ..add(native.results.listen(_onNativeResult));
+    final TransferSnapshot snapshot;
+    try {
+      snapshot = await native.snapshot();
+    } catch (_) {
+      return;
+    }
+    // Dart 不在的時候做完的
+    for (final result in snapshot.results) {
+      await _adoptNativeResult(result);
+    }
+    // App 被收掉的時候還在抓、現在也還在抓的
+    for (final task in snapshot.running) {
+      final entry = _entries[task.sn];
+      if (entry == null || entry.playable) {
+        // 那一集在這段時間裡被刪了
+        unawaited(() async {
+          try {
+            await native.cancel(task.sn);
+            if (task.fileName.isNotEmpty) await native.discard(task.fileName);
+          } catch (_) {}
+        }());
+        continue;
+      }
+      if (_jobs.containsKey(task.sn)) continue;
+      if (!_networkAllowed) {
+        // 只用 Wi-Fi 但現在不在 Wi-Fi 上: 停下來, 回到 Wi-Fi 再排
+        entry.status = DownloadStatus.queued;
+        unawaited(native.cancel(task.sn).catchError((Object _) => false));
+        continue;
+      }
+      entry.status = DownloadStatus.running;
+      entry.error = '';
+      if (task.received > entry.received) entry.received = task.received;
+      if (task.total > 0) entry.total = task.total;
+      final job = _Job(entry);
+      _jobs[entry.sn] = job;
+      unawaited(_runNative(job, attach: true));
+    }
+    await _save();
+  }
+
+  void _onNativeProgress(TransferProgress progress) {
+    final entry = _entries[progress.sn];
+    if (entry == null || entry.status != DownloadStatus.running) return;
+    entry.received = progress.received;
+    if (progress.total > 0) entry.total = progress.total;
+    notifyListeners();
+  }
+
+  void _onNativeResult(TransferResult result) {
+    final waiter = _nativeWaiters[result.sn];
+    if (waiter != null && !waiter.isCompleted) {
+      waiter.complete(result);
+      return;
+    }
+    unawaited(_adoptNativeResult(result));
+  }
+
+  /// 沒有 job 在等的結果: App 重開前做完的, 或是暫停之後才收到的.
+  Future<void> _adoptNativeResult(TransferResult result) async {
+    if (result.status == TransferStatus.cancelled || _disposed) return;
+    final entry = _entries[result.sn];
+    if (entry == null) {
+      // 那一集已經被刪了, 檔案別留著佔空間
+      if (result.status == TransferStatus.done && result.fileName.isNotEmpty) {
+        try {
+          final orphan = File('${directory.path}/${result.fileName}');
+          if (await orphan.exists()) await orphan.delete();
+        } catch (_) {}
+      }
+    } else if (!entry.playable && !_jobs.containsKey(entry.sn)) {
+      switch (result.status) {
+        case TransferStatus.done:
+          if (await videoFile(entry).exists()) {
+            final size = result.total > 0 ? result.total : result.received;
+            entry.received = size;
+            entry.total = size;
+            final job = _Job(entry);
+            try {
+              await _finish(job, entry);
+            } finally {
+              job.client.close();
+            }
+          }
+        case TransferStatus.notFound:
+          entry.status = DownloadStatus.waiting;
+          entry.error = '';
+          _syncWaitingTimer();
+        case TransferStatus.failed:
+          entry.status = DownloadStatus.failed;
+          entry.error = result.error.isEmpty ? '下載失敗' : result.error;
+        case TransferStatus.cancelled:
+          break;
+      }
+      await _save();
+      notifyListeners();
+    }
+    try {
+      await _native?.ack(result.sn);
+    } catch (_) {}
   }
 
   Future<void> _finish(_Job job, DownloadEntry entry) async {
@@ -981,6 +1264,9 @@ class _Job {
   /// await. 在那段時間裡這個 sn 還是它的 —— 想接手的人要等這個.
   final Completer<void> done = Completer<void>();
 
+  /// 原生傳輸的話, 叫停要去原生那邊停 (見 _runNative)
+  Future<void> Function()? onCancel;
+
   void cancel() {
     cancelled = true;
     try {
@@ -988,6 +1274,8 @@ class _Job {
     } catch (_) {
       // 已經關掉了
     }
+    final hook = onCancel;
+    if (hook != null) unawaited(hook());
   }
 
   void finish() {

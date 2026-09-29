@@ -199,6 +199,8 @@ def patch_plist(path):
     schemes.update(('http', 'https', 'apple-magnifier', 'sidestore',
                     'altstore', 'loadcontroller'))
     info['LSApplicationQueriesSchemes'] = sorted(schemes)
+    # 下載進度的即時動態 (動態島 / 鎖定畫面), 見 add_live_activity_extension
+    info['NSSupportsLiveActivities'] = True
     # 播放器自己會鎖橫向, 全部方向都要開著
     info['UISupportedInterfaceOrientations'] = [
         'UIInterfaceOrientationPortrait',
@@ -242,11 +244,341 @@ def patch_ios_deployment(podfile_path, project_path):
     print('  patched', project_path)
 
 
+def patch_app_delegate(path):
+    # 背景下載 (background_download 外掛) 做完時, 系統會把 App 在背景叫醒並呼叫
+    # handleEventsForBackgroundURLSession. 那時候不一定有 Flutter engine —— 背景
+    # 啟動不會連上 scene, 隱式 engine 也就不會建 —— 外掛根本還沒註冊, 所以這一段
+    # 得直接寫在 AppDelegate 裡.
+    with open(path, encoding='utf-8') as handle:
+        source = handle.read()
+
+    if source.count('import UIKit\n') != 1:
+        raise RuntimeError(f'unexpected imports in {path}')
+    source = source.replace('import UIKit\n',
+                            'import UIKit\nimport background_download\n', 1)
+
+    launch = ('    return super.application(application, '
+              'didFinishLaunchingWithOptions: launchOptions)\n')
+    if source.count(launch) != 1:
+        raise RuntimeError(f'unexpected didFinishLaunching in {path}')
+    source = source.replace(
+        launch,
+        '    // 背景下載的 session 要一啟動就接回來, 上一輪沒送到的事件才收得到\n'
+        '    BackgroundDownloadSession.shared.activate()\n' + launch, 1)
+
+    handler = '''
+  override func application(
+    _ application: UIApplication,
+    handleEventsForBackgroundURLSession identifier: String,
+    completionHandler: @escaping () -> Void
+  ) {
+    if BackgroundDownloadSession.shared.handleEvents(
+      identifier: identifier, completionHandler: completionHandler)
+    {
+      return
+    }
+    super.application(
+      application, handleEventsForBackgroundURLSession: identifier,
+      completionHandler: completionHandler)
+  }
+'''
+    end = source.rstrip().rfind('}')
+    if end < 0:
+        raise RuntimeError(f'unexpected AppDelegate in {path}')
+    source = source[:end] + handler + source[end:]
+
+    with open(path, 'w', encoding='utf-8', newline='') as handle:
+        handle.write(source)
+    print('  patched', path)
+
+
+def add_live_activity_extension(project_path):
+    # 下載進度的即時動態 (動態島 / 鎖定畫面) 得是一個 widget extension, 也就是
+    # Runner.xcodeproj 裡的另一個 target. 平台外殼每次都是重新產生的, 所以
+    # 這個 target 也每次重新加: 原始碼在 ios_extensions/DownloadActivity/,
+    # 資料格式的正本在外掛裡 (App 跟 extension 兩邊得是同一個型別).
+    import hashlib
+    import re
+    import shutil
+
+    name = 'DownloadActivity'
+    ios_dir = os.path.dirname(os.path.dirname(project_path))
+    target_dir = os.path.join(ios_dir, name)
+    if os.path.exists(target_dir):
+        shutil.rmtree(target_dir)
+    shutil.copytree(os.path.join('ios_extensions', name), target_dir)
+    shutil.copyfile(
+        os.path.join('packages', 'background_download', 'ios', 'Classes',
+                     'DownloadActivityAttributes.swift'),
+        os.path.join(target_dir, 'DownloadActivityAttributes.swift'))
+
+    with open(project_path, encoding='utf-8') as handle:
+        project = handle.read()
+    if f'/* {name}.appex */' in project:
+        raise RuntimeError(f'{name} is already in {project_path}')
+
+    def find(pattern, what):
+        match = re.search(pattern, project)
+        if match is None:
+            raise RuntimeError(f'cannot find {what} in {project_path}')
+        return match.group(1)
+
+    root = find(r'rootObject = (\w{24})', 'the project object')
+    main_group = find(r'mainGroup = (\w{24});', 'the main group')
+    products = find(r'productRefGroup = (\w{24})', 'the products group')
+    runner = find(r'(\w{24}) /\* Runner \*/ = \{\n\t\t\tisa = PBXNativeTarget;',
+                  'the Runner target')
+    generated = find(r'(\w{24}) /\* Generated\.xcconfig \*/ = \{isa = PBXFileReference',
+                     'Flutter/Generated.xcconfig')
+    bundle = next((value for value in re.findall(
+        r'PRODUCT_BUNDLE_IDENTIFIER = ([^;\s]+);', project)
+        if not value.endswith('.RunnerTests')), None)
+    if bundle is None:
+        raise RuntimeError(f'cannot find the app bundle id in {project_path}')
+
+    def oid(key):
+        # 固定的 ID: 同一份樣板每次產生出來的專案檔都一樣, diff 看得懂
+        return hashlib.md5(f'agp-{name}-{key}'.encode()).hexdigest()[:24].upper()
+
+    ids = {key: oid(key) for key in (
+        'product', 'widget_ref', 'attrs_ref', 'plist_ref', 'widget_build',
+        'attrs_build', 'embed_build', 'group', 'sources', 'frameworks',
+        'resources', 'target', 'proxy', 'dependency', 'embed_phase',
+        'config_list', 'Debug', 'Release', 'Profile')}
+    ids.update(root=root, generated=generated, bundle=bundle, name=name)
+
+    def fill(text):
+        return re.sub(r'@(\w+)@', lambda m: ids[m.group(1)], text)
+
+    def add_to_section(section, text):
+        nonlocal project
+        end = f'/* End {section} section */\n'
+        if end in project:
+            project = project.replace(end, fill(text) + end, 1)
+        else:
+            marker = '\t};\n\trootObject = '
+            project = project.replace(
+                marker,
+                f'\n/* Begin {section} section */\n{fill(text)}'
+                f'/* End {section} section */\n' + marker, 1)
+
+    def edit_object(object_id, change):
+        nonlocal project
+        # 物件的定義是縮兩格的那一行; 清單裡、TargetAttributes 裡也會出現同一個 ID
+        match = re.search(
+            r'(?<=\n)\t\t' + object_id + r' (?:/\* [^\n]*? \*/ )?= \{\n.*?\n\t\t\};\n',
+            project, re.S)
+        if match is None:
+            raise RuntimeError(f'cannot find object {object_id} in {project_path}')
+        project = project[:match.start()] + change(match.group(0)) + project[match.end():]
+
+    def add_to_list(block, key, item, after=None):
+        match = re.search(r'\b' + re.escape(key) + r' = \((.*?)(\n(\t*)\);)', block, re.S)
+        if match is None:
+            raise RuntimeError(f'cannot find list {key}')
+        items = match.group(1)
+        line = '\n' + match.group(3) + '\t' + fill(item) + ','
+        if after is None:
+            items += line
+        else:
+            at = items.find(after)
+            if at < 0:
+                raise RuntimeError(f'cannot find {after} in list {key}')
+            eol = items.find('\n', at)
+            eol = len(items) if eol < 0 else eol
+            items = items[:eol] + line + items[eol:]
+        return block[:match.start(1)] + items + block[match.end(1):]
+
+    add_to_section('PBXBuildFile', '''\
+\t\t@widget_build@ /* DownloadActivityWidget.swift in Sources */ = {isa = PBXBuildFile; fileRef = @widget_ref@ /* DownloadActivityWidget.swift */; };
+\t\t@attrs_build@ /* DownloadActivityAttributes.swift in Sources */ = {isa = PBXBuildFile; fileRef = @attrs_ref@ /* DownloadActivityAttributes.swift */; };
+\t\t@embed_build@ /* @name@.appex in Embed Foundation Extensions */ = {isa = PBXBuildFile; fileRef = @product@ /* @name@.appex */; settings = {ATTRIBUTES = (RemoveHeadersOnCopy, ); }; };
+''')
+    add_to_section('PBXContainerItemProxy', '''\
+\t\t@proxy@ /* PBXContainerItemProxy */ = {
+\t\t\tisa = PBXContainerItemProxy;
+\t\t\tcontainerPortal = @root@ /* Project object */;
+\t\t\tproxyType = 1;
+\t\t\tremoteGlobalIDString = @target@;
+\t\t\tremoteInfo = @name@;
+\t\t};
+''')
+    # dstSubfolderSpec 13 = PlugIns
+    add_to_section('PBXCopyFilesBuildPhase', '''\
+\t\t@embed_phase@ /* Embed Foundation Extensions */ = {
+\t\t\tisa = PBXCopyFilesBuildPhase;
+\t\t\tbuildActionMask = 2147483647;
+\t\t\tdstPath = "";
+\t\t\tdstSubfolderSpec = 13;
+\t\t\tfiles = (
+\t\t\t\t@embed_build@ /* @name@.appex in Embed Foundation Extensions */,
+\t\t\t);
+\t\t\tname = "Embed Foundation Extensions";
+\t\t\trunOnlyForDeploymentPostprocessing = 0;
+\t\t};
+''')
+    add_to_section('PBXFileReference', '''\
+\t\t@product@ /* @name@.appex */ = {isa = PBXFileReference; explicitFileType = "wrapper.app-extension"; includeInIndex = 0; path = @name@.appex; sourceTree = BUILT_PRODUCTS_DIR; };
+\t\t@widget_ref@ /* DownloadActivityWidget.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DownloadActivityWidget.swift; sourceTree = "<group>"; };
+\t\t@attrs_ref@ /* DownloadActivityAttributes.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DownloadActivityAttributes.swift; sourceTree = "<group>"; };
+\t\t@plist_ref@ /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = Info.plist; sourceTree = "<group>"; };
+''')
+    add_to_section('PBXFrameworksBuildPhase', '''\
+\t\t@frameworks@ /* Frameworks */ = {
+\t\t\tisa = PBXFrameworksBuildPhase;
+\t\t\tbuildActionMask = 2147483647;
+\t\t\tfiles = (
+\t\t\t);
+\t\t\trunOnlyForDeploymentPostprocessing = 0;
+\t\t};
+''')
+    add_to_section('PBXGroup', '''\
+\t\t@group@ /* @name@ */ = {
+\t\t\tisa = PBXGroup;
+\t\t\tchildren = (
+\t\t\t\t@widget_ref@ /* DownloadActivityWidget.swift */,
+\t\t\t\t@attrs_ref@ /* DownloadActivityAttributes.swift */,
+\t\t\t\t@plist_ref@ /* Info.plist */,
+\t\t\t);
+\t\t\tpath = @name@;
+\t\t\tsourceTree = "<group>";
+\t\t};
+''')
+    add_to_section('PBXNativeTarget', '''\
+\t\t@target@ /* @name@ */ = {
+\t\t\tisa = PBXNativeTarget;
+\t\t\tbuildConfigurationList = @config_list@ /* Build configuration list for PBXNativeTarget "@name@" */;
+\t\t\tbuildPhases = (
+\t\t\t\t@sources@ /* Sources */,
+\t\t\t\t@frameworks@ /* Frameworks */,
+\t\t\t\t@resources@ /* Resources */,
+\t\t\t);
+\t\t\tbuildRules = (
+\t\t\t);
+\t\t\tdependencies = (
+\t\t\t);
+\t\t\tname = @name@;
+\t\t\tproductName = @name@;
+\t\t\tproductReference = @product@ /* @name@.appex */;
+\t\t\tproductType = "com.apple.product-type.app-extension";
+\t\t};
+''')
+    add_to_section('PBXResourcesBuildPhase', '''\
+\t\t@resources@ /* Resources */ = {
+\t\t\tisa = PBXResourcesBuildPhase;
+\t\t\tbuildActionMask = 2147483647;
+\t\t\tfiles = (
+\t\t\t);
+\t\t\trunOnlyForDeploymentPostprocessing = 0;
+\t\t};
+''')
+    add_to_section('PBXSourcesBuildPhase', '''\
+\t\t@sources@ /* Sources */ = {
+\t\t\tisa = PBXSourcesBuildPhase;
+\t\t\tbuildActionMask = 2147483647;
+\t\t\tfiles = (
+\t\t\t\t@widget_build@ /* DownloadActivityWidget.swift in Sources */,
+\t\t\t\t@attrs_build@ /* DownloadActivityAttributes.swift in Sources */,
+\t\t\t);
+\t\t\trunOnlyForDeploymentPostprocessing = 0;
+\t\t};
+''')
+    add_to_section('PBXTargetDependency', '''\
+\t\t@dependency@ /* PBXTargetDependency */ = {
+\t\t\tisa = PBXTargetDependency;
+\t\t\ttarget = @target@ /* @name@ */;
+\t\t\ttargetProxy = @proxy@ /* PBXContainerItemProxy */;
+\t\t};
+''')
+
+    # 版本號跟著 App 走 (Generated.xcconfig 的 FLUTTER_BUILD_*), 不然上架 / 側載
+    # 會抱怨 extension 跟 App 的版本對不上. 即時動態要 iOS 16.1, 內容更新的
+    # API (ActivityContent) 要 16.2.
+    configs = ''
+    for config in ('Debug', 'Release', 'Profile'):
+        optimization = ('\t\t\t\tSWIFT_ACTIVE_COMPILATION_CONDITIONS = DEBUG;\n'
+                        '\t\t\t\tSWIFT_OPTIMIZATION_LEVEL = "-Onone";\n'
+                        if config == 'Debug' else
+                        '\t\t\t\tSWIFT_COMPILATION_MODE = wholemodule;\n'
+                        '\t\t\t\tSWIFT_OPTIMIZATION_LEVEL = "-O";\n')
+        configs += f'''\
+\t\t@{config}@ /* {config} */ = {{
+\t\t\tisa = XCBuildConfiguration;
+\t\t\tbaseConfigurationReference = @generated@ /* Generated.xcconfig */;
+\t\t\tbuildSettings = {{
+\t\t\t\tAPPLICATION_EXTENSION_API_ONLY = YES;
+\t\t\t\tCLANG_ENABLE_MODULES = YES;
+\t\t\t\tCODE_SIGN_STYLE = Automatic;
+\t\t\t\tCURRENT_PROJECT_VERSION = "$(FLUTTER_BUILD_NUMBER)";
+\t\t\t\tINFOPLIST_FILE = @name@/Info.plist;
+\t\t\t\tIPHONEOS_DEPLOYMENT_TARGET = 16.2;
+\t\t\t\tLD_RUNPATH_SEARCH_PATHS = (
+\t\t\t\t\t"$(inherited)",
+\t\t\t\t\t"@executable_path/Frameworks",
+\t\t\t\t\t"@executable_path/../../Frameworks",
+\t\t\t\t);
+\t\t\t\tMARKETING_VERSION = "$(FLUTTER_BUILD_NAME)";
+\t\t\t\tPRODUCT_BUNDLE_IDENTIFIER = @bundle@.@name@;
+\t\t\t\tPRODUCT_NAME = "$(TARGET_NAME)";
+\t\t\t\tSKIP_INSTALL = YES;
+{optimization}\t\t\t\tSWIFT_VERSION = 5.0;
+\t\t\t\tTARGETED_DEVICE_FAMILY = "1,2";
+\t\t\t}};
+\t\t\tname = {config};
+\t\t}};
+'''
+    add_to_section('XCBuildConfiguration', configs)
+    add_to_section('XCConfigurationList', '''\
+\t\t@config_list@ /* Build configuration list for PBXNativeTarget "@name@" */ = {
+\t\t\tisa = XCConfigurationList;
+\t\t\tbuildConfigurations = (
+\t\t\t\t@Debug@ /* Debug */,
+\t\t\t\t@Release@ /* Release */,
+\t\t\t\t@Profile@ /* Profile */,
+\t\t\t);
+\t\t\tdefaultConfigurationIsVisible = 0;
+\t\t\tdefaultConfigurationName = Release;
+\t\t};
+''')
+
+    # 嵌進 App 的那一步要排在 Flutter 的 Thin Binary 之前, 不然 Xcode 會報
+    # 「Cycle inside Runner」.
+    edit_object(runner, lambda block: add_to_list(
+        add_to_list(block, 'buildPhases',
+                    '@embed_phase@ /* Embed Foundation Extensions */',
+                    after='/* Embed Frameworks */'),
+        'dependencies', '@dependency@ /* PBXTargetDependency */'))
+    edit_object(main_group, lambda block: add_to_list(
+        block, 'children', '@group@ /* @name@ */'))
+    edit_object(products, lambda block: add_to_list(
+        block, 'children', '@product@ /* @name@.appex */'))
+
+    def patch_project(block):
+        block = add_to_list(block, 'targets', '@target@ /* @name@ */')
+        attributes = 'TargetAttributes = {\n'
+        if block.count(attributes) != 1:
+            raise RuntimeError(f'unexpected TargetAttributes in {project_path}')
+        return block.replace(
+            attributes,
+            attributes + fill('\t\t\t\t\t@target@ = {\n'
+                              '\t\t\t\t\t\tCreatedOnToolsVersion = 16.0;\n'
+                              '\t\t\t\t\t};\n'), 1)
+    edit_object(root, patch_project)
+
+    with open(project_path, 'w', encoding='utf-8', newline='') as handle:
+        handle.write(project)
+    print('  patched', project_path, f'(+{name} extension)')
+
+
 patch_manifest(os.path.join('android', 'app', 'src', 'main', 'AndroidManifest.xml'))
 patch_android_signing(os.path.join('android', 'app', 'build.gradle.kts'))
 patch_plist(os.path.join('ios', 'Runner', 'Info.plist'))
 patch_ios_deployment(os.path.join('ios', 'Podfile'),
                      os.path.join('ios', 'Runner.xcodeproj', 'project.pbxproj'))
+patch_app_delegate(os.path.join('ios', 'Runner', 'AppDelegate.swift'))
+# 要在 patch_ios_deployment 之後: 那一支把專案裡每一個部署目標都改成 15.0,
+# 這個 extension 得是 16.2
+add_live_activity_extension(os.path.join('ios', 'Runner.xcodeproj', 'project.pbxproj'))
 PYTHON
 
 echo "==> flutter pub get"

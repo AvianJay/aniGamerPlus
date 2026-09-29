@@ -20,6 +20,7 @@ class DownloadNetwork extends WidgetsBindingObserver {
 
   Future<void> start({required bool wifiOnly}) async {
     _wifiOnly = wifiOnly;
+    store.cellularAllowed = !wifiOnly;
     await store.setNetworkAllowed(!wifiOnly);
     WidgetsBinding.instance.addObserver(this);
     _subscription = _connectivity.onConnectivityChanged.listen((networks) {
@@ -31,6 +32,8 @@ class DownloadNetwork extends WidgetsBindingObserver {
 
   Future<void> setWifiOnly(bool value) async {
     _wifiOnly = value;
+    // 已經交給系統在抓的那幾集 (iOS) 不會跟著改, 下一集開始才算數
+    store.cellularAllowed = !value;
     await store.setNetworkAllowed(!value || _hasWifi);
     await refresh();
   }

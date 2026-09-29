@@ -1,0 +1,21 @@
+name: background_download
+description: 讓下載在 App 退到背景後繼續跑 —— Android 前景服務 + Live Update 通知, iOS 背景 URLSession + 即時動態.
+version: 0.1.0
+publish_to: none
+
+environment:
+  sdk: '>=3.6.0 <4.0.0'
+  flutter: '>=3.27.0'
+
+dependencies:
+  flutter:
+    sdk: flutter
+
+flutter:
+  plugin:
+    platforms:
+      android:
+        package: tw.avianjay.background_download
+        pluginClass: BackgroundDownloadPlugin
+      ios:
+        pluginClass: BackgroundDownloadPlugin

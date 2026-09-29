@@ -8,6 +8,7 @@ import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 
+import 'package:background_download/background_download.dart';
 import 'package:flutter/material.dart';
 import 'package:path_provider/path_provider.dart';
 
@@ -15,6 +16,7 @@ import '../api/client.dart';
 import '../api/models.dart';
 import '../util/format.dart';
 import 'downloads.dart';
+import 'download_background.dart';
 import 'download_network.dart';
 import 'prefs.dart';
 import 'thumbnails.dart';
@@ -27,7 +29,8 @@ class AppState extends ChangeNotifier {
               baseUrl: prefs.server,
               token: prefs.token.isEmpty ? null : prefs.token,
             ) {
-    downloads = DownloadStore(client);
+    // iOS 的影片檔交給系統的背景 URLSession 抓, 其他平台 Dart 自己抓
+    downloads = DownloadStore(client, native: NativeTransfer.platform);
     thumbnails = ThumbnailStore(client);
   }
 
@@ -45,6 +48,7 @@ class AppState extends ChangeNotifier {
     state.downloadNetwork = DownloadNetwork(state.downloads);
     await state.downloadNetwork.start(wifiOnly: prefs.downloadWifiOnly);
     await state.downloads.init(concurrency: prefs.downloadConcurrency);
+    state.downloadBackground = DownloadBackground(state.downloads);
     return state;
   }
 
@@ -52,6 +56,7 @@ class AppState extends ChangeNotifier {
   final AgpClient client;
   late final DownloadStore downloads;
   late final DownloadNetwork downloadNetwork;
+  late final DownloadBackground downloadBackground;
 
   Future<void> setDownloadWifiOnly(bool value) async {
     await prefs.setDownloadWifiOnly(value);

@@ -199,6 +199,14 @@ jobs:
           /usr/libexec/PlistBuddy -c 'Print :NSAppTransportSecurity:NSAllowsArbitraryLoads' "${APP}/Info.plist"
           /usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "${APP}/Info.plist"
           /usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "${APP}/Info.plist"
+          # The download progress Live Activity is a widget extension that
+          # prepare_platforms.sh splices into the regenerated Xcode project.
+          # If that step silently broke, downloads would still work but the
+          # Dynamic Island would stay empty.
+          EXT="${APP}/PlugIns/DownloadActivity.appex"
+          test -d "${EXT}" || { echo "no widget extension at ${EXT}"; exit 1; }
+          /usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "${EXT}/Info.plist"
+          /usr/libexec/PlistBuddy -c 'Print :NSSupportsLiveActivities' "${APP}/Info.plist"
 
       - name: Package the IPA
         run: |
