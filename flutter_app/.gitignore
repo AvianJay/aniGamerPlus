@@ -3,6 +3,7 @@
 # git 對被排除的目錄不會往下走, 只 unignore 裡面的檔案沒有用.
 !/lib/
 !/packages/video_player_pip/lib/
+!/packages/file_export/lib/
 
 # Flutter / Dart
 .dart_tool/

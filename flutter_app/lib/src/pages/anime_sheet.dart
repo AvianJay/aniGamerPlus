@@ -18,6 +18,7 @@ import '../theme.dart';
 import '../util/format.dart';
 import '../widgets/common.dart';
 import 'downloads_page.dart';
+import 'export_sheet.dart';
 import 'watch_page.dart';
 
 const int kEpisodesShown = 120;
@@ -791,6 +792,17 @@ class _AnimeSheetState extends State<_AnimeSheet> {
                 }
               },
             ),
+            if (onPhone)
+              ListTile(
+                leading: const Icon(Icons.save_alt_rounded),
+                title: const Text('匯出影片檔'),
+                subtitle: const Text('存到檔案 App 或其他資料夾'),
+                onTap: () {
+                  Navigator.of(sheetContext).pop();
+                  showExportSheet(context, state.downloads,
+                      only: episode.videoSn);
+                },
+              ),
             if (!episode.local && state.canManage)
               ListTile(
                 leading: const Icon(Icons.playlist_add_rounded),

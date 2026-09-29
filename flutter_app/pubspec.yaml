@@ -29,6 +29,9 @@ dependencies:
     path: packages/video_player_pip
   video_thumbnail:
     path: packages/video_thumbnail
+  # 匯出影片檔: 交給系統的儲存位置選擇器 / 檔案 App, 不用要儲存空間權限
+  file_export:
+    path: packages/file_export
   connectivity_plus: ^7.0.0
 
   # 播放中別讓螢幕睡著

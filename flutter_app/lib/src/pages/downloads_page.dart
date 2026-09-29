@@ -1,7 +1,8 @@
 /// 手機下載管理 —— 網頁版沒有的一頁.
 ///
 /// 佇列裡的每一集都是一支對 /get_video.mp4 的 Range 請求, 暫停就是把連線切掉,
-/// 續傳靠 .part 的長度接回去. 下載完的集數在首頁跟播放器都會自動改讀本機檔.
+/// 續傳靠 .part 的長度接回去. 下載完的集數在首頁跟播放器都會自動改讀本機檔,
+/// 也可以匯出到 App 外面 (見 export_sheet.dart).
 library;
 
 import 'dart:async';
@@ -14,6 +15,7 @@ import '../theme.dart';
 import '../util/format.dart';
 import '../widgets/cards.dart';
 import '../widgets/common.dart';
+import 'export_sheet.dart';
 import 'watch_page.dart';
 
 class DownloadsPage extends StatefulWidget {
@@ -103,6 +105,12 @@ class _DownloadsPageState extends State<DownloadsPage> {
           appBar: AppBar(
             title: const Text('離線下載'),
             actions: [
+              if (finished.isNotEmpty)
+                IconButton(
+                  tooltip: '匯出影片檔',
+                  icon: const Icon(Icons.save_alt_rounded),
+                  onPressed: () => showExportSheet(context, store),
+                ),
               if (missingDanmaku > 0 && !state.offline && store.networkAllowed)
                 IconButton(
                   tooltip: '補抓彈幕 ($missingDanmaku 集)',
@@ -279,6 +287,12 @@ class _DownloadsPageState extends State<DownloadsPage> {
               tooltip: '重試',
               icon: const Icon(Icons.refresh_rounded, size: 20),
               onPressed: () => store.resume(entry.sn),
+            )
+          else if (entry.playable)
+            IconButton(
+              tooltip: '匯出',
+              icon: const Icon(Icons.save_alt_rounded, size: 20),
+              onPressed: () => showExportSheet(context, store, only: entry.sn),
             ),
           IconButton(
             tooltip: '刪除',
