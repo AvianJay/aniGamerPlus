@@ -68,7 +68,9 @@ class FakeNative {
   }
 }
 
-/// 收尾那一段會去抓封面 (真的 I/O), 一輪 event queue 不一定等得到
+/// 收尾那一段會去抓封面 (真的 I/O), 一輪 event queue 不一定等得到.
+/// 開始下載也一樣: 交給原生之前要先看一眼 .part 有多長, 那也是真的 I/O ——
+/// CI 的機器慢一點, pumpEventQueue() 那二十輪就等不到.
 Future<void> eventually(bool Function() condition) async {
   for (var i = 0; i < 100 && !condition(); i++) {
     await Future<void>.delayed(const Duration(milliseconds: 20));
@@ -86,6 +88,9 @@ void main() {
   late AgpClient client;
   late NativeTransfer native;
   late DownloadStore store;
+
+  /// 原生那邊至少收到 [count] 次開始下載
+  bool started(int count) => fake.argsOf('download.start').length >= count;
 
   Future<DownloadStore> boot() async {
     final made = DownloadStore(client, native: native);
@@ -115,7 +120,7 @@ void main() {
 
   test('開始下載交給原生, 進度跟完成都照原生報的', () async {
     final entry = await store.enqueue(video('100'), withDanmaku: false);
-    await pumpEventQueue();
+    await eventually(() => started(1));
 
     final start = fake.argsOf('download.start').single;
     expect(start['sn'], '100');
@@ -144,10 +149,10 @@ void main() {
 
   test('暫停叫原生停, 續傳時從 .part 的長度接著要', () async {
     final entry = await store.enqueue(video('200'), withDanmaku: false);
-    await pumpEventQueue();
+    await eventually(() => started(1));
 
     await store.pause('200');
-    await pumpEventQueue();
+    await eventually(() => fake.argsOf('download.cancel').isNotEmpty);
     expect(fake.argsOf('download.cancel').single['sn'], '200');
     // 系統把抓到一半的那段留在續傳資料裡, 回報的進度比 .part 多
     await fake.emit('download.result',
@@ -159,7 +164,7 @@ void main() {
 
     await store.partFile(entry).writeAsBytes(List.filled(300, 1));
     await store.resume('200');
-    await pumpEventQueue();
+    await eventually(() => started(2));
     final starts = fake.argsOf('download.start').toList();
     expect(starts, hasLength(2));
     expect(starts.last['offset'], 300);
@@ -168,21 +173,21 @@ void main() {
   test('原生那邊沒東西可停的時候, 暫停也要收得完', () async {
     fake.cancelFinds = false;
     final entry = await store.enqueue(video('250'), withDanmaku: false);
-    await pumpEventQueue();
+    await eventually(() => started(1));
 
     await store.pause('250');
-    await pumpEventQueue();
+    await eventually(() => entry.status == DownloadStatus.paused);
     expect(entry.status, DownloadStatus.paused);
 
     // 那一格讓出來了: 繼續的話會再開一次
     await store.resume('250');
-    await pumpEventQueue();
+    await eventually(() => started(2));
     expect(fake.argsOf('download.start'), hasLength(2));
   });
 
   test('伺服器 404 就回去等, 不算失敗', () async {
     final entry = await store.enqueue(video('300'), withDanmaku: false);
-    await pumpEventQueue();
+    await eventually(() => started(1));
 
     await fake.emit('download.result', {'sn': '300', 'status': 'notFound'});
     expect(entry.status, DownloadStatus.waiting);
@@ -191,7 +196,7 @@ void main() {
 
   test('失敗照原生給的原因顯示', () async {
     final entry = await store.enqueue(video('350'), withDanmaku: false);
-    await pumpEventQueue();
+    await eventually(() => started(1));
 
     await fake.emit('download.result',
         {'sn': '350', 'status': 'failed', 'error': '伺服器回應 500'});
@@ -204,11 +209,13 @@ void main() {
     for (final sn in ['400', '401', '402']) {
       await store.enqueue(video(sn), withDanmaku: false);
     }
+    await eventually(() => started(1));
+    // 再多等幾輪: 同時只開一集的話, 等多久都只該有一個
     await pumpEventQueue();
     expect(fake.argsOf('download.start'), hasLength(1));
 
     store.setBackgrounded(true);
-    await pumpEventQueue();
+    await eventually(() => started(3));
     expect(
       fake.argsOf('download.start').map((args) => args['sn']).toSet(),
       {'400', '401', '402'},
@@ -219,7 +226,7 @@ void main() {
     final done = await store.enqueue(video('500'), withDanmaku: false);
     final still = await store.enqueue(video('501'), withDanmaku: false);
     await store.enqueue(video('502'), withDanmaku: false);
-    await pumpEventQueue();
+    await eventually(() => started(1));
     // 不再理會原生的回覆, 當作 App 在這裡被系統收掉了
     store.dispose();
 
@@ -261,7 +268,7 @@ void main() {
     ];
     store.dispose();
     store = await boot();
-    await pumpEventQueue();
+    await eventually(() => fake.argsOf('download.discard').isNotEmpty);
 
     expect(fake.argsOf('download.cancel').single['sn'], '600');
     expect(fake.argsOf('download.discard').single['name'], '600-1080p.mp4');
@@ -270,10 +277,10 @@ void main() {
 
   test('刪掉一集時連原生的續傳資料一起丟', () async {
     final entry = await store.enqueue(video('700'), withDanmaku: false);
-    await pumpEventQueue();
+    await eventually(() => started(1));
 
     final removing = store.remove('700');
-    await pumpEventQueue();
+    await eventually(() => fake.argsOf('download.cancel').isNotEmpty);
     await fake.emit('download.result', {'sn': '700', 'status': 'cancelled'});
     await removing;
 
