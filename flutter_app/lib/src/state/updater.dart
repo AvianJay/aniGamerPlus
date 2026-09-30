@@ -135,11 +135,16 @@ class Updater {
 
   static Future<AppVersion>? _current;
 
-  /// 跑起來之後就不會變, 讀一次就好
-  static Future<AppVersion> current() => _current ??= () async {
+  /// 跑起來之後就不會變, 讀一次就好.
+  ///
+  /// 「我的」頁每次重建都會叫這個, 但顯示版本的那一格不一定真的蓋出來 (捲在
+  /// 畫面外面). 讀不到版本時那個錯誤就沒人接, 會被當成沒處理的例外 —— ignore()
+  /// 只是把它標成有人處理過, 之後每個 await 它的照樣拿到那個錯誤.
+  static Future<AppVersion> current() => _current ??= (() async {
         final info = await PackageInfo.fromPlatform();
         return AppVersion(info.version, int.tryParse(info.buildNumber) ?? 0);
-      }();
+      }()
+        ..ignore());
 
   /// 通道上最新的那一包; 這個平台沒有檔案可裝時回 null.
   Future<UpdateInfo?> latest(UpdateChannel channel, {required bool ios}) =>

@@ -4,6 +4,7 @@ import 'package:flutter/material.dart';
 
 import 'pages/root_page.dart';
 import 'pages/setup_page.dart';
+import 'pages/tv_remote_actions.dart';
 import 'pages/update_dialog.dart';
 import 'state/app_state.dart';
 import 'theme.dart';
@@ -36,7 +37,8 @@ class _AgpAppState extends State<AgpApp> {
   // 相等, Theme 就會通知底下每一個用到它的 widget.
   final ThemeData _light =
       buildTheme(brightness: Brightness.light, tv: Device.tv);
-  final ThemeData _dark = buildTheme(brightness: Brightness.dark, tv: Device.tv);
+  final ThemeData _dark =
+      buildTheme(brightness: Brightness.dark, tv: Device.tv);
   late ThemeMode _themeMode = widget.state.themeMode;
 
   @override
@@ -49,6 +51,10 @@ class _AgpAppState extends State<AgpApp> {
         widget.state.refreshAll();
       } else {
         widget.state.finishBoot();
+      }
+      // 電視: 開一台讓手機連進來遙控的伺服器
+      if (Device.tv) {
+        unawaited(TvRemoteService.start(widget.state, _navigator));
       }
       // 讓首頁先把片庫拉起來, 別一開 App 就被對話框擋住
       if (widget.state.prefs.updateAutoCheck) {
@@ -68,6 +74,7 @@ class _AgpAppState extends State<AgpApp> {
   void dispose() {
     widget.state.removeListener(_onState);
     _updateTimer?.cancel();
+    if (Device.tv) unawaited(TvRemoteService.stop());
     super.dispose();
   }
 
@@ -85,6 +92,13 @@ class _AgpAppState extends State<AgpApp> {
       theme: _light,
       darkTheme: _dark,
       themeMode: _themeMode,
+      builder: Device.tv
+          ? (context, child) => FocusTraversalGroup(
+                policy: ReadingOrderTraversalPolicy(
+                    requestFocusCallback: _centerFocus),
+                child: child!,
+              )
+          : null,
       home: ListenableBuilder(
         listenable: widget.state,
         builder: (context, _) => widget.state.hasServer
@@ -93,4 +107,26 @@ class _AgpAppState extends State<AgpApp> {
       ),
     );
   }
+}
+
+/// 電視上用方向鍵移到的那一格, 捲到可捲區域的正中間.
+///
+/// 預設是「剛好露出來就停」, 焦點永遠貼在畫面邊上, 看不到下一格是什麼, 一排
+/// 卡片按到底之前都不知道還有沒有. 片單、設定清單都一樣.
+void _centerFocus(
+  FocusNode node, {
+  ScrollPositionAlignmentPolicy? alignmentPolicy,
+  double? alignment,
+  Duration? duration,
+  Curve? curve,
+}) {
+  node.requestFocus();
+  final context = node.context;
+  if (context == null) return;
+  unawaited(Scrollable.ensureVisible(
+    context,
+    alignment: 0.5,
+    duration: const Duration(milliseconds: 180),
+    curve: Curves.easeOutCubic,
+  ));
 }

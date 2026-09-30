@@ -45,7 +45,23 @@ class _LoginPageState extends State<LoginPage> {
   }
 
   void _changed() {
-    if (mounted) setState(() {});
+    if (!mounted) return;
+    // 電視上: 手機遙控把登入狀態傳過來了, 這一頁就沒事了
+    if (Device.tv && state.loggedIn && !_busy) {
+      _close(state.currentUser?.username ?? '');
+      return;
+    }
+    setState(() {});
+  }
+
+  /// 登入成功的三條路 (自己打、掃碼、手機遙控) 可能前後腳一起到, 只關一次
+  bool _closed = false;
+
+  void _close(String username) {
+    if (_closed || !mounted) return;
+    _closed = true;
+    Navigator.of(context).pop();
+    toast(context, username.isEmpty ? '已登入。' : '歡迎回來，$username。');
   }
 
   @override
@@ -85,8 +101,7 @@ class _LoginPageState extends State<LoginPage> {
     }
     if (!mounted) return;
     setState(() => _busy = false);
-    Navigator.of(context).pop();
-    toast(context, '歡迎回來，$username。');
+    _close(username);
   }
 
   /// 手機掃碼送來的帳號密碼. 先用一個獨立的連線驗過, 回手機一句話再換上去.
@@ -108,9 +123,7 @@ class _LoginPageState extends State<LoginPage> {
 
   Future<void> _applyRemote(String username, String token) async {
     await state.applyRemoteSetup(server: state.client.baseUrl, token: token);
-    if (!mounted) return;
-    Navigator.of(context).pop();
-    toast(context, '歡迎回來，$username。');
+    _close(username);
   }
 
   @override
@@ -215,6 +228,7 @@ class _LoginPageState extends State<LoginPage> {
                         askServer: false,
                         initialServer: state.client.baseUrl,
                         onSubmit: _remoteSubmit,
+                        phoneRemote: state.prefs.remoteEnabled,
                       ),
                     ),
                   ),

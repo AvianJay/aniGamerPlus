@@ -15,6 +15,10 @@ class Device {
   /// 測試裡可以直接改.
   static bool tv = false;
 
+  /// 給手機遙控用的名字: 配對時電視上顯示「誰」想連進來, 手機上列出「哪一台」.
+  /// Android 用系統設定裡的裝置名稱 (電視多半是「客廳電視」這種), 沒有就用型號.
+  static String name = Platform.isIOS ? 'iPhone' : 'Android 手機';
+
   /// 問的是 MainActivity 裡那一支 (tool/prepare_platforms.sh 補上的):
   /// UiModeManager 說是電視, 或是有 leanback 這個系統功能.
   static const MethodChannel _channel = MethodChannel('agp/device');
@@ -26,6 +30,23 @@ class Device {
     } catch (_) {
       // 舊的平台外殼沒有這支通道: 當成手機, 至少不會更糟
       tv = false;
+    }
+    try {
+      final named = await _channel.invokeMethod<String>('deviceName');
+      if (named != null && named.trim().isNotEmpty) name = named.trim();
+    } catch (_) {
+      if (tv) name = 'Android TV';
+    }
+  }
+
+  /// Wi-Fi 在省電時會把不是寄給自己的封包 (廣播也算) 濾掉. 電視開著等手機來找
+  /// 的時候要拿著這把鎖, 不然手機的廣播收不到.
+  static Future<void> holdMulticastLock(bool hold) async {
+    if (!Platform.isAndroid) return;
+    try {
+      await _channel.invokeMethod<void>('multicastLock', hold);
+    } catch (_) {
+      // 沒有這支通道就只剩掃描跟手動輸入, 一樣找得到
     }
   }
 }

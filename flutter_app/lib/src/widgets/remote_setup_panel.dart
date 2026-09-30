@@ -19,6 +19,7 @@ class RemoteSetupPanel extends StatefulWidget {
     this.askServer = true,
     this.initialServer = '',
     this.host,
+    this.phoneRemote = false,
   });
 
   final RemoteSetupHandler onSubmit;
@@ -28,6 +29,9 @@ class RemoteSetupPanel extends StatefulWidget {
   /// QR 碼裡放的位址. 平常不給, 自己找這台在區網上的那一個.
   @visibleForTesting
   final InternetAddress? host;
+
+  /// 這台開著手機遙控: 提一句手機 App 可以直接把設定傳過來 (比掃碼還省事)
+  final bool phoneRemote;
 
   @override
   State<RemoteSetupPanel> createState() => _RemoteSetupPanelState();
@@ -175,6 +179,30 @@ class _RemoteSetupPanelState extends State<RemoteSetupPanel> {
         ),
         const SizedBox(height: 14),
         body,
+        if (widget.phoneRemote) ...[
+          const SizedBox(height: 18),
+          const Divider(),
+          const SizedBox(height: 12),
+          Row(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              const Icon(Icons.settings_remote_rounded,
+                  size: 18, color: AgpColors.accent),
+              const SizedBox(width: 8),
+              Expanded(
+                child: Text(
+                  widget.askServer
+                      ? '手機上裝了這個 App 的話，也可以在「我的 → 遙控電視」連上這台，直接把伺服器設定 (連同登入) 傳過來。'
+                      : '手機上裝了這個 App 的話，也可以在「我的 → 遙控電視」連上這台，直接把登入狀態傳過來。',
+                  style: TextStyle(
+                      fontSize: 12.5,
+                      height: 1.5,
+                      color: colors.onSurfaceVariant),
+                ),
+              ),
+            ],
+          ),
+        ],
       ],
     );
   }

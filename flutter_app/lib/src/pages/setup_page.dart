@@ -275,6 +275,7 @@ class _SetupPageState extends State<SetupPage> {
                         child: RemoteSetupPanel(
                           onSubmit: _remoteSubmit,
                           initialServer: widget.state.prefs.server,
+                          phoneRemote: widget.state.prefs.remoteEnabled,
                         ),
                       ),
                     ),

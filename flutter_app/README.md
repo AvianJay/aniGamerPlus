@@ -96,6 +96,29 @@ AniSkip；查不到時依設定使用彈幕建議。
 
 跟 App 連自架伺服器一樣是區網 http, 密碼在區網上是明文傳的.
 
+#### 手機遙控 (手機 App ↔ 電視 App)
+
+手機上「我的 → 遙控電視」, 電視上「我的 → 手機遙控」(預設開著).
+
+* **找電視**: 同時走兩條路 —— UDP 廣播 (埠 47810) 跟把同一個 /24 網段逐台敲一遍
+  `http://<ip>:47811/remote/info`. iOS 沒有 Apple 另外核發的權限送不出廣播, 靠的是後面那一條.
+  都找不到的話可以手動輸入電視上「手機遙控」頁顯示的位址.
+* **配對**: 第一次連線電視上會跳出四位數配對碼, 在手機上輸入; 之後憑配對時拿到的 token 直接連.
+  配對碼錯三次就斷線, 而且半分鐘內不接受新的配對. 電視上可以把手機移出清單.
+  瀏覽器發的連線 (帶 `Origin` 的) 一律擋掉.
+* **能做的事**:
+  * 方向鍵 / OK / 返回 / 首頁 / 播放暫停, 按住連發. 走的是跟實體遙控器同一條按鍵路徑
+    (`lib/src/util/remote_keys.dart`), 所以播放頁的左右跳轉、選單, 通通不必另外接.
+  * 打字: 電視上有輸入框在等就填進去, 沒有就直接開搜尋.
+  * 電視在播的時候手機上看得到片名跟進度條, 拖了就跳.
+  * **把設定傳給電視**: 電視沒設伺服器 (或跟手機不一樣) 時, 一鍵把手機的伺服器位址連同登入狀態交過去 ——
+    電視上不必打任何字.
+  * **在電視上播放**: 手機播放頁的選單 (全螢幕時是右上角那顆) 把這一集連同看到的那一秒丟到電視上接著播.
+* 協定在 `lib/src/state/tv_remote_protocol.dart` 開頭. 一樣是區網上的明文 WebSocket.
+
+電視上的其他優化: 焦點框從第一下按鍵就畫、方向鍵移到的那一格自動捲到畫面中間、
+開 App 時焦點先停在左邊分頁列.
+
 ## 本機開發
 
 平台目錄 (`android/`, `ios/`) 不進版控 —— 那些是 `flutter create` 的樣板, 留在
@@ -111,7 +134,8 @@ bash tool/prepare_platforms.sh
 * `AndroidManifest.xml`: `INTERNET` 權限、`usesCleartextTraffic`
   (自架伺服器多半是區網 http)、url_launcher 要的 `<queries>`、
   Android TV 的 `LEANBACK_LAUNCHER` 與橫幅 (圖在 `android_extensions/res/`).
-* `MainActivity.kt`: 回答「這台是不是電視」的 `agp/device` 通道.
+* `MainActivity.kt`: `agp/device` 通道 —— 這台是不是電視、裝置名稱 (配對時顯示),
+  以及電視等手機廣播時要拿的 Wi-Fi MulticastLock (`CHANGE_WIFI_MULTICAST_STATE`).
 * `Info.plist`: ATS 例外、區網存取說明、背景播放聲音、橫向.
 
 然後就是一般的 Flutter 流程:

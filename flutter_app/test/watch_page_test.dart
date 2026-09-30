@@ -16,6 +16,8 @@ import 'package:agp_mobile/src/pages/watch_page.dart';
 import 'package:agp_mobile/src/danmaku/danmaku_overlay.dart';
 import 'package:agp_mobile/src/state/app_state.dart';
 import 'package:agp_mobile/src/theme.dart';
+import 'package:agp_mobile/src/state/tv_remote_host.dart';
+import 'package:agp_mobile/src/state/tv_remote_protocol.dart';
 import 'package:agp_mobile/src/util/device.dart';
 import 'package:http/http.dart' as http;
 import 'package:http/testing.dart';
@@ -33,6 +35,46 @@ class Paths extends PathProviderPlatform {
 class Wake extends WakelockPlusPlatformInterface {
   @override
   Future<void> toggle({required bool enable}) async {}
+}
+
+class _NoActions implements TvRemoteActions {
+  @override
+  ({String server, String user}) get status => (server: '', user: '');
+  @override
+  void key(RemoteKey key) {}
+  @override
+  Future<String?> text(String value, {required bool submit}) async => null;
+  @override
+  Future<String?> play(String sn, {double? at, bool streaming = false}) async =>
+      null;
+  @override
+  Future<String?> configure(String server, String token) async => null;
+  @override
+  void showPairing(PairingRequest request) {}
+  @override
+  void connected(String phoneName) {}
+}
+
+/// 電視上那一台遙控伺服器, 只記下播放頁跟它說了什麼
+class RecordingHost extends TvRemoteHost {
+  RecordingHost() : super(actions: _NoActions(), id: 'tv', name: 'tv');
+
+  RemotePlayer? player;
+  final published = <NowPlaying?>[];
+
+  @override
+  bool get hasClients => true;
+
+  @override
+  void attachPlayer(RemotePlayer player) => this.player = player;
+
+  @override
+  void detachPlayer(RemotePlayer player) {
+    if (this.player == player) this.player = null;
+  }
+
+  @override
+  void publish(NowPlaying? playing) => published.add(playing);
 }
 
 class DelayedPlayer extends VideoPlayerPlatform {
@@ -1370,6 +1412,47 @@ void main() {
       await tester.sendKeyEvent(LogicalKeyboardKey.arrowLeft);
       await tester.pump(const Duration(milliseconds: 150));
       expect(player.seeks, hasLength(2));
+
+      await tester.pumpWidget(const SizedBox());
+      await tester.pump(const Duration(seconds: 1));
+    });
+
+    testWidgets('手機遙控: 播放頁把進度報給手機, 手機拖進度條叫得動', (tester) async {
+      final host = RecordingHost();
+      TvRemoteHost.current = host;
+      addTearDown(() {
+        TvRemoteHost.current = null;
+        host.dispose();
+      });
+      await open(tester);
+      expect(host.player, isNotNull);
+      await tester.pump(const Duration(seconds: 1));
+      final now = host.published.whereType<NowPlaying>().last;
+      expect(now.sn, '1');
+      expect(now.playing, true);
+      expect(now.duration, 600);
+
+      host.player!.seekTo(300);
+      await tester.pump(const Duration(milliseconds: 150));
+      expect(player.seeks.single.inSeconds, 300);
+
+      await tester.pumpWidget(const SizedBox());
+      await tester.pump(const Duration(seconds: 1));
+      expect(host.player, isNull, reason: '關掉播放頁要跟遙控伺服器說一聲');
+    });
+
+    testWidgets('手機丟過來的集數從手機看到的那一秒開始', (tester) async {
+      levels.install(tester);
+      addTearDown(() => levels.remove(tester));
+      await resizeViewport(tester, const Size(960, 540));
+      await tester.pumpWidget(MaterialApp(
+          theme: buildTheme(brightness: Brightness.dark, tv: true),
+          home: WatchPage(state: state, sn: '1', startAt: 125)));
+      for (var i = 0; i < 8; i++) {
+        await tester.pump(const Duration(milliseconds: 100));
+      }
+      expect(player.seeks, isNotEmpty);
+      expect(player.seeks.first.inSeconds, 125);
 
       await tester.pumpWidget(const SizedBox());
       await tester.pump(const Duration(seconds: 1));

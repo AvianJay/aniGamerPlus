@@ -38,11 +38,14 @@ import '../state/downloads.dart';
 import '../state/prefs.dart';
 import '../state/seek_preview.dart';
 import '../state/intro_skip.dart';
+import '../state/tv_remote_host.dart';
+import '../state/tv_remote_protocol.dart';
 import '../theme.dart';
 import '../util/device.dart';
 import '../util/format.dart';
 import '../widgets/common.dart';
 import '../widgets/seek_preview_card.dart';
+import 'tv_remote_page.dart';
 
 // --------------------------------------------------------------- 常數
 // 全部照抄 static/js/watch.js, 改了就跟網頁版對不起來了
@@ -255,12 +258,22 @@ class _PlayerSpinner extends StatelessWidget {
   }
 }
 
+class _RemoteSeek implements RemotePlayer {
+  _RemoteSeek(this._onSeek);
+
+  final void Function(double seconds) _onSeek;
+
+  @override
+  void seekTo(double seconds) => _onSeek(seconds);
+}
+
 class WatchPage extends StatefulWidget {
   const WatchPage({
     super.key,
     required this.state,
     required this.sn,
     this.streaming = false,
+    this.startAt,
   });
 
   final AppState state;
@@ -268,6 +281,9 @@ class WatchPage extends StatefulWidget {
 
   /// 從「邊看邊下載」進來的, 要走 HLS
   final bool streaming;
+
+  /// 從第幾秒開始. 手機丟到電視上時帶著手機看到的位置; 沒給就照觀看紀錄續播
+  final double? startAt;
 
   @override
   State<WatchPage> createState() => _WatchPageState();
@@ -282,6 +298,9 @@ class _WatchPageState extends State<WatchPage> with WidgetsBindingObserver {
 
   // ------------------------------------------------------------- 這一集
   late String _sn;
+
+  /// [WatchPage.startAt], 只用在第一集: 換集之後照各集自己的紀錄
+  double? _startAt;
   late bool _streaming;
   VideoItem? _video;
   SeriesInfo? _series;
@@ -418,6 +437,9 @@ class _WatchPageState extends State<WatchPage> with WidgetsBindingObserver {
   /// 播放鍵. 叫出控制列時焦點從這一顆開始.
   final FocusNode _playFocus = FocusNode(debugLabel: 'player-play');
 
+  /// 電視上: 手機遙控拖進度條時叫這個
+  _RemoteSeek? _remoteSeek;
+
   // ------------------------------------------------------------- 手勢
   double _dragFrom = 0;
   double _dragAccum = 0;
@@ -448,6 +470,7 @@ class _WatchPageState extends State<WatchPage> with WidgetsBindingObserver {
     super.initState();
     WidgetsBinding.instance.addObserver(this);
     _sn = widget.sn;
+    _startAt = widget.startAt;
     _rate = prefs.rate;
     // 音量跟亮度是裝置的狀態, 不是這個 app 的偏好 —— 存起來下次套用回去只會
     // 覆蓋掉使用者在別的地方調過的值. 開頁時問一次現在是多少.
@@ -490,7 +513,14 @@ class _WatchPageState extends State<WatchPage> with WidgetsBindingObserver {
     _monitor = Timer.periodic(_kMonitorEvery, (_) {
       _sampleSpeed();
       _watchStall();
+      _publishToPhones();
     });
+    final remote = TvRemoteHost.current;
+    if (remote != null) {
+      final seek = _RemoteSeek(_seekFromPhone);
+      _remoteSeek = seek;
+      remote.attachPlayer(seek);
+    }
     unawaited(_boot());
   }
 
@@ -504,6 +534,8 @@ class _WatchPageState extends State<WatchPage> with WidgetsBindingObserver {
     _skipRetryTimer?.cancel();
     _monitor?.cancel();
     unawaited(_pipSubscription?.cancel());
+    final seek = _remoteSeek;
+    if (seek != null) TvRemoteHost.current?.detachPlayer(seek);
     if (_pipActive) unawaited(VideoPlayerPip.exitPipMode());
     _sourceGeneration++;
     _preview.dispose();
@@ -654,7 +686,8 @@ class _WatchPageState extends State<WatchPage> with WidgetsBindingObserver {
     // 進度先用本機那份: app 一開機就同步過一輪 /watch/time, 手上這份幾乎一定
     // 是對的. 為了它擋住整個開播流程不划算 —— 那是一次完整的來回, 而且伺服器
     // 在區網外的時候, 使用者等的就是這一段. 對答案改成開播之後在背景做.
-    _resumeAt = _localResume();
+    _resumeAt = _startAt ?? _localResume();
+    _startAt = null;
     unawaited(_refreshResume());
 
     // 播放器還沒 initialize 完的那幾秒, 時間軸本來寫著 0:00/0:00, 看起來像
@@ -2009,6 +2042,44 @@ class _WatchPageState extends State<WatchPage> with WidgetsBindingObserver {
     _reclaimFocus();
   }
 
+  // =============================================================== 手機遙控
+
+  /// 電視上: 手機的遙控器要畫進度條. 一秒兩次, 沒有手機連著就什麼都不做
+  void _publishToPhones() {
+    final remote = TvRemoteHost.current;
+    if (remote == null || _remoteSeek == null || !remote.hasClients) return;
+    remote.publish(NowPlaying(
+      sn: _sn,
+      title: _seriesName,
+      episode: _hereLabel,
+      position: _pendingSeek ?? _clock.value,
+      duration: _playableDuration,
+      playing: _showsPlaying,
+    ));
+  }
+
+  void _seekFromPhone(double seconds) {
+    if (!mounted || !(_controller?.value.isInitialized ?? false)) return;
+    _showControls();
+    unawaited(_seekTo(seconds));
+  }
+
+  /// 手機上: 這一集連同看到的位置丟到電視上接著播
+  Future<void> _castToTv() async {
+    final at = _pendingSeek ?? _clock.value;
+    // 暫停也順便把進度送上伺服器, 電視那邊對到的紀錄才是這一秒
+    if (_showsPlaying) await _togglePlay();
+    // 遙控器那一頁是直的: 全螢幕鎖著橫向的話先放開
+    if (_fullscreen) await _setFullscreen(false);
+    if (!mounted) return;
+    await Navigator.of(context).push(MaterialPageRoute<void>(
+      builder: (_) => TvRemotePage(
+        state: state,
+        cast: TvCast(sn: _sn, at: at, streaming: _streaming),
+      ),
+    ));
+  }
+
   // =============================================================== 手勢
 
   void _onDoubleTap(Size size) {
@@ -2574,9 +2645,20 @@ class _WatchPageState extends State<WatchPage> with WidgetsBindingObserver {
                 unawaited(_boot());
               } else if (value == 'pip') {
                 unawaited(_enterPip());
+              } else if (value == 'tv') {
+                unawaited(_castToTv());
               }
             },
             itemBuilder: (context) => [
+              const PopupMenuItem(
+                value: 'tv',
+                child: ListTile(
+                  dense: true,
+                  contentPadding: EdgeInsets.zero,
+                  leading: Icon(Icons.cast_rounded, size: 20),
+                  title: Text('在電視上播放'),
+                ),
+              ),
               if (prefs.pipEnabled)
                 const PopupMenuItem(
                   value: 'pip',
@@ -3142,6 +3224,12 @@ class _WatchPageState extends State<WatchPage> with WidgetsBindingObserver {
                           ),
                           _rateMenu(),
                           _qualityMenu(),
+                          // 連過電視的人才擺出來, 沒有電視的人不必多一顆看不懂的鍵
+                          if (!Device.tv &&
+                              (state.tvRemote.connected ||
+                                  state.tvRemote.saved.isNotEmpty))
+                            _barButton(Icons.cast_rounded, '在電視上播放',
+                                () => unawaited(_castToTv())),
                           _barButton(Icons.video_library_outlined, '選集',
                               _openEpisodeSheet),
                         ],

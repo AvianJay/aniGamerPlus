@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 
 import '../state/app_state.dart';
 import '../theme.dart';
+import '../util/device.dart';
 import 'all_tab.dart';
 
 const kAnimeTags = [
@@ -42,17 +43,20 @@ const kAnimeTags = [
 ];
 
 class SearchPage extends StatefulWidget {
-  const SearchPage({super.key, required this.state});
+  const SearchPage({super.key, required this.state, this.initialQuery = ''});
   final AppState state;
+
+  /// 從手機遙控打字過來的: 一打開就是這個關鍵字的結果
+  final String initialQuery;
 
   @override
   State<SearchPage> createState() => _SearchPageState();
 }
 
 class _SearchPageState extends State<SearchPage> {
-  final _search = TextEditingController();
+  late final _search = TextEditingController(text: widget.initialQuery);
   final _focus = FocusNode();
-  String _query = '';
+  late String _query = widget.initialQuery;
   String _tag = '';
   String _sort = 'relevance';
 
@@ -90,7 +94,8 @@ class _SearchPageState extends State<SearchPage> {
           key: const ValueKey('anime-search'),
           controller: _search,
           focusNode: _focus,
-          autofocus: true,
+          // 已經帶著關鍵字進來的 (手機遙控) 不要在電視上彈出螢幕鍵盤蓋住結果
+          autofocus: !(Device.tv && widget.initialQuery.isNotEmpty),
           cursorColor: AgpColors.bahamut,
           autocorrect: false,
           textInputAction: TextInputAction.search,

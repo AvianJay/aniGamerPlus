@@ -14,12 +14,14 @@ import 'package:path_provider/path_provider.dart';
 
 import '../api/client.dart';
 import '../api/models.dart';
+import '../util/device.dart';
 import '../util/format.dart';
 import 'downloads.dart';
 import 'download_background.dart';
 import 'download_network.dart';
 import 'prefs.dart';
 import 'thumbnails.dart';
+import 'tv_remote_client.dart';
 import 'video_cache.dart';
 
 class AppState extends ChangeNotifier {
@@ -66,6 +68,15 @@ class AppState extends ChangeNotifier {
 
   /// 封面/縮圖的來源表與落盤快取
   late final ThumbnailStore thumbnails;
+
+  /// 手機上: 遙控電視的那條連線. 用到才建, 離開遙控頁也不斷 —— 播放頁上的
+  /// 「在電視上播放」要靠它
+  late final TvRemoteClient tvRemote = TvRemoteClient(
+    phoneId: prefs.deviceId,
+    phoneName: Device.name,
+    saved: prefs.remoteTvs,
+    onSavedChanged: prefs.setRemoteTvs,
+  );
 
   ServerInfo serverInfo = ServerInfo();
   CurrentUser? currentUser;

@@ -7,6 +7,7 @@ import 'package:flutter/material.dart';
 import '../state/app_state.dart';
 import '../state/updater.dart';
 import '../theme.dart';
+import '../util/device.dart';
 import '../util/format.dart';
 import '../widgets/common.dart';
 import 'app_prefs_page.dart';
@@ -19,6 +20,8 @@ import 'register_page.dart';
 import 'settings_page.dart';
 import 'setup_page.dart';
 import 'sn_list_page.dart';
+import 'tv_remote_page.dart';
+import 'tv_remote_settings_page.dart';
 import 'update_dialog.dart';
 import 'user_info_page.dart';
 import 'user_manage_page.dart';
@@ -94,6 +97,33 @@ class MeTab extends StatelessWidget {
             builder: (_) => SetupPage(state: state, canPop: true),
           )),
         ),
+        _group(context, '電視'),
+        if (Device.tv)
+          _tile(
+            context,
+            icon: Icons.phonelink_rounded,
+            title: '手機遙控',
+            subtitle: '讓手機連進來當這台電視的遙控器',
+            page: () => TvRemoteSettingsPage(state: state),
+          )
+        else
+          ListenableBuilder(
+            listenable: state.tvRemote,
+            builder: (context, _) {
+              final remote = state.tvRemote;
+              return ListTile(
+                leading: const Icon(Icons.settings_remote_rounded),
+                title: const Text('遙控電視'),
+                subtitle: Text(remote.connected
+                    ? '已連線：${remote.device?.name ?? '電視'}'
+                    : '當電視上 aniGamerPlus 的遙控器，也能把正在看的丟過去'),
+                trailing: const Icon(Icons.chevron_right_rounded, size: 20),
+                onTap: () => Navigator.of(context).push(MaterialPageRoute(
+                  builder: (_) => TvRemotePage(state: state),
+                )),
+              );
+            },
+          ),
         if (state.canManage) ...[
           _group(context, '管理'),
           _tile(

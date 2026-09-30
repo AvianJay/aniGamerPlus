@@ -74,9 +74,12 @@ def patch_manifest(path):
         for node in manifest.findall('uses-permission')
     }
     # REQUEST_INSTALL_PACKAGES: App 內更新下載完 APK 要交給系統安裝器
+    # CHANGE_WIFI_MULTICAST_STATE: 電視等手機用 UDP 廣播來找它的時候, Wi-Fi 在
+    #   省電模式下會把廣播封包濾掉, 要拿一把 MulticastLock (一般權限, 不必問)
     for needed in ('android.permission.INTERNET',
                    'android.permission.ACCESS_NETWORK_STATE',
-                   'android.permission.REQUEST_INSTALL_PACKAGES'):
+                   'android.permission.REQUEST_INSTALL_PACKAGES',
+                   'android.permission.CHANGE_WIFI_MULTICAST_STATE'):
         if needed not in permissions:
             node = ET.Element('uses-permission')
             node.set(attr('name'), needed)
@@ -171,7 +174,9 @@ def add_android_resources(res_dir):
 
 def patch_main_activity(kotlin_dir):
     # 電視跟手機的版面不一樣, 而且得在 runApp 之前就知道 (直向鎖定要跳過),
-    # 見 lib/src/util/device.dart. 只是一個布林, 不值得為它另寫一個外掛.
+    # 見 lib/src/util/device.dart. 另外兩件手機遙控用的小事: 裝置名稱 (配對時
+    # 顯示「誰」), 以及電視等手機廣播時要拿的 MulticastLock. 都是幾行就好,
+    # 不值得為它們另寫一個外掛.
     import glob
     paths = glob.glob(os.path.join(kotlin_dir, '**', 'MainActivity.kt'),
                       recursive=True)
@@ -189,26 +194,66 @@ def patch_main_activity(kotlin_dir):
 import android.content.Context
 import android.content.pm.PackageManager
 import android.content.res.Configuration
+import android.net.wifi.WifiManager
+import android.os.Build
+import android.provider.Settings
 import io.flutter.embedding.android.FlutterActivity
 import io.flutter.embedding.engine.FlutterEngine
 import io.flutter.plugin.common.MethodChannel
 ''', 1)
     source = source.replace(declaration, '''class MainActivity : FlutterActivity() {
+    private var multicastLock: WifiManager.MulticastLock? = null
+
     override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
         super.configureFlutterEngine(flutterEngine)
         MethodChannel(flutterEngine.dartExecutor.binaryMessenger, "agp/device")
             .setMethodCallHandler { call, result ->
                 when (call.method) {
                     "isTelevision" -> result.success(isTelevision())
+                    "deviceName" -> result.success(deviceName())
+                    "multicastLock" -> {
+                        holdMulticastLock(call.arguments == true)
+                        result.success(null)
+                    }
                     else -> result.notImplemented()
                 }
             }
+    }
+
+    override fun onDestroy() {
+        holdMulticastLock(false)
+        super.onDestroy()
     }
 
     private fun isTelevision(): Boolean {
         val uiMode = getSystemService(Context.UI_MODE_SERVICE) as? UiModeManager
         return uiMode?.currentModeType == Configuration.UI_MODE_TYPE_TELEVISION ||
             packageManager.hasSystemFeature(PackageManager.FEATURE_LEANBACK)
+    }
+
+    // 系統設定裡的「裝置名稱」(電視多半是「客廳電視」這種), 沒設就用型號
+    private fun deviceName(): String {
+        val named = try {
+            Settings.Global.getString(contentResolver, "device_name")
+        } catch (error: Exception) {
+            null
+        }
+        return if (named.isNullOrBlank()) Build.MODEL else named
+    }
+
+    private fun holdMulticastLock(hold: Boolean) {
+        if (hold) {
+            if (multicastLock?.isHeld == true) return
+            val wifi = applicationContext.getSystemService(Context.WIFI_SERVICE) as? WifiManager
+                ?: return
+            multicastLock = wifi.createMulticastLock("agp-remote").apply {
+                setReferenceCounted(false)
+                acquire()
+            }
+        } else {
+            multicastLock?.let { if (it.isHeld) it.release() }
+            multicastLock = null
+        }
     }
 }''', 1)
 
@@ -274,7 +319,8 @@ def patch_plist(path):
         'NSAllowsLocalNetworking': True,
     }
     # iOS 14 起連區網位址要先問過使用者
-    info['NSLocalNetworkUsageDescription'] = '用來連線到你自己架設的 aniGamerPlus 伺服器。'
+    # 找同一個網路上的電視 (手機遙控) 也是區網存取: 逐台敲門, 不用 Bonjour
+    info['NSLocalNetworkUsageDescription'] = '用來連線到你自己架設的 aniGamerPlus 伺服器，以及找到同一個網路上的電視。'
     # 鎖屏 / 切到背景時聲音不要斷
     modes = set(info.get('UIBackgroundModes') or [])
     modes.add('audio')

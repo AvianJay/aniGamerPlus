@@ -3,8 +3,11 @@
 library;
 
 import 'dart:convert';
+import 'dart:math';
 
 import 'package:shared_preferences/shared_preferences.dart';
+
+import 'tv_remote_protocol.dart';
 
 class Favourite {
   final String name;
@@ -205,6 +208,55 @@ class Prefs {
   int get skippedUpdateBuild => _sp.getInt('agp-update-skip') ?? 0;
   Future<void> setSkippedUpdateBuild(int value) =>
       _sp.setInt('agp-update-skip', value);
+
+  // ---------------------------------------------------------------- 手機遙控
+
+  /// 這台裝置自己的隨機 id: 電視靠它認得配對過的手機, 手機靠它認得電視
+  String get deviceId {
+    var value = _sp.getString('agp-device-id') ?? '';
+    if (value.isEmpty) {
+      final random = Random.secure();
+      value =
+          List<String>.generate(16, (_) => random.nextInt(16).toRadixString(16))
+              .join();
+      _sp.setString('agp-device-id', value);
+    }
+    return value;
+  }
+
+  /// 電視: 讓手機連進來遙控
+  bool get remoteEnabled => _sp.getBool('agp-remote-enabled') ?? true;
+  Future<void> setRemoteEnabled(bool value) =>
+      _sp.setBool('agp-remote-enabled', value);
+
+  /// 電視: 配對過的手機
+  List<PairedPhone> get pairedPhones => [
+        for (final item in _readList('agp-remote-phones'))
+          PairedPhone.fromJson(item)
+      ];
+  Future<void> setPairedPhones(List<PairedPhone> phones) => _sp.setString(
+      'agp-remote-phones', jsonEncode([for (final p in phones) p.toJson()]));
+
+  /// 手機: 連過的電視
+  List<TvDevice> get remoteTvs =>
+      [for (final item in _readList('agp-remote-tvs')) TvDevice.fromJson(item)];
+  Future<void> setRemoteTvs(List<TvDevice> tvs) => _sp.setString(
+      'agp-remote-tvs', jsonEncode([for (final tv in tvs) tv.toJson()]));
+
+  List<Map<String, dynamic>> _readList(String key) {
+    final raw = _sp.getString(key);
+    if (raw == null || raw.isEmpty) return const [];
+    try {
+      final list = jsonDecode(raw);
+      if (list is! List) return const [];
+      return [
+        for (final item in list)
+          if (item is Map) item.cast<String, dynamic>()
+      ];
+    } catch (_) {
+      return const [];
+    }
+  }
 
   // -------------------------------------------------------------------- 收藏
 

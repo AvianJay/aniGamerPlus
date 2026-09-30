@@ -29,6 +29,34 @@ class _RootPageState extends State<RootPage> {
   int _index = 0;
   AppState get state => widget.state;
 
+  /// 電視: 包著左邊分頁列, 開起來時把焦點放上去
+  final FocusNode _rail = FocusNode(
+      debugLabel: 'root-rail', canRequestFocus: false, skipTraversal: true);
+
+  @override
+  void initState() {
+    super.initState();
+    if (Device.tv) {
+      WidgetsBinding.instance.addPostFrameCallback((_) => _focusRail());
+    }
+  }
+
+  @override
+  void dispose() {
+    _rail.dispose();
+    super.dispose();
+  }
+
+  /// 一開 App 什麼都沒選到的話, 第一下方向鍵落在哪裡要看運氣. 先停在分頁上
+  void _focusRail() {
+    if (!mounted) return;
+    final current = FocusManager.instance.primaryFocus;
+    if (current != null && current is! FocusScopeNode) return;
+    final tabs = _rail.traversalDescendants.toList();
+    if (tabs.isEmpty) return;
+    tabs[_index.clamp(0, tabs.length - 1)].requestFocus();
+  }
+
   void _openSearch() => Navigator.of(context)
       .push(MaterialPageRoute<void>(builder: (_) => SearchPage(state: state)));
 
@@ -131,28 +159,32 @@ class _RootPageState extends State<RootPage> {
   }
 
   Widget _buildRail() {
-    return NavigationRail(
-      selectedIndex: _index,
-      onDestinationSelected: _select,
-      labelType: NavigationRailLabelType.all,
-      backgroundColor: Theme.of(context).navigationBarTheme.backgroundColor,
-      indicatorColor: AgpColors.accentSoft,
-      selectedIconTheme: const IconThemeData(color: AgpColors.accent),
-      selectedLabelTextStyle: const TextStyle(
-          fontSize: 12, fontWeight: FontWeight.w700, color: AgpColors.accent),
-      unselectedLabelTextStyle: TextStyle(
-          fontSize: 12,
-          fontWeight: FontWeight.w600,
-          color: Theme.of(context).colorScheme.onSurfaceVariant),
-      destinations: [
-        for (final tab in _tabs)
-          NavigationRailDestination(
-            icon: Icon(tab.icon),
-            selectedIcon: Icon(tab.selectedIcon),
-            label: Text(tab.label),
-          ),
-      ],
-    );
+    return Focus(
+        focusNode: _rail,
+        child: NavigationRail(
+          selectedIndex: _index,
+          onDestinationSelected: _select,
+          labelType: NavigationRailLabelType.all,
+          backgroundColor: Theme.of(context).navigationBarTheme.backgroundColor,
+          indicatorColor: AgpColors.accentSoft,
+          selectedIconTheme: const IconThemeData(color: AgpColors.accent),
+          selectedLabelTextStyle: const TextStyle(
+              fontSize: 12,
+              fontWeight: FontWeight.w700,
+              color: AgpColors.accent),
+          unselectedLabelTextStyle: TextStyle(
+              fontSize: 12,
+              fontWeight: FontWeight.w600,
+              color: Theme.of(context).colorScheme.onSurfaceVariant),
+          destinations: [
+            for (final tab in _tabs)
+              NavigationRailDestination(
+                icon: Icon(tab.icon),
+                selectedIcon: Icon(tab.selectedIcon),
+                label: Text(tab.label),
+              ),
+          ],
+        ));
   }
 
   PreferredSizeWidget _buildAppBar() {
