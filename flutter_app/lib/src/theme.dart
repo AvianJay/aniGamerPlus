@@ -17,6 +17,9 @@ class AgpColors {
   static const accent = Color(0xFF00B5D4);
   static const accentSoft = Color(0x1900B5D4);
 
+  /// 用遙控器 / 鍵盤移到的那一格的框
+  static const focusRing = accent;
+
   /// 動畫瘋自己的那個青色. 播放器跟選集刻意跟著站上走 —— 這兩塊是使用者拿來
   /// 跟官方 app 對照著用的地方, 顏色一樣才不會每次都要重新找按鈕在哪.
   static const bahamut = Color(0xFF00B5D4);
@@ -30,7 +33,8 @@ class AgpColors {
 const double kRadius = 14;
 const double kRadiusSmall = 10;
 
-ThemeData buildTheme({required Brightness brightness}) {
+/// [tv] = 跑在電視上: 焦點要從沙發上看得出來, 見 [_forTv].
+ThemeData buildTheme({required Brightness brightness, bool tv = false}) {
   final dark = brightness == Brightness.dark;
 
   final scheme = ColorScheme.fromSeed(
@@ -57,7 +61,7 @@ ThemeData buildTheme({required Brightness brightness}) {
     splashFactory: InkSparkle.splashFactory,
   );
 
-  return base.copyWith(
+  final theme = base.copyWith(
     iconButtonTheme: IconButtonThemeData(
       style: IconButton.styleFrom(
         minimumSize: const Size(48, 48),
@@ -205,6 +209,51 @@ ThemeData buildTheme({required Brightness brightness}) {
           states.contains(WidgetState.selected) ? Colors.white : null),
       trackColor: WidgetStateProperty.resolveWith((states) =>
           states.contains(WidgetState.selected) ? AgpColors.accent : null),
+    ),
+  );
+  return tv ? _forTv(theme) : theme;
+}
+
+/// 電視上沒有手指, 只有「現在停在哪一格」. Material 3 預設的焦點只是一層
+/// 一成透明度的灰, 在手機上夠了, 隔三公尺看電視幾乎看不出來.
+///
+/// 清單、選單這類透明底的東西: 把焦點色調成看得見的青色.
+/// 按鈕、Chip 這類自己有底色的: 焦點色會被底色蓋掉, 改成外面加一圈框.
+/// 卡片是另一回事 —— 封面整張蓋住了, 見 FocusFrame.
+ThemeData _forTv(ThemeData theme) {
+  BorderSide? ring(Set<WidgetState> states, BorderSide? otherwise,
+      {Color color = AgpColors.focusRing}) {
+    return states.contains(WidgetState.focused)
+        ? BorderSide(color: color, width: 3)
+        : otherwise;
+  }
+
+  ButtonStyle withRing(ButtonStyle? style, {Color? color}) {
+    final base = style ?? const ButtonStyle();
+    final side = base.side;
+    return base.copyWith(
+      side: WidgetStateProperty.resolveWith((states) => ring(
+          states, side?.resolve(states),
+          color: color ?? AgpColors.focusRing)),
+    );
+  }
+
+  final chipSide = theme.chipTheme.side;
+  return theme.copyWith(
+    focusColor: AgpColors.accent.withValues(alpha: 0.32),
+    iconButtonTheme:
+        IconButtonThemeData(style: withRing(theme.iconButtonTheme.style)),
+    // 實心按鈕本身就是青色, 青色的框套上去等於沒有
+    filledButtonTheme: FilledButtonThemeData(
+        style: withRing(theme.filledButtonTheme.style,
+            color: theme.colorScheme.onSurface)),
+    outlinedButtonTheme: OutlinedButtonThemeData(
+        style: withRing(theme.outlinedButtonTheme.style)),
+    textButtonTheme:
+        TextButtonThemeData(style: withRing(theme.textButtonTheme.style)),
+    chipTheme: theme.chipTheme.copyWith(
+      side: WidgetStateBorderSide.resolveWith(
+          (states) => ring(states, chipSide) ?? BorderSide.none),
     ),
   );
 }

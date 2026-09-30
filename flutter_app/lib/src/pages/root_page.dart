@@ -6,6 +6,7 @@ import 'package:flutter/material.dart';
 
 import '../state/app_state.dart';
 import '../theme.dart';
+import '../util/device.dart';
 import '../widgets/common.dart';
 import 'all_tab.dart';
 import 'downloads_page.dart';
@@ -50,59 +51,107 @@ class _RootPageState extends State<RootPage> {
             appBar: _buildAppBar(),
             body: SafeArea(
               top: false,
-              child: IndexedStack(
-                index: _index,
-                children: [
-                  HomeTab(
-                      state: state, onSeeAll: () => setState(() => _index = 1)),
-                  AllTab(state: state, query: ''),
-                  FavouritesTab(state: state),
-                  HistoryTab(state: state),
-                  MeTab(state: state),
-                ],
-              ),
+              child: Device.tv
+                  // 電視: 分頁移到左邊. 橫的螢幕上下本來就不夠高, 而且遙控器
+                  // 往左一按就回到分頁, 比一路往下按到底自然
+                  ? Row(
+                      crossAxisAlignment: CrossAxisAlignment.stretch,
+                      children: [
+                        _buildRail(),
+                        const VerticalDivider(width: 1),
+                        Expanded(child: _buildTabs()),
+                      ],
+                    )
+                  : _buildTabs(),
             ),
-            bottomNavigationBar: NavigationBar(
-              selectedIndex: _index,
-              onDestinationSelected: (index) {
-                if (index == _index && index == 0) {
-                  return;
-                }
-                setState(() {
-                  _index = index;
-                });
-              },
-              destinations: const [
-                NavigationDestination(
-                  icon: Icon(Icons.home_outlined),
-                  selectedIcon: Icon(Icons.home_rounded),
-                  label: '首頁',
-                ),
-                NavigationDestination(
-                  icon: Icon(Icons.grid_view_outlined),
-                  selectedIcon: Icon(Icons.grid_view_rounded),
-                  label: '所有動畫',
-                ),
-                NavigationDestination(
-                  icon: Icon(Icons.favorite_outline),
-                  selectedIcon: Icon(Icons.favorite_rounded),
-                  label: '收藏',
-                ),
-                NavigationDestination(
-                  icon: Icon(Icons.history_outlined),
-                  selectedIcon: Icon(Icons.history_rounded),
-                  label: '紀錄',
-                ),
-                NavigationDestination(
-                  icon: Icon(Icons.person_outline),
-                  selectedIcon: Icon(Icons.person_rounded),
-                  label: '我的',
-                ),
-              ],
-            ),
+            bottomNavigationBar: Device.tv
+                ? null
+                : NavigationBar(
+                    selectedIndex: _index,
+                    onDestinationSelected: _select,
+                    destinations: [
+                      for (final tab in _tabs)
+                        NavigationDestination(
+                          icon: Icon(tab.icon),
+                          selectedIcon: Icon(tab.selectedIcon),
+                          label: tab.label,
+                        ),
+                    ],
+                  ),
           ),
         );
       },
+    );
+  }
+
+  static const _tabs = [
+    (icon: Icons.home_outlined, selectedIcon: Icons.home_rounded, label: '首頁'),
+    (
+      icon: Icons.grid_view_outlined,
+      selectedIcon: Icons.grid_view_rounded,
+      label: '所有動畫'
+    ),
+    (
+      icon: Icons.favorite_outline,
+      selectedIcon: Icons.favorite_rounded,
+      label: '收藏'
+    ),
+    (
+      icon: Icons.history_outlined,
+      selectedIcon: Icons.history_rounded,
+      label: '紀錄'
+    ),
+    (
+      icon: Icons.person_outline,
+      selectedIcon: Icons.person_rounded,
+      label: '我的'
+    ),
+  ];
+
+  void _select(int index) {
+    if (index == _index && index == 0) {
+      return;
+    }
+    setState(() {
+      _index = index;
+    });
+  }
+
+  Widget _buildTabs() {
+    return IndexedStack(
+      index: _index,
+      children: [
+        HomeTab(state: state, onSeeAll: () => setState(() => _index = 1)),
+        AllTab(state: state, query: ''),
+        FavouritesTab(state: state),
+        HistoryTab(state: state),
+        MeTab(state: state),
+      ],
+    );
+  }
+
+  Widget _buildRail() {
+    return NavigationRail(
+      selectedIndex: _index,
+      onDestinationSelected: _select,
+      labelType: NavigationRailLabelType.all,
+      backgroundColor: Theme.of(context).navigationBarTheme.backgroundColor,
+      indicatorColor: AgpColors.accentSoft,
+      selectedIconTheme: const IconThemeData(color: AgpColors.accent),
+      selectedLabelTextStyle: const TextStyle(
+          fontSize: 12, fontWeight: FontWeight.w700, color: AgpColors.accent),
+      unselectedLabelTextStyle: TextStyle(
+          fontSize: 12,
+          fontWeight: FontWeight.w600,
+          color: Theme.of(context).colorScheme.onSurfaceVariant),
+      destinations: [
+        for (final tab in _tabs)
+          NavigationRailDestination(
+            icon: Icon(tab.icon),
+            selectedIcon: Icon(tab.selectedIcon),
+            label: Text(tab.label),
+          ),
+      ],
     );
   }
 

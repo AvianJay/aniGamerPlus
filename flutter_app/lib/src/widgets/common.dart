@@ -452,3 +452,51 @@ class Rail extends StatelessWidget {
     );
   }
 }
+
+/// 用遙控器 / 鍵盤移到這一格時畫一圈框.
+///
+/// InkWell 自己的焦點色是畫在 Material 上、封面底下的, 一張不透明的封面蓋上去
+/// 就完全看不到 —— 在電視上等於不知道現在停在哪一格. 這一圈畫在最上層.
+///
+/// 只在「用按鍵操作」的模式才畫: 手指點下去不會讓 InkWell 拿到焦點, 手機上
+/// 看起來跟以前一模一樣.
+class FocusFrame extends StatefulWidget {
+  const FocusFrame({
+    super.key,
+    required this.child,
+    this.radius = kRadiusSmall,
+  });
+
+  final Widget child;
+  final double radius;
+
+  @override
+  State<FocusFrame> createState() => _FocusFrameState();
+}
+
+class _FocusFrameState extends State<FocusFrame> {
+  bool _focused = false;
+
+  @override
+  Widget build(BuildContext context) {
+    final show = _focused &&
+        FocusManager.instance.highlightMode == FocusHighlightMode.traditional;
+    return Focus(
+      // 自己不拿焦點, 只是聽底下那顆 InkWell 有沒有拿到
+      canRequestFocus: false,
+      skipTraversal: true,
+      onFocusChange: (focused) => setState(() => _focused = focused),
+      // 一直都是同一個 DecoratedBox, 只換框線: 用 Container 的話有框沒框是兩種
+      // 樹, 一換焦點底下的封面就整個重建、重新載一次圖
+      child: DecoratedBox(
+        position: DecorationPosition.foreground,
+        decoration: BoxDecoration(
+          borderRadius: BorderRadius.circular(widget.radius),
+          border:
+              show ? Border.all(color: AgpColors.focusRing, width: 3) : null,
+        ),
+        child: widget.child,
+      ),
+    );
+  }
+}

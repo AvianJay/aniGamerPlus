@@ -4,12 +4,17 @@
 /// 重導向把 token 撿出來, 畫面只負責收兩個欄位.
 library;
 
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 
 import '../api/client.dart';
 import '../state/app_state.dart';
+import '../state/remote_setup.dart';
 import '../theme.dart';
+import '../util/device.dart';
 import '../widgets/common.dart';
+import '../widgets/remote_setup_panel.dart';
 import 'register_page.dart';
 
 class LoginPage extends StatefulWidget {
@@ -84,92 +89,139 @@ class _LoginPageState extends State<LoginPage> {
     toast(context, '歡迎回來，$username。');
   }
 
+  /// 手機掃碼送來的帳號密碼. 先用一個獨立的連線驗過, 回手機一句話再換上去.
+  Future<String?> _remoteSubmit(RemoteSetupForm form) async {
+    final probe = AgpClient(baseUrl: state.client.baseUrl);
+    final String token;
+    try {
+      token = await probe.login(form.username, form.password);
+    } on ApiException catch (error) {
+      return error.message;
+    } catch (error) {
+      return '連不上伺服器: $error';
+    } finally {
+      probe.close();
+    }
+    unawaited(_applyRemote(form.username, token));
+    return null;
+  }
+
+  Future<void> _applyRemote(String username, String token) async {
+    await state.applyRemoteSetup(server: state.client.baseUrl, token: token);
+    if (!mounted) return;
+    Navigator.of(context).pop();
+    toast(context, '歡迎回來，$username。');
+  }
+
   @override
   Widget build(BuildContext context) {
-    return Scaffold(
-      appBar: AppBar(title: const Text('登入')),
-      body: ListView(
-        padding: const EdgeInsets.fromLTRB(20, 12, 20, 28),
-        children: [
-          Text(
-            state.client.baseUrl,
-            style: TextStyle(
-                fontSize: 12.5,
-                color: Theme.of(context).colorScheme.onSurfaceVariant),
+    final form = ListView(
+      padding: const EdgeInsets.fromLTRB(20, 12, 20, 28),
+      children: [
+        Text(
+          state.client.baseUrl,
+          style: TextStyle(
+              fontSize: 12.5,
+              color: Theme.of(context).colorScheme.onSurfaceVariant),
+        ),
+        const SizedBox(height: 18),
+        TextField(
+          controller: _username,
+          autocorrect: false,
+          enableSuggestions: false,
+          textInputAction: TextInputAction.next,
+          decoration: const InputDecoration(
+            labelText: '帳號',
+            prefixIcon: Icon(Icons.person_outline),
           ),
-          const SizedBox(height: 18),
-          TextField(
-            controller: _username,
-            autocorrect: false,
-            enableSuggestions: false,
-            textInputAction: TextInputAction.next,
-            decoration: const InputDecoration(
-              labelText: '帳號',
-              prefixIcon: Icon(Icons.person_outline),
+          onSubmitted: (_) => _passwordFocus.requestFocus(),
+        ),
+        const SizedBox(height: 12),
+        TextField(
+          controller: _password,
+          focusNode: _passwordFocus,
+          obscureText: _obscure,
+          autocorrect: false,
+          enableSuggestions: false,
+          textInputAction: TextInputAction.done,
+          decoration: InputDecoration(
+            labelText: '密碼',
+            prefixIcon: const Icon(Icons.lock_outline),
+            suffixIcon: IconButton(
+              icon: Icon(_obscure
+                  ? Icons.visibility_outlined
+                  : Icons.visibility_off_outlined),
+              onPressed: () => setState(() => _obscure = !_obscure),
             ),
-            onSubmitted: (_) => _passwordFocus.requestFocus(),
           ),
-          const SizedBox(height: 12),
-          TextField(
-            controller: _password,
-            focusNode: _passwordFocus,
-            obscureText: _obscure,
-            autocorrect: false,
-            enableSuggestions: false,
-            textInputAction: TextInputAction.done,
-            decoration: InputDecoration(
-              labelText: '密碼',
-              prefixIcon: const Icon(Icons.lock_outline),
-              suffixIcon: IconButton(
-                icon: Icon(_obscure
-                    ? Icons.visibility_outlined
-                    : Icons.visibility_off_outlined),
-                onPressed: () => setState(() => _obscure = !_obscure),
-              ),
+          onSubmitted: (_) => _submit(),
+        ),
+        if (_error.isNotEmpty)
+          Padding(
+            padding: const EdgeInsets.only(top: 12),
+            child: Text(
+              _error,
+              style: const TextStyle(fontSize: 13, color: AgpColors.accent),
             ),
-            onSubmitted: (_) => _submit(),
           ),
-          if (_error.isNotEmpty)
-            Padding(
-              padding: const EdgeInsets.only(top: 12),
-              child: Text(
-                _error,
-                style: const TextStyle(fontSize: 13, color: AgpColors.accent),
-              ),
-            ),
-          const SizedBox(height: 20),
-          FilledButton(
-            onPressed: _busy ? null : _submit,
-            child: _busy
-                ? const SizedBox(
-                    width: 18,
-                    height: 18,
-                    child: CircularProgressIndicator(
-                        strokeWidth: 2, color: Colors.white),
-                  )
-                : const Text('登入'),
-          ),
-          if (state.serverInfo.allowRegister) ...[
-            const SizedBox(height: 10),
-            OutlinedButton(
-              onPressed: _busy
-                  ? null
-                  : () => Navigator.of(context).push(MaterialPageRoute(
-                        builder: (_) => RegisterPage(state: state),
-                      )),
-              child: const Text('註冊新帳號'),
-            ),
-          ],
-          const SizedBox(height: 18),
-          Text(
-            '觀看紀錄存在伺服器上，換裝置登入同一個帳號就找得回來。已經下載到這支手機的集數不受影響。',
-            style: TextStyle(
-                fontSize: 12.5,
-                height: 1.6,
-                color: Theme.of(context).colorScheme.onSurfaceVariant),
+        const SizedBox(height: 20),
+        FilledButton(
+          onPressed: _busy ? null : _submit,
+          child: _busy
+              ? const SizedBox(
+                  width: 18,
+                  height: 18,
+                  child: CircularProgressIndicator(
+                      strokeWidth: 2, color: Colors.white),
+                )
+              : const Text('登入'),
+        ),
+        if (state.serverInfo.allowRegister) ...[
+          const SizedBox(height: 10),
+          OutlinedButton(
+            onPressed: _busy
+                ? null
+                : () => Navigator.of(context).push(MaterialPageRoute(
+                      builder: (_) => RegisterPage(state: state),
+                    )),
+            child: const Text('註冊新帳號'),
           ),
         ],
-      ),
+        const SizedBox(height: 18),
+        Text(
+          '觀看紀錄存在伺服器上，換裝置登入同一個帳號就找得回來。已經下載到這支手機的集數不受影響。',
+          style: TextStyle(
+              fontSize: 12.5,
+              height: 1.6,
+              color: Theme.of(context).colorScheme.onSurfaceVariant),
+        ),
+      ],
+    );
+
+    return Scaffold(
+      appBar: AppBar(title: const Text('登入')),
+      body: Device.tv
+          ? Row(
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                Expanded(child: form),
+                const VerticalDivider(width: 1),
+                SizedBox(
+                  width: 380,
+                  child: Center(
+                    child: SingleChildScrollView(
+                      padding: const EdgeInsets.all(24),
+                      child: RemoteSetupPanel(
+                        askServer: false,
+                        initialServer: state.client.baseUrl,
+                        onSubmit: _remoteSubmit,
+                      ),
+                    ),
+                  ),
+                ),
+              ],
+            )
+          : form,
     );
   }
 }

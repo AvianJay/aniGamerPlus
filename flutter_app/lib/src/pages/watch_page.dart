@@ -39,6 +39,7 @@ import '../state/prefs.dart';
 import '../state/seek_preview.dart';
 import '../state/intro_skip.dart';
 import '../theme.dart';
+import '../util/device.dart';
 import '../util/format.dart';
 import '../widgets/common.dart';
 import '../widgets/seek_preview_card.dart';
@@ -410,6 +411,13 @@ class _WatchPageState extends State<WatchPage> with WidgetsBindingObserver {
   bool _boosting = false;
   double _boostFrom = 1;
 
+  // ------------------------------------------------------------- 遙控器
+  /// 整個播放區. 控制列收起來的時候焦點停在這裡, 方向鍵拿來倒退 / 快轉.
+  final FocusNode _playerFocus = FocusNode(debugLabel: 'player-surface');
+
+  /// 播放鍵. 叫出控制列時焦點從這一顆開始.
+  final FocusNode _playFocus = FocusNode(debugLabel: 'player-play');
+
   // ------------------------------------------------------------- 手勢
   double _dragFrom = 0;
   double _dragAccum = 0;
@@ -453,6 +461,9 @@ class _WatchPageState extends State<WatchPage> with WidgetsBindingObserver {
     _autoNext = prefs.autoNext;
     _quality = prefs.playbackResolution;
     _streaming = widget.streaming;
+    // 電視沒有「直的、上面影片下面選集」那一種版面可言, 一進來就是全螢幕.
+    // 系統列跟方向都不必動: 電視本來就是橫的, 也沒有狀態列
+    if (Device.tv) _fullscreen = true;
     _pipSubscription =
         VideoPlayerPip.instance.onPipModeChanged.listen((active) {
       if (!mounted) return;
@@ -522,6 +533,8 @@ class _WatchPageState extends State<WatchPage> with WidgetsBindingObserver {
     _clock.dispose();
     _netSpeed.dispose();
     _qualities.dispose();
+    _playerFocus.dispose();
+    _playFocus.dispose();
     // 離開播放頁就把進度落盤, 不要留著那一秒的 debounce 在後面等 —— 使用者
     // 退出去之後馬上把 app 滑掉的話, 那一秒就是進度不見的那一秒.
     unawaited(state.flushWatchTimesToDisk());
@@ -1854,7 +1867,16 @@ class _WatchPageState extends State<WatchPage> with WidgetsBindingObserver {
         return;
       }
       setState(() => _controlsVisible = false);
+      _reclaimFocus();
     });
+  }
+
+  /// 控制列收起來了, 焦點不能還留在看不見的按鈕上 —— 不然下一次按左右是在
+  /// 看不見的按鈕之間移動, 而不是倒退 / 快進.
+  void _reclaimFocus() {
+    if (_playerFocus.hasFocus && !_playerFocus.hasPrimaryFocus) {
+      _playerFocus.requestFocus();
+    }
   }
 
   void _showControls() {
@@ -1864,7 +1886,127 @@ class _WatchPageState extends State<WatchPage> with WidgetsBindingObserver {
 
   void _toggleControls() {
     setState(() => _controlsVisible = !_controlsVisible);
+    if (!_controlsVisible) _reclaimFocus();
     _armIdle();
+  }
+
+  // =============================================================== 遙控器 / 鍵盤
+
+  /// 按鍵先送到拿著焦點的那一個, 沒人處理才一路往上交. 這個 Focus 包著整個
+  /// 播放區, 所以控制列上的按鈕沒用到的鍵也都會經過這裡.
+  ///
+  /// 焦點在播放區本身 (控制列收著, 或剛進來) 的時候: 左右 = 倒退 / 快進,
+  /// 確認 = 暫停 / 播放, 上下 = 叫出控制列. 焦點在控制列的按鈕上時, 方向鍵
+  /// 照常在按鈕之間移動.
+  KeyEventResult _onPlayerKey(FocusNode node, KeyEvent event) {
+    if (event is KeyUpEvent) return KeyEventResult.ignored;
+    final key = event.logicalKey;
+    final repeat = event is KeyRepeatEvent;
+
+    // 遙控器上專用的媒體鍵: 焦點在哪都一樣
+    if (key == LogicalKeyboardKey.mediaPlayPause ||
+        key == LogicalKeyboardKey.mediaPlay ||
+        key == LogicalKeyboardKey.mediaPause) {
+      final want = key == LogicalKeyboardKey.mediaPlayPause
+          ? !_showsPlaying
+          : key == LogicalKeyboardKey.mediaPlay;
+      if (!repeat && want != _showsPlaying) unawaited(_togglePlay());
+      _showControls();
+      return KeyEventResult.handled;
+    }
+    if (key == LogicalKeyboardKey.mediaFastForward ||
+        key == LogicalKeyboardKey.mediaRewind) {
+      _keySeek(key == LogicalKeyboardKey.mediaFastForward ? 1 : -1);
+      return KeyEventResult.handled;
+    }
+    if (key == LogicalKeyboardKey.mediaTrackNext ||
+        key == LogicalKeyboardKey.mediaTrackPrevious) {
+      if (!repeat) {
+        _goRelative(key == LogicalKeyboardKey.mediaTrackNext ? 1 : -1);
+      }
+      return KeyEventResult.handled;
+    }
+
+    // 控制列開著、焦點在按鈕上: 交給預設的方向鍵移動跟確認鍵, 只把收起來的
+    // 倒數重新算過
+    if (_controlsVisible && !_playerFocus.hasPrimaryFocus) {
+      _armIdle();
+      return KeyEventResult.ignored;
+    }
+    final arrow = key == LogicalKeyboardKey.arrowLeft ||
+        key == LogicalKeyboardKey.arrowRight ||
+        key == LogicalKeyboardKey.arrowUp ||
+        key == LogicalKeyboardKey.arrowDown;
+    if (!arrow && !_isConfirmKey(key)) return KeyEventResult.ignored;
+    // 控制列收起來了焦點卻還在某一顆上 (例如剛從設定選單回來): 拿回來
+    _reclaimFocus();
+
+    if (key == LogicalKeyboardKey.arrowLeft ||
+        key == LogicalKeyboardKey.arrowRight) {
+      _keySeek(key == LogicalKeyboardKey.arrowRight ? 1 : -1);
+    } else if (arrow) {
+      _showControls();
+      _playFocus.requestFocus();
+    } else if (!repeat) {
+      _confirmOnSurface();
+    }
+    return KeyEventResult.handled;
+  }
+
+  static bool _isConfirmKey(LogicalKeyboardKey key) =>
+      key == LogicalKeyboardKey.select ||
+      key == LogicalKeyboardKey.enter ||
+      key == LogicalKeyboardKey.numpadEnter ||
+      key == LogicalKeyboardKey.space ||
+      key == LogicalKeyboardKey.gameButtonA;
+
+  void _keySeek(int direction) {
+    if (!(_controller?.value.isInitialized ?? false)) return;
+    unawaited(_seekBy(direction * kSkipSeconds.toDouble()));
+    _flashMessage(direction > 0 ? '快進 $kSkipSeconds 秒' : '倒退 $kSkipSeconds 秒');
+  }
+
+  /// 播放區上按確認鍵. 畫面上有在等人回答的東西就先回答它 —— 那些按鈕散在
+  /// 畫面各處, 用方向鍵一顆一顆移過去太遠了.
+  void _confirmOnSurface() {
+    if (_error.isNotEmpty) {
+      unawaited(_boot());
+      return;
+    }
+    final next = _nextOffer;
+    if (next != null) {
+      _nextTimer?.cancel();
+      setState(() => _nextOffer = null);
+      unawaited(_switchTo(next));
+      return;
+    }
+    final intro = _effectiveIntro;
+    if (!_skipDismissed && intro != null && intro.visibleAt(_clock.value)) {
+      _skipOpening(intro);
+      return;
+    }
+    unawaited(_togglePlay());
+    _showControls();
+    _playFocus.requestFocus();
+  }
+
+  void _skipOpening(IntroSkip intro) {
+    setState(() => _skipDismissed = true);
+    unawaited(_seekTo(intro.end));
+  }
+
+  /// 電視上的返回鍵: 下一集的倒數、開著的控制列先收掉, 都沒有才離開.
+  bool get _tvBackConsumes =>
+      _nextOffer != null || (_controlsVisible && _showsPlaying);
+
+  void _tvBack() {
+    if (_nextOffer != null) {
+      _cancelNext();
+      return;
+    }
+    _idleTimer?.cancel();
+    setState(() => _controlsVisible = false);
+    _reclaimFocus();
   }
 
   // =============================================================== 手勢
@@ -2223,9 +2365,13 @@ class _WatchPageState extends State<WatchPage> with WidgetsBindingObserver {
   @override
   Widget build(BuildContext context) {
     return PopScope(
-      canPop: !_fullscreen,
+      canPop: Device.tv ? !_tvBackConsumes : !_fullscreen,
       onPopInvokedWithResult: (didPop, _) {
         if (didPop) return;
+        if (Device.tv) {
+          _tvBack();
+          return;
+        }
         unawaited(_setFullscreen(false));
       },
       child: Scaffold(
@@ -2530,136 +2676,144 @@ class _WatchPageState extends State<WatchPage> with WidgetsBindingObserver {
               child: ready ? _fitted(controller) : const SizedBox.shrink());
         }
 
-        return ColoredBox(
-          color: Colors.black,
-          child: _gestureLayer(size,
-              child: Stack(
-                fit: StackFit.expand,
-                children: [
-                  if (ready) _fitted(controller) else _poster(),
-                  if (_danmakuOn && _danmaku.isNotEmpty)
-                    Positioned.fill(
-                      // 時鐘直接交給彈幕層, 不要在這裡包 ValueListenableBuilder
-                      // —— 那等於每一幀重建一次整個彈幕層
-                      child: DanmakuOverlay(
-                        comments: _danmaku,
-                        position: _positionNow,
-                        rate: _boosting ? 2 : _rate,
-                        playing: _playing &&
-                            !_scrubbing &&
-                            _pendingSeek == null &&
-                            !_buffering,
-                        buffering:
-                            _buffering && !_scrubbing && _pendingSeek == null,
-                        enabled: _danmakuOn,
-                        opacity: _danmakuOpacity / 100,
-                        area: _danmakuArea,
-                        scale: _danmakuScale,
-                        speed: _danmakuSpeed,
-                      ),
-                    ),
-                  if ((_initialising || !ready) && _error.isEmpty)
-                    Center(child: _PlayerSpinner(size: 36, speed: _netSpeed)),
-                  if (_error.isNotEmpty) _errorOverlay(),
-                  if (ready && (_buffering || _pendingSeek != null))
-                    // 開始播之後就不要再把轉圈壓在畫面正中央 —— 底下那一幀
-                    // 還在, 使用者要的只是「還在跑嗎、跑多快」
-                    if (_hasPlayed)
-                      _bufferSpeedBadge()
-                    else
-                      Center(child: _PlayerSpinner(size: 32, speed: _netSpeed)),
-                  if (_downloading.isNotEmpty) _downloadBadge(),
-                  AnimatedOpacity(
-                    opacity: _controlsVisible ? 1 : 0,
-                    duration: const Duration(milliseconds: 180),
-                    child: IgnorePointer(
-                      ignoring: !_controlsVisible,
-                      // 時間跟進度條一秒動十次. 收起來的時候 AnimatedOpacity
-                      // 不再是重畫的邊界, 沒有這一層的話那十次會一路往上把
-                      // 整個頁面拖去重畫.
-                      child: RepaintBoundary(
-                          child: _controls(mobileInline: mobileInline)),
-                    ),
-                  ),
-                  if (!_skipDismissed && _effectiveIntro != null)
-                    Positioned(
-                      right: 16,
-                      top: mobileInline ? 12 : null,
-                      bottom: mobileInline
-                          ? null
-                          : math.min(
-                              math.max(176.0, size.height * .24) +
-                                  (_fullscreen
-                                      ? MediaQuery.paddingOf(context).bottom
-                                      : 0),
-                              size.height - 48),
-                      child: ValueListenableBuilder<double>(
-                        valueListenable: _clock,
-                        builder: (context, position, _) {
-                          final intro = _effectiveIntro;
-                          if (intro == null || !intro.visibleAt(position)) {
-                            return const SizedBox.shrink();
-                          }
-                          void skipOpening() {
-                            setState(() => _skipDismissed = true);
-                            unawaited(_seekTo(intro.end));
-                          }
-                          return Semantics(
-                            button: true,
-                            label: '跳過片頭 · ${intro.source}',
-                            onTap: skipOpening,
-                            child: Material(
-                              color: const Color(0xCC101014),
-                              shape: RoundedRectangleBorder(
-                                borderRadius: BorderRadius.circular(4),
-                                side:
-                                    const BorderSide(color: Color(0xB3FFFFFF)),
-                              ),
-                              child: InkWell(
-                                key: const ValueKey('skip-intro'),
-                                borderRadius: BorderRadius.circular(4),
-                                excludeFromSemantics: true,
-                                onTap: skipOpening,
-                                child: const Padding(
-                                  padding: EdgeInsets.symmetric(
-                                      horizontal: 12, vertical: 8),
-                                  child: Text('跳過片頭',
-                                      style: TextStyle(
-                                          color: Colors.white,
-                                          fontSize: 12.5,
-                                          fontWeight: FontWeight.w700)),
-                                ),
-                              ),
-                            ),
-                          );
-                        },
-                      ),
-                    ),
-                  if (!_scrubbing && (_flash.isNotEmpty || _hud.isNotEmpty))
-                    _hudChip(),
-                  if (_boosting)
-                    Positioned(
-                        top: 62,
-                        left: 0,
-                        right: 0,
+        return Focus(
+            focusNode: _playerFocus,
+            // 電視一進來就要能用方向鍵; 手機只有接了鍵盤、按到這裡才會拿到
+            autofocus: Device.tv,
+            onKeyEvent: _onPlayerKey,
+            child: ColoredBox(
+              color: Colors.black,
+              child: _gestureLayer(size,
+                  child: Stack(
+                    fit: StackFit.expand,
+                    children: [
+                      if (ready) _fitted(controller) else _poster(),
+                      if (_danmakuOn && _danmaku.isNotEmpty)
+                        Positioned.fill(
+                          // 時鐘直接交給彈幕層, 不要在這裡包 ValueListenableBuilder
+                          // —— 那等於每一幀重建一次整個彈幕層
+                          child: DanmakuOverlay(
+                            comments: _danmaku,
+                            position: _positionNow,
+                            rate: _boosting ? 2 : _rate,
+                            playing: _playing &&
+                                !_scrubbing &&
+                                _pendingSeek == null &&
+                                !_buffering,
+                            buffering: _buffering &&
+                                !_scrubbing &&
+                                _pendingSeek == null,
+                            enabled: _danmakuOn,
+                            opacity: _danmakuOpacity / 100,
+                            area: _danmakuArea,
+                            scale: _danmakuScale,
+                            speed: _danmakuSpeed,
+                          ),
+                        ),
+                      if ((_initialising || !ready) && _error.isEmpty)
+                        Center(
+                            child: _PlayerSpinner(size: 36, speed: _netSpeed)),
+                      if (_error.isNotEmpty) _errorOverlay(),
+                      if (ready && (_buffering || _pendingSeek != null))
+                        // 開始播之後就不要再把轉圈壓在畫面正中央 —— 底下那一幀
+                        // 還在, 使用者要的只是「還在跑嗎、跑多快」
+                        if (_hasPlayed)
+                          _bufferSpeedBadge()
+                        else
+                          Center(
+                              child:
+                                  _PlayerSpinner(size: 32, speed: _netSpeed)),
+                      if (_downloading.isNotEmpty) _downloadBadge(),
+                      AnimatedOpacity(
+                        opacity: _controlsVisible ? 1 : 0,
+                        duration: const Duration(milliseconds: 180),
                         child: IgnorePointer(
-                            child: Center(
-                                child: Container(
-                          padding: const EdgeInsets.symmetric(
-                              horizontal: 18, vertical: 9),
-                          decoration: BoxDecoration(
-                              color: const Color(0xB3000000),
-                              borderRadius: BorderRadius.circular(24)),
-                          child: const Text('2x 倍速中',
-                              style: TextStyle(
-                                  color: Colors.white,
-                                  fontSize: 16,
-                                  fontWeight: FontWeight.w700)),
-                        )))),
-                  if (_nextOffer != null) _nextCard(),
-                ],
-              )),
-        );
+                          ignoring: !_controlsVisible,
+                          // 時間跟進度條一秒動十次. 收起來的時候 AnimatedOpacity
+                          // 不再是重畫的邊界, 沒有這一層的話那十次會一路往上把
+                          // 整個頁面拖去重畫.
+                          child: RepaintBoundary(
+                              child: _controls(mobileInline: mobileInline)),
+                        ),
+                      ),
+                      if (!_skipDismissed && _effectiveIntro != null)
+                        Positioned(
+                          right: 16,
+                          top: mobileInline ? 12 : null,
+                          bottom: mobileInline
+                              ? null
+                              : math.min(
+                                  math.max(176.0, size.height * .24) +
+                                      (_fullscreen
+                                          ? MediaQuery.paddingOf(context).bottom
+                                          : 0),
+                                  size.height - 48),
+                          child: ValueListenableBuilder<double>(
+                            valueListenable: _clock,
+                            builder: (context, position, _) {
+                              final intro = _effectiveIntro;
+                              if (intro == null || !intro.visibleAt(position)) {
+                                return const SizedBox.shrink();
+                              }
+                              void skipOpening() => _skipOpening(intro);
+                              return Semantics(
+                                button: true,
+                                label: '跳過片頭 · ${intro.source}',
+                                onTap: skipOpening,
+                                child: Material(
+                                  color: const Color(0xCC101014),
+                                  shape: RoundedRectangleBorder(
+                                    borderRadius: BorderRadius.circular(4),
+                                    side: const BorderSide(
+                                        color: Color(0xB3FFFFFF)),
+                                  ),
+                                  child: InkWell(
+                                    key: const ValueKey('skip-intro'),
+                                    borderRadius: BorderRadius.circular(4),
+                                    excludeFromSemantics: true,
+                                    onTap: skipOpening,
+                                    child: Padding(
+                                      padding: const EdgeInsets.symmetric(
+                                          horizontal: 12, vertical: 8),
+                                      // 電視上不必移過來: 在播放區按確認鍵就是跳過
+                                      child: Text(
+                                          Device.tv ? '按 OK 跳過片頭' : '跳過片頭',
+                                          style: const TextStyle(
+                                              color: Colors.white,
+                                              fontSize: 12.5,
+                                              fontWeight: FontWeight.w700)),
+                                    ),
+                                  ),
+                                ),
+                              );
+                            },
+                          ),
+                        ),
+                      if (!_scrubbing && (_flash.isNotEmpty || _hud.isNotEmpty))
+                        _hudChip(),
+                      if (_boosting)
+                        Positioned(
+                            top: 62,
+                            left: 0,
+                            right: 0,
+                            child: IgnorePointer(
+                                child: Center(
+                                    child: Container(
+                              padding: const EdgeInsets.symmetric(
+                                  horizontal: 18, vertical: 9),
+                              decoration: BoxDecoration(
+                                  color: const Color(0xB3000000),
+                                  borderRadius: BorderRadius.circular(24)),
+                              child: const Text('2x 倍速中',
+                                  style: TextStyle(
+                                      color: Colors.white,
+                                      fontSize: 16,
+                                      fontWeight: FontWeight.w700)),
+                            )))),
+                      if (_nextOffer != null) _nextCard(),
+                    ],
+                  )),
+            ));
       },
     );
   }
@@ -2963,6 +3117,12 @@ class _WatchPageState extends State<WatchPage> with WidgetsBindingObserver {
                               // 從觀看紀錄點進來的人要按兩次才回得去.
                               // 先收掉全螢幕再 pop, 免得上一頁閃一下橫的.
                               onPressed: () async {
+                                // 電視一直都是全螢幕, 返回鍵又會先收控制列 ——
+                                // 這一顆是「真的要走」
+                                if (Device.tv) {
+                                  Navigator.of(context).pop();
+                                  return;
+                                }
                                 if (_fullscreen) await _setFullscreen(false);
                                 if (!mounted) return;
                                 await Navigator.of(context).maybePop();
@@ -3132,13 +3292,17 @@ class _WatchPageState extends State<WatchPage> with WidgetsBindingObserver {
           tooltip: _showsPlaying ? '暫停' : '播放',
           size: compact ? 48 : 60,
           hitSize: compact ? 56 : 72,
+          focusNode: _playFocus,
         ),
       ],
     );
   }
 
   Widget _roundButton(IconData icon, VoidCallback onTap,
-      {required String tooltip, double size = 26, double hitSize = 60}) {
+      {required String tooltip,
+      double size = 26,
+      double hitSize = 60,
+      FocusNode? focusNode}) {
     return Tooltip(
         message: tooltip,
         child: Material(
@@ -3146,6 +3310,7 @@ class _WatchPageState extends State<WatchPage> with WidgetsBindingObserver {
           shape: const CircleBorder(),
           child: InkWell(
             customBorder: const CircleBorder(),
+            focusNode: focusNode,
             onTap: () {
               _showControls();
               onTap();
@@ -3260,12 +3425,14 @@ class _WatchPageState extends State<WatchPage> with WidgetsBindingObserver {
                   unawaited(_setAspect(
                       kAspectModes[(index + 1) % kAspectModes.length].value));
                 }),
-              _barButton(
-                  _fullscreen
-                      ? Icons.fullscreen_exit_rounded
-                      : Icons.fullscreen_rounded,
-                  _fullscreen ? '離開全螢幕' : '全螢幕',
-                  () => unawaited(_setFullscreen(!_fullscreen))),
+              // 電視沒有不是全螢幕的版面
+              if (!Device.tv)
+                _barButton(
+                    _fullscreen
+                        ? Icons.fullscreen_exit_rounded
+                        : Icons.fullscreen_rounded,
+                    _fullscreen ? '離開全螢幕' : '全螢幕',
+                    () => unawaited(_setFullscreen(!_fullscreen))),
             ]),
         ]),
       ),

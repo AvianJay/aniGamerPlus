@@ -612,6 +612,22 @@ class AppState extends ChangeNotifier {
     await refreshAll();
   }
 
+  /// 掃碼設定送來的: 位址 (跟有填的話, 登入拿到的 token) 已經在送來的那一刻
+  /// 驗過了, 這裡只負責換上去. 刻意跟驗證分開 —— 驗完就能先回手機一句「好了」,
+  /// 不必讓它等這一邊把整份片庫重新拉一遍.
+  Future<void> applyRemoteSetup(
+      {required String server, String token = ''}) async {
+    client.baseUrl = server;
+    await prefs.setServer(client.baseUrl);
+    if (token.isNotEmpty) {
+      client.token = token;
+      await prefs.setToken(token);
+      // 跟 login() 一樣: 換人登入別把上一個人的進度合併進來
+      await _clearWatchTimes();
+    }
+    await refreshAll();
+  }
+
   Future<void> logout() async {
     await client.logout();
     await prefs.clearToken();

@@ -106,6 +106,36 @@ def patch_manifest(path):
     if activity is not None:
         activity.set(attr('supportsPictureInPicture'), 'true')
 
+    # 4. Android TV. 電視的桌面只列出有 LEANBACK_LAUNCHER 的 App, 而且要一張
+    #    橫幅 (android:banner, 圖在 android_extensions/). 觸控跟 leanback 都標成
+    #    「不一定要有」, 同一個 APK 手機跟電視都裝得上.
+    features = {
+        node.get(attr('name'))
+        for node in manifest.findall('uses-feature')
+    }
+    for feature in ('android.software.leanback',
+                    'android.hardware.touchscreen'):
+        if feature in features:
+            continue
+        node = ET.Element('uses-feature')
+        node.set(attr('name'), feature)
+        node.set(attr('required'), 'false')
+        manifest.insert(0, node)
+    if application is not None:
+        application.set(attr('banner'), '@drawable/tv_banner')
+    if activity is not None:
+        for intent in activity.findall('intent-filter'):
+            actions = {a.get(attr('name')) for a in intent.findall('action')}
+            if 'android.intent.action.MAIN' not in actions:
+                continue
+            categories = {
+                c.get(attr('name')) for c in intent.findall('category')
+            }
+            if 'android.intent.category.LEANBACK_LAUNCHER' not in categories:
+                node = ET.SubElement(intent, 'category')
+                node.set(attr('name'),
+                         'android.intent.category.LEANBACK_LAUNCHER')
+
     # 3. url_launcher 在 API 30 以上要先宣告想問哪些 scheme,
     #    不然「在動畫瘋開啟」會靜靜地什麼都不做.
     queries = manifest.find('queries')
@@ -128,6 +158,62 @@ def patch_manifest(path):
     if hasattr(ET, 'indent'):  # Python 3.9+
         ET.indent(tree, space='    ')
     tree.write(path, encoding='utf-8', xml_declaration=True)
+    print('  patched', path)
+
+
+def add_android_resources(res_dir):
+    # 樣板裡沒有的圖 (電視桌面的橫幅) 放在 android_extensions/res/, 照原樣疊上去
+    import shutil
+    shutil.copytree(os.path.join('android_extensions', 'res'), res_dir,
+                    dirs_exist_ok=True)
+    print('  copied android_extensions/res ->', res_dir)
+
+
+def patch_main_activity(kotlin_dir):
+    # 電視跟手機的版面不一樣, 而且得在 runApp 之前就知道 (直向鎖定要跳過),
+    # 見 lib/src/util/device.dart. 只是一個布林, 不值得為它另寫一個外掛.
+    import glob
+    paths = glob.glob(os.path.join(kotlin_dir, '**', 'MainActivity.kt'),
+                      recursive=True)
+    if len(paths) != 1:
+        raise RuntimeError(f'expected one MainActivity.kt under {kotlin_dir}')
+    path = paths[0]
+    with open(path, encoding='utf-8') as handle:
+        source = handle.read()
+
+    imports = 'import io.flutter.embedding.android.FlutterActivity\n'
+    declaration = 'class MainActivity : FlutterActivity()'
+    if source.count(imports) != 1 or source.count(declaration) != 1:
+        raise RuntimeError(f'unexpected MainActivity template in {path}')
+    source = source.replace(imports, '''import android.app.UiModeManager
+import android.content.Context
+import android.content.pm.PackageManager
+import android.content.res.Configuration
+import io.flutter.embedding.android.FlutterActivity
+import io.flutter.embedding.engine.FlutterEngine
+import io.flutter.plugin.common.MethodChannel
+''', 1)
+    source = source.replace(declaration, '''class MainActivity : FlutterActivity() {
+    override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
+        super.configureFlutterEngine(flutterEngine)
+        MethodChannel(flutterEngine.dartExecutor.binaryMessenger, "agp/device")
+            .setMethodCallHandler { call, result ->
+                when (call.method) {
+                    "isTelevision" -> result.success(isTelevision())
+                    else -> result.notImplemented()
+                }
+            }
+    }
+
+    private fun isTelevision(): Boolean {
+        val uiMode = getSystemService(Context.UI_MODE_SERVICE) as? UiModeManager
+        return uiMode?.currentModeType == Configuration.UI_MODE_TYPE_TELEVISION ||
+            packageManager.hasSystemFeature(PackageManager.FEATURE_LEANBACK)
+    }
+}''', 1)
+
+    with open(path, 'w', encoding='utf-8', newline='') as handle:
+        handle.write(source)
     print('  patched', path)
 
 
@@ -571,6 +657,8 @@ def add_live_activity_extension(project_path):
 
 
 patch_manifest(os.path.join('android', 'app', 'src', 'main', 'AndroidManifest.xml'))
+add_android_resources(os.path.join('android', 'app', 'src', 'main', 'res'))
+patch_main_activity(os.path.join('android', 'app', 'src', 'main', 'kotlin'))
 patch_android_signing(os.path.join('android', 'app', 'build.gradle.kts'))
 patch_plist(os.path.join('ios', 'Runner', 'Info.plist'))
 patch_ios_deployment(os.path.join('ios', 'Podfile'),

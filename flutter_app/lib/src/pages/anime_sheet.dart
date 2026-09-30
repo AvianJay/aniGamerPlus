@@ -690,7 +690,8 @@ class _AnimeSheetState extends State<_AnimeSheet> {
       foreground = Theme.of(context).colorScheme.onSurfaceVariant;
     }
 
-    return InkWell(
+    return FocusFrame(
+        child: InkWell(
       borderRadius: BorderRadius.circular(kRadiusSmall),
       onTap: () {
         if (episode.local) {
@@ -737,7 +738,7 @@ class _AnimeSheetState extends State<_AnimeSheet> {
           ],
         ),
       ),
-    );
+    ));
   }
 
   Future<void> _episodeMenu(SeriesInfo detail, SeriesEpisode episode) async {

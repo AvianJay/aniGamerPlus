@@ -69,6 +69,33 @@ AniSkip；查不到時依設定使用彈幕建議。
     複製在背景跑, 會顯示進度, 中途可以取消 (寫到一半的那個檔案會刪掉).
   * iOS: 開「檔案」App 的匯出面板, 存到手機、iCloud 雲碟或其他位置都可以.
 
+### Android TV
+
+同一個 APK 裝到 Android TV / Google TV 上就是電視版 (manifest 宣告了
+`LEANBACK_LAUNCHER` 跟桌面橫幅, 觸控標成非必要). 開 App 時問一次系統
+(`lib/src/util/device.dart`), 是電視的話:
+
+* 分頁移到左邊 (NavigationRail), 卡片、按鈕被選到時有明顯的框.
+* 播放器一進來就全螢幕. 遙控器:
+  * 控制列收著時: 左右 = 倒退 / 快進 10 秒 (按住連續跳), OK = 暫停 / 播放,
+    上下 = 叫出控制列 (焦點從播放鍵開始, 之後方向鍵在按鈕間移動).
+  * 畫面上出現「跳過片頭」、「即將播放下一集」、錯誤的「重試」時, 按 OK 就是那一個.
+  * 返回鍵: 播放中先收控制列 / 取消下一集倒數, 再按一次才離開.
+  * 遙控器上的播放/暫停、快轉、倒轉、上一首/下一首 (= 上一集/下一集) 鍵不管焦點在哪都有效.
+
+#### 掃碼設定
+
+用遙控器敲網址跟密碼太痛苦, 所以電視上的「伺服器位址」跟「登入」頁右邊會有一個 QR 碼:
+
+1. 電視在區網上開一台小伺服器 (`lib/src/state/remote_setup.dart`), QR 碼就是它的網址,
+   路徑帶一段隨機字串.
+2. 手機 (跟電視同一個網路) 用相機掃, 瀏覽器打開一頁表單, 填伺服器位址, 有開帳號系統的話
+   順便填帳號密碼. 手機上不需要裝這個 App.
+3. 送出後由電視自己去連線、登入驗證; 失敗的原因會顯示在手機上, 改了再送就好.
+   成功之後那台小伺服器就收掉, 離開設定頁也會收掉.
+
+跟 App 連自架伺服器一樣是區網 http, 密碼在區網上是明文傳的.
+
 ## 本機開發
 
 平台目錄 (`android/`, `ios/`) 不進版控 —— 那些是 `flutter create` 的樣板, 留在
@@ -82,7 +109,9 @@ bash tool/prepare_platforms.sh
 這支會 `flutter create` 一份樣板搬進來, 然後補上這個 App 需要的東西:
 
 * `AndroidManifest.xml`: `INTERNET` 權限、`usesCleartextTraffic`
-  (自架伺服器多半是區網 http)、url_launcher 要的 `<queries>`.
+  (自架伺服器多半是區網 http)、url_launcher 要的 `<queries>`、
+  Android TV 的 `LEANBACK_LAUNCHER` 與橫幅 (圖在 `android_extensions/res/`).
+* `MainActivity.kt`: 回答「這台是不是電視」的 `agp/device` 通道.
 * `Info.plist`: ATS 例外、區網存取說明、背景播放聲音、橫向.
 
 然後就是一般的 Flutter 流程:

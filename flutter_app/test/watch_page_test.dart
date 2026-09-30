@@ -16,6 +16,7 @@ import 'package:agp_mobile/src/pages/watch_page.dart';
 import 'package:agp_mobile/src/danmaku/danmaku_overlay.dart';
 import 'package:agp_mobile/src/state/app_state.dart';
 import 'package:agp_mobile/src/theme.dart';
+import 'package:agp_mobile/src/util/device.dart';
 import 'package:http/http.dart' as http;
 import 'package:http/testing.dart';
 
@@ -1310,5 +1311,101 @@ void main() {
 
     await tester.pumpWidget(const SizedBox());
     await tester.pump(const Duration(seconds: 1));
+  });
+
+  group('電視遙控器', () {
+    setUp(() => Device.tv = true);
+    tearDown(() => Device.tv = false);
+
+    String? focused() => FocusManager.instance.primaryFocus?.debugLabel;
+
+    double controlsOpacity(WidgetTester tester) => tester
+        .widget<AnimatedOpacity>(find
+            .ancestor(
+                of: find.byType(Slider), matching: find.byType(AnimatedOpacity))
+            .first)
+        .opacity;
+
+    testWidgets('一進來就是全螢幕、焦點在播放區: 左右跳轉, OK 暫停並把焦點交給播放鍵',
+        (tester) async {
+      await open(tester);
+      // 電視沒有「離開全螢幕」可言
+      expect(find.byTooltip('全螢幕'), findsNothing);
+      expect(find.byTooltip('離開全螢幕'), findsNothing);
+      expect(find.byTooltip('畫面比例'), findsOneWidget);
+      expect(focused(), 'player-surface');
+      expect(player.playing, true);
+
+      await tester.sendKeyEvent(LogicalKeyboardKey.arrowRight);
+      await tester.pump(const Duration(milliseconds: 150));
+      expect(player.seeks, hasLength(1));
+      expect(player.seeks.single.inSeconds, inInclusiveRange(28, 33));
+      expect(find.text('快進 10 秒'), findsOneWidget);
+      // 原生播放器跟上了, 跳轉才算結束
+      player.actual = player.seeks.single;
+      await tester.pump(const Duration(milliseconds: 300));
+      expect(player.playing, true);
+
+      await tester.sendKeyEvent(LogicalKeyboardKey.select, platform: 'android');
+      await tester.pump(const Duration(milliseconds: 300));
+      expect(player.playing, false);
+      expect(focused(), 'player-play');
+
+      // 焦點在控制列上的時候, 左右是在按鈕之間移動, 不是跳轉
+      await tester.sendKeyEvent(LogicalKeyboardKey.arrowLeft);
+      await tester.pump(const Duration(milliseconds: 300));
+      expect(player.seeks, hasLength(1));
+      expect(focused(), isNot('player-play'));
+
+      // 遙控器上的播放鍵不管焦點在哪都算
+      await tester.sendKeyEvent(LogicalKeyboardKey.mediaPlayPause,
+          platform: 'android');
+      await tester.pump(const Duration(milliseconds: 300));
+      expect(player.playing, true);
+
+      // 控制列自己收起來之後焦點回到播放區, 左右又是跳轉
+      await tester.pump(kControlsIdle + const Duration(seconds: 1));
+      expect(controlsOpacity(tester), 0);
+      expect(focused(), 'player-surface');
+      await tester.sendKeyEvent(LogicalKeyboardKey.arrowLeft);
+      await tester.pump(const Duration(milliseconds: 150));
+      expect(player.seeks, hasLength(2));
+
+      await tester.pumpWidget(const SizedBox());
+      await tester.pump(const Duration(seconds: 1));
+    });
+
+    testWidgets('返回鍵: 播放中先收控制列, 再按一次才離開', (tester) async {
+      levels.install(tester);
+      addTearDown(() => levels.remove(tester));
+      await resizeViewport(tester, const Size(960, 540));
+      await tester.pumpWidget(MaterialApp(
+          theme: buildTheme(brightness: Brightness.dark, tv: true),
+          home: const Scaffold(body: Text('home'))));
+      unawaited(tester.state<NavigatorState>(find.byType(Navigator)).push(
+          MaterialPageRoute<void>(
+              builder: (_) => WatchPage(state: state, sn: '1'))));
+      for (var i = 0; i < 10; i++) {
+        await tester.pump(const Duration(milliseconds: 100));
+      }
+      expect(player.playing, true);
+      expect(controlsOpacity(tester), 1);
+
+      await tester.binding.handlePopRoute();
+      await tester.pump(const Duration(milliseconds: 300));
+      expect(find.byType(WatchPage), findsOneWidget);
+      expect(controlsOpacity(tester), 0);
+
+      await tester.binding.handlePopRoute();
+      // 退場動畫跑完之後, 下一個 frame 才把整頁拿掉
+      for (var i = 0; i < 4; i++) {
+        await tester.pump(const Duration(milliseconds: 250));
+      }
+      expect(find.byType(WatchPage), findsNothing);
+      expect(find.text('home'), findsOneWidget);
+
+      await tester.pumpWidget(const SizedBox());
+      await tester.pump(const Duration(seconds: 1));
+    });
   });
 }

@@ -7,6 +7,7 @@ import 'pages/setup_page.dart';
 import 'pages/update_dialog.dart';
 import 'state/app_state.dart';
 import 'theme.dart';
+import 'util/device.dart';
 
 class AgpApp extends StatefulWidget {
   const AgpApp({super.key, required this.state});
@@ -33,8 +34,9 @@ class _AgpAppState extends State<AgpApp> {
 
   // 兩份主題各建一次就好. 每次都 buildTheme() 一份新的話, 內容一樣卻比不出
   // 相等, Theme 就會通知底下每一個用到它的 widget.
-  final ThemeData _light = buildTheme(brightness: Brightness.light);
-  final ThemeData _dark = buildTheme(brightness: Brightness.dark);
+  final ThemeData _light =
+      buildTheme(brightness: Brightness.light, tv: Device.tv);
+  final ThemeData _dark = buildTheme(brightness: Brightness.dark, tv: Device.tv);
   late ThemeMode _themeMode = widget.state.themeMode;
 
   @override

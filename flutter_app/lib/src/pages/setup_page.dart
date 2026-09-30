@@ -4,12 +4,17 @@
 /// 所以位址填的是 Dashboard 的網址, 跟你在瀏覽器上打的那一個一樣.
 library;
 
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 
 import '../api/client.dart';
 import '../state/app_state.dart';
+import '../state/remote_setup.dart';
 import '../theme.dart';
+import '../util/device.dart';
 import '../widgets/common.dart';
+import '../widgets/remote_setup_panel.dart';
 
 class SetupPage extends StatefulWidget {
   const SetupPage({super.key, required this.state, this.canPop = false});
@@ -72,6 +77,32 @@ class _SetupPageState extends State<SetupPage> {
     }
   }
 
+  /// 手機掃碼送來的. 位址跟帳號在這裡先驗過, 回手機一句話, 然後才換上去.
+  Future<String?> _remoteSubmit(RemoteSetupForm form) async {
+    final probe = AgpClient(baseUrl: form.server);
+    var token = '';
+    try {
+      await probe.serverInfo();
+      if (form.username.isNotEmpty) {
+        token = await probe.login(form.username, form.password);
+      }
+    } catch (error) {
+      return _explain(error);
+    } finally {
+      probe.close();
+    }
+    unawaited(_applyRemote(probe.baseUrl, token));
+    return null;
+  }
+
+  Future<void> _applyRemote(String server, String token) async {
+    if (mounted) setState(() => _controller.text = server);
+    await widget.state.applyRemoteSetup(server: server, token: token);
+    // 開機那一次不必自己走: 有了位址, 外面就換成首頁了
+    if (!mounted || !widget.canPop) return;
+    Navigator.of(context).pop(true);
+  }
+
   String _explain(Object error) {
     final text = error.toString();
     if (error is ApiException) {
@@ -82,7 +113,7 @@ class _SetupPageState extends State<SetupPage> {
     }
     if (text.contains('SocketException') ||
         text.contains('Connection refused')) {
-      return '連不上. 確認伺服器有開, 而且手機跟它在同一個網路';
+      return '連不上. 確認伺服器有開, 而且${Device.tv ? '電視' : '手機'}跟它在同一個網路';
     }
     if (text.contains('TimeoutException')) {
       return '連線逾時';
@@ -97,139 +128,160 @@ class _SetupPageState extends State<SetupPage> {
   Widget build(BuildContext context) {
     final history = widget.state.prefs.serverHistory;
 
+    final form = ListView(
+      padding: const EdgeInsets.fromLTRB(22, 28, 22, 32),
+      children: [
+        if (!widget.canPop) ...[
+          const SizedBox(height: 24),
+          Row(
+            children: [
+              Container(
+                width: 46,
+                height: 46,
+                decoration: BoxDecoration(
+                  color: AgpColors.accent,
+                  borderRadius: BorderRadius.circular(12),
+                ),
+                child: const Icon(Icons.play_arrow_rounded,
+                    color: Colors.white, size: 30),
+              ),
+              const SizedBox(width: 12),
+              const Text(
+                'aniGamerPlus',
+                style: TextStyle(fontSize: 25, fontWeight: FontWeight.w800),
+              ),
+            ],
+          ),
+          const SizedBox(height: 12),
+          Text(
+            '填上你自己那台 aniGamerPlus 的網址 —— 就是平常用瀏覽器開 Dashboard 的那一個.',
+            style: TextStyle(
+                fontSize: 14,
+                height: 1.5,
+                color: Theme.of(context).colorScheme.onSurfaceVariant),
+          ),
+          const SizedBox(height: 26),
+        ],
+        TextField(
+          controller: _controller,
+          autocorrect: false,
+          enableSuggestions: false,
+          keyboardType: TextInputType.url,
+          textInputAction: TextInputAction.go,
+          onSubmitted: (_) => _connect(),
+          decoration: const InputDecoration(
+            labelText: '伺服器位址',
+            hintText: 'http://192.168.1.10:5000',
+            prefixIcon: Icon(Icons.dns_outlined),
+          ),
+        ),
+        const SizedBox(height: 8),
+        Text(
+          '沒填 http:// 的話會自動補上.',
+          style: TextStyle(
+              fontSize: 12,
+              color: Theme.of(context).colorScheme.onSurfaceVariant),
+        ),
+        if (history.isNotEmpty) ...[
+          const SizedBox(height: 16),
+          Wrap(
+            spacing: 8,
+            runSpacing: 8,
+            children: [
+              for (final item in history)
+                ActionChip(
+                  label: Text(item, style: const TextStyle(fontSize: 12)),
+                  avatar: const Icon(Icons.history, size: 15),
+                  onPressed: () => setState(() => _controller.text = item),
+                ),
+            ],
+          ),
+        ],
+        if (_error.isNotEmpty) ...[
+          const SizedBox(height: 18),
+          _Banner(
+            icon: Icons.error_outline,
+            color: AgpColors.accent,
+            text: _error,
+          ),
+        ],
+        if (_hint.isNotEmpty) ...[
+          const SizedBox(height: 18),
+          _Banner(
+            icon: Icons.info_outline,
+            color: const Color(0xFF3A8BD8),
+            text: _hint,
+          ),
+        ],
+        const SizedBox(height: 22),
+        FilledButton(
+          onPressed: _busy ? null : _connect,
+          child: _busy
+              ? const SizedBox(
+                  width: 18,
+                  height: 18,
+                  child: CircularProgressIndicator(
+                      strokeWidth: 2, color: Colors.white),
+                )
+              : const Text('連線'),
+        ),
+        if (!widget.canPop && widget.state.downloads.finished.isNotEmpty) ...[
+          const SizedBox(height: 12),
+          OutlinedButton.icon(
+            onPressed: () {
+              toast(context, '離線模式: 只會看到已經下載到手機上的集數');
+              widget.state.offline = true;
+              widget.state.booting = false;
+              widget.state.refreshLibrary();
+            },
+            icon: const Icon(Icons.download_done_rounded, size: 18),
+            label: Text('先看離線的 ${widget.state.downloads.finished.length} 集'),
+          ),
+        ],
+        const SizedBox(height: 30),
+        const Divider(),
+        const SizedBox(height: 16),
+        const Text(
+          '找不到位址?',
+          style: TextStyle(fontWeight: FontWeight.w700, fontSize: 14),
+        ),
+        const SizedBox(height: 6),
+        Text(
+          '在跑 aniGamerPlus 的那台電腦上看 config.json 的 dashboard.host 跟 port, '
+          '例如 host 是 0.0.0.0、port 是 5000, 那手機上就填「電腦的區網 IP:5000」.',
+          style: TextStyle(
+              fontSize: 13,
+              height: 1.55,
+              color: Theme.of(context).colorScheme.onSurfaceVariant),
+        ),
+      ],
+    );
+
     return Scaffold(
       appBar: widget.canPop ? AppBar(title: const Text('伺服器位址')) : null,
       body: SafeArea(
-        child: ListView(
-          padding: const EdgeInsets.fromLTRB(22, 28, 22, 32),
-          children: [
-            if (!widget.canPop) ...[
-              const SizedBox(height: 24),
-              Row(
+        child: Device.tv
+            // 電視: 右邊擺 QR 碼. 左邊那一套還在, 有接鍵盤的話照樣能打
+            ? Row(
+                crossAxisAlignment: CrossAxisAlignment.stretch,
                 children: [
-                  Container(
-                    width: 46,
-                    height: 46,
-                    decoration: BoxDecoration(
-                      color: AgpColors.accent,
-                      borderRadius: BorderRadius.circular(12),
+                  Expanded(child: form),
+                  const VerticalDivider(width: 1),
+                  SizedBox(
+                    width: 380,
+                    child: Center(
+                      child: SingleChildScrollView(
+                        padding: const EdgeInsets.all(24),
+                        child: RemoteSetupPanel(
+                          onSubmit: _remoteSubmit,
+                          initialServer: widget.state.prefs.server,
+                        ),
+                      ),
                     ),
-                    child: const Icon(Icons.play_arrow_rounded,
-                        color: Colors.white, size: 30),
-                  ),
-                  const SizedBox(width: 12),
-                  const Text(
-                    'aniGamerPlus',
-                    style: TextStyle(fontSize: 25, fontWeight: FontWeight.w800),
                   ),
                 ],
-              ),
-              const SizedBox(height: 12),
-              Text(
-                '填上你自己那台 aniGamerPlus 的網址 —— 就是平常用瀏覽器開 Dashboard 的那一個.',
-                style: TextStyle(
-                    fontSize: 14,
-                    height: 1.5,
-                    color: Theme.of(context).colorScheme.onSurfaceVariant),
-              ),
-              const SizedBox(height: 26),
-            ],
-            TextField(
-              controller: _controller,
-              autocorrect: false,
-              enableSuggestions: false,
-              keyboardType: TextInputType.url,
-              textInputAction: TextInputAction.go,
-              onSubmitted: (_) => _connect(),
-              decoration: const InputDecoration(
-                labelText: '伺服器位址',
-                hintText: 'http://192.168.1.10:5000',
-                prefixIcon: Icon(Icons.dns_outlined),
-              ),
-            ),
-            const SizedBox(height: 8),
-            Text(
-              '沒填 http:// 的話會自動補上.',
-              style: TextStyle(
-                  fontSize: 12,
-                  color: Theme.of(context).colorScheme.onSurfaceVariant),
-            ),
-            if (history.isNotEmpty) ...[
-              const SizedBox(height: 16),
-              Wrap(
-                spacing: 8,
-                runSpacing: 8,
-                children: [
-                  for (final item in history)
-                    ActionChip(
-                      label: Text(item, style: const TextStyle(fontSize: 12)),
-                      avatar: const Icon(Icons.history, size: 15),
-                      onPressed: () => setState(() => _controller.text = item),
-                    ),
-                ],
-              ),
-            ],
-            if (_error.isNotEmpty) ...[
-              const SizedBox(height: 18),
-              _Banner(
-                icon: Icons.error_outline,
-                color: AgpColors.accent,
-                text: _error,
-              ),
-            ],
-            if (_hint.isNotEmpty) ...[
-              const SizedBox(height: 18),
-              _Banner(
-                icon: Icons.info_outline,
-                color: const Color(0xFF3A8BD8),
-                text: _hint,
-              ),
-            ],
-            const SizedBox(height: 22),
-            FilledButton(
-              onPressed: _busy ? null : _connect,
-              child: _busy
-                  ? const SizedBox(
-                      width: 18,
-                      height: 18,
-                      child: CircularProgressIndicator(
-                          strokeWidth: 2, color: Colors.white),
-                    )
-                  : const Text('連線'),
-            ),
-            if (!widget.canPop &&
-                widget.state.downloads.finished.isNotEmpty) ...[
-              const SizedBox(height: 12),
-              OutlinedButton.icon(
-                onPressed: () {
-                  toast(context, '離線模式: 只會看到已經下載到手機上的集數');
-                  widget.state.offline = true;
-                  widget.state.booting = false;
-                  widget.state.refreshLibrary();
-                },
-                icon: const Icon(Icons.download_done_rounded, size: 18),
-                label:
-                    Text('先看離線的 ${widget.state.downloads.finished.length} 集'),
-              ),
-            ],
-            const SizedBox(height: 30),
-            const Divider(),
-            const SizedBox(height: 16),
-            const Text(
-              '找不到位址?',
-              style: TextStyle(fontWeight: FontWeight.w700, fontSize: 14),
-            ),
-            const SizedBox(height: 6),
-            Text(
-              '在跑 aniGamerPlus 的那台電腦上看 config.json 的 dashboard.host 跟 port, '
-              '例如 host 是 0.0.0.0、port 是 5000, 那手機上就填「電腦的區網 IP:5000」.',
-              style: TextStyle(
-                  fontSize: 13,
-                  height: 1.55,
-                  color: Theme.of(context).colorScheme.onSurfaceVariant),
-            ),
-          ],
-        ),
+              )
+            : form,
       ),
     );
   }

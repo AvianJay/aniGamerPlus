@@ -545,25 +545,32 @@ class _ScheduleState extends State<_Schedule> {
             itemBuilder: (context, index) {
               final day = days[index];
               final on = day.weekday == today.weekday;
-              return GestureDetector(
-                onTap: () => setState(() => _weekday = day.weekday),
-                child: Container(
-                  padding: const EdgeInsets.symmetric(horizontal: 14),
-                  alignment: Alignment.center,
-                  decoration: BoxDecoration(
-                    color: on
-                        ? AgpColors.accent
-                        : Theme.of(context).colorScheme.surfaceContainerHighest,
-                    borderRadius: BorderRadius.circular(999),
-                  ),
-                  child: Text(
-                    '${day.label} ${day.episodes.length}',
-                    style: TextStyle(
-                      fontSize: 13,
-                      fontWeight: FontWeight.w700,
+              // InkWell 而不是 GestureDetector: 遙控器要移得到這一顆
+              return FocusFrame(
+                radius: 999,
+                child: InkWell(
+                  borderRadius: BorderRadius.circular(999),
+                  onTap: () => setState(() => _weekday = day.weekday),
+                  child: Container(
+                    padding: const EdgeInsets.symmetric(horizontal: 14),
+                    alignment: Alignment.center,
+                    decoration: BoxDecoration(
                       color: on
-                          ? Colors.white
-                          : Theme.of(context).colorScheme.onSurfaceVariant,
+                          ? AgpColors.accent
+                          : Theme.of(context)
+                              .colorScheme
+                              .surfaceContainerHighest,
+                      borderRadius: BorderRadius.circular(999),
+                    ),
+                    child: Text(
+                      '${day.label} ${day.episodes.length}',
+                      style: TextStyle(
+                        fontSize: 13,
+                        fontWeight: FontWeight.w700,
+                        color: on
+                            ? Colors.white
+                            : Theme.of(context).colorScheme.onSurfaceVariant,
+                      ),
                     ),
                   ),
                 ),

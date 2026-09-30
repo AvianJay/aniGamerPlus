@@ -50,6 +50,7 @@ dependencies:
   # App 內更新: 讀自己的 build number, 下載好的 APK 交給系統安裝器
   package_info_plus: ^10.2.1
   open_filex: ^4.7.0
+  qr: ^3.0.2
 
 dev_dependencies:
   flutter_test:

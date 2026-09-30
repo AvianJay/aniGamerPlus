@@ -78,142 +78,145 @@ class PosterCard extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return Material(
-        color: Theme.of(context).cardTheme.color,
-        borderRadius: BorderRadius.circular(5),
-        elevation: Theme.of(context).brightness == Brightness.light ? 1 : 0,
-        shadowColor: const Color(0x26000000),
-        clipBehavior: Clip.antiAlias,
-        child: InkWell(
-          onTap: onTap,
-          borderRadius: BorderRadius.circular(kRadiusSmall),
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              Stack(
+    return FocusFrame(
+        radius: 5,
+        child: Material(
+            color: Theme.of(context).cardTheme.color,
+            borderRadius: BorderRadius.circular(5),
+            elevation: Theme.of(context).brightness == Brightness.light ? 1 : 0,
+            shadowColor: const Color(0x26000000),
+            clipBehavior: Clip.antiAlias,
+            child: InkWell(
+              onTap: onTap,
+              borderRadius: BorderRadius.circular(kRadiusSmall),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                mainAxisSize: MainAxisSize.min,
                 children: [
-                  CoverImage(
-                    name: title,
-                    url: cover,
-                    cache: cache,
-                    sn: sn,
-                    poster: true,
-                    headers: headers,
-                    aspectRatio: aspectRatio,
-                    radius: 0,
-                  ),
-                  if (onFavourite != null)
-                    Positioned(
-                      right: 0,
-                      top: 0,
-                      child: IconButton(
-                        tooltip: favourite == true ? '取消收藏' : '收藏',
-                        onPressed: onFavourite,
-                        icon: Icon(
-                          favourite == true
-                              ? Icons.favorite
-                              : Icons.favorite_border,
-                          color: Colors.white,
-                          size: 28,
-                          shadows: const [
-                            Shadow(color: Colors.black54, blurRadius: 8)
-                          ],
-                        ),
+                  Stack(
+                    children: [
+                      CoverImage(
+                        name: title,
+                        url: cover,
+                        cache: cache,
+                        sn: sn,
+                        poster: true,
+                        headers: headers,
+                        aspectRatio: aspectRatio,
+                        radius: 0,
                       ),
-                    ),
-                  if (popularity != null && popularity!.isNotEmpty)
-                    Positioned(
-                      left: 0,
-                      right: 0,
-                      bottom: 0,
-                      child: Container(
-                        padding: const EdgeInsets.fromLTRB(8, 22, 8, 6),
-                        decoration: const BoxDecoration(
-                          gradient: LinearGradient(
-                            begin: Alignment.topCenter,
-                            end: Alignment.bottomCenter,
-                            colors: [Colors.transparent, Colors.black54],
-                          ),
-                        ),
-                        child: Row(
-                            mainAxisAlignment: MainAxisAlignment.end,
-                            children: [
-                              const Icon(Icons.visibility_outlined,
-                                  color: Colors.white, size: 14),
-                              const SizedBox(width: 4),
-                              Flexible(
-                                  child: Text(popularity!,
-                                      maxLines: 1,
-                                      overflow: TextOverflow.ellipsis,
-                                      style: const TextStyle(
-                                          color: Colors.white, fontSize: 11))),
-                            ]),
-                      ),
-                    ),
-                  if (badge != null)
-                    Positioned(
-                        right: 6,
-                        bottom: 6,
-                        child: Pill(label: badge!, dense: true)),
-                  if (rank != null)
-                    Positioned(
-                      left: 0,
-                      top: 0,
-                      child: Container(
-                        padding: const EdgeInsets.symmetric(
-                            horizontal: 8, vertical: 3),
-                        decoration: const BoxDecoration(
-                          color: AgpColors.accent,
-                          borderRadius: BorderRadius.only(
-                            topLeft: Radius.circular(kRadiusSmall),
-                            bottomRight: Radius.circular(kRadiusSmall),
-                          ),
-                        ),
-                        child: Text(
-                          '${rank!}',
-                          style: const TextStyle(
-                            color: Colors.white,
-                            fontSize: 12,
-                            fontWeight: FontWeight.w800,
-                          ),
-                        ),
-                      ),
-                    ),
-                ],
-              ),
-              Padding(
-                  padding: const EdgeInsets.fromLTRB(8, 8, 8, 6),
-                  child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        Text(
-                          title,
-                          maxLines: 2,
-                          overflow: TextOverflow.ellipsis,
-                          style: const TextStyle(
-                              fontSize: 13,
-                              fontWeight: FontWeight.w700,
-                              height: 1.25),
-                        ),
-                        if (subtitle != null && subtitle!.isNotEmpty)
-                          Padding(
-                            padding: const EdgeInsets.only(top: 4),
-                            child: Text(
-                              subtitle!,
-                              maxLines: 1,
-                              overflow: TextOverflow.ellipsis,
-                              style: TextStyle(
-                                  fontSize: 11.5,
-                                  color: Theme.of(context)
-                                      .colorScheme
-                                      .onSurfaceVariant),
+                      if (onFavourite != null)
+                        Positioned(
+                          right: 0,
+                          top: 0,
+                          child: IconButton(
+                            tooltip: favourite == true ? '取消收藏' : '收藏',
+                            onPressed: onFavourite,
+                            icon: Icon(
+                              favourite == true
+                                  ? Icons.favorite
+                                  : Icons.favorite_border,
+                              color: Colors.white,
+                              size: 28,
+                              shadows: const [
+                                Shadow(color: Colors.black54, blurRadius: 8)
+                              ],
                             ),
                           ),
-                      ])),
-            ],
-          ),
-        ));
+                        ),
+                      if (popularity != null && popularity!.isNotEmpty)
+                        Positioned(
+                          left: 0,
+                          right: 0,
+                          bottom: 0,
+                          child: Container(
+                            padding: const EdgeInsets.fromLTRB(8, 22, 8, 6),
+                            decoration: const BoxDecoration(
+                              gradient: LinearGradient(
+                                begin: Alignment.topCenter,
+                                end: Alignment.bottomCenter,
+                                colors: [Colors.transparent, Colors.black54],
+                              ),
+                            ),
+                            child: Row(
+                                mainAxisAlignment: MainAxisAlignment.end,
+                                children: [
+                                  const Icon(Icons.visibility_outlined,
+                                      color: Colors.white, size: 14),
+                                  const SizedBox(width: 4),
+                                  Flexible(
+                                      child: Text(popularity!,
+                                          maxLines: 1,
+                                          overflow: TextOverflow.ellipsis,
+                                          style: const TextStyle(
+                                              color: Colors.white,
+                                              fontSize: 11))),
+                                ]),
+                          ),
+                        ),
+                      if (badge != null)
+                        Positioned(
+                            right: 6,
+                            bottom: 6,
+                            child: Pill(label: badge!, dense: true)),
+                      if (rank != null)
+                        Positioned(
+                          left: 0,
+                          top: 0,
+                          child: Container(
+                            padding: const EdgeInsets.symmetric(
+                                horizontal: 8, vertical: 3),
+                            decoration: const BoxDecoration(
+                              color: AgpColors.accent,
+                              borderRadius: BorderRadius.only(
+                                topLeft: Radius.circular(kRadiusSmall),
+                                bottomRight: Radius.circular(kRadiusSmall),
+                              ),
+                            ),
+                            child: Text(
+                              '${rank!}',
+                              style: const TextStyle(
+                                color: Colors.white,
+                                fontSize: 12,
+                                fontWeight: FontWeight.w800,
+                              ),
+                            ),
+                          ),
+                        ),
+                    ],
+                  ),
+                  Padding(
+                      padding: const EdgeInsets.fromLTRB(8, 8, 8, 6),
+                      child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Text(
+                              title,
+                              maxLines: 2,
+                              overflow: TextOverflow.ellipsis,
+                              style: const TextStyle(
+                                  fontSize: 13,
+                                  fontWeight: FontWeight.w700,
+                                  height: 1.25),
+                            ),
+                            if (subtitle != null && subtitle!.isNotEmpty)
+                              Padding(
+                                padding: const EdgeInsets.only(top: 4),
+                                child: Text(
+                                  subtitle!,
+                                  maxLines: 1,
+                                  overflow: TextOverflow.ellipsis,
+                                  style: TextStyle(
+                                      fontSize: 11.5,
+                                      color: Theme.of(context)
+                                          .colorScheme
+                                          .onSurfaceVariant),
+                                ),
+                              ),
+                          ])),
+                ],
+              ),
+            )));
   }
 }
 
@@ -245,7 +248,8 @@ class EpisodeCard extends StatelessWidget {
     final local = state.downloads.entryFor(video.sn);
     final offlineFile = state.downloads.localThumb(video.sn);
 
-    return InkWell(
+    return FocusFrame(
+        child: InkWell(
       onTap: onTap,
       onLongPress: onLongPress,
       borderRadius: BorderRadius.circular(kRadiusSmall),
@@ -346,7 +350,7 @@ class EpisodeCard extends StatelessWidget {
           ]),
         ],
       ),
-    );
+    ));
   }
 }
 
