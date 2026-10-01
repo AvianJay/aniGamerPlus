@@ -5,6 +5,7 @@
 !/packages/video_player_pip/lib/
 !/packages/file_export/lib/
 !/packages/background_download/lib/
+!/packages/airplay_route/lib/
 
 # Flutter / Dart
 .dart_tool/

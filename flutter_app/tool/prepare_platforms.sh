@@ -262,6 +262,105 @@ import io.flutter.plugin.common.MethodChannel
     print('  patched', path)
 
 
+def add_cast_support(manifest_path, kotlin_dir, gradle_path):
+    # 投放到 Chromecast (flutter_chrome_cast, 底下是 Google Cast SDK).
+    #
+    # Cast SDK 一起來就去 manifest 找 OptionsProvider. 外掛自帶的那一支要等 Dart
+    # 那邊把設定傳下來才有值 (lateinit), 而 SDK 自己的 ReconnectionService 可能在
+    # App 被系統收掉之後單獨重啟, 那時候 Dart 根本還沒跑 —— 所以用 App 自己的,
+    # 設定寫死: Google 的預設媒體接收器, 不必另外註冊接收器.
+    import glob
+    paths = glob.glob(os.path.join(kotlin_dir, '**', 'MainActivity.kt'),
+                      recursive=True)
+    if len(paths) != 1:
+        raise RuntimeError(f'expected one MainActivity.kt under {kotlin_dir}')
+    with open(paths[0], encoding='utf-8') as handle:
+        package = next((line.split()[1] for line in handle
+                        if line.startswith('package ')), None)
+    if not package:
+        raise RuntimeError(f'cannot find the package of {paths[0]}')
+    provider = os.path.join(os.path.dirname(paths[0]), 'CastOptionsProvider.kt')
+    with open(provider, 'w', encoding='utf-8', newline='') as handle:
+        handle.write(f'''package {package}
+
+import android.content.Context
+import com.google.android.gms.cast.CastMediaControlIntent
+import com.google.android.gms.cast.framework.CastOptions
+import com.google.android.gms.cast.framework.OptionsProvider
+import com.google.android.gms.cast.framework.SessionProvider
+import com.google.android.gms.cast.framework.media.CastMediaOptions
+import com.google.android.gms.cast.framework.media.NotificationOptions
+
+// tool/prepare_platforms.sh 產生的, 別直接改
+class CastOptionsProvider : OptionsProvider {{
+    override fun getCastOptions(context: Context): CastOptions {{
+        // 投放中的媒體通知 (鎖定畫面也看得到): 點下去回到 App
+        val notification = NotificationOptions.Builder()
+            .setTargetActivityClassName(MainActivity::class.java.name)
+            .build()
+        val media = CastMediaOptions.Builder()
+            .setNotificationOptions(notification)
+            .build()
+        return CastOptions.Builder()
+            .setReceiverApplicationId(
+                CastMediaControlIntent.DEFAULT_MEDIA_RECEIVER_APPLICATION_ID)
+            .setCastMediaOptions(media)
+            .setResumeSavedSession(true)
+            .setEnableReconnectionService(true)
+            .build()
+    }}
+
+    override fun getAdditionalSessionProviders(context: Context): List<SessionProvider>? = null
+}}
+''')
+    print('  wrote', provider)
+
+    ET.register_namespace('android', ANDROID)
+    ET.register_namespace('tools', TOOLS)
+    tree = ET.parse(manifest_path)
+    manifest = tree.getroot()
+    application = manifest.find('application')
+    if application is None:
+        raise RuntimeError(f'no <application> in {manifest_path}')
+    # 投放中的媒體通知是一個前景服務. Android 14 起前景服務要宣告類型,
+    # 框架自己的 manifest 沒寫, 得由 App 補上 (FOREGROUND_SERVICE 本身框架有帶)
+    permission = 'android.permission.FOREGROUND_SERVICE_MEDIA_PLAYBACK'
+    if permission not in {node.get(attr('name'))
+                          for node in manifest.findall('uses-permission')}:
+        node = ET.Element('uses-permission')
+        node.set(attr('name'), permission)
+        manifest.insert(0, node)
+    meta = ET.SubElement(application, 'meta-data')
+    meta.set(attr('name'),
+             'com.google.android.gms.cast.framework.OPTIONS_PROVIDER_CLASS_NAME')
+    meta.set(attr('value'), package + '.CastOptionsProvider')
+    service = ET.SubElement(application, 'service')
+    service.set(attr('name'),
+                'com.google.android.gms.cast.framework.media.MediaNotificationService')
+    service.set(attr('exported'), 'false')
+    service.set(attr('foregroundServiceType'), 'mediaPlayback')
+    if hasattr(ET, 'indent'):
+        ET.indent(tree, space='    ')
+    tree.write(manifest_path, encoding='utf-8', xml_declaration=True)
+    print('  patched', manifest_path, '(cast)')
+
+    # CastOptionsProvider 在 App 這個模組裡, 編譯時要看得到 Cast SDK. 外掛是用
+    # implementation 拉進來的, 不會傳給 App; 版本跟外掛的一樣, Gradle 取同一份.
+    with open(gradle_path, encoding='utf-8') as handle:
+        source = handle.read()
+    marker = '\nflutter {\n'
+    if source.count(marker) != 1:
+        raise RuntimeError(f'unexpected flutter block in {gradle_path}')
+    source = source.replace(marker, '''
+dependencies {
+    implementation("com.google.android.gms:play-services-cast-framework:21.5.0")
+}
+''' + marker, 1)
+    with open(gradle_path, 'w', encoding='utf-8', newline='') as handle:
+        handle.write(source)
+    print('  patched', gradle_path, '(cast)')
+
+
 def patch_android_signing(path):
     with open(path, encoding='utf-8') as handle:
         source = handle.read()
@@ -320,7 +419,12 @@ def patch_plist(path):
     }
     # iOS 14 起連區網位址要先問過使用者
     # 找同一個網路上的電視 (手機遙控) 也是區網存取: 逐台敲門, 不用 Bonjour
-    info['NSLocalNetworkUsageDescription'] = '用來連線到你自己架設的 aniGamerPlus 伺服器，以及找到同一個網路上的電視。'
+    info['NSLocalNetworkUsageDescription'] = '用來連線到你自己架設的 aniGamerPlus 伺服器，以及找到同一個網路上的電視與 Chromecast。'
+    # Chromecast 是用 Bonjour 找的, 要找的服務得先列在這裡, 不然 iOS 直接擋掉.
+    # CC1AD845 是 Google 的預設媒體接收器
+    services = set(info.get('NSBonjourServices') or [])
+    services.update(('_googlecast._tcp', '_CC1AD845._googlecast._tcp'))
+    info['NSBonjourServices'] = sorted(services)
     # 鎖屏 / 切到背景時聲音不要斷
     modes = set(info.get('UIBackgroundModes') or [])
     modes.add('audio')
@@ -706,6 +810,9 @@ patch_manifest(os.path.join('android', 'app', 'src', 'main', 'AndroidManifest.xm
 add_android_resources(os.path.join('android', 'app', 'src', 'main', 'res'))
 patch_main_activity(os.path.join('android', 'app', 'src', 'main', 'kotlin'))
 patch_android_signing(os.path.join('android', 'app', 'build.gradle.kts'))
+add_cast_support(os.path.join('android', 'app', 'src', 'main', 'AndroidManifest.xml'),
+                 os.path.join('android', 'app', 'src', 'main', 'kotlin'),
+                 os.path.join('android', 'app', 'build.gradle.kts'))
 patch_plist(os.path.join('ios', 'Runner', 'Info.plist'))
 patch_ios_deployment(os.path.join('ios', 'Podfile'),
                      os.path.join('ios', 'Runner.xcodeproj', 'project.pbxproj'))

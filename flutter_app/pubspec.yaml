@@ -37,6 +37,13 @@ dependencies:
     path: packages/background_download
   connectivity_plus: ^7.0.0
 
+  # 投放: Chromecast 走 Google Cast SDK (Android / iOS 都是), AirPlay 是 iOS
+  # 自己的系統按鈕 (packages/airplay_route). 電視拿不到 cookie, 兩邊都是用
+  # 伺服器發的投放票 (/cast/ticket) 把網址本身變成鑰匙.
+  flutter_chrome_cast: ^1.4.8
+  airplay_route:
+    path: packages/airplay_route
+
   # 播放中別讓螢幕睡著
   wakelock_plus: ">=1.2.0 <2.0.0"
 

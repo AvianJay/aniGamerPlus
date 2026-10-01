@@ -160,6 +160,13 @@ async def add_accept_ranges(request: Request, call_next):
     response = await call_next(request)
     if 'accept-ranges' not in response.headers:
         response.headers['Accept-Ranges'] = 'bytes'
+    # 投放票驗過的那幾條影音請求 (見 _media_access_error): Chromecast 的接收器
+    # 是一張 gstatic 上的網頁, 用 XHR 抓 HLS 清單跟分片, 不給 CORS 它就讀不到.
+    # 票寫在網址上、不靠 cookie, 所以放給任何來源也不會順手把登入狀態借出去.
+    if getattr(request.state, 'cast_ticket', False):
+        response.headers['Access-Control-Allow-Origin'] = '*'
+        response.headers['Access-Control-Expose-Headers'] = (
+            'Content-Length, Content-Range, Accept-Ranges')
     return response
 
 
@@ -1338,6 +1345,103 @@ def _catalog_login_error(current_settings, request):
     return None
 
 
+# ------------------------------------------------------------- 投放票
+# 電視那一頭拿不到我們的 cookie: Chromecast 的預設接收器手上只有一條網址, AirPlay
+# 也不會把 App 自己加的標頭轉給 Apple TV. 所以 App 投放前先拿 cookie 來換一張票,
+# 票直接寫在網址上 (?ct=...).
+#
+# 票只認一集、會過期, 而且是拿發票那個帳號自己的 token 簽的 —— 帳號被刪掉或 token
+# 換掉, 發出去的票就一起作廢, 伺服器這邊不必另外記任何東西, 重開機也不受影響.
+CAST_TICKET_TTL = 12 * 60 * 60
+
+# 不必登入的伺服器: 片子本來就是公開的, 這張票只是讓請求拿到 CORS 標頭
+CAST_TICKET_OPEN = 'open'
+
+
+def _cast_user_tag(token):
+    # 票上要寫「誰發的」才找得到簽名用的 token, 但不能把 token 本身寫上去
+    return hashlib.sha256(('agp-cast-user:' + token).encode('utf-8')).hexdigest()[:16]
+
+
+def _cast_signature(token, sn, expires):
+    message = ('agp-cast:%s:%d' % (sn, expires)).encode('utf-8')
+    return hmac.new(token.encode('utf-8'), message, hashlib.sha256).hexdigest()[:32]
+
+
+def _issue_cast_ticket(sn, user, now=None):
+    expires = int(time.time() if now is None else now) + CAST_TICKET_TTL
+    token = user['token']
+    return '%d.%s.%s' % (expires, _cast_user_tag(token),
+                         _cast_signature(token, sn, expires))
+
+
+def _cast_ticket_user(ticket, sn, userdata=None, now=None):
+    """票對得上這一集而且還沒過期, 就回發票的那個帳號; 否則 None."""
+    parts = str(ticket or '').split('.')
+    if len(parts) != 3 or not parts[0].isdigit() or not str(sn or '').isdigit():
+        return None
+    expires = int(parts[0])
+    if expires < (time.time() if now is None else now):
+        return None
+    userdata = userdata or load_user_data()
+    for user in userdata['users']:
+        token = user.get('token')
+        if not token or not hmac.compare_digest(_cast_user_tag(token), parts[1]):
+            continue
+        if hmac.compare_digest(_cast_signature(token, sn, expires), parts[2]):
+            return user
+        return None
+    return None
+
+
+def _media_access_error(current_settings, request):
+    """影音路由的門口: cookie 或投放票, 有一樣就放行.
+
+    票驗過的請求會在 request.state 上留一個記號, add_accept_ranges 看到它才補
+    CORS 標頭 —— 帶 cookie 的一般播放用不到, 也不該拿到.
+    """
+    ticket = request.query_params.get('ct')
+    if not current_settings['dashboard']['online_watch_requires_login']:
+        if ticket:
+            request.state.cast_ticket = True
+        return None
+    if ticket and _cast_ticket_user(ticket, request.query_params.get('id')):
+        request.state.cast_ticket = True
+        return None
+    vaild_user, user_role = verify_user(request.cookies)
+    if not vaild_user:
+        return JSONResponse({"error": "login required"}, status_code=403)
+    return None
+
+
+def _cast_ticket_param(request):
+    """清單裡的分片、金鑰網址要帶著同一張票, 接收器才抓得到."""
+    if getattr(request.state, 'cast_ticket', False):
+        return request.query_params.get('ct') or None
+    return None
+
+
+@app.get('/cast/ticket')
+def cast_ticket(request: Request):
+    current_settings = _get_current_settings()
+    gated = _online_watch_gate(current_settings)
+    if gated is not None:
+        return gated
+    sn = str(request.query_params.get('id') or '')
+    if not sn.isdigit():
+        return JSONResponse({"error": "invalid sn"}, status_code=400)
+    if current_settings['dashboard']['online_watch_requires_login']:
+        user = find_user_by_token(request.cookies.get('token'))
+        if not user:
+            return JSONResponse({"error": "login required"}, status_code=403)
+        ticket = _issue_cast_ticket(sn, user)
+    else:
+        ticket = CAST_TICKET_OPEN
+    resp = JSONResponse({'ticket': ticket, 'expiresIn': CAST_TICKET_TTL})
+    resp.headers['Cache-Control'] = 'no-store'
+    return resp
+
+
 
 def _build_thumbnail(sn, cache_path, entry):
     """官方封面优先, 抽帧兜底.
@@ -1660,7 +1764,13 @@ def _hls_ready_count(temp_dir, segments):
     return count
 
 
-def _hls_render(sn, parsed, ready, complete):
+def _cast_query(ticket):
+    # 清單是投放票換來的話, 分片跟金鑰也得帶著同一張票: 接收器手上沒有 cookie
+    return '&ct=%s' % urllib.parse.quote(ticket, safe='') if ticket else ''
+
+
+def _hls_render(sn, parsed, ready, complete, ticket=None):
+    ct = _cast_query(ticket)
     lines = [
         '#EXTM3U',
         '#EXT-X-VERSION:3',
@@ -1673,12 +1783,12 @@ def _hls_render(sn, parsed, ready, complete):
         # 開始播 —— 也就是把已經下載好的部分整個跳過. 原生播放器也吃這一行
         '#EXT-X-START:TIME-OFFSET=0,PRECISE=YES',
         # 只換掉 URI, 不重建整行: 上游哪天帶了 IV= 也不會被我們弄丟
-        re.sub(r'URI="[^"]*"', 'URI="key.bin?id=%s"' % sn, parsed['key_line']),
+        re.sub(r'URI="[^"]*"', 'URI="key.bin?id=%s%s"' % (sn, ct), parsed['key_line']),
     ]
     for index in range(ready):
         lines.append(parsed['segments'][index]['extinf'])
         # 相對路徑, 讓它跟著 /hls/ 走, 反向代理掛在哪個路徑底下都不會錯
-        lines.append('segment.ts?id=%s&n=%d' % (sn, index))
+        lines.append('segment.ts?id=%s&n=%d%s' % (sn, index, ct))
     if complete:
         lines.append('#EXT-X-ENDLIST')
     return '\n'.join(lines) + '\n'
@@ -2005,8 +2115,9 @@ def _stream_key(sn, res, media):
     return media['key']
 
 
-def _stream_render(sn, res, parsed):
+def _stream_render(sn, res, parsed, ticket=None):
     """把上游的 chunklist 改寫成全部指回我們自己的版本."""
+    ct = _cast_query(ticket)
     lines = [
         '#EXTM3U',
         '#EXT-X-VERSION:3',
@@ -2018,12 +2129,12 @@ def _stream_render(sn, res, parsed):
         # VOD 而且一開始就有 ENDLIST, 播放器才肯讓人拖時間軸
         '#EXT-X-PLAYLIST-TYPE:VOD',
         # 用 re.sub 換掉 URI 而不是重寫整行: 上游要是有帶 IV=, 那個一定要原樣留著
-        re.sub(r'URI="[^"]*"', 'URI="key.bin?id=%s&res=%s"' % (sn, res),
+        re.sub(r'URI="[^"]*"', 'URI="key.bin?id=%s&res=%s%s"' % (sn, res, ct),
                parsed['key_line']),
     ]
     for index, segment in enumerate(parsed['segments']):
         lines.append(segment['extinf'])
-        lines.append('segment.ts?id=%s&res=%s&n=%d' % (sn, res, index))
+        lines.append('segment.ts?id=%s&res=%s&n=%d%s' % (sn, res, index, ct))
     lines.append('#EXT-X-ENDLIST')
     return '\n'.join(lines) + '\n'
 
@@ -2961,10 +3072,9 @@ def getvid(request: Request):
     gated = _online_watch_gate(current_settings)
     if gated is not None:
         return gated
-    if current_settings['dashboard']['online_watch_requires_login']:
-        valid_user, user_role = verify_user(request.cookies)
-        if not valid_user:
-            return JSONResponse({"error": "login required"}, status_code=403)
+    denied = _media_access_error(current_settings, request)
+    if denied is not None:
+        return denied
 
     sn = request.query_params.get('id')
     res = request.query_params.get('res')
@@ -3071,7 +3181,7 @@ def _hls_request_state(request):
     gated = _online_watch_gate(current_settings)
     if gated is not None:
         return None, None, gated
-    denied = _catalog_login_error(current_settings, request)
+    denied = _media_access_error(current_settings, request)
     if denied is not None:
         return None, None, denied
     sn = request.query_params.get('id')
@@ -3119,7 +3229,8 @@ def hls_playlist(request: Request):
         return JSONResponse({"error": "not ready"}, status_code=404)
 
     body = _hls_render(request.query_params.get('id'), state['parsed'],
-                       state['ready'], state['mode'] == 'finalising')
+                       state['ready'], state['mode'] == 'finalising',
+                       ticket=_cast_ticket_param(request))
     if request.method == 'HEAD':
         resp = Response(status_code=200)
         resp.headers['Content-Type'] = HLS_MIME
@@ -3219,7 +3330,7 @@ def _stream_request_state(request):
     gated = _online_watch_gate(current_settings)
     if gated is not None:
         return None, None, gated
-    denied = _catalog_login_error(current_settings, request)
+    denied = _media_access_error(current_settings, request)
     if denied is not None:
         return None, None, denied
     sn = str(request.query_params.get('id') or '')
@@ -3267,7 +3378,8 @@ def stream_playlist(request: Request):
     current_settings, sn, res, media, denied = _stream_request_media(request)
     if denied is not None:
         return denied
-    body = _stream_render(sn, res, media['parsed'])
+    body = _stream_render(sn, res, media['parsed'],
+                          ticket=_cast_ticket_param(request))
     if request.method == 'HEAD':
         resp = Response(status_code=200)
         resp.headers['Content-Type'] = HLS_MIME

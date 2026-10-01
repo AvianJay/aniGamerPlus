@@ -100,18 +100,44 @@ class AgpClient {
   // ---------------------------------------------------------------- 播放來源
 
   /// 完成檔. 支援 Range, 下載器也是打這一支.
-  Uri videoUrl(String sn, {int? resolution}) => uri('/get_video.mp4', {
+  ///
+  /// 下面三支的 [castTicket] 是給電視 (Chromecast / Apple TV) 用的: 那一頭拿不到
+  /// 我們的 cookie, 改成把投放票直接寫在網址上, 見 [castTicket].
+  Uri videoUrl(String sn, {int? resolution, String? castTicket}) =>
+      uri('/get_video.mp4', {
         'id': sn,
         if (resolution != null && resolution > 0) 'res': resolution,
+        if (castTicket != null) 'ct': castTicket,
       });
 
   /// 邊看邊下載: 還沒合併完的那一集是一份 EVENT playlist
-  Uri hlsPlaylistUrl(String sn) => uri('/hls/playlist.m3u8', {'id': sn});
+  Uri hlsPlaylistUrl(String sn, {String? castTicket}) =>
+      uri('/hls/playlist.m3u8', {
+        'id': sn,
+        if (castTicket != null) 'ct': castTicket,
+      });
 
   /// 線上切換畫質: 伺服器現去動畫瘋要那個畫質的 HLS, 代理成一份 VOD playlist.
   /// 片庫裡一集只留一種畫質, 所以這是換畫質唯一的來源.
-  Uri streamPlaylistUrl(String sn, int resolution) =>
-      uri('/stream/playlist.m3u8', {'id': sn, 'res': resolution});
+  Uri streamPlaylistUrl(String sn, int resolution, {String? castTicket}) =>
+      uri('/stream/playlist.m3u8', {
+        'id': sn,
+        'res': resolution,
+        if (castTicket != null) 'ct': castTicket,
+      });
+
+  /// 換一張投放票: 只認這一集、幾個小時後過期, 寫在網址上給電視用.
+  ///
+  /// 舊版伺服器沒有這條路由 (404) 時回 null —— 片庫不必登入的話, 不帶票的網址
+  /// 電視一樣打得開, 只是 HLS 會缺 CORS 標頭; 要登入的話就真的投不出去了.
+  Future<String?> castTicket(String sn) async {
+    final response = await _get('/cast/ticket', {'id': sn});
+    if (response.statusCode == 404) return null;
+    if (response.statusCode >= 400) _fail(response);
+    final data = jsonDecode(utf8.decode(response.bodyBytes));
+    final ticket = data is Map ? data['ticket'] : null;
+    return ticket is String && ticket.isNotEmpty ? ticket : null;
+  }
 
   /// 這一集在動畫瘋那邊還有哪些畫質. 由高到低.
   ///

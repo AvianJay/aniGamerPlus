@@ -38,6 +38,7 @@ Dashboard 的 HTTP API, 所以多了一件網頁做不到的事: **把整集下�
 | — | **下載到手機 + 離線播放** (網頁版沒有) |
 | — | **匯出影片檔** —— 把下載好的集數存到 App 外面 |
 | — | **App 偏好設定** —— 這支手機自己的播放/下載/外觀偏好 |
+| — | **投放** —— Chromecast (Android / iOS) 與 AirPlay (iOS), 見下面「投放」 |
 
 「伺服器設定」改的是伺服器上的 `config.json`; 「App 偏好設定」只存在這支手機的
 `shared_preferences` 裡, 兩者互不影響.
@@ -180,6 +181,36 @@ lib/
 * Android: 下載 APK 後交給系統安裝器. 要跟手上那一版同一把金鑰簽才蓋得過去, debug 版裝不了 release 版的更新
 * iOS: 自動偵測 TrollStore / SideStore / AltStore / LCSign；LCSign 用 `loadcontroller://import?url=` 匯入 IPA，需在 LCSign 完成簽名與安裝；都沒有就用瀏覽器下載
 
+
+### 投放 (Chromecast / AirPlay)
+
+播放器上方 (直式時在影片下方那一列) 的兩顆鍵:
+
+* **Chromecast** (Android / iOS): 同一個 Wi-Fi 上找得到 Chromecast 或內建
+  Chromecast 的電視時才會出現. 連上之後這一集從手機上的位置交給電視, 手機這邊
+  變成遙控器 —— 播放鍵、時間軸、倍速、換集、自動下一集都是在叫電視, 觀看進度
+  照樣記. 離開播放頁不會斷, 回到同一集直接接手; 停止投放就在手機上從電視停下
+  的地方暫停著接回來. 用的是 Google 的預設媒體接收器, 不必另外註冊.
+* **AirPlay** (iOS): 系統自己的按鈕. 選了 Apple TV 之後影片由 iOS 送過去, 控制
+  照舊在手機上.
+
+電視那一頭拿不到 App 的登入 cookie, 也連不到手機上的本機快取, 所以投放前 App
+會先跟伺服器換一張**投放票** (`/cast/ticket`), 寫在影片網址上 (`?ct=...`):
+
+* 只認那一集, 12 小時後過期; 用帳號自己的 token 簽, 帳號刪掉或 token 換掉就一起
+  作廢. 票本身不含 token.
+* `/get_video.mp4`、`/hls/*`、`/stream/*` 都認這張票. HLS 清單裡的分片與金鑰
+  網址會帶著同一張票, 而且只有帶票的請求會拿到 CORS 標頭 (Chromecast 的接收器
+  用 XHR 抓 HLS).
+* 伺服器的位址要是電視連得到的 (區網 IP 或網域, 不能是 `localhost`). 舊版伺服器
+  沒有這條路由的話, 片庫不必登入時照樣投得出去 (HLS 可能缺 CORS); 要登入就投不了.
+
+限制: 彈幕不會出現在電視上 (預設接收器畫不了 ASS); 只下載在手機裡、伺服器片庫
+沒有的集數投不出去; 邊看邊下載的集數要等伺服器有第一片才會交給電視.
+
+平台設定都在 `tool/prepare_platforms.sh`: Android 的 `CastOptionsProvider`
+(App 自己的, 不用外掛那個要等 Dart 初始化的版本)、媒體通知的前景服務; iOS 的
+`NSBonjourServices`. AirPlay 按鈕是 `packages/airplay_route` (AVRoutePickerView).
 
 ### 播放器操作與快取
 

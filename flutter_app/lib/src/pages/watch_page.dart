@@ -18,6 +18,7 @@ import 'dart:async';
 import 'dart:io';
 import 'dart:math' as math;
 
+import 'package:airplay_route/airplay_route.dart';
 import 'package:flutter/foundation.dart' show compute;
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
@@ -34,6 +35,7 @@ import '../api/models.dart';
 import '../danmaku/ass.dart';
 import '../danmaku/danmaku_overlay.dart';
 import '../state/app_state.dart';
+import '../state/cast.dart';
 import '../state/downloads.dart';
 import '../state/prefs.dart';
 import '../state/seek_preview.dart';
@@ -43,6 +45,7 @@ import '../state/tv_remote_protocol.dart';
 import '../theme.dart';
 import '../util/device.dart';
 import '../util/format.dart';
+import '../widgets/cast_sheet.dart';
 import '../widgets/common.dart';
 import '../widgets/seek_preview_card.dart';
 import 'tv_remote_page.dart';
@@ -267,6 +270,16 @@ class _RemoteSeek implements RemotePlayer {
   void seekTo(double seconds) => _onSeek(seconds);
 }
 
+/// 這一集交不出去給電視, 而且原因可以直接講給使用者聽
+class _CastUnavailable implements Exception {
+  const _CastUnavailable(this.message);
+
+  final String message;
+
+  @override
+  String toString() => message;
+}
+
 class WatchPage extends StatefulWidget {
   const WatchPage({
     super.key,
@@ -373,6 +386,24 @@ class _WatchPageState extends State<WatchPage> with WidgetsBindingObserver {
   StreamSubscription<bool>? _pipSubscription;
   bool _pipActive = false;
   bool _pipRequested = false;
+
+  // ------------------------------------------------------------- 投放
+  CastController get cast => state.cast;
+
+  /// 電視上沒有投放這回事 (它自己就是螢幕), 桌面版也沒有 Cast SDK
+  bool get _castSupported => CastController.supported && !Device.tv;
+
+  /// 這一頁現在是 Chromecast 的遙控器: 本機沒有播放器, 播放鍵、時間軸、換集
+  /// 都改去叫電視. 停止投放時從電視停下的位置在手機上接回來.
+  bool _chromecasting = false;
+
+  /// AirPlay 是 iOS 自己把 AVPlayer 的畫面送過去的, 控制照舊走本機播放器;
+  /// 我們只負責換一條 Apple TV 自己連得到的網址, 見 [_openSource].
+  AirPlayRoute _airplay = AirPlayRoute.none;
+  StreamSubscription<AirPlayRoute>? _airplaySubscription;
+
+  /// 手上這個播放器開的是不是給 AirPlay 的那條網址
+  bool _airplaySource = false;
 
   IntroSkip? get _effectiveIntro => switch (prefs.openingSkipMode) {
         'off' => null,
@@ -510,6 +541,13 @@ class _WatchPageState extends State<WatchPage> with WidgetsBindingObserver {
         }));
       }
     });
+    if (_castSupported) {
+      cast.addListener(_onChromecastChanged);
+      cast.position.addListener(_onChromecastPosition);
+      // 播放頁開著就順便找: 附近真的有 Chromecast 才把投放鈕擺出來
+      cast.startDiscovery();
+    }
+    _airplaySubscription = AirPlay.routes().listen(_onAirPlayRoute);
     _monitor = Timer.periodic(_kMonitorEvery, (_) {
       _sampleSpeed();
       _watchStall();
@@ -534,6 +572,13 @@ class _WatchPageState extends State<WatchPage> with WidgetsBindingObserver {
     _skipRetryTimer?.cancel();
     _monitor?.cancel();
     unawaited(_pipSubscription?.cancel());
+    unawaited(_airplaySubscription?.cancel());
+    if (_castSupported) {
+      // 投放不斷: 離開播放頁電視照樣播, 回到同一集時 _openOnChromecast 會接手
+      cast.removeListener(_onChromecastChanged);
+      cast.position.removeListener(_onChromecastPosition);
+      cast.stopDiscovery();
+    }
     final seek = _remoteSeek;
     if (seek != null) TvRemoteHost.current?.detachPlayer(seek);
     if (_pipActive) unawaited(VideoPlayerPip.exitPipMode());
@@ -594,7 +639,12 @@ class _WatchPageState extends State<WatchPage> with WidgetsBindingObserver {
       _background = false;
       _lifecycleWork = _lifecycleWork.then((_) async {
         final controller = _controller;
-        if (!mounted || _background || controller == null) return;
+        if (!mounted || _background) return;
+        if (controller == null) {
+          // 投放中手機上本來就沒有播放器; 邊看邊下載的進度還是要接著問
+          if (_chromecasting && _streaming) _startPoll();
+          return;
+        }
         // 回到前景時播放器已經壞掉的話, 多半是本機快取那台在背景被系統收走了,
         // 連不上. 從剛剛的位置重開一次 —— 磁碟上的快取還在, 所以這一趟很快.
         if (controller.value.hasError) {
@@ -791,15 +841,21 @@ class _WatchPageState extends State<WatchPage> with WidgetsBindingObserver {
   /// 這一次要播的到底是哪一份. 拿來認暖機播放器 —— 換了畫質、改走離線檔或者
   /// 從下載中變成完成檔, 這個字串就不一樣, 手上那個就不能用了.
   String get _sourceKey {
-    if (_needsProxy) return 'proxy:$_quality';
+    // AirPlay 用的是另一條網址 (帶投放票、不走快取), 跟平常那個不能混用
+    final airplay = _airplay.active ? '+airplay' : '';
+    if (_needsProxy) return 'proxy:$_quality$airplay';
     final local = _localFile;
     if (local != null) return 'file:${local.path}';
-    if (_streaming) return 'hls';
-    return 'mp4:${_video?.resolution ?? 0}';
+    if (_streaming) return 'hls$airplay';
+    return 'mp4:${_video?.resolution ?? 0}$airplay';
   }
 
   /// 建立 / 換掉 VideoPlayerController
   Future<void> _openSource({double? seekTo, bool autoplay = true}) async {
+    if (_castSupported && cast.connected) {
+      await _openOnChromecast(seekTo: seekTo, autoplay: autoplay);
+      return;
+    }
     final generation = ++_sourceGeneration;
     _scrubbing = false;
     _preview.cancel();
@@ -832,6 +888,11 @@ class _WatchPageState extends State<WatchPage> with WidgetsBindingObserver {
     }
 
     final local = _localFile;
+    // AirPlay 到 Apple TV 時片子是電視自己去抓的: 它拿不到 Cookie 標頭, 也連不到
+    // 手機上 127.0.0.1 那台快取. 改走帶投放票、直連伺服器的網址. 離線檔不必 ——
+    // 本機檔案是 iOS 自己轉送過去的.
+    final airplay = _airplay.active && (_needsProxy || local == null);
+    final ticket = airplay ? await _airplayTicket() : null;
     late VideoPlayerController controller;
     var usedCache = false;
     if (_needsProxy) {
@@ -841,8 +902,10 @@ class _WatchPageState extends State<WatchPage> with WidgetsBindingObserver {
       // 這條路以前完全沒有快取 —— 換過畫質之後看的每一集, 關掉 app 再回來都
       // 要整個重抓. 那份清單裡的分片是相對路徑, 所以只要清單本身從本機快取
       // 那台發出去, 播放器要分片時就會回頭問我們, 一片一片存得下來.
-      final direct = client.streamPlaylistUrl(_sn, _quality);
-      final cached = await _cachedHlsUrl(direct, 's$_sn-$_quality');
+      final direct =
+          client.streamPlaylistUrl(_sn, _quality, castTicket: ticket);
+      final cached =
+          airplay ? direct : await _cachedHlsUrl(direct, 's$_sn-$_quality');
       usedCache = cached != direct;
       controller = VideoPlayerController.networkUrl(
         cached,
@@ -860,7 +923,7 @@ class _WatchPageState extends State<WatchPage> with WidgetsBindingObserver {
               : VideoViewType.textureView);
     } else if (_streaming) {
       controller = VideoPlayerController.networkUrl(
-        client.hlsPlaylistUrl(_sn),
+        client.hlsPlaylistUrl(_sn, castTicket: ticket),
         httpHeaders: client.authHeaders,
         videoPlayerOptions: VideoPlayerOptions(allowBackgroundPlayback: true),
         viewType: prefs.pipEnabled
@@ -869,11 +932,12 @@ class _WatchPageState extends State<WatchPage> with WidgetsBindingObserver {
       );
     } else {
       final res = _video?.resolution ?? 0;
-      final direct = client.videoUrl(_sn, resolution: res > 0 ? res : null);
+      final direct = client.videoUrl(_sn,
+          resolution: res > 0 ? res : null, castTicket: ticket);
       // 片庫裡的完整 mp4 走本機快取: 檔頭 (moov 在檔尾的話還包含檔尾那一塊)
       // 留在磁碟上, app 關掉再開也算數. HLS 不走 —— 那份 playlist 裡的分片
       // 是相對路徑, 換了 host 就解析到本機來了.
-      final cached = await _cachedUrl(direct, 'v$_sn-$res');
+      final cached = airplay ? direct : await _cachedUrl(direct, 'v$_sn-$res');
       usedCache = cached != direct;
       controller = VideoPlayerController.networkUrl(
         cached,
@@ -923,6 +987,7 @@ class _WatchPageState extends State<WatchPage> with WidgetsBindingObserver {
     }
     setState(() {
       _controller = controller;
+      _airplaySource = airplay;
       _initialising = false;
       _error = '';
       _duration = duration > 0 ? duration : _duration;
@@ -940,6 +1005,255 @@ class _WatchPageState extends State<WatchPage> with WidgetsBindingObserver {
       unawaited(WakelockPlus.enable());
     }
     _armIdle();
+  }
+
+  // =============================================================== AirPlay
+
+  /// AirPlay 用的投放票. 拿不到 (舊版伺服器、斷線) 就不帶票 —— 片庫不必登入的
+  /// 話照樣播得了, 而且手機自己播的時候還有 Cookie 標頭可以用.
+  Future<String?> _airplayTicket() async {
+    try {
+      return await client.castTicket(_sn);
+    } catch (_) {
+      return null;
+    }
+  }
+
+  void _onAirPlayRoute(AirPlayRoute route) {
+    if (!mounted || route == _airplay) return;
+    final started = route.active && !_airplay.active;
+    setState(() => _airplay = route);
+    // 剛切到 AirPlay, 手上這條網址 Apple TV 連不到: 從現在的位置換一條連得到的.
+    // 切回手機就不必換回來 —— 帶票的網址手機自己播也一樣能用.
+    if (!started || _chromecasting || _airplaySource) return;
+    final controller = _controller;
+    if (controller == null || !controller.value.isInitialized) return;
+    if (!_needsProxy && _localFile != null) return;
+    unawaited(_openSource(
+        seekTo: _pendingSeek ?? _clock.value, autoplay: _showsPlaying));
+  }
+
+  // =============================================================== Chromecast
+
+  /// 投放中: 手機上不開播放器, 改把這一集交給電視.
+  Future<void> _openOnChromecast({double? seekTo, bool autoplay = true}) async {
+    final generation = ++_sourceGeneration;
+    _scrubbing = false;
+    _preview.cancel();
+    _pendingSeek = null;
+    _playIntent = null;
+    _releaseLocalPlayer();
+    final target = seekTo ?? _resumeAt;
+    final source = _chromecastSource;
+    setState(() {
+      _chromecasting = true;
+      _initialising = true;
+      _error = '';
+      _boosting = false;
+      _clockRunning = false;
+      _setAnchor(target > 1 ? target : 0);
+    });
+    _clock.value = _anchor;
+    _showControls();
+
+    // 電視上已經是這一份 (投放中退出去又回來): 直接接手, 不要從頭再載一次
+    final current = cast.media;
+    if (current != null &&
+        current.sn == _sn &&
+        current.source == source &&
+        cast.playback != CastPlayback.ended &&
+        cast.playback != CastPlayback.failed) {
+      setState(() => _initialising = false);
+      _syncFromChromecast();
+      _onChromecastPosition();
+      unawaited(_loadOpeningSkip());
+      return;
+    }
+
+    CastMedia media;
+    try {
+      media = await _chromecastMedia(source);
+    } on _CastUnavailable catch (error) {
+      if (!mounted || generation != _sourceGeneration) return;
+      setState(() {
+        _initialising = false;
+        _error = error.message;
+      });
+      return;
+    } catch (error) {
+      if (!mounted || generation != _sourceGeneration) return;
+      setState(() {
+        _initialising = false;
+        _error = '投放失敗: $error';
+      });
+      return;
+    }
+    if (!mounted || generation != _sourceGeneration || !cast.connected) return;
+    try {
+      await cast.load(media,
+          startAt: target > 1 ? target : 0, autoplay: autoplay, rate: _rate);
+    } catch (error) {
+      if (!mounted || generation != _sourceGeneration) return;
+      setState(() {
+        _initialising = false;
+        _error = '電視沒辦法播這一集: $error';
+      });
+      return;
+    }
+    if (!mounted || generation != _sourceGeneration) return;
+    setState(() {
+      _initialising = false;
+      if (autoplay) _playIntent = true;
+    });
+    unawaited(_loadOpeningSkip());
+  }
+
+  /// 改由電視播: 手機上那個播放器停下來放回架上. 停止投放時 [_openSource]
+  /// 認得它, 不必重新要一次檔頭.
+  void _releaseLocalPlayer() {
+    final controller = _controller;
+    if (controller == null) return;
+    controller.removeListener(_onPlayerUpdate);
+    _controller = null;
+    if (controller.value.isInitialized && !controller.value.hasError) {
+      unawaited(controller.pause());
+      _parkWarmPlayer(_WarmPlayer(
+        sn: _sn,
+        key: _sourceKey,
+        controller: controller,
+        position: _clock.value,
+      ));
+    } else {
+      unawaited(controller.dispose());
+    }
+    unawaited(WakelockPlus.disable());
+  }
+
+  /// 交給電視的是哪一份. 跟 [_sourceKey] 同一個意思, 只是離線檔不算 (電視讀
+  /// 不到手機裡的檔案, 永遠是從伺服器拿).
+  String get _chromecastSource {
+    if (_needsProxy) return 'proxy:$_quality';
+    if (_streaming) return 'hls';
+    return 'mp4:${_video?.resolution ?? 0}';
+  }
+
+  Future<CastMedia> _chromecastMedia(String source) async {
+    if (state.offline) {
+      throw const _CastUnavailable('離線中，電視連不到伺服器。停止投放就能在手機上看。');
+    }
+    String? ticket;
+    try {
+      ticket = await client.castTicket(_sn);
+    } on ApiException catch (error) {
+      if (error.needsLogin) {
+        throw const _CastUnavailable('要先登入才能投放。');
+      }
+      rethrow;
+    }
+    final Uri url;
+    final String type;
+    if (_needsProxy) {
+      url = client.streamPlaylistUrl(_sn, _quality, castTicket: ticket);
+      type = 'application/x-mpegURL';
+    } else if (_streaming) {
+      url = client.hlsPlaylistUrl(_sn, castTicket: ticket);
+      type = 'application/x-mpegURL';
+    } else if (state.videoOf(_sn) != null) {
+      final res = _video?.resolution ?? 0;
+      url = client.videoUrl(_sn,
+          resolution: res > 0 ? res : null, castTicket: ticket);
+      type = 'video/mp4';
+    } else {
+      throw const _CastUnavailable(
+          '這一集只存在這支手機上，伺服器的片庫裡沒有，電視抓不到。停止投放就能在手機上看。');
+    }
+    final cover = _series?.cover ?? '';
+    final duration = _playableDuration;
+    return CastMedia(
+      sn: _sn,
+      source: source,
+      url: url,
+      contentType: type,
+      title: _seriesName,
+      subtitle: _hereLabel,
+      poster: cover.startsWith('http') ? Uri.tryParse(cover) : null,
+      duration: duration > 0 ? duration : null,
+    );
+  }
+
+  void _onChromecastChanged() {
+    if (!mounted) return;
+    if (cast.connected && !_chromecasting) {
+      // 邊看邊下載還沒有第一片: 交出去也只會讓電視拿到 404. 等 _pollStream
+      // 看到有東西了自己叫 _openSource, 那時候就會走到電視上
+      if (_streaming && !_streamAttached && _controller == null) return;
+      // 剛連上 (或是連著的時候點進這一集): 從手機上現在的位置交給電視
+      final at = _pendingSeek ?? _clock.value;
+      final play = _controller == null || _showsPlaying;
+      unawaited(_openSource(seekTo: at, autoplay: play));
+      return;
+    }
+    if (!cast.connected && _chromecasting) {
+      // 停止投放 (自己按的, 或是電視那頭關掉了): 從電視停下的地方, 在手機上
+      // 暫停著接回來 —— 人多半還坐在電視前, 不該突然從手機喇叭出聲
+      final at = _clock.value;
+      setState(() {
+        _chromecasting = false;
+        _playing = false;
+        _buffering = false;
+        _playIntent = null;
+        _error = '';
+      });
+      unawaited(_openSource(seekTo: at, autoplay: false));
+      return;
+    }
+    if (_chromecasting) _syncFromChromecast();
+  }
+
+  /// 電視回報的狀態 → 這一頁的播放鍵、轉圈、片長、播完了沒
+  void _syncFromChromecast() {
+    final media = cast.media;
+    if (media == null || media.sn != _sn) return;
+    final playback = cast.playback;
+    final playing = playback == CastPlayback.playing ||
+        playback == CastPlayback.buffering;
+    final buffering = playback == CastPlayback.buffering ||
+        playback == CastPlayback.loading;
+    final stopped = playback == CastPlayback.idle ||
+        playback == CastPlayback.ended ||
+        playback == CastPlayback.failed;
+    setState(() {
+      _playing = playing;
+      _buffering = buffering;
+      if (playback == CastPlayback.playing) _hasPlayed = true;
+      // 按下去要的那個狀態到了, 或是停在一個不會自己再動的狀態, 樂觀顯示就收掉
+      if (_playIntent == playing || stopped) _playIntent = null;
+      if (cast.duration > 0) {
+        _duration = math.max(cast.duration, _streaming ? _streamTotal : 0);
+      }
+      if (playback == CastPlayback.failed && _error.isEmpty) {
+        _error = '電視播不了這一集。可以重試，或停止投放改在手機上看。';
+      }
+    });
+    _clockRunning = playback == CastPlayback.playing;
+    if (playback == CastPlayback.ended && !_ended) _onEnded();
+  }
+
+  void _onChromecastPosition() {
+    if (!mounted || !_chromecasting || _scrubbing) return;
+    final media = cast.media;
+    if (media == null || media.sn != _sn) return;
+    final seconds = cast.position.value;
+    _setAnchor(seconds);
+    _clock.value = seconds;
+    // 進度照樣記: 本機那份給「繼續觀看」, 伺服器那份給別的裝置接著看
+    if (_playing) unawaited(_syncTime());
+  }
+
+  Future<void> _openCastSheet() async {
+    _idleTimer?.cancel();
+    await showCastSheet(context, cast: cast);
+    if (mounted) _armIdle();
   }
 
   /// 接手停在架上的那個播放器.
@@ -974,6 +1288,9 @@ class _WatchPageState extends State<WatchPage> with WidgetsBindingObserver {
 
     setState(() {
       _controller = controller;
+      // 架上那個是照 _sourceKey 認的, 而 _sourceKey 裡帶著 AirPlay 的狀態
+      _airplaySource =
+          _airplay.active && (_needsProxy || _localFile == null);
       _initialising = false;
       _error = '';
       _duration = duration > 0 ? duration : _duration;
@@ -1367,7 +1684,10 @@ class _WatchPageState extends State<WatchPage> with WidgetsBindingObserver {
     if (_background) return;
     if (_streamAutoplayed) return;
     final controller = _controller;
-    if (controller == null || !controller.value.isInitialized) return;
+    final ready = _chromecasting
+        ? cast.media?.sn == _sn
+        : controller != null && controller.value.isInitialized;
+    if (!ready) return;
     // 代理串流是整集一次給完的 VOD, 不必陪下載器等頭
     if (!_needsProxy &&
         _streamReady < kStreamHeadStart &&
@@ -1375,7 +1695,11 @@ class _WatchPageState extends State<WatchPage> with WidgetsBindingObserver {
       return;
     }
     _streamAutoplayed = true;
-    unawaited(controller.play());
+    if (_chromecasting) {
+      unawaited(cast.play());
+      return;
+    }
+    unawaited(controller!.play());
     unawaited(WakelockPlus.enable());
   }
 
@@ -1645,6 +1969,10 @@ class _WatchPageState extends State<WatchPage> with WidgetsBindingObserver {
   }
 
   Future<void> _seekTo(double seconds, {bool? resume}) async {
+    if (_chromecasting) {
+      await _seekOnChromecast(seconds);
+      return;
+    }
     final controller = _controller;
     if (controller == null || !controller.value.isInitialized) return;
     if (_pendingSeek == null) {
@@ -1737,9 +2065,29 @@ class _WatchPageState extends State<WatchPage> with WidgetsBindingObserver {
     }
   }
 
+  /// 投放中的跳轉: 交給電視就好, 等它自己緩衝. 位置先畫在目標上, 電視回報
+  /// 的位置跟上來之後自然對齊.
+  Future<void> _seekOnChromecast(double seconds) async {
+    if (cast.media?.sn != _sn) return;
+    var target = _clampSeek(seconds);
+    // 邊看邊下載: 電視一樣只能跳到伺服器已經有的那一段
+    if (_streaming && !_needsProxy && _streamReady > 0) {
+      target = math.min(target, math.max(0.0, _streamReady - 1));
+    }
+    setState(() => _ended = false);
+    _setAnchor(target);
+    _clock.value = target;
+    await cast.seek(target);
+    unawaited(_syncTime(force: true));
+  }
+
   Future<void> _seekBy(double delta) => _seekTo(_clock.value + delta);
 
   Future<void> _togglePlay() async {
+    if (_chromecasting) {
+      await _togglePlayOnChromecast();
+      return;
+    }
     final controller = _controller;
     if (controller == null || !controller.value.isInitialized) return;
     if (_pendingSeek != null) {
@@ -1771,6 +2119,32 @@ class _WatchPageState extends State<WatchPage> with WidgetsBindingObserver {
     _armIdle();
   }
 
+  Future<void> _togglePlayOnChromecast() async {
+    if (cast.media?.sn != _sn) return;
+    final playback = cast.playback;
+    // 播完 / 出錯之後電視上已經沒有東西可以「繼續」了, 得重新交一次
+    if (_ended ||
+        playback == CastPlayback.ended ||
+        playback == CastPlayback.failed) {
+      final from = _ended ? 0.0 : _clock.value;
+      setState(() {
+        _ended = false;
+        _error = '';
+      });
+      await _openSource(seekTo: from, autoplay: true);
+      return;
+    }
+    final wantPlaying = !_showsPlaying;
+    setState(() => _playIntent = wantPlaying);
+    if (wantPlaying) {
+      _streamAutoplayed = true;
+      await cast.play();
+    } else {
+      await cast.pause();
+      unawaited(_syncTime(force: true));
+    }
+  }
+
   Future<void> _setRate(double rate) async {
     // 先照舊的速度把位置結清, 再換速度 —— 反過來的話, 從上次對時到現在的
     // 那一段會被用新的速度重算一次, 時間軸就跳一下
@@ -1778,6 +2152,7 @@ class _WatchPageState extends State<WatchPage> with WidgetsBindingObserver {
     setState(() => _rate = rate);
     _setAnchor(at);
     await _controller?.setPlaybackSpeed(rate);
+    if (_chromecasting) await cast.setRate(rate);
     await state.savePref(() => prefs.setRate(rate));
     _flashMessage('播放速度 ${rate == 1 ? '正常' : '$rate×'}');
   }
@@ -2113,15 +2488,19 @@ class _WatchPageState extends State<WatchPage> with WidgetsBindingObserver {
     unawaited(_controller?.setPlaybackSpeed(_boostFrom));
   }
 
+  /// 時間軸拖得動嗎: 手機上的播放器開好了, 或是正在投放 (那時手機上沒有播放器)
+  bool get _canSeek =>
+      _chromecasting || (_controller?.value.isInitialized ?? false);
+
   void _onHorizontalStart(DragStartDetails details) {
-    if (!(_controller?.value.isInitialized ?? false)) return;
+    if (!_canSeek) return;
     _dragFrom = _clock.value;
     _dragAccum = 0;
     _showControls();
   }
 
   void _onHorizontalUpdate(DragUpdateDetails details, Size size) {
-    if (size.width <= 0 || !(_controller?.value.isInitialized ?? false)) return;
+    if (size.width <= 0 || !_canSeek) return;
     _dragAccum += details.delta.dx / size.width * kGestureSeekSpan;
     final target = (_dragFrom + _dragAccum)
         .clamp(0.0, math.max(0.0, _playableDuration))
@@ -2655,11 +3034,11 @@ class _WatchPageState extends State<WatchPage> with WidgetsBindingObserver {
                 child: ListTile(
                   dense: true,
                   contentPadding: EdgeInsets.zero,
-                  leading: Icon(Icons.cast_rounded, size: 20),
+                  leading: Icon(Icons.connected_tv_rounded, size: 20),
                   title: Text('在電視上播放'),
                 ),
               ),
-              if (prefs.pipEnabled)
+              if (prefs.pipEnabled && !_chromecasting)
                 const PopupMenuItem(
                   value: 'pip',
                   child: ListTile(
@@ -2769,8 +3148,14 @@ class _WatchPageState extends State<WatchPage> with WidgetsBindingObserver {
                   child: Stack(
                     fit: StackFit.expand,
                     children: [
-                      if (ready) _fitted(controller) else _poster(),
-                      if (_danmakuOn && _danmaku.isNotEmpty)
+                      if (_chromecasting)
+                        _chromecastPanel(mobileInline: mobileInline)
+                      else if (ready)
+                        _fitted(controller)
+                      else
+                        _poster(),
+                      // 投放中彈幕不畫: 手機上看不到影片, 電視那頭又畫不了 ASS
+                      if (_danmakuOn && _danmaku.isNotEmpty && !_chromecasting)
                         Positioned.fill(
                           // 時鐘直接交給彈幕層, 不要在這裡包 ValueListenableBuilder
                           // —— 那等於每一幀重建一次整個彈幕層
@@ -2792,7 +3177,8 @@ class _WatchPageState extends State<WatchPage> with WidgetsBindingObserver {
                             speed: _danmakuSpeed,
                           ),
                         ),
-                      if ((_initialising || !ready) && _error.isEmpty)
+                      if ((_initialising || (!ready && !_chromecasting)) &&
+                          _error.isEmpty)
                         Center(
                             child: _PlayerSpinner(size: 36, speed: _netSpeed)),
                       if (_error.isNotEmpty) _errorOverlay(),
@@ -2806,6 +3192,7 @@ class _WatchPageState extends State<WatchPage> with WidgetsBindingObserver {
                               child:
                                   _PlayerSpinner(size: 32, speed: _netSpeed)),
                       if (_downloading.isNotEmpty) _downloadBadge(),
+                      if (_airplay.active && !_chromecasting) _airplayBadge(),
                       AnimatedOpacity(
                         opacity: _controlsVisible ? 1 : 0,
                         duration: const Duration(milliseconds: 180),
@@ -2944,6 +3331,128 @@ class _WatchPageState extends State<WatchPage> with WidgetsBindingObserver {
         ),
       ),
     );
+  }
+
+  /// 投放中: 影片在電視上, 這裡只寫「在哪裡播」. 控制列照常疊在上面, 是電視
+  /// 的遙控器.
+  Widget _chromecastPanel({bool mobileInline = false}) {
+    return ColoredBox(
+      key: const ValueKey('chromecast-panel'),
+      color: const Color(0xFF0D0E11),
+      child: Padding(
+        // 讓開上下兩條控制列, 字才不會被播放鍵蓋住
+        padding: EdgeInsets.fromLTRB(
+            24, mobileInline ? 8 : 56, 24, mobileInline ? 92 : 140),
+        child: Center(
+          child: FittedBox(
+            fit: BoxFit.scaleDown,
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                const Icon(Icons.cast_connected_rounded,
+                    size: 34, color: AgpColors.bahamut),
+                const SizedBox(height: 8),
+                ListenableBuilder(
+                  listenable: cast,
+                  builder: (context, _) => Text(
+                    '正在「${cast.deviceName ?? '電視'}」上播放',
+                    textAlign: TextAlign.center,
+                    style: const TextStyle(
+                        color: Colors.white,
+                        fontSize: 14,
+                        fontWeight: FontWeight.w700),
+                  ),
+                ),
+                const SizedBox(height: 2),
+                Text(
+                  '$_seriesName · $_hereLabel',
+                  textAlign: TextAlign.center,
+                  style: const TextStyle(color: AgpColors.fgDim, fontSize: 12),
+                ),
+              ],
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+
+  /// AirPlay 中. 影片送到 Apple TV 時手機這邊是黑的, 送到喇叭時畫面照舊 ——
+  /// 分不出是哪一種, 所以只掛一個小徽章, 不蓋住畫面.
+  Widget _airplayBadge() {
+    final name = _airplay.name;
+    return Positioned(
+      top: _fullscreen ? 62 : 10,
+      left: 0,
+      right: 0,
+      child: IgnorePointer(
+        child: Center(
+          child: Container(
+            padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
+            decoration: BoxDecoration(
+              color: Colors.black.withValues(alpha: 0.62),
+              borderRadius: BorderRadius.circular(999),
+            ),
+            child: Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                const Icon(Icons.airplay_rounded,
+                    size: 14, color: AgpColors.bahamut),
+                const SizedBox(width: 6),
+                Text(
+                  name.isEmpty ? 'AirPlay' : 'AirPlay · $name',
+                  style: const TextStyle(
+                      color: Colors.white,
+                      fontSize: 12,
+                      fontWeight: FontWeight.w600),
+                ),
+              ],
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+
+  /// 投放的兩顆鍵: AirPlay (iOS, 一直都在) 跟 Chromecast (附近找得到裝置、
+  /// 或是正連著的時候才出現 —— Google 的投放按鈕規範也是這樣).
+  List<Widget> _castButtons({Color? foregroundColor}) {
+    if (Device.tv) return const [];
+    return [
+      if (AirPlay.supported)
+        Tooltip(
+          message: 'AirPlay',
+          child: SizedBox.square(
+            dimension: kBarSlot,
+            child: Center(
+              child: AirPlayButton(
+                size: 36,
+                color: foregroundColor ?? Colors.white,
+                activeColor: AgpColors.accent,
+              ),
+            ),
+          ),
+        ),
+      if (_castSupported)
+        ListenableBuilder(
+          listenable: cast,
+          builder: (context, _) {
+            if (!cast.available ||
+                (!cast.connected && cast.devices.isEmpty)) {
+              return const SizedBox.shrink();
+            }
+            return _barButton(
+              cast.connected
+                  ? Icons.cast_connected_rounded
+                  : Icons.cast_rounded,
+              cast.connected ? '投放中：${cast.deviceName}' : '投放到電視',
+              () => unawaited(_openCastSheet()),
+              active: cast.connected,
+              foregroundColor: foregroundColor,
+            );
+          },
+        ),
+    ];
   }
 
   Widget _errorOverlay() {
@@ -3222,13 +3731,15 @@ class _WatchPageState extends State<WatchPage> with WidgetsBindingObserver {
                               ),
                             ),
                           ),
+                          ..._castButtons(),
                           _rateMenu(),
                           _qualityMenu(),
-                          // 連過電視的人才擺出來, 沒有電視的人不必多一顆看不懂的鍵
+                          // 連過電視的人才擺出來, 沒有電視的人不必多一顆看不懂的鍵.
+                          // 圖示不用投放的那一個: 那是 Chromecast 的
                           if (!Device.tv &&
                               (state.tvRemote.connected ||
                                   state.tvRemote.saved.isNotEmpty))
-                            _barButton(Icons.cast_rounded, '在電視上播放',
+                            _barButton(Icons.connected_tv_rounded, '在電視上播放',
                                 () => unawaited(_castToTv())),
                           _barButton(Icons.video_library_outlined, '選集',
                               _openEpisodeSheet),
@@ -3286,6 +3797,7 @@ class _WatchPageState extends State<WatchPage> with WidgetsBindingObserver {
             _rateMenu(onSurface: true),
             Flexible(child: _qualityMenu(onSurface: true)),
           ])),
+          ..._castButtons(foregroundColor: colors.onSurfaceVariant),
           _barButton(
               _danmakuOn
                   ? Icons.chat_bubble_outline_rounded
@@ -3503,7 +4015,7 @@ class _WatchPageState extends State<WatchPage> with WidgetsBindingObserver {
                   () => unawaited(_setDanmaku(!_danmakuOn)),
                   active: _danmakuOn),
               _barButton(Icons.settings_outlined, '設定', _openSettingsSheet),
-              if (prefs.pipEnabled)
+              if (prefs.pipEnabled && !_chromecasting)
                 _barButton(Icons.picture_in_picture_alt_rounded, '子母畫面',
                     () => unawaited(_enterPip())),
               if (_fullscreen)
@@ -3537,8 +4049,7 @@ class _WatchPageState extends State<WatchPage> with WidgetsBindingObserver {
         final secondary = _streaming && !_needsProxy
             ? _seekableDuration.clamp(0.0, max)
             : _bufferedSeconds().clamp(0.0, max);
-        final enabled =
-            playable > 0 && (_controller?.value.isInitialized ?? false);
+        final enabled = playable > 0 && _canSeek;
         return SizedBox(
           height: 32,
           child: SliderTheme(

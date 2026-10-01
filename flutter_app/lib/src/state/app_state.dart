@@ -16,6 +16,7 @@ import '../api/client.dart';
 import '../api/models.dart';
 import '../util/device.dart';
 import '../util/format.dart';
+import 'cast.dart';
 import 'downloads.dart';
 import 'download_background.dart';
 import 'download_network.dart';
@@ -77,6 +78,15 @@ class AppState extends ChangeNotifier {
     saved: prefs.remoteTvs,
     onSavedChanged: prefs.setRemoteTvs,
   );
+
+  /// 手機上: 投放到 Chromecast 的那一條連線. 跟遙控電視一樣掛在這裡, 離開
+  /// 播放頁也不斷 —— 電視照樣播下去, 回到同一集時播放頁會接手
+  CastController get cast => _cast ??= CastController();
+  CastController? _cast;
+
+  /// 測試換成接假後端的那一個
+  @visibleForTesting
+  set cast(CastController value) => _cast = value;
 
   ServerInfo serverInfo = ServerInfo();
   CurrentUser? currentUser;
