@@ -58,4 +58,37 @@ class MethodChannelVideoPlayerPip extends VideoPlayerPipPlatform {
       return false;
     }
   }
+
+  @override
+  Future<bool> updatePip({
+    int? playerId,
+    required bool autoEnter,
+    required bool playing,
+    int? width,
+    int? height,
+    Rect? sourceRect,
+  }) async {
+    try {
+      final result = await methodChannel.invokeMethod<bool>('updatePip', {
+        'playerId': playerId,
+        'autoEnter': autoEnter,
+        'playing': playing,
+        if (width != null) 'width': width,
+        if (height != null) 'height': height,
+        if (sourceRect != null)
+          'rect': [
+            sourceRect.left.round(),
+            sourceRect.top.round(),
+            sourceRect.right.round(),
+            sourceRect.bottom.round(),
+          ],
+      });
+      return result ?? false;
+    } on PlatformException catch (e) {
+      debugPrint('Error updating PiP: ${e.message}');
+      return false;
+    } on MissingPluginException {
+      return false;
+    }
+  }
 }

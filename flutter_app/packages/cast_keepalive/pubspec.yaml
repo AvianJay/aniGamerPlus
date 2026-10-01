@@ -1,0 +1,18 @@
+name: cast_keepalive
+description: 投放中 App 退到背景時, 別讓 iOS 把它暫停 —— 電視播完才接得上下一集.
+version: 0.1.0
+publish_to: none
+
+environment:
+  sdk: '>=3.6.0 <4.0.0'
+  flutter: '>=3.27.0'
+
+dependencies:
+  flutter:
+    sdk: flutter
+
+flutter:
+  plugin:
+    platforms:
+      ios:
+        pluginClass: CastKeepalivePlugin

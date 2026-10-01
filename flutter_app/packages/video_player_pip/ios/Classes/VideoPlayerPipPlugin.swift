@@ -8,6 +8,8 @@ public class VideoPlayerPipPlugin: NSObject, FlutterPlugin, AVPictureInPictureCo
   private var pipController: AVPictureInPictureController?
   private var isInPipMode = false
   private var observationToken: NSKeyValueObservation?
+  /// 播放頁要求「回到桌面時自動進子母畫面」的那一個播放器. nil 就是沒有.
+  private var armedPlayerId: Int?
   
   public static func register(with registrar: FlutterPluginRegistrar) {
     let channel = FlutterMethodChannel(name: "video_player_pip", binaryMessenger: registrar.messenger())
@@ -48,6 +50,12 @@ public class VideoPlayerPipPlugin: NSObject, FlutterPlugin, AVPictureInPictureCo
     case "isInPipMode":
       NSLog("VideoPlayerPip: isInPipMode query = \(isInPipMode)")
       result(isInPipMode)
+
+    case "updatePip":
+      let args = call.arguments as? [String: Any] ?? [:]
+      result(updatePip(
+        playerId: args["playerId"] as? Int,
+        autoEnter: args["autoEnter"] as? Bool ?? false))
       
     default:
       NSLog("VideoPlayerPip: Method not implemented: \(call.method)")
@@ -110,34 +118,9 @@ public class VideoPlayerPipPlugin: NSObject, FlutterPlugin, AVPictureInPictureCo
       
       // Check if we can create a PiP controller with this layer
       if AVPictureInPictureController.isPictureInPictureSupported() && playerLayer.player != nil {
-        // Clean up any existing controller and observations
-        cleanupPipController()
-        
-        pipController = AVPictureInPictureController(playerLayer: playerLayer)
-        pipController?.delegate = self
-        
-        // Enable PiP to start from inline (foreground)
-        if #available(iOS 14.2, *) {
-          NSLog("VideoPlayerPip: Setting canStartPictureInPictureAutomaticallyFromInline to true")
-          pipController?.canStartPictureInPictureAutomaticallyFromInline = true
-        }
-        
-        // Allow PiP during interactive playback
-        if #available(iOS 15.0, *) {
-          NSLog("VideoPlayerPip: Setting requiresLinearPlayback to false")
-          pipController?.requiresLinearPlayback = false
-        }
-        
-        NSLog("VideoPlayerPip: PiP controller created successfully: \(String(describing: pipController))")
-        
-        // Set up observation for the possible PiP state
-        if #available(iOS 14.0, *) {
-          observationToken = pipController?.observe(\.isPictureInPictureActive, options: [.new]) { [weak self] (controller, change) in
-            guard let self = self, let newValue = change.newValue else { return }
-            NSLog("VideoPlayerPip: isPictureInPictureActive changed to \(newValue)")
-            self.isInPipMode = newValue
-            self.channel?.invokeMethod("pipModeChanged", arguments: ["isInPipMode": newValue])
-          }
+        // 自動子母畫面已經替這一個播放器建好 controller 的話直接用, 不重建
+        if pipController?.playerLayer !== playerLayer {
+          makePipController(for: playerLayer)
         }
         
         // Start PiP - Try to start it more forcefully
@@ -170,6 +153,69 @@ public class VideoPlayerPipPlugin: NSObject, FlutterPlugin, AVPictureInPictureCo
     }
   }
   
+  private func makePipController(for playerLayer: AVPlayerLayer) {
+    // Clean up any existing controller and observations
+    cleanupPipController()
+
+    pipController = AVPictureInPictureController(playerLayer: playerLayer)
+    pipController?.delegate = self
+
+    // 只有播放頁說要的時候才在回到桌面時自動進去, 見 updatePip
+    if #available(iOS 14.2, *) {
+      pipController?.canStartPictureInPictureAutomaticallyFromInline = armedPlayerId != nil
+    }
+
+    // Allow PiP during interactive playback
+    if #available(iOS 15.0, *) {
+      pipController?.requiresLinearPlayback = false
+    }
+
+    NSLog("VideoPlayerPip: PiP controller created: \(String(describing: pipController))")
+
+    observationToken = pipController?.observe(\.isPictureInPictureActive, options: [.new]) { [weak self] (controller, change) in
+      guard let self = self, let newValue = change.newValue else { return }
+      NSLog("VideoPlayerPip: isPictureInPictureActive changed to \(newValue)")
+      self.isInPipMode = newValue
+      self.channel?.invokeMethod("pipModeChanged", arguments: ["isInPipMode": newValue])
+    }
+  }
+
+  /// 回到桌面時自動進子母畫面: 系統要在切到背景之前就有一個掛在畫面上那個
+  /// AVPlayerLayer 的 controller, 而且 canStartPictureInPictureAutomaticallyFromInline
+  /// 是開著的. 找不到播放器 (畫面還沒畫出來) 就回 false, Dart 那邊會再試.
+  private func updatePip(playerId: Int?, autoEnter: Bool) -> Bool {
+    guard isPipSupported() else { return false }
+    guard let playerId = playerId else {
+      armedPlayerId = nil
+      if isInPipMode {
+        if #available(iOS 14.2, *) {
+          pipController?.canStartPictureInPictureAutomaticallyFromInline = false
+        }
+      } else {
+        cleanupPipController()
+      }
+      return true
+    }
+
+    let stale = pipController == nil || pipController?.playerLayer.player == nil
+    if (armedPlayerId != playerId || stale) && !isInPipMode {
+      // 換了播放器 (換集、換畫質): 舊的 layer 已經不在畫面上了
+      guard let playerLayer = findAVPlayerLayer(playerId: playerId),
+            playerLayer.player != nil else {
+        return false
+      }
+      armedPlayerId = playerId
+      if pipController?.playerLayer !== playerLayer {
+        makePipController(for: playerLayer)
+      }
+    }
+    armedPlayerId = playerId
+    if #available(iOS 14.2, *) {
+      pipController?.canStartPictureInPictureAutomaticallyFromInline = autoEnter
+    }
+    return true
+  }
+
   private func cleanupPipController() {
     observationToken?.invalidate()
     observationToken = nil
@@ -310,6 +356,10 @@ public class VideoPlayerPipPlugin: NSObject, FlutterPlugin, AVPictureInPictureCo
     NSLog("VideoPlayerPip: PiP stopped")
     isInPipMode = false
     channel?.invokeMethod("pipModeChanged", arguments: ["isInPipMode": false])
+    // 自動子母畫面還掛著的話留著 controller, 下一次回到桌面還要用
+    if armedPlayerId != nil {
+      return
+    }
     // Explicitly release the controller when PiP is stopped
     if #available(iOS 14.0, *) {
         if self.pipController == pictureInPictureController {
@@ -340,6 +390,14 @@ public class VideoPlayerPipPlugin: NSObject, FlutterPlugin, AVPictureInPictureCo
   
   public func pictureInPictureControllerWillStopPictureInPicture(_ pictureInPictureController: AVPictureInPictureController) {
     NSLog("VideoPlayerPip: PiP will stop")
+  }
+
+  /// 在子母畫面裡按「回到 App」: 播放頁一直都在, 什麼都不用重建
+  public func pictureInPictureController(
+    _ pictureInPictureController: AVPictureInPictureController,
+    restoreUserInterfaceForPictureInPictureStopWithCompletionHandler completionHandler: @escaping (Bool) -> Void
+  ) {
+    completionHandler(true)
   }
   
   deinit {

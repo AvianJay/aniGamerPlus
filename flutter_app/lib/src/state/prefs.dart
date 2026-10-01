@@ -124,6 +124,10 @@ class Prefs {
   Future<void> setPipEnabled(bool value) =>
       _sp.setBool('agp-pip-enabled', value);
 
+  /// 播放中回到桌面 / 切到別的 App 時自動縮進子母畫面
+  bool get pipAuto => _sp.getBool('agp-pip-auto') ?? true;
+  Future<void> setPipAuto(bool value) => _sp.setBool('agp-pip-auto', value);
+
   /// 100 / 75 / 50 / 25
   int get danmakuOpacity => _sp.getInt('agp-danmaku-opacity') ?? 100;
   Future<void> setDanmakuOpacity(int value) =>

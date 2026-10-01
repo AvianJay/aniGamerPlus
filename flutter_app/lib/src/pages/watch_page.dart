@@ -11,7 +11,11 @@
 ///   2. 邊看邊下載的 HLS EVENT 播放清單 (/hls/playlist.m3u8)
 ///   3. 伺服器片庫的完整 mp4 (/get_video.mp4)
 ///
-/// 子母畫面使用 video_player_pip 的原生播放器檢視。
+/// 子母畫面使用 video_player_pip 的原生播放器檢視。播放中回到桌面會自動縮進
+/// 子母畫面 (設定裡可關), Android 的子母畫面視窗裡有倒退 / 播放 / 快轉.
+///
+/// 投放中退到背景, 這一頁照樣跟著電視走: 播完接下一集、記進度、等邊看邊下載
+/// 的第一片. iOS 要靠 cast_keepalive 讓 App 別被暫停.
 library;
 
 import 'dart:async';
@@ -19,6 +23,7 @@ import 'dart:io';
 import 'dart:math' as math;
 
 import 'package:airplay_route/airplay_route.dart';
+import 'package:cast_keepalive/cast_keepalive.dart';
 import 'package:flutter/foundation.dart' show compute;
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
@@ -384,8 +389,27 @@ class _WatchPageState extends State<WatchPage> with WidgetsBindingObserver {
   Timer? _skipRetryTimer;
   bool _skipDismissed = false;
   StreamSubscription<bool>? _pipSubscription;
+  StreamSubscription<String>? _pipActionSubscription;
   bool _pipActive = false;
   bool _pipRequested = false;
+
+  /// 原生那邊確認掛上了「回到桌面時自動進子母畫面」
+  bool _autoPipArmed = false;
+
+  /// 剛切到背景, 正在等自動子母畫面開起來. 這段時間不暫停 —— iOS 要影片正在
+  /// 播才會自動開.
+  bool _autoPipPending = false;
+  int _autoPipCheck = 0;
+
+  /// 最後一次送給原生的子母畫面設定, 一樣就不再送
+  String _pipSent = '';
+  bool _pipSyncScheduled = false;
+
+  /// 送過子母畫面設定給原生 (離開時要拆掉)
+  bool _pipTouched = false;
+
+  /// 影片畫面本身 (FittedBox 裡那一塊). 子母畫面進出動畫要知道它在哪裡.
+  final GlobalKey _videoKey = GlobalKey(debugLabel: 'video');
 
   // ------------------------------------------------------------- 投放
   CastController get cast => state.cast;
@@ -404,6 +428,12 @@ class _WatchPageState extends State<WatchPage> with WidgetsBindingObserver {
 
   /// 手上這個播放器開的是不是給 AirPlay 的那條網址
   bool _airplaySource = false;
+
+  /// 投放中在背景自己接下一集, 正在換
+  bool _advancing = false;
+
+  /// 正在用 cast_keepalive 讓 App 留在背景
+  bool _keepingAlive = false;
 
   IntroSkip? get _effectiveIntro => switch (prefs.openingSkipMode) {
         'off' => null,
@@ -524,6 +554,7 @@ class _WatchPageState extends State<WatchPage> with WidgetsBindingObserver {
       setState(() {
         _pipActive = active;
         _pipRequested = active;
+        if (active) _autoPipPending = false;
       });
       if (!active) {
         // Restoring PiP briefly passes through inactive. Give the app time to
@@ -531,16 +562,18 @@ class _WatchPageState extends State<WatchPage> with WidgetsBindingObserver {
         unawaited(Future<void>.delayed(const Duration(milliseconds: 500), () {
           if (!mounted ||
               _pipActive ||
+              _background ||
               WidgetsBinding.instance.lifecycleState ==
                   AppLifecycleState.resumed) {
             return;
           }
-          _background = true;
-          unawaited(_controller?.pause());
-          unawaited(_syncTime(force: true));
+          // 子母畫面被關掉了: 他不想看了, 回到 App 時也別自己播起來
+          _goBackground(resume: false);
         }));
       }
     });
+    _pipActionSubscription =
+        VideoPlayerPip.instance.onPipAction.listen(_onPipAction);
     if (_castSupported) {
       cast.addListener(_onChromecastChanged);
       cast.position.addListener(_onChromecastPosition);
@@ -572,7 +605,13 @@ class _WatchPageState extends State<WatchPage> with WidgetsBindingObserver {
     _skipRetryTimer?.cancel();
     _monitor?.cancel();
     unawaited(_pipSubscription?.cancel());
+    unawaited(_pipActionSubscription?.cancel());
     unawaited(_airplaySubscription?.cancel());
+    // 離開播放頁: 回到桌面不該再自動縮進子母畫面, 也不必再撐著背景
+    if (_pipTouched) {
+      unawaited(VideoPlayerPip.updatePip(autoEnter: false, playing: false));
+    }
+    if (_keepingAlive) unawaited(CastKeepAlive.hold(false));
     if (_castSupported) {
       // 投放不斷: 離開播放頁電視照樣播, 回到同一集時 _openOnChromecast 會接手
       cast.removeListener(_onChromecastChanged);
@@ -631,15 +670,21 @@ class _WatchPageState extends State<WatchPage> with WidgetsBindingObserver {
     super.dispose();
   }
 
+  /// 切到背景之後等自動子母畫面多久. 系統是跟著這一次切換開的, 通常不到半秒.
+  static const Duration kAutoPipGrace = Duration(milliseconds: 900);
+
   @override
   void didChangeAppLifecycleState(AppLifecycleState lifecycle) {
     if (lifecycle == AppLifecycleState.resumed) {
+      _autoPipPending = false;
+      _autoPipCheck++;
       if (_pipActive || _pipRequested) {
         _background = false;
         return;
       }
       if (!_background) return;
       _background = false;
+      _syncKeepAlive();
       _lifecycleWork = _lifecycleWork.then((_) async {
         final controller = _controller;
         if (!mounted || _background) return;
@@ -674,16 +719,59 @@ class _WatchPageState extends State<WatchPage> with WidgetsBindingObserver {
       });
       return;
     }
-    if (_pipActive || _pipRequested) return;
+    if (_pipActive || _pipRequested || _autoPipPending) return;
+    if (_background) return;
+    if (_autoPipArmed && _showsPlaying) {
+      // 系統的自動子母畫面就是跟著這一次切換開的. 先別暫停 (iOS 一暫停就不開
+      // 了), 等一下看它有沒有開起來; 沒有的話 (控制中心、來電、使用者在系統
+      // 設定裡關掉了) 才照平常的樣子停下來.
+      _autoPipPending = true;
+      final check = ++_autoPipCheck;
+      unawaited(Future<void>.delayed(kAutoPipGrace, () async {
+        if (!mounted || check != _autoPipCheck || !_autoPipPending) return;
+        var inPip = _pipActive;
+        if (!inPip) {
+          try {
+            inPip = await VideoPlayerPip.isInPipMode();
+          } catch (_) {}
+        }
+        if (!mounted || check != _autoPipCheck || !_autoPipPending) return;
+        _autoPipPending = false;
+        if (inPip) {
+          // 事件還沒到, 但它確實開了
+          setState(() {
+            _pipActive = true;
+            _pipRequested = true;
+          });
+          return;
+        }
+        if (WidgetsBinding.instance.lifecycleState ==
+            AppLifecycleState.resumed) {
+          return;
+        }
+        _goBackground();
+      }));
+      return;
+    }
+    _goBackground();
+  }
+
+  /// 切到背景 (而且沒有在子母畫面裡): 本機播放停下來, 進度落地.
+  ///
+  /// 投放中不一樣: 手機上本來就沒有播放器, 而這一頁還要繼續跟著電視走 ——
+  /// 邊看邊下載的進度照樣問, 播完照樣接下一集 (見 [_dormant]).
+  void _goBackground({bool? resume}) {
     if (_background) return;
     _background = true;
     final controller = _controller;
-    _resumeAfterBackground = _pendingSeek != null
-        ? _resumeAfterSeek
-        : (controller?.value.isPlaying ?? false);
+    _resumeAfterBackground = resume ??
+        (_pendingSeek != null
+            ? _resumeAfterSeek
+            : (controller?.value.isPlaying ?? false));
     _onLongPressEnd();
     _idleTimer?.cancel();
-    _streamTimer?.cancel();
+    if (!_chromecasting) _streamTimer?.cancel();
+    _syncKeepAlive();
     _lifecycleWork = _lifecycleWork.then((_) async {
       if (controller == null || controller != _controller) return;
       await controller.pause();
@@ -692,6 +780,9 @@ class _WatchPageState extends State<WatchPage> with WidgetsBindingObserver {
       await WakelockPlus.disable();
     }).catchError((Object _) {});
   }
+
+  /// 在背景而且沒事可做. 投放中不算: 電視還在播, 這一頁得跟著它.
+  bool get _dormant => _background && !_chromecasting;
 
   // =============================================================== 開場
 
@@ -1207,6 +1298,9 @@ class _WatchPageState extends State<WatchPage> with WidgetsBindingObserver {
         _playIntent = null;
         _error = '';
       });
+      _syncKeepAlive();
+      // 在背景時斷的: 邊看邊下載的輪詢跟著停, 回到前景再接
+      if (_background) _streamTimer?.cancel();
       unawaited(_openSource(seekTo: at, autoplay: false));
       return;
     }
@@ -1240,6 +1334,32 @@ class _WatchPageState extends State<WatchPage> with WidgetsBindingObserver {
     });
     _clockRunning = playback == CastPlayback.playing;
     if (playback == CastPlayback.ended && !_ended) _onEnded();
+    _syncKeepAlive();
+  }
+
+  /// iOS: 投放中退到背景時讓 App 留著 (見 cast_keepalive). 只在這一頁還有事
+  /// 要做的時候 —— 電視在播 / 暫停著 (之後還會播完)、正在換下一集、或在等
+  /// 下一集邊看邊下載的第一片. 電視停了、連線斷了就放手, 讓系統照常暫停 App.
+  void _syncKeepAlive() {
+    if (!_chromecasting && !_keepingAlive) return;
+    final busy = switch (cast.playback) {
+      CastPlayback.playing ||
+      CastPlayback.paused ||
+      CastPlayback.buffering ||
+      CastPlayback.loading =>
+        true,
+      _ => false,
+    };
+    final waitingForStream =
+        _streaming && !_streamAttached && (_streamTimer?.isActive ?? false);
+    final want = mounted &&
+        _background &&
+        _chromecasting &&
+        !cast.reconnecting &&
+        (busy || _advancing || waitingForStream);
+    if (want == _keepingAlive) return;
+    _keepingAlive = want;
+    unawaited(CastKeepAlive.hold(want));
   }
 
   void _onChromecastPosition() {
@@ -1463,6 +1583,116 @@ class _WatchPageState extends State<WatchPage> with WidgetsBindingObserver {
     }
   }
 
+  /// 這一頁現在在最上面 (沒有被別的頁面、選單、面板蓋住). 在 build 裡記下來.
+  bool _routeIsCurrent = true;
+
+  /// 回到桌面時要不要自動縮進子母畫面: 只在真的在看片的時候.
+  bool get _autoPipWanted {
+    final controller = _controller;
+    return prefs.pipEnabled &&
+        prefs.pipAuto &&
+        !Device.tv &&
+        !_chromecasting &&
+        // AirPlay 時影片在 Apple TV 上, 手機縮成小視窗沒有意義
+        !_airplay.active &&
+        !_ended &&
+        _routeIsCurrent &&
+        controller != null &&
+        controller.value.isInitialized &&
+        _showsPlaying;
+  }
+
+  /// 每畫一幀之後對一次子母畫面的設定. 狀態一變 (開始 / 暫停、換集、全螢幕、
+  /// 被別的頁面蓋住) 這一頁一定會重畫, 所以掛在這裡就不會漏.
+  void _schedulePipSync() {
+    if (_pipSyncScheduled || !VideoPlayerPip.supported || Device.tv) return;
+    _pipSyncScheduled = true;
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      _pipSyncScheduled = false;
+      if (mounted) unawaited(_syncPip());
+    });
+  }
+
+  int _pipRetries = 0;
+
+  Future<void> _syncPip() async {
+    final controller = _controller;
+    final ready = prefs.pipEnabled &&
+        !_chromecasting &&
+        controller != null &&
+        controller.value.isInitialized;
+    final auto = ready && _autoPipWanted;
+    final playing = _showsPlaying;
+    final size = ready ? controller.value.size : Size.zero;
+    final rect = ready ? _pipRect() : null;
+    // video_player_pip 只需要原生播放器的 ID, 見 _enterPip
+    // ignore: invalid_use_of_visible_for_testing_member
+    final id = ready ? controller.playerId : null;
+    final edges = rect == null
+        ? ''
+        : [rect.left, rect.top, rect.right, rect.bottom]
+            .map((v) => v.round())
+            .join(',');
+    final key = '$id|$auto|$playing|${size.width.round()}x'
+        '${size.height.round()}|$edges';
+    if (key == _pipSent) return;
+    if (id == null && !_pipTouched) return; // 從來沒掛過, 不必拆
+    final previous = _pipSent;
+    _pipSent = key;
+    _pipTouched = true;
+    if (key.split('|').first != previous.split('|').first) _pipRetries = 0;
+    final ok = await VideoPlayerPip.updatePip(
+      playerId: id,
+      autoEnter: auto,
+      playing: playing,
+      width: size.width > 0 ? size.width.round() : null,
+      height: size.height > 0 ? size.height.round() : null,
+      sourceRect: rect,
+    );
+    if (!mounted || key != _pipSent) return;
+    _autoPipArmed = auto && ok;
+    // iOS 要在畫面上找到這個播放器的 AVPlayerLayer, 剛換播放器的那一幀可能
+    // 還沒掛上去. 過一下再試, 試幾次就算了 (這台裝置不支援子母畫面).
+    if (!ok && id != null && _pipRetries < 3) {
+      _pipRetries++;
+      _pipSent = '';
+      unawaited(Future<void>.delayed(const Duration(milliseconds: 500), () {
+        if (mounted) _schedulePipSync();
+      }));
+    }
+  }
+
+  /// 影片畫面在視窗裡的位置 (實體像素). Android 拿它當進出子母畫面的動畫起點.
+  Rect? _pipRect() {
+    final box = _videoKey.currentContext?.findRenderObject();
+    if (box is! RenderBox || !box.attached || !box.hasSize) return null;
+    final view = View.maybeOf(context);
+    if (view == null) return null;
+    final ratio = view.devicePixelRatio;
+    final screen = Offset.zero & (view.physicalSize / ratio);
+    final shown = MatrixUtils.transformRect(
+            box.getTransformTo(null), Offset.zero & box.size)
+        .intersect(screen);
+    if (shown.isEmpty) return null;
+    return Rect.fromLTRB(shown.left * ratio, shown.top * ratio,
+        shown.right * ratio, shown.bottom * ratio);
+  }
+
+  /// Android 子母畫面視窗裡的按鈕
+  void _onPipAction(String action) {
+    if (!mounted || _chromecasting) return;
+    switch (action) {
+      case 'play':
+        if (!_showsPlaying) unawaited(_togglePlay());
+      case 'pause':
+        if (_showsPlaying) unawaited(_togglePlay());
+      case 'rewind':
+        unawaited(_seekBy(-kSkipSeconds.toDouble()));
+      case 'forward':
+        unawaited(_seekBy(kSkipSeconds.toDouble()));
+    }
+  }
+
   Future<void> _enterPip() async {
     final controller = _controller;
     if (!prefs.pipEnabled ||
@@ -1605,7 +1835,7 @@ class _WatchPageState extends State<WatchPage> with WidgetsBindingObserver {
   // =============================================================== 邊看邊下載
 
   void _startPoll() {
-    if (_background) return;
+    if (_dormant) return;
     _streamTimer?.cancel();
     _streamTimer = Timer.periodic(kStreamPoll, (_) => unawaited(_pollStream()));
     unawaited(_pollStream());
@@ -1614,17 +1844,18 @@ class _WatchPageState extends State<WatchPage> with WidgetsBindingObserver {
   void _stopPoll() {
     _streamTimer?.cancel();
     _streamTimer = null;
+    _syncKeepAlive();
   }
 
   Future<void> _pollStream() async {
-    if (!mounted || _background || !_streaming) return;
+    if (!mounted || _dormant || !_streaming) return;
     HlsStatus status;
     try {
       status = await client.hlsStatus(_sn);
     } catch (_) {
       return;
     }
-    if (!mounted || _background || !_streaming) return;
+    if (!mounted || _dormant || !_streaming) return;
 
     if (status.mode == 'file') {
       await _finishStream();
@@ -1684,7 +1915,7 @@ class _WatchPageState extends State<WatchPage> with WidgetsBindingObserver {
 
   /// 攢夠 45 秒 (或已經在合併) 才開播, 免得開頭就卡住
   void _maybeAutoplay() {
-    if (_background) return;
+    if (_dormant) return;
     if (_streamAutoplayed) return;
     final controller = _controller;
     final ready = _chromecasting
@@ -2736,6 +2967,13 @@ class _WatchPageState extends State<WatchPage> with WidgetsBindingObserver {
     final next = _neighbour(1);
     if (next == null) return;
     if (!mounted) return;
+    // 投放中而且手機在背景: 沒有人看得到倒數, 也沒有人能按取消 —— 直接接下一集,
+    // 電視上不必空等. 這段空檔裡 Android 投放的媒體通知 (前景服務) 會收掉,
+    // 拖久了 App 可能被系統凍住.
+    if (_chromecasting && _background && _autoNext) {
+      unawaited(_advanceInBackground(next));
+      return;
+    }
     setState(() {
       _nextOffer = next;
       _nextCountdown = kNextEpisodeCountdown;
@@ -2748,7 +2986,7 @@ class _WatchPageState extends State<WatchPage> with WidgetsBindingObserver {
         timer.cancel();
         return;
       }
-      if (_background) return;
+      if (_dormant) return;
       setState(() => _nextCountdown -= 1);
       if (_nextCountdown <= 0) {
         timer.cancel();
@@ -2757,6 +2995,17 @@ class _WatchPageState extends State<WatchPage> with WidgetsBindingObserver {
         if (target != null) unawaited(_switchTo(target));
       }
     });
+  }
+
+  Future<void> _advanceInBackground(SeriesEpisode next) async {
+    _advancing = true;
+    _syncKeepAlive();
+    try {
+      await _switchTo(next);
+    } finally {
+      _advancing = false;
+      if (mounted) _syncKeepAlive();
+    }
   }
 
   void _cancelNext() {
@@ -2836,6 +3085,8 @@ class _WatchPageState extends State<WatchPage> with WidgetsBindingObserver {
 
   @override
   Widget build(BuildContext context) {
+    _routeIsCurrent = ModalRoute.of(context)?.isCurrent ?? true;
+    _schedulePipSync();
     return PopScope(
       canPop: Device.tv ? !_tvBackConsumes : !_fullscreen,
       onPopInvokedWithResult: (didPop, _) {
@@ -3322,6 +3573,7 @@ class _WatchPageState extends State<WatchPage> with WidgetsBindingObserver {
       child: FittedBox(
         fit: fit,
         child: SizedBox(
+          key: _videoKey,
           width: width,
           height: height,
           child: VideoPlayer(controller),
@@ -3377,7 +3629,9 @@ class _WatchPageState extends State<WatchPage> with WidgetsBindingObserver {
                 ListenableBuilder(
                   listenable: cast,
                   builder: (context, _) => Text(
-                    '正在「${cast.deviceName ?? '電視'}」上播放',
+                    cast.reconnecting
+                        ? '正在重新連線到「${cast.deviceName ?? '電視'}」…'
+                        : '正在「${cast.deviceName ?? '電視'}」上播放',
                     textAlign: TextAlign.center,
                     style: const TextStyle(
                         color: Colors.white,

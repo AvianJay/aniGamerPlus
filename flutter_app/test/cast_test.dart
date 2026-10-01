@@ -12,6 +12,8 @@ import 'package:shared_preferences/shared_preferences.dart';
 import 'package:video_player_platform_interface/video_player_platform_interface.dart';
 import 'package:wakelock_plus_platform_interface/wakelock_plus_platform_interface.dart';
 
+import 'package:cast_keepalive/cast_keepalive.dart';
+
 import 'package:agp_mobile/src/api/client.dart';
 import 'package:agp_mobile/src/pages/watch_page.dart';
 import 'package:agp_mobile/src/state/app_state.dart';
@@ -175,6 +177,7 @@ final _media = CastMedia(
 );
 
 void main() {
+  TestWidgetsFlutterBinding.ensureInitialized();
   late bool supported;
   setUp(() {
     supported = CastController.supported;
@@ -281,12 +284,94 @@ void main() {
     });
   });
 
+  group('連線暫時掉了', () {
+    Future<(FakeCastBackend, CastController)> start(WidgetTester tester) async {
+      final backend = FakeCastBackend();
+      final cast = CastController(backend: backend);
+      addTearDown(() async {
+        cast.dispose();
+        await backend.close();
+      });
+      await cast.warmUp();
+      backend.session('tv');
+      await tester.pump();
+      await cast.load(_media, startAt: 0);
+      backend.status(CastPlayback.playing, duration: 1400);
+      await tester.pump();
+      return (backend, cast);
+    }
+
+    testWidgets('一下子就接回來: 不算停止投放, 電視上那一集還認得', (tester) async {
+      final (backend, cast) = await start(tester);
+      var notified = 0;
+      cast.addListener(() => notified++);
+
+      backend.session(null);
+      await tester.pump(const Duration(seconds: 2));
+      expect(cast.connected, isTrue);
+      expect(cast.reconnecting, isTrue);
+      expect(cast.media, isNotNull);
+
+      backend.session('tv');
+      await tester.pump();
+      expect(cast.reconnecting, isFalse);
+      expect(cast.media?.sn, '1');
+      expect(cast.playback, CastPlayback.playing);
+      expect(notified, 2, reason: '掉線、接回來各通知一次');
+      await tester.pump(CastController.kSessionGrace);
+      expect(cast.connected, isTrue);
+    });
+
+    testWidgets('一直沒回來: 寬限期過了才放掉', (tester) async {
+      final (backend, cast) = await start(tester);
+      backend.session(null);
+      await tester.pump(
+          CastController.kSessionGrace - const Duration(seconds: 1));
+      expect(cast.connected, isTrue);
+      await tester.pump(const Duration(seconds: 2));
+      expect(cast.connected, isFalse);
+      expect(cast.reconnecting, isFalse);
+      expect(cast.media, isNull);
+    });
+
+    testWidgets('在背景時不下定論 (iOS 會把 App 整個停下來), 回到前景才開始算',
+        (tester) async {
+      final (backend, cast) = await start(tester);
+      tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.inactive);
+      tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.hidden);
+      tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.paused);
+      backend.session(null);
+      await tester.pump(const Duration(minutes: 30));
+      expect(cast.connected, isTrue);
+
+      tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.hidden);
+      tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.inactive);
+      tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.resumed);
+      await tester.pump(
+          CastController.kSessionGrace - const Duration(seconds: 1));
+      expect(cast.connected, isTrue, reason: 'SDK 這時候才正要把 session 接回來');
+      await tester.pump(const Duration(seconds: 2));
+      expect(cast.connected, isFalse);
+    });
+
+    testWidgets('自己按停止投放: 不等寬限期', (tester) async {
+      final (_, cast) = await start(tester);
+      await cast.disconnect();
+      await tester.pump();
+      expect(cast.connected, isFalse);
+      expect(cast.media, isNull);
+    });
+  });
+
   group('播放頁', () {
     late Directory temp;
     late AppState state;
     late LocalPlayer player;
     late FakeCastBackend backend;
+    late bool keepAliveSupported;
     final requests = <Uri>[];
+    final holds = <bool>[];
+    const keepAlive = MethodChannel('agp/cast_keepalive');
 
     // AppState.boot() 會開 connectivity_plus 的事件流; 測試裡沒有那個外掛
     const connectivity = [
@@ -302,6 +387,13 @@ void main() {
           return call.method == 'check' ? ['wifi'] : null;
         });
       }
+      holds.clear();
+      keepAliveSupported = CastKeepAlive.supported;
+      CastKeepAlive.supported = true;
+      messenger.setMockMethodCallHandler(keepAlive, (call) async {
+        if (call.method == 'hold') holds.add(call.arguments == true);
+        return null;
+      });
       requests.clear();
       temp = await Directory.systemTemp.createTemp('agp-cast-test-');
       PathProviderPlatform.instance = Paths(temp.path);
@@ -317,6 +409,9 @@ void main() {
     });
 
     tearDown(() async {
+      CastKeepAlive.supported = keepAliveSupported;
+      TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+          .setMockMethodCallHandler(keepAlive, null);
       disposeWarmPlayer();
       state.cast.dispose();
       await backend.close();
@@ -324,7 +419,8 @@ void main() {
       await deleteTempDir(temp);
     });
 
-    Future<void> boot(WidgetTester tester, {bool connected = true}) async {
+    Future<void> boot(WidgetTester tester,
+        {bool connected = true, bool twoEpisodes = false}) async {
       http.Response reply(Object data) =>
           http.Response.bytes(utf8.encode(jsonEncode(data)), 200);
       final api = AgpClient(
@@ -343,7 +439,15 @@ void main() {
                     'anime_name': '測試動畫',
                     'episode': '3',
                     'resolution': 1080,
-                  }
+                  },
+                  if (twoEpisodes)
+                    {
+                      'sn': '2',
+                      'title': '測試動畫[4]',
+                      'anime_name': '測試動畫',
+                      'episode': '4',
+                      'resolution': 1080,
+                    },
                 ]
               });
           }
@@ -432,6 +536,10 @@ void main() {
       await tester.pump(const Duration(milliseconds: 100));
 
       backend.session(null);
+      await tester.pump(const Duration(seconds: 1));
+      expect(find.byKey(const ValueKey('chromecast-panel')), findsOneWidget,
+          reason: '可能只是暫時掉線, 先等一下');
+      await tester.pump(CastController.kSessionGrace);
       for (var i = 0; i < 10; i++) {
         await tester.pump(const Duration(milliseconds: 100));
       }
@@ -474,6 +582,129 @@ void main() {
       }
       expect(backend.calls, contains('connect:tv'));
       expect(backend.loads, hasLength(1), reason: '一連上就把這一集交出去');
+      expect(find.byKey(const ValueKey('chromecast-panel')), findsOneWidget);
+      await leave(tester);
+    });
+
+    /// 換集時會把進度寫進磁碟: 真的 I/O 在假時鐘裡不會自己完成, 得讓它跑一下
+    Future<void> settle(WidgetTester tester, bool Function() done) async {
+      for (var i = 0; i < 60; i++) {
+        await tester.runAsync(
+            () => Future<void>.delayed(const Duration(milliseconds: 15)));
+        await tester.pump(const Duration(milliseconds: 100));
+        if (done()) return;
+      }
+      fail('等不到下一集交給電視');
+    }
+
+    void toBackground(WidgetTester tester) {
+      tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.inactive);
+      tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.hidden);
+      tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.paused);
+    }
+
+    void toForeground(WidgetTester tester) {
+      tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.hidden);
+      tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.inactive);
+      tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.resumed);
+    }
+
+    testWidgets('投放中切到背景: 電視播完直接接下一集, App 一直撐在背景',
+        (tester) async {
+      await boot(tester, twoEpisodes: true);
+      await open(tester);
+      backend.status(CastPlayback.playing, duration: 1400);
+      backend.position(1390);
+      await tester.pump(const Duration(milliseconds: 100));
+      expect(holds, isEmpty, reason: '在前景不必撐');
+
+      toBackground(tester);
+      await tester.pump();
+      expect(holds, [true]);
+
+      backend.status(CastPlayback.ended);
+      await settle(tester, () => backend.loads.length == 2);
+      expect(backend.loads, hasLength(2), reason: '背景裡沒人看倒數, 不必等八秒');
+      final next = backend.loads.last;
+      expect(next.media.sn, '2');
+      expect(next.media.url.queryParameters['ct'], 'T-2');
+      expect(next.autoplay, isTrue);
+      expect(player.creations, 0, reason: '還是交給電視, 手機上不開播放器');
+      expect(state.watchTimeOf('1')?.ended, isTrue);
+      expect(holds, [true], reason: '下一集還要接著看, 不能放手');
+
+      toForeground(tester);
+      await tester.pump();
+      expect(holds, [true, false]);
+      expect(find.byKey(const ValueKey('chromecast-panel')), findsOneWidget);
+      await leave(tester);
+    });
+
+    testWidgets('投放中在前景播完: 照舊倒數八秒才接下一集', (tester) async {
+      await boot(tester, twoEpisodes: true);
+      await open(tester);
+      backend.status(CastPlayback.playing, duration: 1400);
+      backend.position(1390);
+      await tester.pump(const Duration(milliseconds: 100));
+
+      backend.status(CastPlayback.ended);
+      await tester.pump(const Duration(seconds: 2));
+      expect(backend.loads, hasLength(1));
+      await tester.pump(const Duration(seconds: 7));
+      await settle(tester, () => backend.loads.length == 2);
+      expect(backend.loads, hasLength(2));
+      expect(backend.loads.last.media.sn, '2');
+      expect(holds, isEmpty);
+      await leave(tester);
+    });
+
+    testWidgets('投放中切到背景, 電視暫停了也還撐著; 最後一集播完就放手',
+        (tester) async {
+      await boot(tester);
+      await open(tester);
+      backend.status(CastPlayback.playing, duration: 1400);
+      await tester.pump(const Duration(milliseconds: 100));
+      toBackground(tester);
+      await tester.pump();
+      backend.status(CastPlayback.paused, duration: 1400);
+      await tester.pump(const Duration(milliseconds: 100));
+      expect(holds, [true]);
+
+      backend.status(CastPlayback.ended);
+      await tester.pump(const Duration(milliseconds: 100));
+      expect(holds, [true, false], reason: '沒有下一集, 這一頁沒事可做了');
+      toForeground(tester);
+      await tester.pump();
+      await leave(tester);
+    });
+
+    testWidgets('連線暫時掉了 (iOS 退到背景時 SDK 會先暫停 session): 不切回手機, 回來也不重新載入',
+        (tester) async {
+      await boot(tester);
+      await open(tester);
+      backend.status(CastPlayback.playing, duration: 1400);
+      backend.position(300);
+      await tester.pump(const Duration(milliseconds: 100));
+
+      toBackground(tester);
+      backend.session(null);
+      await tester.pump(const Duration(minutes: 1));
+      expect(player.creations, 0);
+      expect(find.byKey(const ValueKey('chromecast-panel')), findsOneWidget);
+
+      toForeground(tester);
+      await tester.pump(const Duration(seconds: 2));
+      backend.session('客廳電視');
+      backend.status(CastPlayback.playing, duration: 1400);
+      backend.position(362);
+      for (var i = 0; i < 10; i++) {
+        await tester.pump(const Duration(milliseconds: 100));
+      }
+      expect(backend.loads, hasLength(1), reason: '電視上那一集照樣播, 不重新交一次');
+      expect(player.creations, 0);
+      expect(find.byKey(const ValueKey('chromecast-panel')), findsOneWidget);
+      expect(tester.widget<Slider>(find.byType(Slider)).value, 362);
+      await tester.pump(CastController.kSessionGrace);
       expect(find.byKey(const ValueKey('chromecast-panel')), findsOneWidget);
       await leave(tester);
     });

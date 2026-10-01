@@ -8,6 +8,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:path_provider_platform_interface/path_provider_platform_interface.dart';
+import 'package:video_player_pip/index.dart' show VideoPlayerPip;
 import 'package:video_player_platform_interface/video_player_platform_interface.dart';
 import 'package:wakelock_plus_platform_interface/wakelock_plus_platform_interface.dart';
 import 'package:agp_mobile/src/api/models.dart';
@@ -1514,6 +1515,192 @@ void main() {
 
     await tester.pumpWidget(const SizedBox());
     await tester.pump(const Duration(seconds: 1));
+  });
+
+  group('子母畫面', () {
+    const channel = MethodChannel('video_player_pip');
+    late List<Map<Object?, Object?>> updates;
+    late bool nativeInPip;
+    late bool pipSupported;
+
+    setUp(() {
+      pipSupported = VideoPlayerPip.supported;
+      VideoPlayerPip.supported = true;
+      updates = [];
+      nativeInPip = false;
+    });
+    tearDown(() => VideoPlayerPip.supported = pipSupported);
+
+    void installNative(WidgetTester tester) {
+      final messenger = tester.binding.defaultBinaryMessenger;
+      messenger.setMockMethodCallHandler(channel, (call) async {
+        switch (call.method) {
+          case 'updatePip':
+            updates.add(call.arguments as Map<Object?, Object?>);
+            return true;
+          case 'isInPipMode':
+            return nativeInPip;
+          case 'isPipSupported':
+            return true;
+        }
+        return null;
+      });
+      addTearDown(() => messenger.setMockMethodCallHandler(channel, null));
+    }
+
+    /// 原生那邊送上來的事件 (進出子母畫面、視窗裡的按鈕)
+    Future<void> fromNative(
+        WidgetTester tester, String method, Object? arguments) async {
+      await tester.binding.defaultBinaryMessenger.handlePlatformMessage(
+          channel.name,
+          const StandardMethodCodec()
+              .encodeMethodCall(MethodCall(method, arguments)),
+          (_) {});
+    }
+
+    Future<void> togglePlay(WidgetTester tester) async {
+      final center = middle(tester);
+      await tester.tapAt(center);
+      await tester.pump(const Duration(milliseconds: 80));
+      await tester.tapAt(center);
+      await tester.pump(const Duration(milliseconds: 300));
+    }
+
+    testWidgets('播放中掛上自動子母畫面, 暫停就拆掉, 離開播放頁全部收掉',
+        (tester) async {
+      installNative(tester);
+      await open(tester);
+      expect(player.playing, isTrue);
+      final armed = updates.last;
+      expect(armed['autoEnter'], isTrue);
+      expect(armed['playing'], isTrue);
+      expect(armed['playerId'], 1);
+      expect(armed['width'], 1920);
+      expect(armed['height'], 1080);
+      expect(armed['rect'], isA<List<Object?>>(),
+          reason: 'Android 要拿影片的位置做進出動畫');
+
+      await togglePlay(tester);
+      expect(player.playing, isFalse);
+      expect(updates.last['autoEnter'], isFalse);
+      expect(updates.last['playing'], isFalse,
+          reason: '子母畫面視窗裡要改畫播放鍵');
+
+      await tester.pumpWidget(const SizedBox());
+      expect(updates.last['autoEnter'], isFalse);
+      expect(updates.last['playerId'], isNull);
+    });
+
+    testWidgets('回到桌面時自動子母畫面開起來: 影片不暫停', (tester) async {
+      installNative(tester);
+      await open(tester);
+      tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.inactive);
+      await tester.pump();
+      expect(player.playing, isTrue, reason: 'iOS 一暫停就不會自動開了');
+
+      await fromNative(tester, 'pipModeChanged', {'isInPipMode': true});
+      tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.hidden);
+      tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.paused);
+      await tester.pump(const Duration(seconds: 3));
+      expect(player.playing, isTrue);
+
+      // 從子母畫面點回 App
+      await fromNative(tester, 'pipModeChanged', {'isInPipMode': false});
+      tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.hidden);
+      tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.inactive);
+      tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.resumed);
+      await tester.pump(const Duration(seconds: 1));
+      expect(player.playing, isTrue);
+      await tester.pumpWidget(const SizedBox());
+    });
+
+    testWidgets('事件比切到背景晚到也認得: 問一次原生是不是已經在子母畫面裡',
+        (tester) async {
+      installNative(tester);
+      await open(tester);
+      nativeInPip = true;
+      tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.inactive);
+      await tester.pump(const Duration(seconds: 2));
+      expect(player.playing, isTrue);
+      await tester.pumpWidget(const SizedBox());
+    });
+
+    testWidgets('自動子母畫面沒開起來 (控制中心、來電): 等一下照常暫停',
+        (tester) async {
+      installNative(tester);
+      await open(tester);
+      tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.inactive);
+      await tester.pump(const Duration(milliseconds: 100));
+      expect(player.playing, isTrue);
+      await tester.pump(const Duration(seconds: 1));
+      expect(player.playing, isFalse);
+
+      // 回來的時候照舊接著播
+      tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.resumed);
+      await tester.pump(const Duration(milliseconds: 100));
+      expect(player.playing, isTrue);
+      await tester.pumpWidget(const SizedBox());
+    });
+
+    testWidgets('子母畫面被關掉: 停下來, 回到 App 也不自己播', (tester) async {
+      installNative(tester);
+      await open(tester);
+      tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.inactive);
+      await fromNative(tester, 'pipModeChanged', {'isInPipMode': true});
+      await tester.pump(const Duration(seconds: 1));
+      expect(player.playing, isTrue);
+
+      await fromNative(tester, 'pipModeChanged', {'isInPipMode': false});
+      tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.hidden);
+      tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.paused);
+      await tester.pump(const Duration(seconds: 1));
+      expect(player.playing, isFalse);
+
+      tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.hidden);
+      tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.inactive);
+      tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.resumed);
+      await tester.pump(const Duration(seconds: 1));
+      expect(player.playing, isFalse);
+      await tester.pumpWidget(const SizedBox());
+    });
+
+    testWidgets('Android 子母畫面視窗裡的按鈕: 暫停、播放、倒退、快轉', (tester) async {
+      installNative(tester);
+      await open(tester);
+      await fromNative(tester, 'pipModeChanged', {'isInPipMode': true});
+      await tester.pump(const Duration(milliseconds: 100));
+
+      await fromNative(tester, 'pipAction', {'action': 'pause'});
+      await tester.pump(const Duration(milliseconds: 100));
+      expect(player.playing, isFalse);
+      expect(updates.last['playing'], isFalse);
+
+      await fromNative(tester, 'pipAction', {'action': 'play'});
+      await tester.pump(const Duration(milliseconds: 100));
+      expect(player.playing, isTrue);
+      expect(updates.last['playing'], isTrue);
+
+      final before = player.seeks.length;
+      await fromNative(tester, 'pipAction', {'action': 'forward'});
+      await tester.pump(const Duration(milliseconds: 300));
+      expect(player.seeks.length, before + 1);
+      expect(player.seeks.last.inSeconds, greaterThanOrEqualTo(29));
+      player.actual = player.seeks.last;
+      await tester.pump(const Duration(seconds: 1));
+      await tester.pumpWidget(const SizedBox());
+    });
+
+    testWidgets('設定裡關掉自動子母畫面: 不掛, 切到背景馬上暫停', (tester) async {
+      await state.prefs.setPipAuto(false);
+      installNative(tester);
+      await open(tester);
+      expect(updates, isNotEmpty);
+      expect(updates.every((call) => call['autoEnter'] == false), isTrue);
+      tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.inactive);
+      await tester.pump();
+      expect(player.playing, isFalse);
+      await tester.pumpWidget(const SizedBox());
+    });
   });
 
   group('電視遙控器', () {

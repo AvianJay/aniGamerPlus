@@ -15,6 +15,7 @@ import 'dart:async';
 import 'dart:io';
 
 import 'package:flutter/foundation.dart';
+import 'package:flutter/widgets.dart';
 import 'package:flutter_chrome_cast/flutter_chrome_cast.dart';
 
 import '../util/device.dart';
@@ -121,9 +122,17 @@ abstract class CastBackend {
   Future<void> setRate(double rate);
 }
 
-class CastController extends ChangeNotifier {
+class CastController extends ChangeNotifier with WidgetsBindingObserver {
   CastController({CastBackend? backend})
       : _backendOverride = backend;
+
+  /// 連線掉了之後, App 在前景等這麼久還沒接回來, 才算真的停止投放.
+  ///
+  /// iOS 的 Cast SDK 在 App 退到背景 (或被系統暫停過、網路斷一下) 時會先把
+  /// session 暫停, 回到前景再接回來 —— 中間那一段外掛回報的是「沒有 session」.
+  /// 照單全收的話, 播放頁會以為停止投放了: 在手機上開播放器, 等 session 接回來
+  /// 又把這一集重新交給電視, 電視上的畫面就從頭載入一次.
+  static const Duration kSessionGrace = Duration(seconds: 8);
 
   /// 只有手機跟平板投得出去: 電視自己就是螢幕, 桌面版沒有 Cast SDK.
   /// 測試裡可以直接改.
@@ -168,6 +177,15 @@ class CastController extends ChangeNotifier {
   int _discoverers = 0;
   bool _discovering = false;
 
+  /// SDK 說連線沒了, 但還沒認定是真的斷了 (見 [kSessionGrace])
+  bool _lost = false;
+  Timer? _lostTimer;
+  bool _foreground = true;
+  bool _observing = false;
+
+  /// 連線暫時掉了, 正在等它接回來. 這段時間 [connected] 還是 true.
+  bool get reconnecting => _lost;
+
   /// 起 SDK. 只會真的做一次; 失敗了這次開機就不再試.
   Future<bool> warmUp() {
     if (!supported || Device.tv) return Future<bool>.value(false);
@@ -182,6 +200,10 @@ class CastController extends ChangeNotifier {
       ok = false;
     }
     if (!ok) return false;
+    final lifecycle = WidgetsBinding.instance.lifecycleState;
+    _foreground = lifecycle == null || lifecycle == AppLifecycleState.resumed;
+    WidgetsBinding.instance.addObserver(this);
+    _observing = true;
     _subscriptions
       ..add(_backend.devices.listen(_onDevices, onError: (Object _) {}))
       ..add(_backend.sessions.listen(_onSession, onError: (Object _) {}))
@@ -250,7 +272,8 @@ class CastController extends ChangeNotifier {
       await _backend.disconnect();
     } catch (_) {}
     // SDK 偶爾不回報斷線 (電視已經先關了). 這裡自己收尾, 回報晚到也只是再收一次.
-    _onSession(null);
+    // 自己按的停止不必等寬限期
+    _drop();
   }
 
   /// 把 [next] 交給電視, 從 [startAt] 秒開始.
@@ -298,7 +321,8 @@ class CastController extends ChangeNotifier {
 
   void _onSession(String? name) {
     if (name != null) {
-      final changed = deviceName != name || connecting != null;
+      final changed = deviceName != name || connecting != null || _lost;
+      _cancelLoss();
       deviceName = name;
       connecting = null;
       final waiter = _connectWaiter;
@@ -307,11 +331,44 @@ class CastController extends ChangeNotifier {
       return;
     }
     if (deviceName == null && media == null) return;
+    if (_lost) return;
+    _lost = true;
+    _armLoss();
+    notifyListeners();
+  }
+
+  /// 開始 (或重新開始) 算寬限期. 在背景時不算: iOS 會把整支 App 停下來, 計時器
+  /// 在回到前景那一刻早就過期了, 而 SDK 這時候才正要把 session 接回來.
+  void _armLoss() {
+    _lostTimer?.cancel();
+    _lostTimer = null;
+    if (!_foreground) return;
+    _lostTimer = Timer(kSessionGrace, _drop);
+  }
+
+  void _cancelLoss() {
+    _lost = false;
+    _lostTimer?.cancel();
+    _lostTimer = null;
+  }
+
+  /// 真的斷了: 電視上那一集忘掉, 播放頁會在手機上接回來
+  void _drop() {
+    _cancelLoss();
+    if (deviceName == null && media == null) return;
     deviceName = null;
     media = null;
     playback = CastPlayback.idle;
     _sawPlayback = false;
     notifyListeners();
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    final foreground = state == AppLifecycleState.resumed;
+    if (foreground == _foreground) return;
+    _foreground = foreground;
+    if (_lost) _armLoss();
   }
 
   void _onStatus(CastRemoteStatus? status) {
@@ -360,6 +417,8 @@ class CastController extends ChangeNotifier {
 
   @override
   void dispose() {
+    _lostTimer?.cancel();
+    if (_observing) WidgetsBinding.instance.removeObserver(this);
     for (final subscription in _subscriptions) {
       unawaited(subscription.cancel());
     }
@@ -380,6 +439,10 @@ class GoogleCastBackend implements CastBackend {
             GoogleCastDiscoveryCriteriaInitialize.initWithApplicationID(appId),
             // 播放頁一開就要知道附近有沒有 Chromecast, 才決定按鈕要不要出現
             startDiscoveryAfterFirstTapOnCastButton: false,
+            // 退到背景也不要暫停 session: 投放中播放頁會用 cast_keepalive 讓
+            // App 留著, 才看得到電視播完、接得上下一集. 真的被系統暫停了,
+            // 回來時 CastController 的寬限期會擋掉那一段「沒有 session」.
+            suspendSessionsWhenBackgrounded: false,
           )
         : GoogleCastOptionsAndroid(appId: appId);
     return GoogleCastContext.instance.setSharedInstanceWithOptions(options);

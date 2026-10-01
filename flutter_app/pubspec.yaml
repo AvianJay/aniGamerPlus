@@ -43,6 +43,9 @@ dependencies:
   flutter_chrome_cast: ^1.4.8
   airplay_route:
     path: packages/airplay_route
+  # 投放中 App 退到背景時讓 iOS 別把它暫停, 電視播完才接得上下一集
+  cast_keepalive:
+    path: packages/cast_keepalive
 
   # 播放中別讓螢幕睡著
   wakelock_plus: ">=1.2.0 <2.0.0"

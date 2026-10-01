@@ -145,6 +145,14 @@ class _AppPrefsPageState extends State<AppPrefsPage> {
             value: prefs.pipEnabled,
             onChanged: (value) => _save(() => prefs.setPipEnabled(value)),
           ),
+          SwitchListTile(
+            title: const Text('離開 App 時自動開啟子母畫面'),
+            subtitle: const Text('播放中回到桌面或切到別的 App，影片縮成小視窗繼續播'),
+            value: prefs.pipEnabled && prefs.pipAuto,
+            onChanged: prefs.pipEnabled
+                ? (value) => _save(() => prefs.setPipAuto(value))
+                : null,
+          ),
           _group('彈幕'),
           SwitchListTile(
             title: const Text('預設開啟彈幕'),

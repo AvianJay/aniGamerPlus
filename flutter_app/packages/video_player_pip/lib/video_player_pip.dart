@@ -1,4 +1,7 @@
 import 'dart:async';
+import 'dart:io' show Platform;
+
+import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'src/video_player_controller.dart';
@@ -11,8 +14,10 @@ import 'video_player_pip_platform_interface.dart';
 class VideoPlayerPip {
   static const MethodChannel _channel = MethodChannel('video_player_pip');
 
-  static final VideoPlayerPipPlatform _platform =
-      VideoPlayerPipPlatform.instance;
+  static VideoPlayerPipPlatform get _platform => VideoPlayerPipPlatform.instance;
+
+  /// 只有手機有系統的子母畫面. 測試裡可以直接改.
+  static bool supported = !kIsWeb && (Platform.isAndroid || Platform.isIOS);
 
   /// Checks if the device supports PiP mode
   ///
@@ -78,7 +83,32 @@ class VideoPlayerPip {
   ///
   /// Returns `true` if in PiP mode, or `false` otherwise.
   static Future<bool> isInPipMode() {
+    if (!supported) return Future.value(false);
     return _platform.isInPipMode();
+  }
+
+  /// 子母畫面的設定, 見 [VideoPlayerPipPlatform.updatePip].
+  ///
+  /// [autoEnter] 為 true 時, 使用者回到桌面 (Android 的 Home / 最近使用,
+  /// iOS 往上滑) 系統會自動把 [playerId] 那一個播放器收進子母畫面.
+  /// [playing] 決定 Android 子母畫面視窗裡畫播放鍵還是暫停鍵.
+  static Future<bool> updatePip({
+    int? playerId,
+    required bool autoEnter,
+    required bool playing,
+    int? width,
+    int? height,
+    Rect? sourceRect,
+  }) {
+    if (!supported) return Future.value(false);
+    return _platform.updatePip(
+      playerId: playerId,
+      autoEnter: autoEnter,
+      playing: playing,
+      width: width,
+      height: height,
+      sourceRect: sourceRect,
+    );
   }
 
   /// Stream of PiP mode state changes.
@@ -94,6 +124,13 @@ class VideoPlayerPip {
   /// ```
   Stream<bool> get onPipModeChanged {
     return _onPipModeChangedController.stream;
+  }
+
+  /// Android 子母畫面視窗裡按下的按鈕: `play`、`pause`、`rewind`、`forward`.
+  ///
+  /// iOS 的子母畫面用的是系統自己的按鈕, 直接操作播放器, 不會送到這裡.
+  Stream<String> get onPipAction {
+    return _onPipActionController.stream;
   }
 
   /// Toggles Picture-in-Picture mode.
@@ -131,12 +168,17 @@ class VideoPlayerPip {
   }
 
   final _onPipModeChangedController = StreamController<bool>.broadcast();
+  final _onPipActionController = StreamController<String>.broadcast();
 
   Future<dynamic> _handleMethodCall(MethodCall call) async {
     switch (call.method) {
       case 'pipModeChanged':
         final bool isInPipMode = call.arguments['isInPipMode'] as bool;
         _onPipModeChangedController.add(isInPipMode);
+        break;
+      case 'pipAction':
+        final Object? action = call.arguments['action'];
+        if (action is String) _onPipActionController.add(action);
         break;
       case 'pipError':
         final String errorMessage = call.arguments['error'] as String;
@@ -154,6 +196,9 @@ class VideoPlayerPip {
   void dispose() {
     if (!_onPipModeChangedController.isClosed) {
       _onPipModeChangedController.close();
+    }
+    if (!_onPipActionController.isClosed) {
+      _onPipActionController.close();
     }
     _channel.setMethodCallHandler(null);
   }
