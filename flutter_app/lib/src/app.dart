@@ -8,6 +8,7 @@ import 'pages/tv_remote_actions.dart';
 import 'pages/update_dialog.dart';
 import 'state/app_state.dart';
 import 'theme.dart';
+import 'util/build_config.dart';
 import 'util/device.dart';
 
 class AgpApp extends StatefulWidget {
@@ -57,7 +58,7 @@ class _AgpAppState extends State<AgpApp> {
         unawaited(TvRemoteService.start(widget.state, _navigator));
       }
       // 讓首頁先把片庫拉起來, 別一開 App 就被對話框擋住
-      if (widget.state.prefs.updateAutoCheck) {
+      if (kAppUpdaterEnabled && widget.state.prefs.updateAutoCheck) {
         _updateTimer = Timer(const Duration(seconds: 2), _checkForUpdates);
       }
     });

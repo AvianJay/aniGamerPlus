@@ -72,6 +72,9 @@ jobs:
       - name: Unit and widget tests
         run: flutter test
 
+      - name: AAB updater exclusion tests
+        run: flutter test --dart-define=APP_UPDATER=false test/app_updater_build_test.dart
+
   android:
     needs: analyze
     runs-on: ubuntu-latest
@@ -123,7 +126,7 @@ jobs:
           KEYSTORE_PATH: ${{ github.workspace }}/flutter_app/android/app/release-keystore.jks
           KEYSTORE_ALIAS: ${{ secrets.KEYSTORE_ALIAS }}
           KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
-        run: flutter build appbundle --release --build-number "${GITHUB_RUN_NUMBER}"
+        run: flutter build appbundle --release --build-number "${GITHUB_RUN_NUMBER}" --dart-define=APP_UPDATER=false
 
       - name: Name the artifacts
         run: |

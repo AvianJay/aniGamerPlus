@@ -7,6 +7,7 @@ import 'package:flutter/material.dart';
 import '../state/app_state.dart';
 import '../state/updater.dart';
 import '../theme.dart';
+import '../util/build_config.dart';
 import '../util/device.dart';
 import '../util/format.dart';
 import '../widgets/common.dart';
@@ -187,18 +188,19 @@ class MeTab extends StatelessWidget {
             }
           },
         ),
-        ListTile(
-          leading: const Icon(Icons.system_update_rounded),
-          title: const Text('檢查更新'),
-          subtitle: FutureBuilder<AppVersion>(
-            future: Updater.current(),
-            builder: (context, snapshot) => Text(
-              '${UpdateChannel.parse(state.prefs.updateChannel).label}'
-              '${snapshot.hasData ? ' · 目前 ${snapshot.data}' : ''}',
+        if (kAppUpdaterEnabled)
+          ListTile(
+            leading: const Icon(Icons.system_update_rounded),
+            title: const Text('檢查更新'),
+            subtitle: FutureBuilder<AppVersion>(
+              future: Updater.current(),
+              builder: (context, snapshot) => Text(
+                '${UpdateChannel.parse(state.prefs.updateChannel).label}'
+                '${snapshot.hasData ? ' · 目前 ${snapshot.data}' : ''}',
+              ),
             ),
+            onTap: () => checkForUpdates(context, state.prefs),
           ),
-          onTap: () => checkForUpdates(context, state.prefs),
-        ),
         const ListTile(
           leading: Icon(Icons.info_outline),
           title: Text('aniGamerPlus+'),

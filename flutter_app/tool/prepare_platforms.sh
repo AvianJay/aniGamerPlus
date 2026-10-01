@@ -406,6 +406,40 @@ val releaseKeystorePassword = System.getenv("KEYSTORE_PASSWORD")
     print('  patched', path)
 
 
+def patch_android_updater(path):
+    with open(path, encoding='utf-8') as handle:
+        source = handle.read()
+
+    android_marker = '\nandroid {\n'
+    if source.count(android_marker) != 1:
+        raise RuntimeError(f'unexpected Android Gradle template in {path}')
+
+    # Flutter passes --dart-define values to Gradle as Base64-encoded entries.
+    # Use the same compile-time switch for the UI and the merged manifest, even
+    # when APK and AAB are built consecutively from the same platform shell.
+    configuration = '''
+val appUpdaterEnabled = (project.findProperty("dart-defines") as? String)
+    ?.split(",")
+    ?.filter { it.isNotEmpty() }
+    ?.none {
+        String(Base64.getDecoder().decode(it), Charsets.UTF_8) ==
+            "APP_UPDATER=false"
+    } ?: true
+'''
+    source = 'import java.util.Base64\n\n' + source
+    source = source.replace(android_marker, configuration + android_marker, 1)
+    source = source.replace(android_marker, android_marker + '''
+    sourceSets.configureEach {
+        if (!appUpdaterEnabled && name in setOf("debug", "profile", "release")) {
+            manifest.srcFile("../../android_extensions/no_updater/AndroidManifest.xml")
+        }
+    }
+''', 1)
+    with open(path, 'w', encoding='utf-8', newline='') as handle:
+        handle.write(source)
+    print('  patched', path, '(updater build switch)')
+
+
 def patch_plist(path):
     with open(path, 'rb') as handle:
         info = plistlib.load(handle)
@@ -826,6 +860,7 @@ patch_manifest(os.path.join('android', 'app', 'src', 'main', 'AndroidManifest.xm
 add_android_resources(os.path.join('android', 'app', 'src', 'main', 'res'))
 patch_main_activity(os.path.join('android', 'app', 'src', 'main', 'kotlin'))
 patch_android_signing(os.path.join('android', 'app', 'build.gradle.kts'))
+patch_android_updater(os.path.join('android', 'app', 'build.gradle.kts'))
 add_cast_support(os.path.join('android', 'app', 'src', 'main', 'AndroidManifest.xml'),
                  os.path.join('android', 'app', 'src', 'main', 'kotlin'),
                  os.path.join('android', 'app', 'build.gradle.kts'))
@@ -846,4 +881,5 @@ echo
 echo "好了. 接著可以:"
 echo "  flutter run                 # 接一台手機或模擬器"
 echo "  flutter build apk --release"
+echo "  flutter build appbundle --release --dart-define=APP_UPDATER=false"
 echo "  flutter build ios --release --no-codesign"

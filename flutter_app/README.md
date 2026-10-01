@@ -144,6 +144,7 @@ bash tool/prepare_platforms.sh
 ```bash
 flutter run
 flutter build apk --release
+flutter build appbundle --release --dart-define=APP_UPDATER=false
 flutter build ios --release --no-codesign
 ```
 
@@ -166,7 +167,7 @@ lib/
 `.github/workflows/Flutter-build.yml`:
 
 * `analyze` —— `flutter analyze`
-* `android` —— APK + AAB, 用 repository secrets 裡的 release 金鑰簽 (PR 沒有 secrets 時退回 debug 金鑰)
+* `android` —— APK + AAB, 用 repository secrets 裡的 release 金鑰簽 (PR 沒有 secrets 時退回 debug 金鑰)。AAB 以 `APP_UPDATER=false` 編譯，不含 App 內更新入口、啟動時檢查、APK 安裝權限與更新用的 FileProvider
 * `ios` —— 未簽名的 IPA, 要靠 sideloader 自己簽
 * `nightly` —— master 每次推送, 把 APK / AAB / IPA 以固定檔名換進 `nightly` prerelease
 
@@ -174,6 +175,10 @@ lib/
 `Python-build.yml` 也會把伺服器執行檔放進同一個 `nightly` release.
 
 ### App 內更新
+
+APK / IPA 提供 App 內更新。AAB 建置時傳入 `--dart-define=APP_UPDATER=false`，
+更新功能會在編譯時移除，Android manifest 也會移除 `REQUEST_INSTALL_PACKAGES`
+及更新用的 FileProvider；AAB 安裝後的更新交由發佈商店處理。
 
 「我的 → 檢查更新」, 開 App 時也會自己看一次 (「App 偏好設定 → 更新」可關).
 

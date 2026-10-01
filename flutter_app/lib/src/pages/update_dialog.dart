@@ -10,11 +10,13 @@ import 'package:flutter/material.dart';
 
 import '../state/prefs.dart';
 import '../state/updater.dart';
+import '../util/build_config.dart';
 import '../util/format.dart';
 import '../widgets/common.dart';
 
 Future<void> checkForUpdates(BuildContext context, Prefs prefs,
     {bool silent = false}) async {
+  if (!kAppUpdaterEnabled) return;
   if (!Platform.isAndroid && !Platform.isIOS) return;
   final channel = UpdateChannel.parse(prefs.updateChannel);
   final updater = Updater();
