@@ -237,4 +237,64 @@ void main() {
     await tester.pumpAndSettle();
     expect(find.text('下載 1 集到手機'), findsOneWidget);
   });
+
+  testWidgets('下載未看完的集數包含未看與看到一半，跳過看完和已有下載', (tester) async {
+    state.watchTimes = {
+      'l1': WatchTime(ended: true, duration: 600),
+      'l2': WatchTime(time: 250, duration: 600),
+    };
+    await tester.runAsync(() async {
+      await state.downloads.enqueue(VideoItem(sn: 'l4'));
+      final retry = await state.downloads.enqueue(VideoItem(sn: 'l5'));
+      retry.status = DownloadStatus.failed;
+    });
+    await open(tester, 'sheet-unfinished', [
+      for (var i = 1; i <= 5; i++) ep('l$i', '$i', local: true),
+    ]);
+
+    await tester.tap(find.text('下載未看完的集數'));
+    await tester.pumpAndSettle();
+    expect(find.text('下載 3 集到手機'), findsOneWidget);
+    expect(find.byIcon(Icons.check_box_rounded), findsNWidgets(3));
+
+    await tester.tap(find.text('下載 3 集到手機'));
+    await settle(tester,
+        () => state.downloads.entryFor('l5')!.status == DownloadStatus.queued);
+    expect(state.downloads.entryFor('l1'), isNull);
+    for (final sn in ['l2', 'l3', 'l4', 'l5']) {
+      expect(state.downloads.entryFor(sn)?.status, DownloadStatus.queued);
+    }
+    await tester.pump(const Duration(seconds: 4));
+    await tester.pumpAndSettle();
+  });
+
+  testWidgets('選集下載可以只選未看完的，包含伺服器尚未下載的集數', (tester) async {
+    state.watchTimes = {'l1': WatchTime(ended: true)};
+    await open(tester, 'sheet-filter-unfinished', [
+      ep('l1', '1', local: true),
+      ep('l2', '2', local: true),
+      ep('r3', '3'),
+    ]);
+    await tester.tap(find.text('選集下載到手機'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('全選'));
+    await tester.pumpAndSettle();
+    expect(find.text('下載 3 集到手機'), findsOneWidget);
+    await tester.tap(find.text('只選未看完的'));
+    await tester.pumpAndSettle();
+    expect(find.text('下載 2 集到手機'), findsOneWidget);
+    expect(find.byIcon(Icons.check_box_rounded), findsNWidgets(2));
+  });
+
+  testWidgets('全部看完時不會預選下載', (tester) async {
+    state.watchTimes = {'l1': WatchTime(ended: true)};
+    await open(tester, 'sheet-all-finished', [ep('l1', '1', local: true)]);
+    await tester.tap(find.text('下載未看完的集數'));
+    await tester.pumpAndSettle();
+    expect(find.text('選一些集數'), findsOneWidget);
+    final filter = tester.widget<TextButton>(find.ancestor(
+        of: find.text('只選未看完的'), matching: find.byType(TextButton)));
+    expect(filter.onPressed, isNull);
+    expect(state.downloads.entries, isEmpty);
+  });
 }

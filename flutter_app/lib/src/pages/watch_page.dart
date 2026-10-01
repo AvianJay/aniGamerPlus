@@ -588,10 +588,13 @@ class _WatchPageState extends State<WatchPage> with WidgetsBindingObserver {
     // 最後一筆進度要在把 _clock 收掉之前記. _syncTime() 的前半段是同步的,
     // noteWatchTime() 當場就跑完, 所以下面的 flush 與通知都看得到它.
     _noteFinalPosition();
+    final deleteCompleted =
+        prefs.downloadAutoDeleteWatched && _ended && store.isDownloaded(_sn);
     final controller = _controller;
     _controller = null;
     controller?.removeListener(_onPlayerUpdate);
-    if (controller != null &&
+    if (!deleteCompleted &&
+        controller != null &&
         controller.value.isInitialized &&
         !controller.value.hasError) {
       // 不丟掉, 停在架上等他回來 —— 從觀看紀錄退出去再點回同一集是最常做的
@@ -605,7 +608,7 @@ class _WatchPageState extends State<WatchPage> with WidgetsBindingObserver {
         position: _clock.value,
       ));
     } else {
-      unawaited(controller?.dispose());
+      unawaited(_disposeEpisodePlayer(controller, _sn));
     }
     _clock.dispose();
     _netSpeed.dispose();
@@ -1872,7 +1875,7 @@ class _WatchPageState extends State<WatchPage> with WidgetsBindingObserver {
   bool _forceNote = false;
 
   Future<void> _syncTime(
-      {bool ended = false, bool force = false, bool? notify}) async {
+      {bool? ended, bool force = false, bool? notify}) async {
     if (_pendingSeek != null || _scrubbing) {
       // 跳轉中的位置是中間狀態, 記下來只會把人帶回一個他沒有要停的地方.
       // 但「一定要記」的那幾次不能就這樣放掉 —— 掛著等跳轉結束再補.
@@ -1880,16 +1883,20 @@ class _WatchPageState extends State<WatchPage> with WidgetsBindingObserver {
       return;
     }
     final now = DateTime.now().millisecondsSinceEpoch;
+    final sn = _sn;
+    // 退出、換集或切到背景時仍然保留已看完的狀態，重播才會清掉 _ended。
+    final completed = ended ?? _ended;
     // 要送伺服器的那一次一定要先寫本機: 兩邊的位置與 timestamp 才會對得上, 不然
     // 下次合併時伺服器那份會被當成更新的
-    final remoteDue =
-        force || ended || now - _lastSync >= kRemoteSyncEvery.inMilliseconds;
+    final remoteDue = force ||
+        completed ||
+        now - _lastSync >= kRemoteSyncEvery.inMilliseconds;
     final localDue = remoteDue ||
         _forceNote ||
         now - _lastNote >= kLocalSyncEvery.inMilliseconds;
     if (!localDue) return;
 
-    final seconds = ended ? 0 : _clock.value.round();
+    final seconds = completed ? 0 : _clock.value.round();
     final duration = _duration.round();
 
     _lastNote = now;
@@ -1897,10 +1904,10 @@ class _WatchPageState extends State<WatchPage> with WidgetsBindingObserver {
     // 離線就先記成「還欠伺服器」, 回到線上時 flushPendingWatchTimes() 會補送.
     // 以前這裡是直接 return, 所以飛航模式下看的進度既沒落盤也沒上傳.
     state.noteWatchTime(
-      _sn,
+      sn,
       WatchTime(
         time: seconds,
-        ended: ended,
+        ended: completed,
         duration: duration,
         timestamp: now ~/ 1000,
       ),
@@ -1909,7 +1916,7 @@ class _WatchPageState extends State<WatchPage> with WidgetsBindingObserver {
       pending: state.offline && state.watchTimesAreServerBacked,
       // 播放中每幾秒那一筆不必叫整個 app 重建 —— 離開這一頁時會補一次通知.
       // 暫停、跳轉、播完這些 (force) 照樣通知.
-      notify: notify ?? (force || ended),
+      notify: notify ?? (force || completed),
     );
     if (force) {
       // 切到背景 / 關掉播放器時走這條, 等不了那一秒的 debounce
@@ -1922,15 +1929,15 @@ class _WatchPageState extends State<WatchPage> with WidgetsBindingObserver {
     // 沒登入 / 伺服器沒開帳號系統的話, 本機那份就是唯一的一份, 不必再送出去
     if (!state.canSyncWatchTimes) return;
     try {
-      await client.setWatchTime(_sn, seconds,
-          ended: ended, duration: duration > 0 ? duration : null);
+      await client.setWatchTime(sn, seconds,
+          ended: completed, duration: duration > 0 ? duration : null);
       // 這一筆通了, 順手把之前欠的也送掉
       if (state.hasPendingWatchTimes) {
         unawaited(state.flushPendingWatchTimes());
       }
     } catch (_) {
       // 斷線了, 這一筆要記著, 等下次連上補送
-      state.markWatchTimePending(_sn);
+      state.markWatchTimePending(sn);
     }
   }
 
@@ -2603,6 +2610,19 @@ class _WatchPageState extends State<WatchPage> with WidgetsBindingObserver {
     _forceNote = false;
   }
 
+  /// 播放器放開檔案後再刪除，避免檔案仍被原生播放器占用。
+  Future<void> _disposeEpisodePlayer(
+      VideoPlayerController? controller, String sn) async {
+    final completed = _ended;
+    await controller?.dispose();
+    if (completed &&
+        prefs.downloadAutoDeleteWatched &&
+        state.watchTimeOf(sn)?.ended == true &&
+        store.isDownloaded(sn)) {
+      await store.remove(sn);
+    }
+  }
+
   Future<void> _switchTo(SeriesEpisode episode) async {
     if (episode.videoSn == _sn) return;
     final downloaded = store.isDownloaded(episode.videoSn);
@@ -2617,10 +2637,11 @@ class _WatchPageState extends State<WatchPage> with WidgetsBindingObserver {
     _nextTimer?.cancel();
     _flashTimer?.cancel();
     final controller = _controller;
+    _controller = null;
     if (controller != null) {
       controller.removeListener(_onPlayerUpdate);
-      unawaited(controller.pause());
     }
+    unawaited(_disposeEpisodePlayer(controller, _sn));
     if (!mounted) return;
     setState(() {
       _sn = episode.videoSn;
@@ -2676,10 +2697,11 @@ class _WatchPageState extends State<WatchPage> with WidgetsBindingObserver {
     _stopPoll();
     _nextTimer?.cancel();
     final controller = _controller;
+    _controller = null;
     if (controller != null) {
       controller.removeListener(_onPlayerUpdate);
-      unawaited(controller.pause());
     }
+    unawaited(_disposeEpisodePlayer(controller, _sn));
     if (!mounted) return;
     setState(() {
       _sn = episode.videoSn;

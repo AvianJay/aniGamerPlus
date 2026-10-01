@@ -182,6 +182,24 @@ void main() {
     await tester.pumpWidget(const SizedBox());
   });
 
+  testWidgets('看完自動刪除手機影片預設關閉，設定會儲存在手機', (tester) async {
+    expect(state.prefs.downloadAutoDeleteWatched, isFalse);
+    await open(tester, AppPrefsPage(state: state));
+    final label = find.text('看完自動刪除手機影片');
+    await tester.scrollUntilVisible(label, 300,
+        scrollable: find.byType(Scrollable).first);
+    await tester.tap(label);
+    await tester.pumpAndSettle();
+    expect(state.prefs.downloadAutoDeleteWatched, isTrue);
+    final saved = await SharedPreferences.getInstance();
+    await saved.reload();
+    expect(saved.getBool('agp-dl-auto-delete-watched'), isTrue);
+    await tester.tap(label);
+    await tester.pumpAndSettle();
+    expect(state.prefs.downloadAutoDeleteWatched, isFalse);
+    await tester.pumpWidget(const SizedBox());
+  });
+
   testWidgets(
       'invalid server values never upload and valid edits preserve unrelated settings',
       (tester) async {

@@ -166,6 +166,11 @@ class Prefs {
   Future<void> setDownloadDanmaku(bool value) =>
       _sp.setBool('agp-dl-danmu', value);
 
+  bool get downloadAutoDeleteWatched =>
+      _sp.getBool('agp-dl-auto-delete-watched') ?? false;
+  Future<void> setDownloadAutoDeleteWatched(bool value) =>
+      _sp.setBool('agp-dl-auto-delete-watched', value);
+
   bool get downloadWifiOnly => _sp.getBool('agp-dl-wifi') ?? false;
   Future<void> setDownloadWifiOnly(bool value) =>
       _sp.setBool('agp-dl-wifi', value);

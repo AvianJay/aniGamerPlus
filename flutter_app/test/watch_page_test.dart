@@ -15,6 +15,7 @@ import 'package:agp_mobile/src/api/client.dart';
 import 'package:agp_mobile/src/pages/watch_page.dart';
 import 'package:agp_mobile/src/danmaku/danmaku_overlay.dart';
 import 'package:agp_mobile/src/state/app_state.dart';
+import 'package:agp_mobile/src/state/downloads.dart';
 import 'package:agp_mobile/src/theme.dart';
 import 'package:agp_mobile/src/state/tv_remote_host.dart';
 import 'package:agp_mobile/src/state/tv_remote_protocol.dart';
@@ -89,6 +90,9 @@ class DelayedPlayer extends VideoPlayerPlatform {
   bool playing = false;
   double speed = 1;
   int creations = 0;
+  final disposed = <int>[];
+  Completer<void>? disposeBarrier;
+  bool failInitialisation = false;
   Uint8List? frame;
 
   /// 跳轉之後回報「在緩衝」—— 真的播放器跳到沒載過的地方就是這樣
@@ -122,6 +126,10 @@ class DelayedPlayer extends VideoPlayerPlatform {
     final stream = _streamFor(id);
     scheduleMicrotask(() {
       if (stream.isClosed) return;
+      if (failInitialisation) {
+        stream.addError(PlatformException(code: 'VideoError', message: 'fixture'));
+        return;
+      }
       stream.add(VideoEvent(
           eventType: VideoEventType.initialized,
           duration: duration,
@@ -131,7 +139,12 @@ class DelayedPlayer extends VideoPlayerPlatform {
   }
 
   @override
-  Future<void> dispose(int id) async {}
+  Future<void> dispose(int id) async {
+    final barrier = disposeBarrier;
+    if (barrier != null) await barrier.future;
+    disposed.add(id);
+  }
+
   @override
   Future<void> pause(int id) async {
     playing = false;
@@ -249,6 +262,8 @@ void main() {
         {'agp-server': 'http://localhost:12345'});
     state = await AppState.boot();
     state.offline = true;
+    state.downloads.concurrency = 0;
+    await state.prefs.setDownloadAutoDeleteWatched(false);
     player = DelayedPlayer();
     VideoPlayerPlatform.instance = player;
   });
@@ -286,7 +301,157 @@ void main() {
     slider.onChangeEnd!(target);
   }
 
-  testWidgets('skip intro stays compact above tablet, phone and fullscreen controls',
+  Future<List<File>> seedDownload(WidgetTester tester, String sn) async {
+    // 使用短片，這些檔案生命週期測試不需要載入外部片頭資料。
+    player.duration = const Duration(seconds: 120);
+    final files = <File>[];
+    await tester.runAsync(() async {
+      final entry = await state.downloads.enqueue(
+          VideoItem(sn: sn, animeName: '測試動畫', episode: sn, resolution: 1080),
+          withDanmaku: false);
+      entry.status = DownloadStatus.done;
+      files.addAll([
+        state.downloads.videoFile(entry),
+        state.downloads.partFile(entry),
+        state.downloads.danmakuFile(sn),
+        state.downloads.thumbFile(sn),
+      ]);
+      for (final file in files) {
+        await file.writeAsString('fixture');
+      }
+    });
+    return files;
+  }
+
+  Future<void> settleIo(WidgetTester tester, bool Function() done) async {
+    for (var i = 0; i < 60; i++) {
+      await tester.runAsync(
+          () => Future<void>.delayed(const Duration(milliseconds: 15)));
+      await tester.pump(const Duration(milliseconds: 100));
+      if (done()) return;
+    }
+    fail('等待播放器與下載檔案處理完成逾時');
+  }
+
+  Future<void> finishEpisode(WidgetTester tester) async {
+    player.actual = player.duration;
+    player.events.add(VideoEvent(
+        eventType: VideoEventType.isPlayingStateUpdate, isPlaying: false));
+    await tester.pump(const Duration(milliseconds: 300));
+    await tester.pump(const Duration(milliseconds: 300));
+    expect(state.watchTimeOf('1')?.ended, isTrue);
+  }
+
+  testWidgets('看完退出後，先釋放播放器再自動刪除手機影片與附屬檔案', (tester) async {
+    await state.prefs.setDownloadAutoDeleteWatched(true);
+    final files = await seedDownload(tester, '1');
+    final other = await seedDownload(tester, '2');
+    await open(tester);
+    await settleIo(tester, () => player.playing);
+    await finishEpisode(tester);
+    expect(files.every((file) => file.existsSync()), isTrue);
+
+    player.disposeBarrier = Completer<void>();
+    await tester.pumpWidget(const SizedBox());
+    expect(state.watchTimeOf('1')?.ended, isTrue);
+    expect(files.every((file) => file.existsSync()), isTrue,
+        reason: '原生播放器尚未釋放檔案');
+    player.disposeBarrier!.complete();
+    await settleIo(tester, () => files.every((file) => !file.existsSync()));
+    expect(player.disposed, contains(1));
+    expect(state.downloads.entryFor('1'), isNull);
+    expect(state.watchTimeOf('1')?.ended, isTrue);
+    expect(other.every((file) => file.existsSync()), isTrue);
+  });
+
+  for (final scenario in [
+    (enabled: false, finished: true),
+    (enabled: true, finished: false),
+  ]) {
+    testWidgets('保留手機影片：自動刪除=${scenario.enabled}，看完=${scenario.finished}',
+        (tester) async {
+      await state.prefs.setDownloadAutoDeleteWatched(scenario.enabled);
+      final files = await seedDownload(tester, '1');
+      await open(tester);
+      await settleIo(tester, () => player.playing);
+      if (scenario.finished) await finishEpisode(tester);
+      await tester.pumpWidget(const SizedBox());
+      await tester.pump();
+      expect(state.watchTimeOf('1')?.ended, scenario.finished);
+      expect(state.downloads.isDownloaded('1'), isTrue);
+      expect(files.every((file) => file.existsSync()), isTrue);
+    });
+  }
+
+  testWidgets('看完後切到下一集也會刪除上一集，保留下一集與看完紀錄', (tester) async {
+    await state.prefs.setDownloadAutoDeleteWatched(true);
+    final files = await seedDownload(tester, '1');
+    final nextFiles = await seedDownload(tester, '2');
+    state.client.seedSeriesJson('1', {
+      'videoSn': '1',
+      'title': '測試動畫',
+      'groups': [
+        {
+          'name': '第一季',
+          'episodes': [
+            {'videoSn': '1', 'episode': '1', 'local': true},
+            {'videoSn': '2', 'episode': '2', 'local': true},
+          ],
+        },
+      ],
+    });
+    await open(tester);
+    await settleIo(tester, () => player.playing);
+    await finishEpisode(tester);
+    player.actual = const Duration(seconds: 20);
+    await tester.tap(find.byKey(const ValueKey('episode-2')));
+    await settleIo(
+        tester,
+        () =>
+            player.creations == 2 && files.every((file) => !file.existsSync()));
+    expect(state.watchTimeOf('1')?.ended, isTrue);
+    expect(state.downloads.entryFor('1'), isNull);
+    expect(state.downloads.isDownloaded('2'), isTrue);
+    expect(nextFiles.every((file) => file.existsSync()), isTrue);
+    await tester.pumpWidget(const SizedBox());
+  });
+
+  testWidgets('看完後跳回前段重看，不會在退出時刪除尚未重看完的影片', (tester) async {
+    await state.prefs.setDownloadAutoDeleteWatched(true);
+    final files = await seedDownload(tester, '1');
+    await open(tester);
+    await settleIo(tester, () => player.playing);
+    await finishEpisode(tester);
+    seek(tester, 30);
+    player.actual = const Duration(seconds: 30);
+    await tester.pump(const Duration(milliseconds: 300));
+    await tester.pump(const Duration(milliseconds: 300));
+    await tester.pumpWidget(const SizedBox());
+    await tester.pump();
+    expect(state.watchTimeOf('1')?.ended, isFalse);
+    expect(state.downloads.isDownloaded('1'), isTrue);
+    expect(files.every((file) => file.existsSync()), isTrue);
+  });
+
+  testWidgets('只有舊的看完紀錄，本次播放失敗時不會自動刪除影片', (tester) async {
+    await state.prefs.setDownloadAutoDeleteWatched(true);
+    final files = await seedDownload(tester, '1');
+    state.watchTimes = {'1': WatchTime(ended: true, duration: 120)};
+    player.failInitialisation = true;
+    await open(tester);
+    expect(player.playing, isFalse);
+    await tester.pumpWidget(const SizedBox());
+    await tester.pump();
+    await tester.runAsync(
+        () => Future<void>.delayed(const Duration(milliseconds: 50)));
+    await tester.pump();
+    expect(state.watchTimeOf('1')?.ended, isTrue);
+    expect(state.downloads.isDownloaded('1'), isTrue);
+    expect(files.every((file) => file.existsSync()), isTrue);
+  });
+
+  testWidgets(
+      'skip intro stays compact above tablet, phone and fullscreen controls',
       (tester) async {
     http.Response reply(Object data) =>
         http.Response.bytes(utf8.encode(jsonEncode(data)), 200);
@@ -1293,15 +1458,11 @@ void main() {
     expect(state.watchTimeOf('1'), isNotNull);
 
     await tester.tap(find.byKey(const ValueKey('episode-2')));
-    await tester.pump(const Duration(milliseconds: 300));
-    for (var i = 0; i < 4; i++) {
-      await tester.pump(const Duration(milliseconds: 100));
-    }
+    await settleIo(tester, () => state.watchTimeOf('2') != null);
 
     // 舊行為: 上一集那個時間戳還在, 新的一集要等窗口過完才會記第一筆, 所以這裡
     // 會是 null. 這一筆存不存在就是「換集有沒有歸零」的分界.
-    expect(state.watchTimeOf('2'), isNotNull,
-        reason: '換集之後新的一集也要立刻開始記進度');
+    expect(state.watchTimeOf('2'), isNotNull, reason: '換集之後新的一集也要立刻開始記進度');
     await tester.pumpWidget(const SizedBox());
     await tester.pump(const Duration(seconds: 1));
   });

@@ -204,6 +204,13 @@ class _AppPrefsPageState extends State<AppPrefsPage> {
             onChanged: (value) => _save(() => prefs.setDownloadDanmaku(value)),
           ),
           SwitchListTile(
+            title: const Text('看完自動刪除手機影片'),
+            subtitle: const Text('看完後，退出或切換集數時刪除手機上的影片與彈幕'),
+            value: prefs.downloadAutoDeleteWatched,
+            onChanged: (value) =>
+                _save(() => prefs.setDownloadAutoDeleteWatched(value)),
+          ),
+          SwitchListTile(
             title: const Text('線上播放先讀本機快取'),
             subtitle: const Text('把每一集的檔頭留在手機上，下次開同一集不必再抓一遍'),
             value: prefs.videoCache,

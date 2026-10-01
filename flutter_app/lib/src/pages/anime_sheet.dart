@@ -230,7 +230,8 @@ class _AnimeSheetState extends State<_AnimeSheet> {
         danmu: true,
       );
 
-  Future<void> _openPicker(SeriesInfo detail) async {
+  Future<void> _openPicker(SeriesInfo detail,
+      {bool onlyUnfinished = false}) async {
     await showModalBottomSheet<void>(
       context: context,
       isScrollControlled: true,
@@ -241,6 +242,7 @@ class _AnimeSheetState extends State<_AnimeSheet> {
           state: state,
           detail: detail,
           resolution: _resolution,
+          onlyUnfinished: onlyUnfinished,
         ),
       ),
     );
@@ -542,6 +544,11 @@ class _AnimeSheetState extends State<_AnimeSheet> {
         onPressed: () => _openPicker(detail),
         icon: const Icon(Icons.checklist_rounded, size: 18),
         label: const Text('選集下載到手機'),
+      ));
+      buttons.add(OutlinedButton.icon(
+        onPressed: () => _openPicker(detail, onlyUnfinished: true),
+        icon: const Icon(Icons.download_for_offline_outlined, size: 18),
+        label: const Text('下載未看完的集數'),
       ));
     }
     if (currentSn.isNotEmpty) {
@@ -857,11 +864,13 @@ class _EpisodePickerSheet extends StatefulWidget {
     required this.state,
     required this.detail,
     required this.resolution,
+    this.onlyUnfinished = false,
   });
 
   final AppState state;
   final SeriesInfo detail;
   final String resolution;
+  final bool onlyUnfinished;
 
   @override
   State<_EpisodePickerSheet> createState() => _EpisodePickerSheetState();
@@ -877,6 +886,14 @@ class _EpisodePickerSheetState extends State<_EpisodePickerSheet> {
   AppState get state => widget.state;
   SeriesInfo get detail => widget.detail;
 
+  @override
+  void initState() {
+    super.initState();
+    if (widget.onlyUnfinished) {
+      _picked.addAll(_unfinished.map((e) => e.videoSn));
+    }
+  }
+
   /// 已經在手機上 (或正在抓) 的集數不列入可挑範圍
   bool _taken(SeriesEpisode episode) {
     final entry = state.downloads.entryFor(episode.videoSn);
@@ -886,11 +903,14 @@ class _EpisodePickerSheetState extends State<_EpisodePickerSheet> {
   Iterable<SeriesEpisode> get _selectable =>
       detail.allEpisodes.where((e) => !_taken(e));
 
-  void _selectAll({bool onlyLocal = false}) {
+  Iterable<SeriesEpisode> get _unfinished =>
+      _selectable.where((e) => state.watchTimeOf(e.videoSn)?.ended != true);
+
+  void _selectAll({bool onlyLocal = false, bool onlyUnfinished = false}) {
     setState(() {
       _picked
         ..clear()
-        ..addAll(_selectable
+        ..addAll((onlyUnfinished ? _unfinished : _selectable)
             .where((e) => !onlyLocal || e.local)
             .map((e) => e.videoSn));
     });
@@ -898,7 +918,7 @@ class _EpisodePickerSheetState extends State<_EpisodePickerSheet> {
 
   Future<void> _confirm() async {
     final picks =
-        detail.allEpisodes.where((e) => _picked.contains(e.videoSn)).toList();
+        _selectable.where((e) => _picked.contains(e.videoSn)).toList();
     if (picks.isEmpty) return;
 
     final needServer = picks.where((e) => !e.local).toList();
@@ -1001,6 +1021,12 @@ class _EpisodePickerSheetState extends State<_EpisodePickerSheet> {
                 onPressed:
                     selectable == 0 ? null : () => _selectAll(onlyLocal: true),
                 child: const Text('只選伺服器上有的'),
+              ),
+              TextButton(
+                onPressed: _working || _unfinished.isEmpty
+                    ? null
+                    : () => _selectAll(onlyUnfinished: true),
+                child: const Text('只選未看完的'),
               ),
             ],
           ),
