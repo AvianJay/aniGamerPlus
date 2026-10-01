@@ -11,6 +11,7 @@
 # 不會卡住事件循環.
 
 import os, sys, time, re, random, traceback, argparse
+import shutil
 import signal
 import sqlite3
 import threading
@@ -272,6 +273,90 @@ def _set_dashboard_allow_register(value):
     return settings['dashboard']['user_control']['allow_register']
 
 
+REDOWNLOAD_RESOLUTIONS = ('360', '480', '540', '576', '720', '1080')
+REDOWNLOAD_USAGE = '用法: redownload <sn|all> [' + '|'.join(REDOWNLOAD_RESOLUTIONS) + '] [all|one]'
+
+
+def _subscription_info(episodes):
+    # 追番清單裡有這部番的話沿用它的分類與重新命名, 重新下載的檔案才會落回原本的資料夾
+    episodes = set(episodes)
+    for key, info in sn_dict.items():
+        if key in episodes or episodes & set(Config.current_sn_list_all.get(key, ())):
+            return {'tag': info.get('tag', ''), 'rename': info.get('rename', '')}
+    return {'tag': '', 'rename': ''}
+
+
+def _already_at_resolution(sn, resolution):
+    # 這個指令是拿來把 720P 升級成 1080P 的, 已經是目標解析度的就不用再下載一次
+    try:
+        row = read_db(sn)
+    except IndexError:
+        return False
+    return row['status'] == 1 and str(row['resolution']) == resolution
+
+
+def _schedule_redownload(jobs, resolution):
+    scheduled = skipped = 0
+    for ep, info in jobs:
+        if ep in processing_queue:
+            # 正在下載/上傳的那條會跟這條搶同一個檔案, 讓它跑完
+            skipped += 1
+            continue
+        task_info = dict(info, resolution=resolution, redownload=True)
+        # 先佔 processing_queue 再放進 queue, auto_update_loop 才不會同時再派一條
+        processing_queue.append(ep)
+        queue[ep] = task_info
+        task = threading.Thread(target=worker_thread, args=(ep, task_info))
+        task.daemon = True
+        task.start()
+        err_print(ep, '加入重新下載列隊', resolution + 'P')
+        scheduled += 1
+    return scheduled, skipped
+
+
+def _redownload_command(args):
+    if not args or not (args[0] == 'all' or args[0].isdigit()):
+        return {'handled': True, 'success': False, 'message': REDOWNLOAD_USAGE}
+    target, rest = args[0], args[1:]
+    resolution = str(settings['download_resolution'])
+    if rest and rest[0].rstrip('p') in REDOWNLOAD_RESOLUTIONS:
+        resolution, rest = rest[0].rstrip('p'), rest[1:]
+    if len(rest) > 1 or (rest and rest[0] not in ('all', 'one')):
+        return {'handled': True, 'success': False, 'message': REDOWNLOAD_USAGE}
+    if target == 'all' and rest:
+        return {'handled': True, 'success': False, 'message': 'all/one 只有在指定 sn 時可用\n' + REDOWNLOAD_USAGE}
+
+    if target == 'all':
+        downloaded = [row['sn'] for row in read_db_all() if row['status'] == 1]
+        jobs = [(sn, _subscription_info([sn])) for sn in sorted(downloaded)]
+    elif not rest or rest[0] == 'one':
+        sn = int(target)
+        jobs = [(sn, _subscription_info([sn]))]
+    else:
+        anime = build_anime(int(target))
+        if anime['failed']:
+            return {'handled': True, 'success': False, 'message': f'sn={target} 解析失敗, 無法取得劇集列表'}
+        episodes = sorted(anime['anime'].get_episode_list().values())
+        info = _subscription_info(episodes)
+        jobs = [(ep, info) for ep in episodes]
+
+    total = len(jobs)
+    jobs = [(ep, info) for ep, info in jobs if not _already_at_resolution(ep, resolution)]
+    up_to_date = total - len(jobs)
+    if not jobs:
+        if up_to_date:
+            return {'handled': True, 'success': True,
+                    'message': f'{up_to_date} 個劇集都已經是 {resolution}P, 不需要重新下載'}
+        return {'handled': True, 'success': False, 'message': '沒有可重新下載的劇集'}
+    scheduled, skipped = _schedule_redownload(jobs, resolution)
+    message = f'已加入 {scheduled} 個重新下載任務 ({resolution}P)'
+    if up_to_date:
+        message += f', 略過 {up_to_date} 個已是 {resolution}P 的劇集'
+    if skipped:
+        message += f', 略過 {skipped} 個正在進行中的任務'
+    return {'handled': True, 'success': scheduled > 0, 'message': message}
+
+
 def _run_builtin_command(command_name, args):
     if command_name in ('help', '?'):
         return {'handled': True, 'success': True, 'message': 'help'}
@@ -286,6 +371,8 @@ def _run_builtin_command(command_name, args):
         settings = Config.read_settings()
         plugin_manager.reload(settings)
         return {'handled': True, 'success': True, 'message': '設定與插件已重載'}
+    if command_name == 'redownload':
+        return _redownload_command(args)
     if command_name == 'dashboard-user-control':
         if len(args) < 1 or args[0] not in ('on', 'off'):
             return {'handled': True, 'success': False, 'message': '用法: dashboard-user-control on|off'}
@@ -313,6 +400,7 @@ def _list_console_commands():
         ('update-videolist', '立即更新 video_list.json'),
         ('checknow', '觸發立即更新(自動模式)'),
         ('reload-config', '重載 config 與插件'),
+        ('redownload <sn|all> [解析度] [all|one]', '以指定解析度重新下載(已是該解析度的略過), all/one(預設 one)僅在指定 sn 時可用'),
         ('dashboard-user-control on|off', '切換 Dashboard 使用者控制'),
         ('dashboard-allow-register on|off', '切換 Dashboard 註冊開關'),
         ('exit', '離開控制台'),
@@ -421,6 +509,9 @@ def worker_thread(sn, sn_info, realtime_show_file_size=False):
 def worker(sn, sn_info, realtime_show_file_size=False):
     bangumi_tag = sn_info['tag']
     rename = sn_info['rename']
+    # redownload 指令派的工作: 不管資料庫狀態一律重新下載, 並可指定解析度
+    redownload = sn_info.get('redownload', False)
+    resolution = sn_info.get('resolution') or settings['download_resolution']
 
     def dequeue():
         # queue / processing_queue 沒清乾淨的話, 這個 sn 會永遠被 auto_update_loop
@@ -465,14 +556,17 @@ def worker(sn, sn_info, realtime_show_file_size=False):
     try:
         anime_in_db = read_db(sn)
     except BaseException as e:
-        # 讀不到就地退出, 但一定要把自己從列隊移除, 否則這個 sn 直接永久卡死
-        dequeue()
-        err_print(sn, '任务失敗', 'ＤＢ讀取失敗, 從任務列隊中移除, 等待下次更新重試: ' + str(e), status=1)
-        err_print(sn, '任务失敗', '異常詳情:\n' + traceback.format_exc(), status=1, display=False)
-        sys.exit(1)
+        if redownload and isinstance(e, IndexError):
+            anime_in_db = None  # 重新下載的這集資料庫還沒有, 下載完再補登記
+        else:
+            # 讀不到就地退出, 但一定要把自己從列隊移除, 否則這個 sn 直接永久卡死
+            dequeue()
+            err_print(sn, '任务失敗', 'ＤＢ讀取失敗, 從任務列隊中移除, 等待下次更新重試: ' + str(e), status=1)
+            err_print(sn, '任务失敗', '異常詳情:\n' + traceback.format_exc(), status=1, display=False)
+            sys.exit(1)
 
     # 如果用户设定要上传且已经下载好了但还没有上传成功, 那么仅上传
-    if settings['upload_to_server'] and anime_in_db['status'] == 1 and anime_in_db['remote_status'] == 0:
+    if not redownload and settings['upload_to_server'] and anime_in_db['status'] == 1 and anime_in_db['remote_status'] == 0:
         acquire_upload_limiter()  # 并发上传限制器
         try:
             anime = build_anime(sn)
@@ -525,7 +619,7 @@ def worker(sn, sn_info, realtime_show_file_size=False):
         anime = anime['anime']
 
         try:
-            anime.download(settings['download_resolution'], bangumi_tag=bangumi_tag, rename=rename,
+            anime.download(resolution, bangumi_tag=bangumi_tag, rename=rename,
                            realtime_show_file_size=realtime_show_file_size, classify=settings['classify_bangumi'])
         except BaseException as e:
             # 兜一下各种奇奇怪怪的错误
@@ -542,7 +636,11 @@ def worker(sn, sn_info, realtime_show_file_size=False):
                 del Config.tasks_progress_rate[int(sn)]  # 任务失败, 不在监控此任务进度
             sys.exit(1)
 
+        if anime_in_db is None:
+            insert_db(anime)  # 沒有這筆的話 update_db 的 UPDATE 什麼都不會改到
         update_db(anime)  # 下载完成后, 更新数据库
+        if redownload and anime_in_db is not None:
+            _remove_replaced_video(sn, anime_in_db['local_file_path'], anime.local_video_path)
         download_cd = threading.Thread(target=download_cd_counter)
         download_cd.start()
         # 交棒給冷卻執行緒, 之後由它 release, 這裡不能再放
@@ -594,6 +692,28 @@ def download_cd_counter():
         time.sleep(wait_time)
         seconds -= wait_time
     thread_limiter.release()  # 并发下载限制器
+
+
+def _remove_replaced_video(sn, old_path, new_path):
+    # 檔名帶解析度([720P] → [1080P])或分類變了的話, 重新下載的檔案不會蓋掉舊檔,
+    # 資料庫已經指向新檔, 舊檔留著只會讓資料夾裡多一份沒人管的影片
+    if not old_path or not new_path:
+        return
+    if os.path.normcase(os.path.abspath(old_path)) == os.path.normcase(os.path.abspath(new_path)):
+        return
+    old_danmu = os.path.splitext(old_path)[0] + '.ass'
+    new_danmu = os.path.splitext(new_path)[0] + '.ass'
+    try:
+        if os.path.exists(old_path):
+            os.remove(old_path)
+            err_print(sn, '重新下載', '已刪除舊檔 ' + old_path)
+        if os.path.exists(old_danmu):
+            if os.path.exists(new_danmu):
+                os.remove(old_danmu)
+            else:
+                shutil.move(old_danmu, new_danmu)  # 這次沒下載彈幕的話沿用舊的
+    except OSError as e:
+        err_print(sn, '重新下載', '清理舊檔失敗: ' + str(e), status=1)
 
 
 def check_tasks():
