@@ -240,7 +240,7 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-  # Rolls the APK and IPA into the `nightly` prerelease under fixed names, next
+  # Rolls the APK, AAB and IPA into the `nightly` prerelease under fixed names, next
   # to flutter-nightly.json, which the app's updater reads to learn the build
   # number. Only master: a pull request or a side branch must never reach the
   # phones that follow the nightly channel.
@@ -271,8 +271,10 @@ jobs:
           set -euo pipefail
           VERSION=$(grep -m1 '^version:' flutter_app/pubspec.yaml | sed 's/version: *//; s/+.*//')
           mv dist/aniGamerPlus-*-"${GITHUB_RUN_NUMBER}".apk dist/aniGamerPlus-nightly.apk
+          mv dist/aniGamerPlus-*-"${GITHUB_RUN_NUMBER}".aab dist/aniGamerPlus-nightly.aab
           mv dist/aniGamerPlus-flutter-*-"${GITHUB_RUN_NUMBER}"-unsigned.ipa dist/aniGamerPlus-nightly-unsigned.ipa
           APK=dist/aniGamerPlus-nightly.apk
+          AAB=dist/aniGamerPlus-nightly.aab
           IPA=dist/aniGamerPlus-nightly-unsigned.ipa
           # The same run number is the app's build number, see --build-number.
           # Size and hash let the updater reject a download that was cut short:
@@ -284,10 +286,13 @@ jobs:
             --arg date "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
             --argjson apk_size "$(stat -c %s "${APK}")" \
             --arg apk_sha256 "$(sha256sum "${APK}" | cut -d' ' -f1)" \
+            --argjson aab_size "$(stat -c %s "${AAB}")" \
+            --arg aab_sha256 "$(sha256sum "${AAB}" | cut -d' ' -f1)" \
             --argjson ipa_size "$(stat -c %s "${IPA}")" \
             --arg ipa_sha256 "$(sha256sum "${IPA}" | cut -d' ' -f1)" \
             '{version: $version, build: $build, commit: $commit, date: $date,
               apk: "aniGamerPlus-nightly.apk", apk_size: $apk_size, apk_sha256: $apk_sha256,
+              aab: "aniGamerPlus-nightly.aab", aab_size: $aab_size, aab_sha256: $aab_sha256,
               ipa: "aniGamerPlus-nightly-unsigned.ipa", ipa_size: $ipa_size, ipa_sha256: $ipa_sha256}' \
             > dist/flutter-nightly.json
           echo "VERSION=${VERSION}" >> "${GITHUB_ENV}"
@@ -299,5 +304,6 @@ jobs:
         run: |
           bash .github/scripts/publish-nightly.sh App "${VERSION} (build ${GITHUB_RUN_NUMBER})" \
             dist/aniGamerPlus-nightly.apk \
+            dist/aniGamerPlus-nightly.aab \
             dist/aniGamerPlus-nightly-unsigned.ipa \
             dist/flutter-nightly.json

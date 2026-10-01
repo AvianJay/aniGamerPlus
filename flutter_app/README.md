@@ -168,7 +168,7 @@ lib/
 * `analyze` —— `flutter analyze`
 * `android` —— APK + AAB, 用 repository secrets 裡的 release 金鑰簽 (PR 沒有 secrets 時退回 debug 金鑰)
 * `ios` —— 未簽名的 IPA, 要靠 sideloader 自己簽
-* `nightly` —— master 每次推送, 把 APK / IPA 以固定檔名換進 `nightly` prerelease
+* `nightly` —— master 每次推送, 把 APK / AAB / IPA 以固定檔名換進 `nightly` prerelease
 
 都會上傳成 artifact, 發 release 的時候 APK 跟 IPA 會自動附上去.
 `Python-build.yml` 也會把伺服器執行檔放進同一個 `nightly` release.
