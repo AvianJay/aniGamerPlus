@@ -71,3 +71,11 @@ flutter:
   uses-material-design: true
   assets:
     - assets/opening_t2s.json
+
+  # iOS 照舊走 CocoaPods, 不走 Swift Package Manager (Flutter 3.44 起預設開).
+  # 為的是還能支援 iOS 15: Google Cast SDK 4.8.6 起最低要 iOS 16, 而 SPM 那條路
+  # (flutter_chrome_cast 的 Package.swift 寫 from: 4.8.4) 沒辦法把版本釘住;
+  # CocoaPods 可以, 見 tool/prepare_platforms.sh 的 pin_cast_sdk.
+  # Flutter 說之後不再允許關掉 SPM —— 到那時候就只能把最低版本拉到 iOS 16.
+  config:
+    enable-swift-package-manager: false

@@ -212,6 +212,11 @@ lib/
 (App 自己的, 不用外掛那個要等 Dart 初始化的版本)、媒體通知的前景服務; iOS 的
 `NSBonjourServices`. AirPlay 按鈕是 `packages/airplay_route` (AVRoutePickerView).
 
+iOS 為了繼續支援 iOS 15, Google Cast SDK 釘在 4.8.4 (4.8.6 起最低要 iOS 16):
+`pubspec.yaml` 關掉了 Swift Package Manager, 改走 CocoaPods, 由
+`prepare_platforms.sh` 在 Podfile 裡釘版本. Flutter 之後會不再允許關掉 SPM,
+到時候只能把最低版本拉到 iOS 16.
+
 ### 播放器操作與快取
 
 - 右上角可直接選擇 0.25–2 倍速與片源提供的畫質；右下角為倒退／快進 10 秒及播放鍵。

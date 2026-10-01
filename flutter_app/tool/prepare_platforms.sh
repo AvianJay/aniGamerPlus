@@ -480,6 +480,22 @@ def patch_ios_deployment(podfile_path, project_path):
     print('  patched', project_path)
 
 
+def pin_cast_sdk(podfile_path):
+    # Google Cast SDK 4.8.6 起最低要 iOS 16, 4.8.4 還支援 iOS 15. flutter_chrome_cast
+    # 的 podspec 寫的是 ~> 4.8.4, 不釘的話 CocoaPods 會拿最新的, 然後整個 App 因為
+    # 部署目標 15.0 編不過. 這裡釘在 4.8.4 (pubspec.yaml 也因此關掉了 SPM).
+    with open(podfile_path, encoding='utf-8') as handle:
+        podfile = handle.read()
+    marker = '  flutter_install_all_ios_pods File.dirname(File.realpath(__FILE__))\n'
+    if podfile.count(marker) != 1:
+        raise RuntimeError(f'unexpected Runner target in {podfile_path}')
+    podfile = podfile.replace(
+        marker, marker + "  pod 'google-cast-sdk', '4.8.4'\n", 1)
+    with open(podfile_path, 'w', encoding='utf-8', newline='') as handle:
+        handle.write(podfile)
+    print('  patched', podfile_path, '(google-cast-sdk 4.8.4)')
+
+
 def patch_app_delegate(path):
     # 背景下載 (background_download 外掛) 做完時, 系統會把 App 在背景叫醒並呼叫
     # handleEventsForBackgroundURLSession. 那時候不一定有 Flutter engine —— 背景
@@ -816,6 +832,7 @@ add_cast_support(os.path.join('android', 'app', 'src', 'main', 'AndroidManifest.
 patch_plist(os.path.join('ios', 'Runner', 'Info.plist'))
 patch_ios_deployment(os.path.join('ios', 'Podfile'),
                      os.path.join('ios', 'Runner.xcodeproj', 'project.pbxproj'))
+pin_cast_sdk(os.path.join('ios', 'Podfile'))
 patch_app_delegate(os.path.join('ios', 'Runner', 'AppDelegate.swift'))
 # 要在 patch_ios_deployment 之後: 那一支把專案裡每一個部署目標都改成 15.0,
 # 這個 extension 得是 16.2
