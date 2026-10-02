@@ -1163,6 +1163,8 @@ void main() {
     expect(find.byType(DanmakuOverlay), findsOneWidget);
     expect(tester.widget<DanmakuOverlay>(find.byType(DanmakuOverlay)).comments,
         isNotEmpty);
+    expect(tester.widget<DanmakuOverlay>(find.byType(DanmakuOverlay)).lowPower,
+        isFalse);
     expect(find.text('彈幕'), findsNothing);
     expect(find.textContaining('這一集沒有彈幕'), findsNothing);
     await tester.tap(find.byTooltip('關閉彈幕'));
@@ -1706,6 +1708,25 @@ void main() {
   group('電視遙控器', () {
     setUp(() => Device.tv = true);
     tearDown(() => Device.tv = false);
+
+    testWidgets('電視播放自動使用低負載彈幕', (tester) async {
+      await tester.runAsync(() async {
+        final ass = await File('../tests/fixtures/sample.ass').readAsString();
+        await state.downloads.writeCachedDanmaku('1', ass);
+      });
+      await open(tester);
+      for (var i = 0;
+          i < 10 && find.byType(DanmakuOverlay).evaluate().isEmpty;
+          i++) {
+        await tester.runAsync(
+            () => Future<void>.delayed(const Duration(milliseconds: 20)));
+        await tester.pump();
+      }
+      final overlay = tester.widget<DanmakuOverlay>(find.byType(DanmakuOverlay));
+      expect(overlay.comments, isNotEmpty);
+      expect(overlay.lowPower, isTrue);
+      await tester.pumpWidget(const SizedBox());
+    });
 
     String? focused() => FocusManager.instance.primaryFocus?.debugLabel;
 

@@ -3448,6 +3448,7 @@ class _WatchPageState extends State<WatchPage> with WidgetsBindingObserver {
                             area: _danmakuArea,
                             scale: _danmakuScale,
                             speed: _danmakuSpeed,
+                            lowPower: Device.tv,
                           ),
                         ),
                       if ((_initialising || (!ready && !_chromecasting)) &&

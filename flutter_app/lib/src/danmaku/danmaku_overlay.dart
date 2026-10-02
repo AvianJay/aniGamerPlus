@@ -6,10 +6,10 @@
 ///
 /// 效能上有幾件事是刻意這樣寫的, 改之前先看一下:
 ///
-/// * 每一條彈幕出場時只畫一次, 畫成一張圖 (連同陰影), 之後每一幀只是把那張
+/// * 彈幕出場時畫成一張圖 (連同陰影), 相同文字與顏色共用, 之後每一幀只是把那張
 ///   圖貼到新的位置. 以前每一幀都重新排一次字、重新模糊一次陰影 —— iOS 的
 ///   Impeller 沒有光柵快取, 一百多條字的模糊陰影就是一百多次離屏模糊, 一秒
-///   一百二十次. 貼圖則是一幀一百多個四邊形, 幾乎不花錢.
+///   一百二十次. 貼圖省下重畫文字的成本, 但建立貼圖的尖峰和記憶體仍需要上限.
 /// * 時間軸是一個「問了才算」的函式, 不是每一幀都在變的 notifier. 那樣的話
 ///   每一個聽著它的東西都得每一幀重建一次 —— 以前播放頁的時間跟進度條就是
 ///   這樣, 連控制列收起來的時候都在一秒重建一百二十次.
@@ -21,6 +21,7 @@
 /// * 透明度是貼圖時那支畫筆的 alpha, 不套 Opacity. Opacity 會 saveLayer, 等於
 ///   每一幀替整個播放區開一張離屏圖; 而且這樣調透明度不必重畫任何一張圖.
 /// * 同時在畫面上的條數有上限, 而且真的完全沒動的那一幀不會發出重畫通知.
+/// * 密集彈幕分幀建立貼圖; 電視採較低的數量、解析度和記憶體預算, 留資源給影片.
 library;
 
 import 'dart:async';
@@ -36,6 +37,17 @@ import 'ass.dart';
 /// 「整個進場」就算空出來, 所以一軌其實疊得下好幾條, 彈幕密的時候疊出來三百
 /// 多條都有可能 —— 那已經不是看得清不清楚的問題, 是畫不動.
 const int kDanmakuMaxLive = 160;
+
+/// 電視的保守預算, 避免低階 Android TV 同時解碼影片和合成大量貼圖時掉幀.
+const int kDanmakuTvMaxLive = 48;
+const int kDanmakuRastersPerFrame = 4;
+const int kDanmakuTvRastersPerFrame = 2;
+const int kDanmakuTextureBytes = 32 * 1024 * 1024;
+const int kDanmakuTvTextureBytes = 8 * 1024 * 1024;
+
+// 包含被略過的彈幕也要計入, 不能在一幀內掃完幾萬條擠在同一秒的留言.
+const int _kCommentsPerFrame = 64;
+const int _kMaxTextureDimension = 2048;
 
 /// 卡頓的時候最多讓彈幕自己往前滑幾秒.
 ///
@@ -56,12 +68,27 @@ int debugDanmakuRasterized = 0;
 @visibleForTesting
 int debugDanmakuSpritesAlive = 0;
 
+@visibleForTesting
+int debugDanmakuTextureBytes = 0;
+
+@visibleForTesting
+int debugDanmakuPaints = 0;
+
+typedef _SpriteKey = (String, Color);
+
+enum _SpawnResult { spawned, skipped, deferred }
+
 /// 一條彈幕畫好的樣子.
 class _Sprite {
-  _Sprite(this.image, this.width, this.height) {
+  _Sprite(this.key, this.image, this.width, this.height, this.padding) {
     debugDanmakuRasterized++;
     debugDanmakuSpritesAlive++;
+    debugDanmakuTextureBytes += bytes;
   }
+
+  final _SpriteKey key;
+  int users = 0;
+  int get bytes => image.width * image.height * 4;
 
   /// 含陰影的整張圖, 裝置像素
   final ui.Image image;
@@ -69,9 +96,11 @@ class _Sprite {
   /// 字本身佔多寬多高 (邏輯像素, 不含陰影的留白) —— 排軌道、算位置用這個
   final double width;
   final double height;
+  final double padding;
 
   void dispose() {
     debugDanmakuSpritesAlive--;
+    debugDanmakuTextureBytes -= bytes;
     image.dispose();
   }
 }
@@ -100,20 +129,36 @@ class _Live {
 /// 中間不再複製一份 list 出來 —— 以前那份複製是每一幀一次.
 class _Scene {
   final List<_Live> live = [];
+  final Map<_SpriteKey, _Sprite> sprites = {};
+  int textureBytes = 0;
   double now = 0;
   double laneHeight = 0;
 
   /// 整層的透明度, 貼圖的時候套上去
   double alpha = 1;
 
-  /// 裝置像素比. 圖是照這個比例畫的, 貼的時候要對回去.
+  /// 貼圖像素比, 電視會限制解析度. 圖是照這個比例畫的, 貼的時候要對回去.
   double pixelRatio = 1;
+
+  void add(_Live item) {
+    final sprite = item.sprite;
+    if (sprite.users++ == 0) {
+      sprites[sprite.key] = sprite;
+      textureBytes += sprite.bytes;
+    }
+    live.add(item);
+  }
 
   /// 收掉一條就要把它的圖還回去 —— 那是 GPU 上的記憶體, 不會自己消失.
   void drop(bool Function(_Live live) test) {
     live.removeWhere((item) {
       if (!test(item)) return false;
-      item.sprite.dispose();
+      final sprite = item.sprite;
+      if (--sprite.users == 0) {
+        sprites.remove(sprite.key);
+        textureBytes -= sprite.bytes;
+        sprite.dispose();
+      }
       return true;
     });
   }
@@ -134,6 +179,7 @@ class DanmakuOverlay extends StatefulWidget {
     this.area = 1.0,
     this.scale = 1.0,
     this.speed = 1.0,
+    this.lowPower = false,
   });
 
   final List<DanmakuComment> comments;
@@ -158,6 +204,9 @@ class DanmakuOverlay extends StatefulWidget {
   final double scale;
   final double speed;
 
+  /// 低階裝置的貼圖與顯示量預算. 播放頁在 Android TV 自動啟用.
+  final bool lowPower;
+
   @override
   State<DanmakuOverlay> createState() => _DanmakuOverlayState();
 }
@@ -176,7 +225,8 @@ class _DanmakuOverlayState extends State<DanmakuOverlay>
   final ValueNotifier<int> _repaint = ValueNotifier<int>(0);
 
   late final Ticker _ticker;
-  Duration _tickAt = Duration.zero;
+  Duration? _tickAt;
+  int _rasterAttempts = 0;
 
   /// 下一條彈幕還要好一陣子才出現時, 到時候叫醒 ticker 的那一個
   Timer? _wake;
@@ -214,7 +264,7 @@ class _DanmakuOverlayState extends State<DanmakuOverlay>
     _wake?.cancel();
     _wake = null;
     if (!widget.enabled || widget.comments.isEmpty || _ticker.isActive) return;
-    _tickAt = Duration.zero;
+    _tickAt = null;
     _ticker.start();
   }
 
@@ -240,10 +290,12 @@ class _DanmakuOverlayState extends State<DanmakuOverlay>
     if (oldWidget.comments != widget.comments ||
         oldWidget.scale != widget.scale ||
         oldWidget.area != widget.area ||
-        oldWidget.speed != widget.speed) {
+        oldWidget.speed != widget.speed ||
+        oldWidget.lowPower != widget.lowPower) {
       _reset();
       _repaint.value++;
-    } else if (oldWidget.opacity != widget.opacity) {
+    }
+    if (oldWidget.opacity != widget.opacity) {
       _scene.alpha = _alpha;
       _repaint.value++;
     }
@@ -270,18 +322,21 @@ class _DanmakuOverlayState extends State<DanmakuOverlay>
       return;
     }
     // 第一幀跟 app 回到前景那一下 dt 會很大, 夾住免得彈幕一口氣衝出去
-    final dt = _tickAt == Duration.zero
+    final dt = _tickAt == null
         ? 0.0
-        : ((elapsed - _tickAt).inMicroseconds / 1000000.0).clamp(0.0, 0.25);
+        : ((elapsed - _tickAt!).inMicroseconds / 1000000.0).clamp(0.0, 0.25);
     _tickAt = elapsed;
 
     final moved = _advance(dt);
     final spawned = _sync(_shown);
-    if (moved || spawned) {
-      _scene.now = _shown;
+    _scene.now = _shown;
+    if (spawned ||
+        (moved &&
+            _scene.live
+                .any((item) => item.comment.mode == DanmakuMode.scroll))) {
       _repaint.value++;
     }
-    if (!widget.playing && !moved && !spawned) {
+    if (!widget.playing && !moved && !spawned && !_hasDueComments) {
       // 暫停了, 或是卡住而且已經滑到頭了: 停下來, 不要每一幀空轉
       _rest();
     } else if (widget.playing && _scene.live.isEmpty) {
@@ -299,8 +354,8 @@ class _DanmakuOverlayState extends State<DanmakuOverlay>
     if (gap < 1.0) return;
     _rest();
     final rate = widget.rate > 0 ? widget.rate : 1.0;
-    _wake = Timer(Duration(milliseconds: ((gap - 0.5) / rate * 1000).round()),
-        _resume);
+    _wake = Timer(
+        Duration(milliseconds: ((gap - 0.5) / rate * 1000).round()), _resume);
   }
 
   /// 把畫面上的時間軸往前推一格, 回傳有沒有真的動.
@@ -344,10 +399,22 @@ class _DanmakuOverlayState extends State<DanmakuOverlay>
 
   double get _alpha => widget.opacity.clamp(0.05, 1.0);
 
+  int get _maxLive => widget.lowPower ? kDanmakuTvMaxLive : kDanmakuMaxLive;
+  int get _rasterBudget =>
+      widget.lowPower ? kDanmakuTvRastersPerFrame : kDanmakuRastersPerFrame;
+  int get _textureBudget =>
+      widget.lowPower ? kDanmakuTvTextureBytes : kDanmakuTextureBytes;
+  bool get _hasDueComments =>
+      _cursor < widget.comments.length &&
+      widget.comments[_cursor].start <= _shown;
+
   /// 把一條彈幕 (字 + 陰影) 畫成一張圖. 只在出場那一次做.
   ///
   /// 透明度不烤進去: 那是貼圖時畫筆的事, 這樣拉透明度的時候一張都不必重畫.
-  _Sprite _rasterize(DanmakuComment comment) {
+  _Sprite? _rasterize(DanmakuComment comment) {
+    _rasterAttempts++;
+    final ratio = _scene.pixelRatio;
+    final padding = widget.lowPower ? 2.0 : _kShadowPad;
     final painter = TextPainter(
       text: TextSpan(
         text: comment.text,
@@ -356,29 +423,35 @@ class _DanmakuOverlayState extends State<DanmakuOverlay>
           color: comment.color,
           fontWeight: FontWeight.w600,
           height: 1.1,
-          shadows: const [
+          shadows: [
             Shadow(
-              blurRadius: 3,
-              color: Color.fromRGBO(0, 0, 0, 0.8),
-              offset: Offset(1, 1),
+              blurRadius: widget.lowPower ? 0 : 3,
+              color: const Color.fromRGBO(0, 0, 0, 0.8),
+              offset: const Offset(1, 1),
             ),
           ],
         ),
       ),
       textDirection: TextDirection.ltr,
       maxLines: 1,
-    )..layout();
-    final ratio = _scene.pixelRatio;
+      ellipsis: '…',
+    )..layout(maxWidth: _kMaxTextureDimension / ratio - padding * 2);
+    final width = ((painter.width + padding * 2) * ratio).ceil();
+    final height = ((painter.height + padding * 2) * ratio).ceil();
+    // 超長文字也不能開出超過 GPU 限制的貼圖. 記憶體滿了就略過這條.
+    if (height > _kMaxTextureDimension ||
+        _scene.textureBytes + width * height * 4 > _textureBudget) {
+      painter.dispose();
+      return null;
+    }
     final recorder = ui.PictureRecorder();
     final canvas = Canvas(recorder)..scale(ratio);
-    painter.paint(canvas, const Offset(_kShadowPad, _kShadowPad));
+    painter.paint(canvas, Offset(padding, padding));
     final picture = recorder.endRecording();
-    final image = picture.toImageSync(
-      ((painter.width + _kShadowPad * 2) * ratio).ceil(),
-      ((painter.height + _kShadowPad * 2) * ratio).ceil(),
-    );
+    final image = picture.toImageSync(width, height);
     picture.dispose();
-    final sprite = _Sprite(image, painter.width, painter.height);
+    final sprite = _Sprite((comment.text, comment.color), image, painter.width,
+        painter.height, padding);
     painter.dispose();
     return sprite;
   }
@@ -387,6 +460,7 @@ class _DanmakuOverlayState extends State<DanmakuOverlay>
   bool _sync(double now) {
     if (_size == Size.zero) return false;
     var changed = false;
+    _rasterAttempts = 0;
 
     // 往回拉 (或換集) 就整層重來
     if (_lastTime < 0 || now < _lastTime - 0.4 || now > _lastTime + 4) {
@@ -404,25 +478,37 @@ class _DanmakuOverlayState extends State<DanmakuOverlay>
     _scene.drop((live) => live.endAt() <= now);
     if (_scene.live.length != before) changed = true;
 
+    // 分幀消化尖峰, 過期的直接二分跳過, 避免佇列愈積愈長.
+    if (_cursor < widget.comments.length &&
+        widget.comments[_cursor].start < now - 1.5) {
+      _cursor = _indexAt(now - 1.5);
+    }
+    var inspected = 0;
     while (_cursor < widget.comments.length &&
-        widget.comments[_cursor].start <= now) {
+        widget.comments[_cursor].start <= now &&
+        inspected++ < _kCommentsPerFrame) {
       final comment = widget.comments[_cursor];
-      _cursor++;
-      // 一次跳很多集的時候別把幾百條一起塞進來
-      if (now - comment.start > 1.5) continue;
       // 畫不動就別畫, 反正疊到這個數量也看不清了
-      if (_scene.live.length >= kDanmakuMaxLive) continue;
-      if (_spawn(comment, now)) changed = true;
+      if (_scene.live.length >= _maxLive) {
+        _cursor = _indexAt(now, after: true);
+        break;
+      }
+      final result = _spawn(comment, now);
+      // 預算用完留到下一幀; 軌道滿了或貼圖太大才略過.
+      if (result == _SpawnResult.deferred) break;
+      _cursor++;
+      if (result == _SpawnResult.spawned) changed = true;
     }
     return changed;
   }
 
-  int _indexAt(double now) {
+  int _indexAt(double now, {bool after = false}) {
     var low = 0;
     var high = widget.comments.length;
     while (low < high) {
       final mid = (low + high) ~/ 2;
-      if (widget.comments[mid].start < now) {
+      if (widget.comments[mid].start < now ||
+          (after && widget.comments[mid].start == now)) {
         low = mid + 1;
       } else {
         high = mid;
@@ -431,7 +517,7 @@ class _DanmakuOverlayState extends State<DanmakuOverlay>
     return low;
   }
 
-  bool _spawn(DanmakuComment comment, double now) {
+  _SpawnResult _spawn(DanmakuComment comment, double now) {
     final List<double> lanes;
     if (comment.mode == DanmakuMode.scroll) {
       lanes = _scrollLanes;
@@ -454,16 +540,22 @@ class _DanmakuOverlayState extends State<DanmakuOverlay>
     }
     // 每一軌都塞滿了就丟掉這一條 —— 疊在一起誰也看不清.
     // 先找軌道再畫, 丟掉的那些連圖都不用生.
-    if (lane < 0) return false;
+    if (lane < 0) return _SpawnResult.skipped;
 
-    final sprite = _rasterize(comment);
+    var sprite = _scene.sprites[(comment.text, comment.color)];
+    if (sprite == null) {
+      if (_rasterAttempts >= _rasterBudget) return _SpawnResult.deferred;
+      sprite = _rasterize(comment);
+      if (sprite == null) return _SpawnResult.skipped;
+    }
 
     if (comment.mode == DanmakuMode.scroll) {
       final travel = _size.width + sprite.width;
-      final duration = _baseScrollSeconds / (widget.speed <= 0 ? 1 : widget.speed);
+      final duration =
+          _baseScrollSeconds / (widget.speed <= 0 ? 1 : widget.speed);
       // 這一軌要等到前一條整個進場才空出來, 不然會追撞
       lanes[lane] = now + duration * (sprite.width + 24) / travel;
-      _scene.live.add(_Live(
+      _scene.add(_Live(
         comment: comment,
         sprite: sprite,
         lane: lane,
@@ -473,7 +565,7 @@ class _DanmakuOverlayState extends State<DanmakuOverlay>
     } else {
       const hold = 5.0;
       lanes[lane] = now + hold;
-      _scene.live.add(_Live(
+      _scene.add(_Live(
         comment: comment,
         sprite: sprite,
         lane: lane,
@@ -481,13 +573,14 @@ class _DanmakuOverlayState extends State<DanmakuOverlay>
         duration: hold,
       ));
     }
-    return true;
+    return _SpawnResult.spawned;
   }
 
   @override
   Widget build(BuildContext context) {
     if (!widget.enabled) return const SizedBox.shrink();
-    final ratio = MediaQuery.maybeDevicePixelRatioOf(context) ?? 1.0;
+    final deviceRatio = MediaQuery.maybeDevicePixelRatioOf(context) ?? 1.0;
+    final ratio = widget.lowPower ? math.min(deviceRatio, 1.5) : deviceRatio;
     return LayoutBuilder(
       builder: (context, constraints) {
         final size = Size(constraints.maxWidth, constraints.maxHeight);
@@ -504,6 +597,7 @@ class _DanmakuOverlayState extends State<DanmakuOverlay>
           child: IgnorePointer(
             child: CustomPaint(
               size: size,
+              willChange: widget.playing || widget.buffering,
               painter: _DanmakuPainter(scene: _scene, repaint: _repaint),
             ),
           ),
@@ -521,6 +615,7 @@ class _DanmakuPainter extends CustomPainter {
 
   @override
   void paint(Canvas canvas, Size size) {
+    debugDanmakuPaints++;
     final now = scene.now;
     final laneHeight = scene.laneHeight;
     final ratio = scene.pixelRatio;
@@ -549,9 +644,9 @@ class _DanmakuPainter extends CustomPainter {
       }
       if (x > size.width || x + item.width < 0) continue;
       final image = item.sprite.image;
-      // 對齊到裝置像素再貼: 圖是一比一畫的, 落在半個像素上就會被取樣糊掉
-      final left = ((x - _kShadowPad) * ratio).roundToDouble() / ratio;
-      final top = ((y - _kShadowPad) * ratio).roundToDouble() / ratio;
+      // 對齊到貼圖像素再貼, 避免取樣閃爍; 電視較低解析度的圖會以雙線性放大.
+      final left = ((x - item.sprite.padding) * ratio).roundToDouble() / ratio;
+      final top = ((y - item.sprite.padding) * ratio).roundToDouble() / ratio;
       canvas.drawImageRect(
         image,
         Rect.fromLTWH(0, 0, image.width.toDouble(), image.height.toDouble()),

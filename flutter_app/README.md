@@ -86,6 +86,28 @@ AniSkip；查不到時依設定使用彈幕建議。
   * 返回鍵: 播放中先收控制列 / 取消下一集倒數, 再按一次才離開.
   * 遙控器上的播放/暫停、快轉、倒轉、上一首/下一首 (= 上一集/下一集) 鍵不管焦點在哪都有效.
 
+電視會自動使用較低負載的彈幕設定 (`DanmakuOverlay.lowPower`):
+
+| 彈幕資源 | 一般裝置 | Android TV |
+| --- | --- | --- |
+| 同時顯示上限 | 160 條 | 48 條 |
+| 每幀最多建立貼圖 | 4 張 | 2 張 |
+| 活躍貼圖 RGBA 估算預算 | 32 MiB | 8 MiB |
+| 貼圖像素比 | 裝置像素比 | 最多 1.5 |
+| 文字陰影 | 模糊陰影 | 無模糊陰影 |
+
+同樣文字與顏色的彈幕共用貼圖, 最後一條離場就釋放. 密集留言分幀處理,
+超過顯示量、記憶體預算或落後超過 1.5 秒的留言會略過; 超長文字用省略號限制在
+2048 像素寬的貼圖內. 只有置頂／置底彈幕時, 時鐘前進不會讓彈幕層重畫.
+這些預算讓低階電視保留影片播放所需的資源, 代價是高密度時顯示較少留言,
+高 DPI 電視的字緣也會稍柔和.
+
+`flutter test test/danmaku_overlay_test.dart test/watch_page_test.dart` 驗證分幀預算、
+共用貼圖回收、跳轉、暫停與電視模式接線. 實機效能需用 `flutter run --profile`
+播放相同影片的密集彈幕片段, 在 DevTools Performance 比較 UI／raster frame time
+與超時幀; widget test 的軟體繪製時間不能代表 Android TV GPU 效能.
+量測方式參考 [Flutter performance profiling](https://docs.flutter.dev/perf/ui-performance).
+
 #### 掃碼設定
 
 用遙控器敲網址跟密碼太痛苦, 所以電視上的「伺服器位址」跟「登入」頁右邊會有一個 QR 碼:

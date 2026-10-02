@@ -28,20 +28,32 @@ void main() {
   const frame = ValueKey('frame');
 
   Future<void> show(WidgetTester tester, List<DanmakuComment> comments,
-      {bool playing = true, double rate = 1, double opacity = 1}) {
+      {bool playing = true,
+      double rate = 1,
+      double opacity = 1,
+      bool lowPower = false,
+      double scale = 1,
+      double pixelRatio = 1,
+      bool enabled = true}) {
     return tester.pumpWidget(MaterialApp(
-      home: Center(
-        child: RepaintBoundary(
-          key: frame,
-          child: SizedBox(
-            width: 800,
-            height: 450,
-            child: DanmakuOverlay(
-              comments: comments,
-              position: () => now,
-              playing: playing,
-              rate: rate,
-              opacity: opacity,
+      home: MediaQuery(
+        data: MediaQueryData(devicePixelRatio: pixelRatio),
+        child: Center(
+          child: RepaintBoundary(
+            key: frame,
+            child: SizedBox(
+              width: 800,
+              height: 450,
+              child: DanmakuOverlay(
+                comments: comments,
+                position: () => now,
+                playing: playing,
+                rate: rate,
+                opacity: opacity,
+                lowPower: lowPower,
+                scale: scale,
+                enabled: enabled,
+              ),
             ),
           ),
         ),
@@ -51,7 +63,8 @@ void main() {
 
   /// 畫面最上面那一條 (置頂彈幕那一軌) 最不透明的一個像素
   Future<int> topBandAlpha(WidgetTester tester) async {
-    final boundary = tester.renderObject<RenderRepaintBoundary>(find.byKey(frame));
+    final boundary =
+        tester.renderObject<RenderRepaintBoundary>(find.byKey(frame));
     return (await tester.runAsync(() async {
       final image = await boundary.toImage();
       final bytes = await image.toByteData(format: ui.ImageByteFormat.rawRgba);
@@ -98,8 +111,7 @@ void main() {
     await show(tester, comments);
     final before = debugDanmakuRasterized;
     await play(tester, 3);
-    expect(debugDanmakuRasterized - before, 2,
-        reason: '兩條彈幕在畫面上待了六十幀, 應該只畫兩次');
+    expect(debugDanmakuRasterized - before, 2, reason: '兩條彈幕在畫面上待了六十幀, 應該只畫兩次');
 
     // 調透明度也不必重畫
     await show(tester, comments, opacity: 0.5);
@@ -110,7 +122,7 @@ void main() {
 
   testWidgets('收掉的彈幕要把圖還回去', (tester) async {
     final alive = debugDanmakuSpritesAlive;
-    final comments = [comment(0.1), comment(0.2), comment(0.3)];
+    final comments = [comment(0.1, '一'), comment(0.2, '二'), comment(0.3, '三')];
     await show(tester, comments);
     await play(tester, 0.4);
     expect(debugDanmakuSpritesAlive - alive, 3);
@@ -189,5 +201,163 @@ void main() {
     await tester.pump(const Duration(milliseconds: 16));
     expect(tester.binding.hasScheduledFrame, isFalse);
     await tester.pumpWidget(const SizedBox());
+  });
+
+  for (final lowPower in [false, true]) {
+    testWidgets('密集彈幕分幀建圖, 暫停時也會消化完佇列 (lowPower=$lowPower)', (tester) async {
+      final comments = List.generate(12, (i) => comment(0, 'burst $i'));
+      final before = debugDanmakuRasterized;
+      await show(tester, comments, playing: false, lowPower: lowPower);
+      final budget =
+          lowPower ? kDanmakuTvRastersPerFrame : kDanmakuRastersPerFrame;
+      var previous = before;
+      for (var i = 0; i < 16; i++) {
+        await tester.pump(const Duration(milliseconds: 16));
+        expect(debugDanmakuRasterized - previous, lessThanOrEqualTo(budget),
+            reason: '單幀建立太多貼圖會搶走影片的繪製時間');
+        previous = debugDanmakuRasterized;
+      }
+      expect(debugDanmakuRasterized - before, comments.length,
+          reason: '預算用完的留言應延後處理, 不應直接丟掉');
+      expect(tester.binding.hasScheduledFrame, isFalse);
+      await tester.pumpWidget(const SizedBox());
+    });
+  }
+
+  testWidgets('相同文字與顏色共用貼圖, 最後一條離場才釋放', (tester) async {
+    final alive = debugDanmakuSpritesAlive;
+    final bytes = debugDanmakuTextureBytes;
+    final before = debugDanmakuRasterized;
+    final comments = [
+      comment(0.1, 'same', DanmakuMode.top),
+      comment(0.2, 'same', DanmakuMode.bottom),
+      comment(0.3, 'same'),
+    ];
+    await show(tester, comments);
+    await play(tester, 0.5);
+    expect(debugDanmakuRasterized - before, 1);
+    expect(debugDanmakuSpritesAlive - alive, 1);
+    final retained = debugDanmakuTextureBytes;
+    expect(retained, greaterThan(bytes));
+    await play(tester, 6);
+    expect(debugDanmakuSpritesAlive - alive, 1, reason: '固定彈幕消失時, 捲動彈幕還需要同一張圖');
+    expect(debugDanmakuTextureBytes, retained);
+    await play(tester, 10);
+    expect(debugDanmakuSpritesAlive, alive);
+    expect(debugDanmakuTextureBytes, bytes);
+    await tester.pumpWidget(const SizedBox());
+  });
+
+  testWidgets('不同顏色不共用貼圖', (tester) async {
+    final before = debugDanmakuRasterized;
+    await show(tester, [
+      comment(0.1, 'same'),
+      const DanmakuComment(
+        start: 0.2,
+        end: 5.2,
+        text: 'same',
+        color: Colors.red,
+        mode: DanmakuMode.scroll,
+      ),
+    ]);
+    await play(tester, 0.5);
+    expect(debugDanmakuRasterized - before, 2);
+    await tester.pumpWidget(const SizedBox());
+  });
+
+  testWidgets('電視限制同時顯示量, 密集短留言也不超量', (tester) async {
+    final alive = debugDanmakuSpritesAlive;
+    final comments = List.generate(500, (i) => comment(i * 0.02, '$i'));
+    await show(tester, comments, lowPower: true);
+    var peak = 0;
+    while (now < 8) {
+      now += 0.05;
+      await tester.pump(const Duration(milliseconds: 50));
+      final count = debugDanmakuSpritesAlive - alive;
+      if (count > peak) peak = count;
+      expect(count, lessThanOrEqualTo(kDanmakuTvMaxLive));
+    }
+    expect(peak, kDanmakuTvMaxLive, reason: '測試必須真的把顯示量推到上限');
+    await tester.pumpWidget(const SizedBox());
+    expect(debugDanmakuSpritesAlive, alive);
+  });
+
+  testWidgets('電視限制高 DPI 貼圖解析度, 仍能畫出文字與透明度', (tester) async {
+    final bytes = debugDanmakuTextureBytes;
+    final comments = [comment(0, 'danmaku', DanmakuMode.top)];
+    await show(tester, comments, playing: false, pixelRatio: 3);
+    await tester.pump();
+    final normalBytes = debugDanmakuTextureBytes - bytes;
+    expect(normalBytes, greaterThan(0));
+    await show(tester, comments,
+        playing: false, pixelRatio: 3, lowPower: true, opacity: 0.25);
+    await tester.pump();
+    final tvBytes = debugDanmakuTextureBytes - bytes;
+    expect(tvBytes, greaterThan(0));
+    expect(tvBytes, lessThan(normalBytes / 2));
+    final alpha = await topBandAlpha(tester);
+    expect(alpha, inInclusiveRange(1, 70));
+    await tester.pumpWidget(const SizedBox());
+    expect(debugDanmakuTextureBytes, bytes);
+  });
+
+  testWidgets('超長彈幕限制貼圖寬度和總記憶體, 關閉時全部釋放', (tester) async {
+    final bytes = debugDanmakuTextureBytes;
+    final comments = List.generate(
+        100,
+        (i) => comment(0, 'long $i ${'W' * 1000}',
+            DanmakuMode.values[i % DanmakuMode.values.length]));
+    await show(tester, comments,
+        playing: false, lowPower: true, pixelRatio: 3, scale: 2);
+    for (var i = 0; i < 60; i++) {
+      await tester.pump(const Duration(milliseconds: 16));
+      expect(debugDanmakuTextureBytes - bytes,
+          lessThanOrEqualTo(kDanmakuTvTextureBytes));
+    }
+    expect(debugDanmakuTextureBytes - bytes,
+        greaterThan(kDanmakuTvTextureBytes * 0.8),
+        reason: '要真的接近記憶體上限, 才能驗證預算擋得住');
+    expect(tester.binding.hasScheduledFrame, isFalse);
+    expect(tester.takeException(), isNull);
+    await show(tester, comments, lowPower: true, enabled: false);
+    expect(debugDanmakuTextureBytes, bytes);
+    await tester.pumpWidget(const SizedBox());
+  });
+
+  testWidgets('只有固定彈幕時, 時鐘前進不重畫; 過期仍會清除', (tester) async {
+    await show(tester, [comment(0.1, 'still', DanmakuMode.top)]);
+    await play(tester, 0.3);
+    final paints = debugDanmakuPaints;
+    await play(tester, 3);
+    expect(debugDanmakuPaints, paints);
+    expect(await topBandAlpha(tester), greaterThan(0));
+    await play(tester, 6);
+    expect(debugDanmakuPaints, greaterThan(paints));
+    expect(await topBandAlpha(tester), 0);
+    await tester.pumpWidget(const SizedBox());
+  });
+
+  testWidgets('跳轉會丟掉尚未出場的舊彈幕, 換字級會重建共用貼圖', (tester) async {
+    final alive = debugDanmakuSpritesAlive;
+    final comments = [
+      ...List.generate(50, (i) => comment(0, 'old $i')),
+      comment(30, 'new', DanmakuMode.top),
+    ];
+    await show(tester, comments, playing: false, lowPower: true);
+    await tester.pump();
+    expect(debugDanmakuSpritesAlive - alive, kDanmakuTvRastersPerFrame);
+    now = 30;
+    await tester.pump(const Duration(milliseconds: 16));
+    expect(debugDanmakuSpritesAlive - alive, 1);
+    final bytes = debugDanmakuTextureBytes;
+    final before = debugDanmakuRasterized;
+    await show(tester, comments,
+        playing: false, lowPower: true, scale: 2, opacity: 0.25);
+    await tester.pump();
+    expect(debugDanmakuRasterized - before, 1);
+    expect(debugDanmakuTextureBytes, greaterThan(bytes));
+    expect(await topBandAlpha(tester), inInclusiveRange(1, 70));
+    await tester.pumpWidget(const SizedBox());
+    expect(debugDanmakuSpritesAlive, alive);
   });
 }
