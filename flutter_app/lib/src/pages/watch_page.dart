@@ -52,7 +52,8 @@ import '../util/device.dart';
 import '../util/format.dart';
 import '../widgets/cast_sheet.dart';
 import '../widgets/common.dart';
-import '../widgets/active_builder.dart';
+import '../widgets/intro_skip_prompt.dart';
+import '../widgets/playback_countdown_card.dart';
 import '../widgets/seek_preview_card.dart';
 import '../widgets/tv_settings_list.dart';
 import 'tv_remote_page.dart';
@@ -390,6 +391,8 @@ class _WatchPageState extends State<WatchPage> with WidgetsBindingObserver {
   String _skipRequestKey = '';
   Timer? _skipRetryTimer;
   bool _skipDismissed = false;
+  final _introPromptKey = GlobalKey<IntroSkipPromptState>();
+  bool _introBackVisible = false;
   StreamSubscription<bool>? _pipSubscription;
   StreamSubscription<String>? _pipActionSubscription;
   bool _pipActive = false;
@@ -536,6 +539,7 @@ class _WatchPageState extends State<WatchPage> with WidgetsBindingObserver {
   void initState() {
     super.initState();
     WidgetsBinding.instance.addObserver(this);
+    _clock.addListener(_onIntroClock);
     _sn = widget.sn;
     _startAt = widget.startAt;
     _rate = prefs.rate;
@@ -604,6 +608,7 @@ class _WatchPageState extends State<WatchPage> with WidgetsBindingObserver {
   @override
   void dispose() {
     WidgetsBinding.instance.removeObserver(this);
+    _clock.removeListener(_onIntroClock);
     _idleTimer?.cancel();
     _flashTimer?.cancel();
     _nextTimer?.cancel();
@@ -1570,8 +1575,7 @@ class _WatchPageState extends State<WatchPage> with WidgetsBindingObserver {
       final end = interval[1];
       if (start >= 0 &&
           end > start + 40 &&
-          end < duration - 300 &&
-          end <= 420) {
+          end < duration - 300) {
         setState(() => _aniskipIntro = IntroSkip(start, end, 'AniSkip'));
       }
     } catch (_) {
@@ -2526,6 +2530,7 @@ class _WatchPageState extends State<WatchPage> with WidgetsBindingObserver {
   /// 控制列收起來了, 焦點不能還留在看不見的按鈕上 —— 不然下一次按左右是在
   /// 看不見的按鈕之間移動, 而不是倒退 / 快進.
   void _reclaimFocus() {
+    if (_introPromptKey.currentState?.hasFocus ?? false) return;
     if (_playerFocus.hasFocus && !_playerFocus.hasPrimaryFocus) {
       _playerFocus.requestFocus();
     }
@@ -2728,14 +2733,33 @@ class _WatchPageState extends State<WatchPage> with WidgetsBindingObserver {
   }
 
   void _skipOpening(IntroSkip intro) {
-    setState(() => _skipDismissed = true);
+    if (_skipDismissed) return;
+    _dismissOpening();
     unawaited(_seekTo(intro.end));
+  }
+
+  bool get _introVisible =>
+      !_skipDismissed && (_effectiveIntro?.visibleAt(_clock.value) ?? false);
+
+  void _onIntroClock() {
+    if (!Device.tv || !mounted) return;
+    final visible = _introVisible;
+    if (visible != _introBackVisible) {
+      // PopScope must update when the OP enters/exits even with controls hidden.
+      setState(() => _introBackVisible = visible);
+    }
+  }
+
+  void _dismissOpening() {
+    setState(() => _skipDismissed = true);
+    if (Device.tv && !_settingsOpen) _playerFocus.requestFocus();
   }
 
   /// 電視上的返回鍵: 下一集的倒數、開著的控制列先收掉, 都沒有才離開.
   bool get _tvBackConsumes =>
       _timelineEditing ||
       _nextOffer != null ||
+      _introVisible ||
       (_controlsVisible && _showsPlaying);
 
   void _tvBack() {
@@ -2745,6 +2769,10 @@ class _WatchPageState extends State<WatchPage> with WidgetsBindingObserver {
     }
     if (_nextOffer != null) {
       _cancelNext();
+      return;
+    }
+    if (_introVisible) {
+      _dismissOpening();
       return;
     }
     _idleTimer?.cancel();
@@ -3500,6 +3528,8 @@ class _WatchPageState extends State<WatchPage> with WidgetsBindingObserver {
         final size = Size(constraints.maxWidth, constraints.maxHeight);
         final controller = _controller;
         final ready = controller != null && controller.value.isInitialized;
+        final intro = _effectiveIntro;
+        final introEpisode = _sn;
 
         if (_pipActive) {
           return ColoredBox(
@@ -3581,7 +3611,7 @@ class _WatchPageState extends State<WatchPage> with WidgetsBindingObserver {
                                   child: _controls(mobileInline: mobileInline)),
                         ),
                       ),
-                      if (!_skipDismissed && _effectiveIntro != null)
+                      if (!_skipDismissed && intro != null)
                         Positioned(
                           right: 16,
                           top: mobileInline ? 12 : null,
@@ -3592,48 +3622,47 @@ class _WatchPageState extends State<WatchPage> with WidgetsBindingObserver {
                                       (_fullscreen
                                           ? MediaQuery.paddingOf(context).bottom
                                           : 0),
-                                  size.height - 48),
-                          child: ClockVisibility(
+                                  size.height - 140),
+                          child: IntroSkipPrompt(
+                            key: _introPromptKey,
                             clock: _clock,
-                            visibleAt: (position) =>
-                                _effectiveIntro?.visibleAt(position) ?? false,
-                            child: Builder(builder: (context) {
-                              final intro = _effectiveIntro;
-                              if (intro == null) {
-                                return const SizedBox.shrink();
+                            intro: intro,
+                            episodeKey: _sn,
+                            tv: Device.tv,
+                            compact: mobileInline,
+                            seconds: kNextEpisodeCountdown,
+                            canCount: () =>
+                                _sn == introEpisode &&
+                                _effectiveIntro == intro &&
+                                !_skipDismissed &&
+                                _showsPlaying &&
+                                !_buffering &&
+                                !_ended &&
+                                !_scrubbing &&
+                                _pendingSeek == null &&
+                                !_background &&
+                                !_settingsOpen &&
+                                _routeIsCurrent,
+                            canFocus: () =>
+                                !_settingsOpen &&
+                                !_background &&
+                                _routeIsCurrent &&
+                                !_timelineEditing,
+                            onSkip: () {
+                              if (_sn == introEpisode && _effectiveIntro == intro) {
+                                _skipOpening(intro);
                               }
-                              void skipOpening() => _skipOpening(intro);
-                              return Semantics(
-                                button: true,
-                                label: '跳過片頭 · ${intro.source}',
-                                onTap: skipOpening,
-                                child: Material(
-                                  color: const Color(0xCC101014),
-                                  shape: RoundedRectangleBorder(
-                                    borderRadius: BorderRadius.circular(4),
-                                    side: const BorderSide(
-                                        color: Color(0xB3FFFFFF)),
-                                  ),
-                                  child: InkWell(
-                                    key: const ValueKey('skip-intro'),
-                                    borderRadius: BorderRadius.circular(4),
-                                    excludeFromSemantics: true,
-                                    onTap: skipOpening,
-                                    child: Padding(
-                                      padding: const EdgeInsets.symmetric(
-                                          horizontal: 12, vertical: 8),
-                                      // 電視上不必移過來: 在播放區按確認鍵就是跳過
-                                      child: Text(
-                                          Device.tv ? '按 OK 跳過片頭' : '跳過片頭',
-                                          style: const TextStyle(
-                                              color: Colors.white,
-                                              fontSize: 12.5,
-                                              fontWeight: FontWeight.w700)),
-                                    ),
-                                  ),
-                                ),
-                              );
-                            }),
+                            },
+                            onCancel: _dismissOpening,
+                            onNavigateControls: _focusPlay,
+                            onFocusReleased: () {
+                              if (Device.tv &&
+                                  mounted &&
+                                  !_settingsOpen &&
+                                  _routeIsCurrent) {
+                                _playerFocus.requestFocus();
+                              }
+                            },
                           ),
                         ),
                       if (!_scrubbing && (_flash.isNotEmpty || _hud.isNotEmpty))
@@ -3956,59 +3985,17 @@ class _WatchPageState extends State<WatchPage> with WidgetsBindingObserver {
     return Positioned(
       right: 14,
       bottom: 70,
-      child: Container(
-        width: 236,
-        padding: const EdgeInsets.fromLTRB(14, 12, 14, 12),
-        decoration: BoxDecoration(
-          color: Colors.black.withValues(alpha: 0.82),
-          borderRadius: BorderRadius.circular(kRadius),
-          border: Border.all(color: AgpColors.lineStrong),
-        ),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            const Text(
-              '即將播放下一集',
-              style: TextStyle(
-                fontSize: 12,
-                color: AgpColors.fgFaint,
-                fontWeight: FontWeight.w700,
-              ),
-            ),
-            const SizedBox(height: 5),
-            Text(
-              '$label · $_seriesName',
-              maxLines: 2,
-              overflow: TextOverflow.ellipsis,
-              style: const TextStyle(fontSize: 13.5, color: Colors.white),
-            ),
-            const SizedBox(height: 11),
-            Row(
-              children: [
-                Expanded(
-                  child: FilledButton(
-                    onPressed: () {
-                      _nextTimer?.cancel();
-                      setState(() => _nextOffer = null);
-                      unawaited(_switchTo(next));
-                    },
-                    child: Text(
-                      _autoNext && _nextCountdown > 0
-                          ? '立即播放 ($_nextCountdown)'
-                          : '立即播放',
-                    ),
-                  ),
-                ),
-                const SizedBox(width: 8),
-                OutlinedButton(
-                  onPressed: _cancelNext,
-                  child: const Text('取消'),
-                ),
-              ],
-            ),
-          ],
-        ),
+      child: PlaybackCountdownCard(
+        title: '即將播放下一集',
+        detail: '$label · $_seriesName',
+        action:
+            _autoNext && _nextCountdown > 0 ? '立即播放 ($_nextCountdown)' : '立即播放',
+        onAction: () {
+          _nextTimer?.cancel();
+          setState(() => _nextOffer = null);
+          unawaited(_switchTo(next));
+        },
+        onCancel: _cancelNext,
       ),
     );
   }

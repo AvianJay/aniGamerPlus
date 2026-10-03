@@ -23,6 +23,7 @@ import 'package:agp_mobile/src/state/tv_remote_protocol.dart';
 import 'package:agp_mobile/src/util/device.dart';
 import 'package:agp_mobile/src/util/remote_keys.dart';
 import 'package:agp_mobile/src/widgets/tv_settings_list.dart';
+import 'package:agp_mobile/src/widgets/intro_skip_prompt.dart';
 import 'package:http/http.dart' as http;
 import 'package:http/testing.dart';
 
@@ -460,9 +461,8 @@ void main() {
     expect(files.every((file) => file.existsSync()), isTrue);
   });
 
-  testWidgets(
-      'skip intro stays compact above tablet, phone and fullscreen controls',
-      (tester) async {
+  Future<void> seedIntro(WidgetTester tester,
+      {int at = 162, (double, double) interval = (160.776, 250.776)}) async {
     http.Response reply(Object data) =>
         http.Response.bytes(utf8.encode(jsonEncode(data)), 200);
     final api = AgpClient(
@@ -500,7 +500,10 @@ void main() {
                 {
                   'skipType': 'op',
                   'episodeLength': 1420,
-                  'interval': {'startTime': 160.776, 'endTime': 250.776},
+                  'interval': {
+                    'startTime': interval.$1,
+                    'endTime': interval.$2
+                  },
                 }
               ]
             });
@@ -511,6 +514,7 @@ void main() {
     addTearDown(api.close);
     state = (await tester.runAsync(() => AppState.boot(client: api)))!;
     state.offline = true;
+    await state.prefs.setOpeningSkipMode('aniskip-first');
     state.client.seedSeriesJson('1', {
       'videoSn': '1',
       'title': '轉生公主與天才千金的魔法革命',
@@ -520,14 +524,21 @@ void main() {
           'name': '',
           'episodes': [
             {'videoSn': '1', 'episode': '10', 'local': true},
+            {'videoSn': '2', 'episode': '11', 'local': true},
           ],
         }
       ],
     });
-    state.noteWatchTime('1', WatchTime(time: 162, duration: 1420),
+    state.noteWatchTime('1', WatchTime(time: at, duration: 1420),
         notify: false);
     player.duration = const Duration(seconds: 1420);
-    player.actual = const Duration(seconds: 162);
+    player.actual = Duration(milliseconds: (at * 1000).round());
+  }
+
+  testWidgets(
+      'intro countdown fits above tablet, phone and fullscreen controls',
+      (tester) async {
+    await seedIntro(tester);
     await open(tester);
     await resizeViewport(tester, const Size(1280, 882));
     for (var i = 0;
@@ -536,34 +547,259 @@ void main() {
       await tester.pump(const Duration(milliseconds: 100));
     }
     final skip = find.byKey(const ValueKey('skip-intro'));
-    expect(skip, findsOneWidget);
-    var bounds = tester.getRect(skip);
-    var forward = tester.getRect(find.byTooltip('快轉 10 秒'));
-    expect(bounds.width, lessThan(130));
-    expect(bounds.height, lessThanOrEqualTo(40));
-    expect(bounds.bottom, lessThan(forward.top - 12));
+    final card = find.byKey(const ValueKey('intro-countdown'));
+    Future<void> captureIntro(String name) async {
+      if (Platform.environment['AGP_INTRO_CAPTURE'] != '1') return;
+      final boundary = tester.renderObject<RenderRepaintBoundary>(
+          find.byKey(const ValueKey('capture')));
+      await tester.runAsync(() async {
+        final image = await boundary.toImage();
+        final bytes = await image.toByteData(format: ui.ImageByteFormat.png);
+        await File('../.agpwork/intro-$name.png')
+            .writeAsBytes(bytes!.buffer.asUint8List());
+        image.dispose();
+      });
+    }
 
-    await resizeViewport(tester, const Size(390, 844));
-    await tester.pump(const Duration(milliseconds: 350));
-    bounds = tester.getRect(skip);
-    forward = tester.getRect(find.byTooltip('快轉 10 秒'));
+    expect(skip, findsOneWidget);
+    expect(find.text('立即跳過 (8)'), findsOneWidget);
+    var bounds = tester.getRect(card);
+    var forward = tester.getRect(find.byTooltip('快轉 10 秒'));
+    expect(bounds.width, lessThanOrEqualTo(268));
     expect(bounds.bottom, lessThan(forward.top - 12));
-    expect(bounds.top, greaterThanOrEqualTo(
-        tester.getTopLeft(find.byKey(const ValueKey('player-surface'))).dy));
+    await captureIntro('tablet');
+
+    for (final width in [390.0, 375.0, 320.0]) {
+      await resizeViewport(tester, Size(width, 844));
+      await tester.pump(const Duration(milliseconds: 350));
+      bounds = tester.getRect(card);
+      forward = tester.getRect(find.byTooltip('快轉 10 秒'));
+      expect(bounds.bottom, lessThan(forward.top - 12));
+      expect(
+          bounds.top,
+          greaterThanOrEqualTo(tester
+              .getTopLeft(find.byKey(const ValueKey('player-surface')))
+              .dy));
+      await captureIntro('phone-${width.toInt()}');
+    }
 
     await resizeViewport(tester, const Size(1280, 882));
     await tester.pump(const Duration(milliseconds: 350));
 
     await tester.tap(find.byTooltip('全螢幕'));
     await tester.pump(const Duration(milliseconds: 350));
-    bounds = tester.getRect(skip);
+    bounds = tester.getRect(card);
     forward = tester.getRect(find.byTooltip('快轉 10 秒'));
     expect(bounds.bottom, lessThan(forward.top - 12));
+    await captureIntro('fullscreen');
     await tester.tap(skip);
+    await tester.pump(const Duration(milliseconds: 350));
+    expect(skip, findsNothing);
     player.actual = const Duration(milliseconds: 250776);
     await tester.pump(const Duration(milliseconds: 350));
     expect(find.byKey(const ValueKey('skip-intro')), findsNothing);
     expect(player.seeks.last.inMilliseconds, 250776);
+    await tester.pumpWidget(const SizedBox());
+  });
+
+  testWidgets('intro countdown automatically seeks to the exact OP end',
+      (tester) async {
+    await seedIntro(tester);
+    await open(tester);
+    await settleIo(
+        tester,
+        () =>
+            find.byKey(const ValueKey('skip-intro')).evaluate().isNotEmpty &&
+            player.playing);
+    await tester.pump(const Duration(seconds: 8));
+    expect(player.seeks.where((seek) => seek.inMilliseconds == 250776),
+        hasLength(1));
+    player.actual = const Duration(milliseconds: 250776);
+    await tester.pump(const Duration(milliseconds: 350));
+    expect(find.byKey(const ValueKey('skip-intro')), findsNothing);
+    expect(player.playing, isTrue);
+    await tester.pump(const Duration(seconds: 3));
+    expect(player.seeks.where((seek) => seek.inMilliseconds == 250776),
+        hasLength(1));
+    await tester.pumpWidget(const SizedBox());
+  });
+
+  testWidgets('intro countdown disabled never auto-seeks', (tester) async {
+    await seedIntro(tester);
+    await state.prefs.setOpeningSkipMode('off');
+    await open(tester);
+    await tester.pump(const Duration(seconds: 10));
+    expect(find.byKey(const ValueKey('skip-intro')), findsNothing);
+    expect(
+        player.seeks.where((seek) => seek.inMilliseconds == 250776), isEmpty);
+    await tester.pumpWidget(const SizedBox());
+  });
+
+  testWidgets('intro countdown accepts OP after a long cold open',
+      (tester) async {
+    await seedIntro(tester, at: 572, interval: (570, 660));
+    await open(tester);
+    await settleIo(
+        tester,
+        () =>
+            find.byKey(const ValueKey('skip-intro')).evaluate().isNotEmpty &&
+            player.playing);
+    await tester.pump(const Duration(seconds: 8));
+    expect(player.seeks.last.inSeconds, 660);
+    player.actual = const Duration(seconds: 660);
+    await tester.pump(const Duration(milliseconds: 350));
+    expect(find.byKey(const ValueKey('skip-intro')), findsNothing);
+    await tester.pumpWidget(const SizedBox());
+  });
+
+  testWidgets('intro countdown waits for native buffering to finish',
+      (tester) async {
+    await seedIntro(tester);
+    await open(tester);
+    await settleIo(
+        tester,
+        () =>
+            find.byKey(const ValueKey('skip-intro')).evaluate().isNotEmpty &&
+            player.playing);
+    player.events.add(VideoEvent(eventType: VideoEventType.bufferingStart));
+    await tester.pump();
+    await tester.pump(const Duration(seconds: 10));
+    expect(
+        player.seeks.where((seek) => seek.inMilliseconds == 250776), isEmpty);
+    player.events.add(VideoEvent(eventType: VideoEventType.bufferingEnd));
+    await tester.pump();
+    await tester.pump(const Duration(seconds: 8));
+    player.actual = const Duration(milliseconds: 250776);
+    await tester.pump(const Duration(milliseconds: 350));
+    expect(player.seeks.last.inMilliseconds, 250776);
+    await tester.pumpWidget(const SizedBox());
+  });
+
+  testWidgets('intro countdown cancels the old episode and resets for the next',
+      (tester) async {
+    await seedIntro(tester);
+    await open(tester);
+    await settleIo(
+        tester,
+        () =>
+            find.byKey(const ValueKey('skip-intro')).evaluate().isNotEmpty &&
+            player.playing);
+    await tester.tap(find.byKey(const ValueKey('cancel-intro')));
+    await tester.pump(const Duration(milliseconds: 350));
+    await tester.pump(const Duration(seconds: 8));
+    expect(
+        player.seeks.where((seek) => seek.inMilliseconds == 250776), isEmpty);
+    await tester.tap(find.byKey(const ValueKey('episode-2')));
+    await settleIo(
+        tester,
+        () =>
+            player.creations == 2 &&
+            find.byKey(const ValueKey('skip-intro')).evaluate().isNotEmpty);
+    await tester.pump(const Duration(seconds: 8));
+    player.actual = const Duration(milliseconds: 250776);
+    await tester.pump(const Duration(milliseconds: 350));
+    expect(player.seeks.where((seek) => seek.inMilliseconds == 250776),
+        hasLength(1));
+    await tester.pumpWidget(const SizedBox());
+  });
+
+  for (final phone in [false, true]) {
+    testWidgets('intro countdown confirms from TV focus (phone=$phone)',
+        (tester) async {
+      Device.tv = true;
+      addTearDown(() => Device.tv = false);
+      await seedIntro(tester);
+      await open(tester, size: const Size(1280, 720));
+      await settleIo(
+          tester,
+          () =>
+              find.byKey(const ValueKey('skip-intro')).evaluate().isNotEmpty &&
+              player.playing);
+      await tester.pump();
+      final button =
+          tester.widget<FilledButton>(find.byKey(const ValueKey('skip-intro')));
+      expect(button.focusNode!.hasFocus, isTrue);
+      if (phone) {
+        RemoteKeys.press(RemoteKey.ok);
+      } else {
+        await tester.sendKeyEvent(LogicalKeyboardKey.select);
+      }
+      await tester.pump();
+      player.actual = const Duration(milliseconds: 250776);
+      await tester.pump(const Duration(milliseconds: 350));
+      expect(player.seeks.last.inMilliseconds, 250776);
+      expect(find.byKey(const ValueKey('skip-intro')), findsNothing);
+      await tester.pumpWidget(const SizedBox());
+    });
+  }
+
+  testWidgets(
+      'intro countdown can focus pause and stops under playback settings',
+      (tester) async {
+    Device.tv = true;
+    addTearDown(() => Device.tv = false);
+    await seedIntro(tester);
+    await open(tester, size: const Size(1280, 720));
+    await settleIo(
+        tester,
+        () =>
+            find.byKey(const ValueKey('skip-intro')).evaluate().isNotEmpty &&
+            player.playing);
+    await tester.pump();
+    RemoteKeys.press(RemoteKey.down);
+    await tester.pump();
+    expect(FocusManager.instance.primaryFocus!.debugLabel, 'player-play');
+    RemoteKeys.press(RemoteKey.ok);
+    await tester.pump();
+    expect(player.playing, isFalse);
+    await tester.pump(const Duration(seconds: 10));
+    expect(find.byKey(const ValueKey('skip-intro')), findsOneWidget);
+    expect(
+        player.seeks.where((seek) => seek.inMilliseconds == 250776), isEmpty);
+    RemoteKeys.press(RemoteKey.playPause);
+    await tester.pump();
+    await tester.tap(find.byTooltip('設定'));
+    await tester.pump(const Duration(milliseconds: 350));
+    await tester.pump(const Duration(seconds: 10));
+    expect(
+        player.seeks.where((seek) => seek.inMilliseconds == 250776), isEmpty);
+    await tester.binding.handlePopRoute();
+    await tester.pump(const Duration(milliseconds: 350));
+    await tester.pump(const Duration(seconds: 8));
+    player.actual = const Duration(milliseconds: 250776);
+    await tester.pump(const Duration(milliseconds: 350));
+    expect(player.seeks.last.inMilliseconds, 250776);
+    await tester.pumpWidget(const SizedBox());
+  });
+
+  testWidgets('intro countdown entering with hidden controls consumes TV Back',
+      (tester) async {
+    Device.tv = true;
+    addTearDown(() => Device.tv = false);
+    await seedIntro(tester, at: 150);
+    await open(tester, size: const Size(1280, 720));
+    await settleIo(
+        tester,
+        () =>
+            find.byType(IntroSkipPrompt).evaluate().isNotEmpty &&
+            player.playing);
+    await tester.pump(const Duration(seconds: 5));
+    expect(find.byTooltip('暫停'), findsNothing);
+    player.actual = const Duration(seconds: 162);
+    await tester.pump(const Duration(milliseconds: 200));
+    await tester.pump();
+    expect(find.byKey(const ValueKey('skip-intro')), findsOneWidget);
+    expect(
+        tester
+            .widget<PopScope>(find.byWidgetPredicate((w) => w is PopScope))
+            .canPop,
+        isFalse);
+    await tester.binding.handlePopRoute();
+    await tester.pump(const Duration(seconds: 10));
+    expect(find.byKey(const ValueKey('skip-intro')), findsNothing);
+    expect(
+        player.seeks.where((seek) => seek.inMilliseconds == 250776), isEmpty);
+    expect(find.byType(WatchPage), findsOneWidget);
     await tester.pumpWidget(const SizedBox());
   });
 
