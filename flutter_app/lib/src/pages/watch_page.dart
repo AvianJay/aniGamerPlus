@@ -70,8 +70,8 @@ const int kSkipSeconds = 10;
 const double kGestureSeekSpan = 120;
 const double kMinBrightness = 0.2;
 
-/// 手指按不出 mousemove, 所以控制列留得比桌面久
-const Duration kControlsIdle = Duration(milliseconds: 8000);
+/// 播放中連續 5 秒沒操作就收起控制列; 每次操作重新計時.
+const Duration kControlsIdle = Duration(seconds: 5);
 const int kNextEpisodeCountdown = 8;
 
 /// 彈幕檔小於這個大小 (字元) 就直接在畫面這條執行緒上解析. 大約一千多行,

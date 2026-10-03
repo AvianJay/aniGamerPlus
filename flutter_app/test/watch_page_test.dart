@@ -1900,7 +1900,15 @@ void main() {
     testWidgets('電視控制列收起後不訂閱時鐘, 按 OK 立即重建並可操作設定', (tester) async {
       await open(tester);
       expect(find.byType(Slider), findsOneWidget);
-      await tester.pump(kControlsIdle + const Duration(seconds: 1));
+      await tester.sendKeyEvent(LogicalKeyboardKey.arrowUp);
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 4900));
+      expect(controlsOpacity(tester), 1);
+      await tester.sendKeyEvent(LogicalKeyboardKey.arrowDown);
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 4900));
+      expect(controlsOpacity(tester), 1, reason: '操作後應重新算 5 秒');
+      await tester.pump(const Duration(milliseconds: 100));
       expect(find.byType(Slider), findsNothing);
       expect(controlsOpacity(tester), 0);
       for (var i = 0; i < 10; i++) {
