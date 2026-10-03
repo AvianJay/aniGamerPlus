@@ -1422,6 +1422,10 @@ def updatelist():
                 except BaseException as e:
                     err_print(0, '片庫掃描', f'{datapath} 內有一筆影片資料無法解析, 已跳過: {e}', no_sn=True, status=1)
                     continue
+                danmupath = os.path.splitext(video_data['path'])[0] + '.ass'
+                if os.path.exists(danmupath):
+                    video_data['danmu_path'] = danmupath
+                    video_data['danmu'] = True
                 local_exists = os.path.exists(video_data['path'])
                 remote_exists = plugin_manager.has_remote(video_data)
                 if local_exists or remote_exists:
