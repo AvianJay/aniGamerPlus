@@ -109,6 +109,7 @@ class _TvSettingsTileState extends State<TvSettingsTile> {
       onFocusChange: _focusChanged,
       onKeyEvent: _onKey,
       child: Material(
+        animationDuration: Duration.zero,
         color:
             _focus.hasFocus ? Theme.of(context).focusColor : Colors.transparent,
         shape: RoundedRectangleBorder(
