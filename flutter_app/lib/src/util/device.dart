@@ -36,22 +36,6 @@ class Device {
     }
   }
 
-  static Future<bool> openBluetoothSettings() async {
-    try {
-      return await _channel.invokeMethod<bool>('bluetoothSettings') ?? false;
-    } catch (_) {
-      return false;
-    }
-  }
-
-  static Future<bool> openAudioSettings() async {
-    try {
-      return await _channel.invokeMethod<bool>('audioSettings') ?? false;
-    } catch (_) {
-      return false;
-    }
-  }
-
   static Future<void> detect() async {
     if (!Platform.isAndroid) return;
     try {

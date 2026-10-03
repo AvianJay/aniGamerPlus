@@ -5101,51 +5101,6 @@ class _WatchPageState extends State<WatchPage> with WidgetsBindingObserver {
     );
   }
 
-  void _openBluetoothAudio() {
-    showDialog<void>(
-      context: context,
-      builder: (dialogContext) => AlertDialog(
-        title: const Text('藍牙音訊／擴大機'),
-        content: const SingleChildScrollView(
-            child: Text(
-                '畫面留在電視, 聲音由電視系統送到藍牙音訊裝置。\n\n'
-                'Onkyo TX-NR6100：\n'
-                '1. 按擴大機的 BLUETOOTH 鍵, 看到 Now Pairing。'
-                '若已配對過其他裝置, 長按 BLUETOOTH 至少 5 秒。\n'
-                '2. 開啟下方「藍牙配對」, 選 Onkyo TX-NR6100。'
-                '需要密碼時輸入 0000。\n'
-                '3. 若連不上, 在擴大機設定的 Hardware → Bluetooth '
-                '將 Receiver 開啟、Transmitter 關閉。\n\n'
-                '影音同步：在電視的聲音設定將「影音同步／A/V sync」設為自動或開啟。'
-                '補償效果取決於電視與音訊裝置。\n\n'
-                '藍牙提供立體聲；需要多聲道或更低延遲時, 請使用 HDMI ARC。',
-                style: TextStyle(fontSize: 14, height: 1.5))),
-        actions: [
-          TextButton(
-              autofocus: Device.tv,
-              onPressed: () => Navigator.of(dialogContext).pop(),
-              child: const Text('關閉')),
-          TextButton(
-              onPressed: () {
-                Navigator.of(dialogContext).pop();
-                unawaited(Device.openAudioSettings().then((ok) {
-                  if (!ok && mounted) toast(context, '請從電視系統設定開啟聲音 → 影音同步。');
-                }));
-              },
-              child: const Text('影音同步設定')),
-          FilledButton(
-              onPressed: () {
-                Navigator.of(dialogContext).pop();
-                unawaited(Device.openBluetoothSettings().then((ok) {
-                  if (!ok && mounted) toast(context, '請從電視系統設定開啟藍牙／遙控器與配件。');
-                }));
-              },
-              child: const Text('藍牙配對')),
-        ],
-      ),
-    );
-  }
-
   void _openSettingsSheet() {
     _finishTimelineEdit(focusPlay: false);
     _idleTimer?.cancel();
@@ -5170,17 +5125,6 @@ class _WatchPageState extends State<WatchPage> with WidgetsBindingObserver {
                 mainAxisSize: MainAxisSize.min,
                 children: [
                   const _SheetTitle('播放設定'),
-                  if (Device.tv)
-                    _settingsTile(
-                      autofocus: true,
-                      leading: const Icon(Icons.bluetooth_audio_rounded),
-                      title: '藍牙音訊／擴大機',
-                      subtitle: '保留電視畫面, 將聲音送到藍牙音訊裝置',
-                      onTap: () {
-                        Navigator.of(sheetContext).pop();
-                        _openBluetoothAudio();
-                      },
-                    ),
                   _pickerTile<double>(
                     '播放速度',
                     _rate == 1 ? '正常' : '$_rate×',
@@ -5189,6 +5133,7 @@ class _WatchPageState extends State<WatchPage> with WidgetsBindingObserver {
                         .toList(),
                     _rate,
                     (value) => refresh(() => unawaited(_setRate(value))),
+                    autofocus: true,
                   ),
                   // 清單是開這張選單時才去問的, 用 ValueNotifier 而不是頁面的
                   // setState —— StatefulBuilder 在另一棵樹上, 頁面重建帶不動它
@@ -5366,9 +5311,11 @@ class _WatchPageState extends State<WatchPage> with WidgetsBindingObserver {
     T current,
     void Function(T value) onPick, {
     String note = '',
+    bool autofocus = false,
   }) {
     return _settingsTile(
       title: title,
+      autofocus: autofocus,
       subtitle: note.isEmpty ? value : '$value · $note',
       trailing: const Icon(Icons.chevron_right_rounded, size: 20),
       onTap: () async {

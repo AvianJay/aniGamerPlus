@@ -1783,9 +1783,6 @@ void main() {
       await state.prefs.setRate(1);
       await open(tester);
       await settingsWithKeys(tester);
-      expect(focused(), 'settings-藍牙音訊／擴大機');
-      await tester.sendKeyEvent(LogicalKeyboardKey.arrowDown);
-      await tester.pump();
       expect(focused(), 'settings-播放速度');
       await tester.sendKeyEvent(LogicalKeyboardKey.select, platform: 'android');
       await tester.pump(const Duration(milliseconds: 300));
@@ -1880,7 +1877,6 @@ void main() {
         await press(RemoteKey.up);
         expect(focused(), 'settings-${items[i]}');
       }
-      await press(RemoteKey.down);
       await press(RemoteKey.ok);
       expect(focused(), 'settings-播放速度-1.0');
       await press(RemoteKey.down);
@@ -2015,36 +2011,6 @@ void main() {
       expect(controlsOpacity(tester), 1);
       expect(player.seeks, isEmpty);
       expect(find.byType(WatchPage), findsOneWidget);
-      await tester.pumpWidget(const SizedBox());
-    });
-
-    testWidgets('播放設定可開啟藍牙配對與影音同步系統設定', (tester) async {
-      final calls = <String>[];
-      const channel = MethodChannel('agp/device');
-      tester.binding.defaultBinaryMessenger.setMockMethodCallHandler(channel,
-          (call) async {
-        calls.add(call.method);
-        return true;
-      });
-      addTearDown(() => tester.binding.defaultBinaryMessenger
-          .setMockMethodCallHandler(channel, null));
-      await open(tester);
-      Future<void> guide() async {
-        await tester.tap(find.byTooltip('設定'));
-        await tester.pump(const Duration(milliseconds: 300));
-        await tester.tap(find.text('藍牙音訊／擴大機'));
-        await tester.pumpAndSettle();
-        expect(find.textContaining('Onkyo TX-NR6100'), findsOneWidget);
-      }
-
-      await guide();
-      await tester.tap(find.text('藍牙配對'));
-      await tester.pumpAndSettle();
-      expect(calls, ['bluetoothSettings']);
-      await guide();
-      await tester.tap(find.text('影音同步設定'));
-      await tester.pumpAndSettle();
-      expect(calls, ['bluetoothSettings', 'audioSettings']);
       await tester.pumpWidget(const SizedBox());
     });
 

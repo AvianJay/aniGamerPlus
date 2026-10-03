@@ -192,7 +192,6 @@ def patch_main_activity(kotlin_dir):
         raise RuntimeError(f'unexpected MainActivity template in {path}')
     source = source.replace(imports, '''import android.app.UiModeManager
 import android.content.Context
-import android.content.Intent
 import android.content.pm.PackageManager
 import android.content.res.Configuration
 import android.net.wifi.WifiManager
@@ -233,10 +232,6 @@ import io.flutter.plugin.common.MethodChannel
                             }
                         }
                     }
-                    "bluetoothSettings" -> result.success(openSettings(listOf(
-                        Settings.ACTION_BLUETOOTH_SETTINGS, Settings.ACTION_SETTINGS)))
-                    "audioSettings" -> result.success(openSettings(listOf(
-                        Settings.ACTION_SOUND_SETTINGS, Settings.ACTION_SETTINGS)))
                     "multicastLock" -> {
                         holdMulticastLock(call.arguments == true)
                         result.success(null)
@@ -255,19 +250,6 @@ import io.flutter.plugin.common.MethodChannel
         val uiMode = getSystemService(Context.UI_MODE_SERVICE) as? UiModeManager
         return uiMode?.currentModeType == Configuration.UI_MODE_TYPE_TELEVISION ||
             packageManager.hasSystemFeature(PackageManager.FEATURE_LEANBACK)
-    }
-
-    private fun openSettings(actions: List<String>): Boolean {
-        // 部分 Android TV 只提供廠商自己的配件頁, 再回退到一般系統設定.
-        for (action in actions) {
-            try {
-                startActivity(Intent(action))
-                return true
-            } catch (error: Exception) {
-                // 試下一個公開設定入口, 不依賴 Sony 私有元件名稱.
-            }
-        }
-        return false
     }
 
     // 系統設定裡的「裝置名稱」(電視多半是「客廳電視」這種), 沒設就用型號
