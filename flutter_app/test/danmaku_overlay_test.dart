@@ -34,6 +34,7 @@ void main() {
       bool lowPower = false,
       double scale = 1,
       double pixelRatio = 1,
+      bool framesEnabled = true,
       bool enabled = true}) {
     return tester.pumpWidget(MaterialApp(
       home: MediaQuery(
@@ -44,15 +45,18 @@ void main() {
             child: SizedBox(
               width: 800,
               height: 450,
-              child: DanmakuOverlay(
-                comments: comments,
-                position: () => now,
-                playing: playing,
-                rate: rate,
-                opacity: opacity,
-                lowPower: lowPower,
-                scale: scale,
-                enabled: enabled,
+              child: TickerMode(
+                enabled: framesEnabled,
+                child: DanmakuOverlay(
+                  comments: comments,
+                  position: () => now,
+                  playing: playing,
+                  rate: rate,
+                  opacity: opacity,
+                  lowPower: lowPower,
+                  scale: scale,
+                  enabled: enabled,
+                ),
               ),
             ),
           ),
@@ -117,6 +121,99 @@ void main() {
     await show(tester, comments, opacity: 0.5);
     await tester.pump(const Duration(milliseconds: 16));
     expect(debugDanmakuRasterized - before, 2, reason: '調個透明度就整層重畫');
+    await tester.pumpWidget(const SizedBox());
+  });
+
+  testWidgets('電視只有一條捲動彈幕也限制整個引擎的幀排程, 手機維持 vsync', (tester) async {
+    for (final lowPower in [true, false]) {
+      now = 0;
+      await show(tester, [comment(0)], lowPower: lowPower);
+      await tester.pump();
+      final paints = debugDanmakuPaints;
+      var continuousFrames = 0;
+      // 用 120Hz 畫面測試, 不能只減少畫圖卻繼續讓 ticker 每一幀叫醒引擎.
+      for (var i = 0; i < 120; i++) {
+        now += 1 / 120;
+        await tester.pump(const Duration(microseconds: 8333));
+        if (tester.binding.hasScheduledFrame) continuousFrames++;
+      }
+      final count = debugDanmakuPaints - paints;
+      expect(count, lowPower ? inInclusiveRange(28, 31) : greaterThan(110));
+      expect(continuousFrames, lowPower ? 0 : 120,
+          reason: '在 ticker 裡略過 paint 仍會讓引擎合成影片');
+      await tester.pumpWidget(const SizedBox());
+    }
+  });
+
+  testWidgets('電視限幀仍跟上播放時鐘, 暫停後休眠, 恢復與切換模式能繼續', (tester) async {
+    final alive = debugDanmakuSpritesAlive;
+    final comments = [comment(0), comment(30, 'seek', DanmakuMode.top)];
+    await show(tester, comments, lowPower: true);
+    await tester.pump();
+    await play(tester, 1);
+    expect(debugDanmakuSpritesAlive - alive, 1);
+    await show(tester, comments, lowPower: true, playing: false);
+    await tester.pump(const Duration(milliseconds: 40));
+    final paused = debugDanmakuPaints;
+    await tester.pump(const Duration(seconds: 1));
+    expect(debugDanmakuPaints, paused);
+    expect(tester.binding.hasScheduledFrame, isFalse);
+    await show(tester, comments, lowPower: true);
+    await play(tester, 2);
+    expect(debugDanmakuPaints, greaterThan(paused));
+
+    now = 30;
+    await tester.pump(const Duration(milliseconds: 40));
+    expect(debugDanmakuSpritesAlive - alive, 1);
+    expect(await topBandAlpha(tester), greaterThan(0));
+    await show(tester, comments, lowPower: false, playing: false);
+    await tester.pump();
+    expect(await topBandAlpha(tester), greaterThan(0));
+    await tester.pumpWidget(const SizedBox());
+    expect(debugDanmakuSpritesAlive, alive);
+  });
+
+  testWidgets('電視彈幕被其他頁面遮住時停止要求幀, 返回後恢復', (tester) async {
+    final comments = [comment(0)];
+    await show(tester, comments, lowPower: true);
+    await tester.pump();
+    await play(tester, 0.5);
+    await show(tester, comments, lowPower: true, framesEnabled: false);
+    await tester.pump();
+    final hidden = debugDanmakuPaints;
+    await play(tester, 1);
+    expect(debugDanmakuPaints, hidden);
+    expect(tester.binding.hasScheduledFrame, isFalse);
+    await show(tester, comments, lowPower: true);
+    await play(tester, 1.5);
+    expect(debugDanmakuPaints, greaterThan(hidden));
+    await tester.pumpWidget(const SizedBox());
+  });
+
+  testWidgets('電視只有固定彈幕時不要求影片合成幀, 下一條與過期時間仍正常', (tester) async {
+    final alive = debugDanmakuSpritesAlive;
+    await show(
+        tester,
+        [
+          comment(0, 'still', DanmakuMode.top),
+          comment(2, 'next'),
+        ],
+        lowPower: true);
+    await tester.pump();
+    expect(debugDanmakuSpritesAlive - alive, 1);
+    final fixed = debugDanmakuPaints;
+    await play(tester, 1.5);
+    expect(debugDanmakuPaints, fixed);
+    expect(tester.binding.hasScheduledFrame, isFalse);
+    expect(await topBandAlpha(tester), greaterThan(0));
+    await play(tester, 2.2);
+    expect(debugDanmakuSpritesAlive - alive, 2);
+    expect(debugDanmakuPaints, greaterThan(fixed));
+    await play(tester, 6);
+    expect(debugDanmakuSpritesAlive - alive, 1);
+    await play(tester, 12);
+    expect(debugDanmakuSpritesAlive, alive);
+    expect(tester.binding.hasScheduledFrame, isFalse);
     await tester.pumpWidget(const SizedBox());
   });
 
@@ -347,7 +444,7 @@ void main() {
     await tester.pump();
     expect(debugDanmakuSpritesAlive - alive, kDanmakuTvRastersPerFrame);
     now = 30;
-    await tester.pump(const Duration(milliseconds: 16));
+    await tester.pump(const Duration(milliseconds: 40));
     expect(debugDanmakuSpritesAlive - alive, 1);
     final bytes = debugDanmakuTextureBytes;
     final before = debugDanmakuRasterized;

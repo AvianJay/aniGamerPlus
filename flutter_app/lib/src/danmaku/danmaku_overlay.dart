@@ -22,6 +22,8 @@
 ///   每一幀替整個播放區開一張離屏圖; 而且這樣調透明度不必重畫任何一張圖.
 /// * 同時在畫面上的條數有上限, 而且真的完全沒動的那一幀不會發出重畫通知.
 /// * 密集彈幕分幀建立貼圖; 電視採較低的數量、解析度和記憶體預算, 留資源給影片.
+/// * 電視用計時器最多每秒要求 30 幀. 光是在 60Hz ticker 裡略過 paint 還是會
+///   要求引擎合成影片, 所以連排程本身也要減少; 手機照常跟著 vsync.
 library;
 
 import 'dart:async';
@@ -44,6 +46,7 @@ const int kDanmakuRastersPerFrame = 4;
 const int kDanmakuTvRastersPerFrame = 2;
 const int kDanmakuTextureBytes = 32 * 1024 * 1024;
 const int kDanmakuTvTextureBytes = 8 * 1024 * 1024;
+const Duration kDanmakuTvFrameInterval = Duration(microseconds: 33333);
 
 // 包含被略過的彈幕也要計入, 不能在一幀內掃完幾萬條擠在同一秒的留言.
 const int _kCommentsPerFrame = 64;
@@ -225,6 +228,9 @@ class _DanmakuOverlayState extends State<DanmakuOverlay>
   final ValueNotifier<int> _repaint = ValueNotifier<int>(0);
 
   late final Ticker _ticker;
+  Timer? _tvFrames;
+  int? _tvFrameId;
+  bool _framesEnabled = true;
   Duration? _tickAt;
   int _rasterAttempts = 0;
 
@@ -252,10 +258,22 @@ class _DanmakuOverlayState extends State<DanmakuOverlay>
   @override
   void dispose() {
     _wake?.cancel();
+    _rest();
     _ticker.dispose();
     _repaint.dispose();
     _scene.clear();
     super.dispose();
+  }
+
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    _framesEnabled = TickerMode.of(context);
+    if (widget.lowPower && !_framesEnabled) {
+      _rest();
+    } else {
+      _resume();
+    }
   }
 
   /// 讓 ticker 跑起來 (已經在跑就什麼都不做). 真的沒事做的話它下一幀自己
@@ -263,18 +281,48 @@ class _DanmakuOverlayState extends State<DanmakuOverlay>
   void _resume() {
     _wake?.cancel();
     _wake = null;
-    if (!widget.enabled || widget.comments.isEmpty || _ticker.isActive) return;
+    if (!widget.enabled ||
+        widget.comments.isEmpty ||
+        (widget.lowPower && !_framesEnabled) ||
+        _ticker.isActive ||
+        _tvFrames != null) {
+      return;
+    }
     _tickAt = null;
-    _ticker.start();
+    if (widget.lowPower) {
+      // 計時器只要求一次 vsync, 不補畫錯過的幀. 時間仍讀 vsync 的單調時鐘,
+      // 因此掉幀、倍速和暫停都不會讓彈幕時間軸慢下來.
+      _tvFrames =
+          Timer.periodic(kDanmakuTvFrameInterval, (_) => _scheduleTvFrame());
+      _scheduleTvFrame();
+    } else {
+      _ticker.start();
+    }
+  }
+
+  void _scheduleTvFrame() {
+    if (_tvFrames == null || _tvFrameId != null) return;
+    _tvFrameId = SchedulerBinding.instance.scheduleFrameCallback((elapsed) {
+      _tvFrameId = null;
+      if (mounted && _tvFrames != null) _onTick(elapsed);
+    });
   }
 
   void _rest() {
     if (_ticker.isActive) _ticker.stop();
+    _tvFrames?.cancel();
+    _tvFrames = null;
+    final frameId = _tvFrameId;
+    if (frameId != null) {
+      SchedulerBinding.instance.cancelFrameCallbackWithId(frameId);
+    }
+    _tvFrameId = null;
   }
 
   @override
   void didUpdateWidget(covariant DanmakuOverlay oldWidget) {
     super.didUpdateWidget(oldWidget);
+    if (oldWidget.lowPower != widget.lowPower) _rest();
     if (oldWidget.enabled != widget.enabled) {
       if (widget.enabled) {
         _shown = widget.position();
@@ -311,6 +359,7 @@ class _DanmakuOverlayState extends State<DanmakuOverlay>
     _bottomLanes.clear();
     _cursor = 0;
     _lastTime = -1;
+    _scheduleTvFrame();
   }
 
   // ------------------------------------------------------------------ 時間軸
@@ -330,32 +379,44 @@ class _DanmakuOverlayState extends State<DanmakuOverlay>
     final moved = _advance(dt);
     final spawned = _sync(_shown);
     _scene.now = _shown;
-    if (spawned ||
-        (moved &&
-            _scene.live
-                .any((item) => item.comment.mode == DanmakuMode.scroll))) {
+    final scrolling =
+        _scene.live.any((item) => item.comment.mode == DanmakuMode.scroll);
+    if (spawned || (moved && scrolling)) {
       _repaint.value++;
     }
     if (!widget.playing && !moved && !spawned && !_hasDueComments) {
       // 暫停了, 或是卡住而且已經滑到頭了: 停下來, 不要每一幀空轉
       _rest();
-    } else if (widget.playing && _scene.live.isEmpty) {
+    } else if (widget.playing &&
+        (_scene.live.isEmpty ||
+            (widget.lowPower && !scrolling && !_hasDueComments))) {
       _idleUntilNext();
     }
   }
 
-  /// 畫面上一條都沒有, 下一條又還要好一陣子: 先睡, 快到了再醒.
+  /// 空白畫面先睡; 電視只有固定彈幕時也睡到下一條出場或固定彈幕過期.
   void _idleUntilNext() {
-    if (_cursor >= widget.comments.length) {
+    var next = _cursor < widget.comments.length
+        ? widget.comments[_cursor].start
+        : double.infinity;
+    if (widget.lowPower) {
+      for (final item in _scene.live) {
+        next = math.min(next, item.endAt());
+      }
+    }
+    if (!next.isFinite) {
       _rest(); // 這一集後面沒有了
       return;
     }
-    final gap = widget.comments[_cursor].start - _shown;
-    if (gap < 1.0) return;
+    final gap = next - _shown;
+    if (gap <= 0 || (!widget.lowPower && gap < 1.0)) return;
     _rest();
     final rate = widget.rate > 0 ? widget.rate : 1.0;
+    final lead = widget.lowPower ? 0.0 : 0.5;
     _wake = Timer(
-        Duration(milliseconds: ((gap - 0.5) / rate * 1000).round()), _resume);
+        Duration(
+            milliseconds: math.max(1, ((gap - lead) / rate * 1000).round())),
+        _resume);
   }
 
   /// 把畫面上的時間軸往前推一格, 回傳有沒有真的動.

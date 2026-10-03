@@ -987,6 +987,12 @@ class _WatchPageState extends State<WatchPage> with WidgetsBindingObserver {
     // 本機檔案是 iOS 自己轉送過去的.
     final airplay = _airplay.active && (_needsProxy || local == null);
     final ticket = airplay ? await _airplayTicket() : null;
+    // Android 9 的 PlatformView hybrid composition 會把 Flutter 的每一幀
+    // 複製到主記憶體再送回 GPU; 一條在移動的彈幕就足以讓舊電視掉幀.
+    // 電視不啟用 PiP, 不該因為手機的預設 PiP 設定而走這條昂貴的路.
+    final viewType = !Device.tv && prefs.pipEnabled
+        ? VideoViewType.platformView
+        : VideoViewType.textureView;
     late VideoPlayerController controller;
     var usedCache = false;
     if (_needsProxy) {
@@ -1005,24 +1011,18 @@ class _WatchPageState extends State<WatchPage> with WidgetsBindingObserver {
         cached,
         httpHeaders: client.authHeaders,
         videoPlayerOptions: VideoPlayerOptions(allowBackgroundPlayback: true),
-        viewType: prefs.pipEnabled
-            ? VideoViewType.platformView
-            : VideoViewType.textureView,
+        viewType: viewType,
       );
     } else if (local != null) {
       controller = VideoPlayerController.file(local,
           videoPlayerOptions: VideoPlayerOptions(allowBackgroundPlayback: true),
-          viewType: prefs.pipEnabled
-              ? VideoViewType.platformView
-              : VideoViewType.textureView);
+          viewType: viewType);
     } else if (_streaming) {
       controller = VideoPlayerController.networkUrl(
         client.hlsPlaylistUrl(_sn, castTicket: ticket),
         httpHeaders: client.authHeaders,
         videoPlayerOptions: VideoPlayerOptions(allowBackgroundPlayback: true),
-        viewType: prefs.pipEnabled
-            ? VideoViewType.platformView
-            : VideoViewType.textureView,
+        viewType: viewType,
       );
     } else {
       final res = _video?.resolution ?? 0;
@@ -1037,9 +1037,7 @@ class _WatchPageState extends State<WatchPage> with WidgetsBindingObserver {
         cached,
         httpHeaders: client.authHeaders,
         videoPlayerOptions: VideoPlayerOptions(allowBackgroundPlayback: true),
-        viewType: prefs.pipEnabled
-            ? VideoViewType.platformView
-            : VideoViewType.textureView,
+        viewType: viewType,
       );
     }
 

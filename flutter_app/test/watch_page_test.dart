@@ -91,6 +91,7 @@ class DelayedPlayer extends VideoPlayerPlatform {
   bool playing = false;
   double speed = 1;
   int creations = 0;
+  final sources = <VideoCreationOptions>[];
   final disposed = <int>[];
   Completer<void>? disposeBarrier;
   bool failInitialisation = false;
@@ -118,6 +119,7 @@ class DelayedPlayer extends VideoPlayerPlatform {
   Future<void> init() async {}
   @override
   Future<int?> createWithOptions(VideoCreationOptions options) async {
+    sources.add(options);
     creations++;
     return creations;
   }
@@ -1708,6 +1710,20 @@ void main() {
   group('電視遙控器', () {
     setUp(() => Device.tv = true);
     tearDown(() => Device.tv = false);
+
+    for (final offline in [false, true]) {
+      testWidgets('電視不用 PlatformView 合成影片 (offline=$offline)', (tester) async {
+        expect(state.prefs.pipEnabled, isTrue,
+            reason: '重現預設開啟 PiP 時舊電視走到昂貴合成路徑');
+        if (offline) await seedDownload(tester, '1');
+        await open(tester);
+        expect(player.sources, isNotEmpty);
+        expect(player.sources.last.dataSource.sourceType,
+            offline ? DataSourceType.file : DataSourceType.network);
+        expect(player.sources.last.viewType, VideoViewType.textureView);
+        await tester.pumpWidget(const SizedBox());
+      });
+    }
 
     testWidgets('電視播放自動使用低負載彈幕', (tester) async {
       await tester.runAsync(() async {
