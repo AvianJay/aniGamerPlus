@@ -17,6 +17,7 @@ import threading
 import subprocess
 import platform
 import socket
+import zlib
 import pip_system_certs.wrapt_requests
 import requests
 import json
@@ -252,6 +253,20 @@ def _console_context(show_detail=True):
         'read_video_list': _read_video_list,
         'show_detail': show_detail,
     }
+
+
+def catalog_download(provider, anime_id, episodes, mode='single'):
+    """片單上按了插件來源 (不是動畫瘋) 的下載.
+
+    一定要走主程式這一份 plugin_manager: 下載完要 updatelist、要上傳, 這兩樣只有
+    這邊有. Dashboard 自己那一份只拿來列片單, 不碰下載.
+    """
+    plugin_manager.reload(Config.read_settings())
+    return plugin_manager.catalog_download(provider, anime_id, episodes, mode, {
+        'updatelist': updatelist,
+        'upload_video': upload_video,
+        'show_detail': False,
+    })
 
 
 def _set_dashboard_user_control(value):
@@ -1209,6 +1224,7 @@ def run_dashboard():
     from Dashboard import Server
     Server.checknow = checknow
     Server.command_handler = execute_control_command
+    Server.catalog_download_handler = catalog_download
     server = threading.Thread(target=Server.run)
     server.daemon = True
     server.start()
@@ -1225,6 +1241,21 @@ def run_dashboard():
 
     dashboard_address = dashboard_address + host + ':' + str(settings['dashboard']['port'])
     err_print(0, 'Web控制面板已啟動', dashboard_address, no_sn=True, status=2)
+
+
+# .aniGamerPlus.json 裡非正篇 (ova/sp/...) 的集數, sn 中間要塞一個兩位數的類型碼.
+# 以前用 hash(type) % 100, 但 Python 的字串 hash 每次啟動都重新加鹽 —— 同一集重啟
+# 後就換了一個 sn, 觀看紀錄、繼續觀看、縮圖快取全部對不上. 改用固定的表; 00 留給
+# 正篇, 表外的類型用 crc32 落在 10~99, 不會跟表裡的撞.
+CUSTOM_VIDEO_TYPE_CODES = {'ova': 1, 'oad': 2, 'sp': 3, 'ona': 4, 'movie': 5, 'extra': 6, 'special': 7}
+
+
+def custom_video_type_code(video_type):
+    name = str(video_type).strip().lower()
+    code = CUSTOM_VIDEO_TYPE_CODES.get(name)
+    if code is None:
+        code = 10 + zlib.crc32(name.encode('utf-8')) % 90
+    return str(code).zfill(2)
 
 
 def updatelist():
@@ -1286,7 +1317,7 @@ def updatelist():
                         sn = "41" + unique_sn + "00" + str(v["episode"]).zfill(3)
                     else:
                         anime_name2 = anime_name + f" [{v['type']}]"
-                        sn = "41" + unique_sn + str(hash(v['type']) % 100).zfill(2) + str(v["episode"]).zfill(3)
+                        sn = "41" + unique_sn + custom_video_type_code(v['type']) + str(v["episode"]).zfill(3)
                     video_data = {
                         'sn': sn,
                         'anime_name': anime_name2,

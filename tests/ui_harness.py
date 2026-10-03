@@ -500,8 +500,64 @@ WATCH_SERIES_TOTAL = sum(len(g['episodes']) for g in WATCH_SERIES[WATCH_SERIES_L
 MANUAL_TASKS = []
 SN_LIST_ADDITIONS = []
 
+# 插件提供的片單來源 (anime1.me). 只有 create_app(providers=True) 才有 —— 其他
+# 測試看到的片單跟以前一模一樣, 張數、頁數都不會被這幾部擠動.
+ANIME1_ITEMS = [
+    {'animeSn': 'anime1:1878', 'provider': 'anime1', 'providerName': 'Anime1.me', 'acgSn': '',
+     'title': 'Re:從零開始 第四季', 'cover': '', 'info': '2026 春', 'volume': '連載中(3)',
+     'popular': ''},
+    {'animeSn': 'anime1:1866', 'provider': 'anime1', 'providerName': 'Anime1.me', 'acgSn': '',
+     'title': 'MAO 摩緒', 'cover': '', 'info': '2026 春', 'volume': '1-26', 'popular': ''},
+]
+CATALOG_DOWNLOADS = []
+ANIME1_FEATURES = {'tags': False, 'download': True, 'subscribe': True}
+# 第二個插件來源: 有分類標籤, 但什麼都不能下載 —— 前端要照它宣告的功能收起按鈕
+VIEWER_FEATURES = {'tags': True, 'download': False, 'subscribe': False}
+VIEWER_SN = 'viewer:1'
 
-def create_app(logged_in=True, catalog=True, hls=True, proxy=None):
+
+def viewer_detail():
+    return {
+        'animeSn': VIEWER_SN, 'provider': 'viewer', 'providerName': '只能看',
+        'features': dict(VIEWER_FEATURES), 'videoSn': '', 'title': '只能看的作品',
+        'cover': '', 'content': '', 'tags': [], 'director': '', 'publisher': '', 'score': 0,
+        'seasonStart': '', 'popular': '', 'totalEpisode': '2', 'sourceUrl': '',
+        'groups': [{'name': '本篇', 'episodes': [
+            {'videoSn': '', 'episodeId': str(number), 'episode': str(number), 'cover': '',
+             'local': False, 'resolution': 0} for number in (1, 2)]}],
+    }
+
+
+def anime1_detail(anime_sn):
+    if anime_sn == VIEWER_SN:
+        return viewer_detail()
+    card = next((item for item in ANIME1_ITEMS if item['animeSn'] == anime_sn), None)
+    if card is None:
+        return None
+    local = anime_sn == 'anime1:1878'
+    regular = [{
+        # 片庫有的那一集指向真的影片, 立即觀看才播得出來
+        'videoSn': FIRST_SN if local and number == 1 else '',
+        'episodeId': str(30200 + number),
+        'episode': str(number),
+        'cover': '',
+        'local': local and number == 1,
+        'resolution': 720 if local and number == 1 else 0,
+    } for number in range(1, 4)]
+    special = [{'videoSn': '', 'episodeId': '30300', 'episode': 'OVA', 'cover': '',
+                'local': False, 'resolution': 0}]
+    return {
+        'animeSn': anime_sn, 'provider': 'anime1', 'providerName': 'Anime1.me',
+        'features': dict(ANIME1_FEATURES),
+        'videoSn': '', 'title': card['title'], 'cover': '', 'content': '', 'tags': [],
+        'director': '', 'publisher': '喵萌奶茶屋', 'score': 0, 'seasonStart': card['info'],
+        'popular': '', 'totalEpisode': '4',
+        'sourceUrl': 'https://anime1.me/category/re0/',
+        'groups': [{'name': '本篇', 'episodes': regular}, {'name': '特別篇', 'episodes': special}],
+    }
+
+
+def create_app(logged_in=True, catalog=True, hls=True, proxy=None, providers=False):
     app = FastAPI(docs_url=None, redoc_url=None, openapi_url=None)
     app.mount('/static', StaticFiles(directory=STATIC_PATH), name='static')
     templates = Jinja2Templates(directory=TEMPLATE_PATH)
@@ -643,23 +699,32 @@ def create_app(logged_in=True, catalog=True, hls=True, proxy=None):
             query = (request.query_params.get('q') or '').strip().lower()
             tag = (request.query_params.get('tag') or '').strip()
             order = (request.query_params.get('sort') or 'relevance').strip()
+            source = (request.query_params.get('provider') or '').strip()
             if tag and tag not in CATALOG_TAGS:
                 return JSONResponse({'error': 'unsupported tag'}, status_code=400)
             if order not in ('relevance', 'popular', 'default'):
                 return JSONResponse({'error': 'unsupported sort'}, status_code=400)
-            items = [item for item in CATALOG_ALL if query in item['title'].lower()]
+            # Same rules as the real route: no provider is 動畫瘋 only, and the
+            # plugin source has no tags, so a tag filter leaves it out.
+            items = list(CATALOG_ALL) if source in ('', 'all', 'bahamut') else []
+            if providers and source in ('all', 'anime1') and not tag:
+                items += ANIME1_ITEMS
+            items = [item for item in items if query in item['title'].lower()]
             if tag:
                 divisor = {'動作': 2, '奇幻': 5, '異世界': 3}[tag]
                 items = [item for item in items if int(item['animeSn']) % divisor == 0]
+
+            def popular(item):
+                return float(item['popular'].rstrip('萬') or 0)
+
             if order == 'popular':
-                items = sorted(items, key=lambda item: float(item['popular'].rstrip('萬')),
-                               reverse=True)
+                items = sorted(items, key=popular, reverse=True)
             elif order == 'relevance' and query:
                 items = sorted(items, key=lambda item: (
                     item['title'].lower() == query,
                     item['title'].lower().startswith(query),
                     -item['title'].lower().find(query),
-                    float(item['popular'].rstrip('萬'))), reverse=True)
+                    popular(item)), reverse=True)
             try:
                 page = max(1, int(request.query_params.get('page') or 1))
             except ValueError:
@@ -680,10 +745,33 @@ def create_app(logged_in=True, catalog=True, hls=True, proxy=None):
 
         @app.get('/catalog/anime.json')
         def catalog_anime(request: Request):
-            detail = catalog_detail(str(request.query_params.get('sn') or ''))
+            sn = str(request.query_params.get('sn') or '')
+            detail = anime1_detail(sn) if providers else None
+            if detail is None:
+                detail = catalog_detail(sn)
             if detail is None:
                 return JSONResponse({'error': 'unknown'}, status_code=404)
             return JSONResponse(detail)
+
+    if catalog and providers:
+        @app.get('/catalog/providers.json')
+        def catalog_providers():
+            return JSONResponse({'providers': [
+                {'id': 'bahamut', 'name': '動畫瘋',
+                 'features': {'tags': True, 'download': True, 'subscribe': True}},
+                {'id': 'anime1', 'name': 'Anime1.me', 'features': ANIME1_FEATURES},
+                {'id': 'viewer', 'name': '只能看', 'features': VIEWER_FEATURES},
+            ]})
+
+        @app.post('/catalog/download')
+        async def catalog_download(request: Request):
+            body = await request.json()
+            CATALOG_DOWNLOADS.append(body)
+            if body.get('mode') == 'all':
+                return JSONResponse({'success': True, 'scheduled': 0,
+                                     'message': '已加入 anime1me_list.txt，正在排入下載'})
+            return JSONResponse({'success': True, 'scheduled': len(body.get('episodes') or []),
+                                 'message': '已排入 1 集'})
 
     # The real routes only exist while a download is running; HLS_STATE['mode']
     # == 'none' is what stands in for "nothing is downloading" here.
@@ -861,9 +949,9 @@ def _free_port():
 class HarnessServer(object):
     """Runs the harness on a background thread and exposes its base URL."""
 
-    def __init__(self, logged_in=True, catalog=True, hls=True, proxy=None):
+    def __init__(self, logged_in=True, catalog=True, hls=True, proxy=None, providers=False):
         self.port = _free_port()
-        self.app = create_app(logged_in, catalog, hls, proxy)
+        self.app = create_app(logged_in, catalog, hls, proxy, providers)
         # What the settings page has been given and what it posted back; the
         # harness runs in this process, so a test can read it directly.
         self.settings = self.app.state.settings

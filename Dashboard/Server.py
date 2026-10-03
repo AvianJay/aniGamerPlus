@@ -218,6 +218,9 @@ def _apply_cache_headers(resp, current_settings, max_age):
 # 什麼都不做. 兩邊的簽名必須一致, 否則 /checknow 只會拋 TypeError.
 checknow = lambda: None
 command_handler = None
+# 片單上插件來源 (anime1.me 之類) 的下載. 要走主程式那一份 plugin_manager ——
+# 下載完的 updatelist、上傳都在那邊. 單獨跑 Server.py 時沒有下載器, 留 None.
+catalog_download_handler = None
 # Single global userdata lock. RLock so load/save stay re-entrant inside the
 # transactional helper below (and inside load's own normalize-and-save path);
 # there is exactly one userdata lock -- no inconsistent lock ordering.
@@ -1336,6 +1339,138 @@ def _catalog_login_error(current_settings, request):
         if not vaild_user:
             return JSONResponse({"error": "login required"}, status_code=403)
     return None
+
+
+# ------------------------------------------------------------ 插件片單來源
+# 動畫瘋以外的片單由插件提供. 它們的作品編號一律帶上來源前綴 (anime1:1878):
+# 動畫瘋的 animeSn 是純數字, 有冒號的就一定不是它, 兩邊永遠撞不在一起. 沒帶
+# provider 參數的請求 (舊版 App) 只拿得到動畫瘋 —— 它們不認得別的來源.
+BAHAMUT_PROVIDER = 'bahamut'
+_PROVIDER_ID = re.compile(r'[a-z0-9_-]{1,32}')
+_PROVIDER_ITEM_ID = re.compile(r'[A-Za-z0-9_-]{1,64}')
+_CATALOG_DOWNLOAD_LIMIT = 500
+
+
+# 動畫瘋自己的片單什麼都有, 跟插件來源用同一種宣告寫出來, 前端就只要看一種格式
+BAHAMUT_FEATURES = {'tags': True, 'download': True, 'subscribe': True}
+
+
+def _plugin_catalog_providers():
+    return [provider for provider in plugin_manager.catalog_providers()
+            if _PROVIDER_ID.fullmatch(provider['id']) and provider['id'] != BAHAMUT_PROVIDER]
+
+
+def _catalog_sources(value):
+    """provider 參數 -> (要不要動畫瘋, 要哪些插件來源). 認不得就是 None."""
+    value = (value or '').strip()
+    if value in ('', BAHAMUT_PROVIDER):
+        return True, []
+    providers = _plugin_catalog_providers()
+    if value == 'all':
+        return True, providers
+    matched = [provider for provider in providers if provider['id'] == value]
+    return (False, matched) if matched else None
+
+
+def _provider_items(provider):
+    items = []
+    for item in plugin_manager.catalog_items(provider['id']):
+        if not isinstance(item, dict):
+            continue
+        raw = str(item.get('animeSn') or '').strip()
+        title = str(item.get('title') or '').strip()
+        if not title or not _PROVIDER_ITEM_ID.fullmatch(raw):
+            continue
+        tags = item.get('tags') if provider['features']['tags'] else None
+        items.append({
+            'animeSn': provider['id'] + ':' + raw,
+            'provider': provider['id'],
+            'providerName': provider['name'],
+            'acgSn': '',
+            'title': title,
+            'cover': str(item.get('cover') or ''),
+            'info': str(item.get('info') or ''),
+            'volume': str(item.get('volume') or ''),
+            'popular': str(item.get('popular') or ''),
+            'tags': [str(tag) for tag in tags] if isinstance(tags, (list, tuple)) else [],
+        })
+    return items
+
+
+def _split_provider_sn(value):
+    """'anime1:1878' -> (來源, '1878'). 不是已啟用的插件來源就回 None."""
+    provider_id, colon, raw = str(value or '').partition(':')
+    if not colon or not _PROVIDER_ITEM_ID.fullmatch(raw):
+        return None
+    for provider in _plugin_catalog_providers():
+        if provider['id'] == provider_id:
+            return provider, raw
+    return None
+
+
+def _provider_knows(provider, raw):
+    # 跟 _catalog_knows 同一個道理: 只認片單上有的作品, 不然這條路由就成了
+    # 任人指定編號、替他去翻人家分類頁的請求放大器
+    return any(str(item.get('animeSn')) == raw
+               for item in plugin_manager.catalog_items(provider['id'])
+               if isinstance(item, dict))
+
+
+def _path_key(path):
+    return os.path.normcase(os.path.abspath(str(path)))
+
+
+def _provider_anime_detail(provider, raw):
+    detail = plugin_manager.catalog_anime(provider['id'], raw)
+    if not detail:
+        return None
+    # 插件那邊的集數只知道檔案會在哪; 片庫裡的 sn 是 updatelist() 掃資料夾時編的,
+    # 所以用路徑對回片庫, 對得上的就是本地有的那一集
+    local = {}
+    for video in (_read_video_list_file().get('videos') or []):
+        if video.get('path'):
+            local[_path_key(video['path'])] = video
+
+    groups = []
+    for group in detail.get('groups') or []:
+        episodes = []
+        for episode in group.get('episodes') or []:
+            episode_id = str(episode.get('id') or '')
+            if not _PROVIDER_ITEM_ID.fullmatch(episode_id):
+                continue
+            entry = local.get(_path_key(episode['path'])) if episode.get('path') else None
+            episodes.append({
+                'videoSn': str(entry['sn']) if entry else '',
+                'episodeId': episode_id,
+                'episode': str(episode.get('episode') or ''),
+                'cover': '',
+                'local': entry is not None,
+                'resolution': (entry or {}).get('resolution') or 0,
+            })
+        if episodes:
+            groups.append({'name': str(group.get('name') or '全部'), 'episodes': episodes})
+
+    source_url = str(detail.get('sourceUrl') or '')
+    return {
+        'animeSn': provider['id'] + ':' + raw,
+        'provider': provider['id'],
+        'providerName': provider['name'],
+        # sheet 可能是從分享的連結直接開的, 那時候還沒拿到來源清單
+        'features': dict(provider['features']),
+        'videoSn': '',
+        'title': str(detail.get('title') or ''),
+        'cover': str(detail.get('cover') or ''),
+        'content': str(detail.get('content') or ''),
+        'tags': [str(tag) for tag in detail.get('tags') or []],
+        'director': str(detail.get('director') or ''),
+        'publisher': str(detail.get('publisher') or ''),
+        'score': 0,
+        'seasonStart': str(detail.get('seasonStart') or ''),
+        'popular': '',
+        'totalEpisode': str(detail.get('totalEpisode') or ''),
+        'sourceUrl': source_url if source_url.startswith(('https://', 'http://')) else '',
+        'groups': groups,
+    }
 
 
 
@@ -2550,9 +2685,25 @@ def catalog_index(request: Request):
     return _apply_cache_headers(JSONResponse(payload), current_settings, 600)
 
 
+@app.get('/catalog/providers.json')
+def catalog_providers(request: Request):
+    """片單有哪幾個來源. 只有動畫瘋的話, 前端就不必擺來源篩選."""
+    current_settings = _sync_plugin_manager()
+    gated = _online_watch_gate(current_settings)
+    if gated is not None:
+        return gated
+    denied = _catalog_login_error(current_settings, request)
+    if denied is not None:
+        return denied
+    providers = ([{'id': BAHAMUT_PROVIDER, 'name': '動畫瘋', 'features': dict(BAHAMUT_FEATURES)}] +
+                 _plugin_catalog_providers())
+    # 開關插件是改設定就生效的, 別讓瀏覽器把舊的來源清單留太久
+    return _apply_cache_headers(JSONResponse({'providers': providers}), current_settings, 60)
+
+
 @app.get('/catalog/all.json')
 def catalog_all(request: Request):
-    current_settings = _get_current_settings()
+    current_settings = _sync_plugin_manager()
     gated = _online_watch_gate(current_settings)
     if gated is not None:
         return gated
@@ -2563,13 +2714,36 @@ def catalog_all(request: Request):
     tag = (request.query_params.get('tag') or '').strip()
     if tag and tag not in Catalog.TAGS:
         return JSONResponse({'error': 'unsupported tag'}, status_code=400)
-    cache_name = _tag_cache_name(tag) if tag else 'all'
-    items = _get_catalog_tag(tag) if tag else _get_catalog_all()
-    loading = _catalog_refreshing(cache_name)
-    # A worker may have published the first cache between the two reads.
-    if not items and not loading:
-        items = (_read_catalog_cache(cache_name, 0) or {}).get('items') or []
+    sources = _catalog_sources(request.query_params.get('provider'))
+    if sources is None:
+        return JSONResponse({'error': 'unsupported provider'}, status_code=400)
+    include_bahamut, plugin_sources = sources
+
+    items = []
+    loading = False
+    if include_bahamut:
+        cache_name = _tag_cache_name(tag) if tag else 'all'
+        items = _get_catalog_tag(tag) if tag else _get_catalog_all()
+        loading = _catalog_refreshing(cache_name)
+        # A worker may have published the first cache between the two reads.
+        if not items and not loading:
+            items = (_read_catalog_cache(cache_name, 0) or {}).get('items') or []
+    # 動畫瘋那一份拿不到的時候前端要記得過一陣子再來問, 插件來源有沒有東西
+    # 不影響這件事 —— 所以 available 只看動畫瘋, 沒要動畫瘋才看插件的
     available = bool(items)
+    extra = []
+    plugin_available = False
+    for provider in plugin_sources:
+        provider_items = _provider_items(provider)
+        plugin_available = plugin_available or bool(provider_items)
+        if tag:
+            # 沒宣告 tags 的來源, 卡片上的 tags 一律是空的, 選了標籤自然一部都不剩
+            provider_items = [item for item in provider_items if tag in item['tags']]
+        extra.extend(provider_items)
+    items = list(items) + extra
+    if not include_bahamut:
+        # 篩完沒東西是篩選的結果, 不是來源掛了; 只有來源本身交不出片單才要重試
+        available = plugin_available
     keyword = (request.query_params.get('q') or '').strip()
     if keyword:
         # 全站一千八百多部都已经在本地了, 搜个片名没必要再去问巴哈
@@ -2686,10 +2860,93 @@ def catalog_tags(request: Request):
     return _apply_cache_headers(JSONResponse({'tags': Catalog.TAGS}), current_settings, 3600)
 
 
+def _provider_anime_response(anime_sn, current_settings):
+    target = _split_provider_sn(anime_sn)
+    if target is None:
+        return JSONResponse({"error": "invalid sn"}, status_code=400)
+    provider, raw = target
+    if not _provider_knows(provider, raw):
+        return JSONResponse({"error": "anime not found"}, status_code=404)
+    detail = _provider_anime_detail(provider, raw)
+    if not detail:
+        return JSONResponse({"error": "anime info unavailable"}, status_code=404)
+    # 哪幾集在本地是會變的 (剛下載完一集), 不像動畫瘋的官方資料可以放十分鐘
+    resp = JSONResponse(detail)
+    resp.headers['Cache-Control'] = 'no-store'
+    return resp
+
+
+@app.post('/catalog/download')
+async def catalog_download(request: Request):
+    """片單上插件來源的下載: 單集 (mode=single + episodes) 或整部追番 (mode=all)."""
+    denied = await run_in_threadpool(_admin_api_preflight, request)
+    if denied is not None:
+        return denied
+    try:
+        data = await request.json()
+    except Exception:
+        data = None
+    if not isinstance(data, dict):
+        return JSONResponse({'success': False, 'message': 'invalid request'}, status_code=400)
+    return await run_in_threadpool(_catalog_download_blocking, request, data)
+
+
+def _catalog_download_blocking(request, data):
+    current_settings = _sync_plugin_manager()
+    gated = _online_watch_gate(current_settings)
+    if gated is not None:
+        return gated
+    denied = _admin_api_guard(request, current_settings)
+    if denied is not None:
+        return denied
+
+    target = _split_provider_sn(data.get('sn'))
+    if target is None:
+        return JSONResponse({'success': False, 'message': 'unknown anime'}, status_code=400)
+    provider, raw = target
+    mode = data.get('mode') or 'single'
+    if mode not in ('single', 'all'):
+        return JSONResponse({'success': False, 'message': 'unsupported mode'}, status_code=400)
+    if not provider['features']['download' if mode == 'single' else 'subscribe']:
+        return JSONResponse({'success': False,
+                             'message': provider['name'] + ' 不支援' + ('單集下載' if mode == 'single' else '整部加入下載')},
+                            status_code=400)
+    episodes = data.get('episodes') or []
+    if (not isinstance(episodes, list) or len(episodes) > _CATALOG_DOWNLOAD_LIMIT or
+            not all(isinstance(item, str) and _PROVIDER_ITEM_ID.fullmatch(item) for item in episodes)):
+        return JSONResponse({'success': False, 'message': 'invalid episodes'}, status_code=400)
+    if mode == 'single' and not episodes:
+        return JSONResponse({'success': False, 'message': 'no episode selected'}, status_code=400)
+    if not callable(catalog_download_handler):
+        return JSONResponse({'success': False, 'message': '下載器尚未啟動'}, status_code=503)
+
+    try:
+        result = catalog_download_handler(provider['id'], raw, episodes, mode)
+    except BaseException as e:
+        err_print(0, 'Dashboard', '片單下載失敗: ' + traceback.format_exc(),
+                  no_sn=True, status=1, display=False)
+        return JSONResponse({'success': False, 'message': str(e)}, status_code=500)
+    if not result.get('handled', False):
+        return JSONResponse({'success': False, 'message': 'provider not found'}, status_code=404)
+    success = bool(result.get('success', False))
+    try:
+        scheduled = int(result.get('scheduled', 0) or 0)
+    except (TypeError, ValueError):
+        scheduled = 0
+    err_print(0, 'Dashboard',
+              f'通過 Web 控制臺從 {provider["name"]} 片單下達了下載: {raw} ({mode})',
+              no_sn=True, status=2 if success else 1)
+    return JSONResponse({
+        'success': success,
+        'message': str(result.get('message') or ''),
+        'scheduled': scheduled,
+    }, status_code=200 if success else 400)
+
+
 @app.get('/catalog/anime.json')
 def catalog_anime(request: Request):
     # 详情页: 简介、集数表, 以及每一集在本地有没有
-    current_settings = _get_current_settings()
+    current_settings = _sync_plugin_manager()
     gated = _online_watch_gate(current_settings)
     if gated is not None:
         return gated
@@ -2698,6 +2955,8 @@ def catalog_anime(request: Request):
         return denied
 
     anime_sn = request.query_params.get('sn')
+    if anime_sn and ':' in anime_sn:
+        return _provider_anime_response(anime_sn, current_settings)
     if not anime_sn or not str(anime_sn).isdigit():
         return JSONResponse({"error": "invalid sn"}, status_code=400)
     if not _catalog_knows(anime_sn):

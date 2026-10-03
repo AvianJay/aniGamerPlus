@@ -18,14 +18,14 @@
 
   <link rel="stylesheet" href="./static/css/agp.css?v=8">
   <link rel="stylesheet" href="./static/css/home.css?v=5">
-  <link rel="stylesheet" href="./static/css/catalog.css?v=7">
+  <link rel="stylesheet" href="./static/css/catalog.css?v=8">
 
   <script id="agp-dashboard-bootstrap" type="application/json">{{ dashboard_bootstrap|tojson }}</script>
   <script src="./static/js/jquery-3.4.0.min.js"></script>
   <script src="./static/js/userapi.js?v=4"></script>
   <script src="./static/js/agp-shell.js?v=8"></script>
   <script src="./static/js/home.js?v=13"></script>
-  <script src="./static/js/catalog.js?v=14"></script>
+  <script src="./static/js/catalog.js?v=15"></script>
 </head>
 
 <body class="agp-body is-loading has-tabbar">
@@ -75,6 +75,9 @@
     <section class="agp-pane" id="paneAll" data-pane="all" hidden>
       <div id="homeLibrary"></div>
       <div class="agp-catalog-filters" id="catalogFilters" aria-label="動畫篩選與排序">
+        <!-- 有插件提供其他來源 (anime1.me 之類) 才會出現 -->
+        <label for="catalogProvider" hidden>來源</label>
+        <select id="catalogProvider" hidden><option value="all">所有來源</option></select>
         <label for="catalogTag">標籤</label>
         <select id="catalogTag"><option value="">所有標籤</option></select>
         <label for="catalogSort">排序</label>
