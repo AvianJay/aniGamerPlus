@@ -21,6 +21,8 @@ import 'package:agp_mobile/src/theme.dart';
 import 'package:agp_mobile/src/state/tv_remote_host.dart';
 import 'package:agp_mobile/src/state/tv_remote_protocol.dart';
 import 'package:agp_mobile/src/util/device.dart';
+import 'package:agp_mobile/src/util/remote_keys.dart';
+import 'package:agp_mobile/src/widgets/tv_settings_list.dart';
 import 'package:http/http.dart' as http;
 import 'package:http/testing.dart';
 
@@ -278,19 +280,24 @@ void main() {
     await deleteTempDir(temp);
   });
   Future<void> open(WidgetTester tester,
-      {Brightness mode = Brightness.dark, double scale = 1}) async {
+      {Brightness mode = Brightness.dark,
+      double scale = 1,
+      Size size = const Size(1000, 800)}) async {
     levels.install(tester);
     addTearDown(() => levels.remove(tester));
-    await resizeViewport(tester, const Size(1000, 800));
+    await resizeViewport(tester, size);
     await tester.pumpWidget(RepaintBoundary(
         key: const ValueKey('capture'),
         child: MaterialApp(
             debugShowCheckedModeBanner: false,
-            theme: captureTheme(buildTheme(brightness: mode)),
+            theme: captureTheme(buildTheme(brightness: mode, tv: Device.tv)),
             builder: (context, child) => MediaQuery(
                 data: MediaQuery.of(context)
                     .copyWith(textScaler: TextScaler.linear(scale)),
-                child: child!),
+                child: Device.tv
+                    ? FocusTraversalGroup(
+                        policy: ReadingOrderTraversalPolicy(), child: child!)
+                    : child!),
             home: WatchPage(state: state, sn: '1'))));
     for (var i = 0; i < 8; i++) {
       await tester.pump(const Duration(milliseconds: 100));
@@ -1749,6 +1756,146 @@ void main() {
     double controlsOpacity(WidgetTester tester) => tester
         .widget<AnimatedOpacity>(find.byKey(const ValueKey('player-controls')))
         .opacity;
+
+    Future<void> settingsWithKeys(WidgetTester tester) async {
+      await tester.sendKeyEvent(LogicalKeyboardKey.arrowUp);
+      await tester.pump();
+      for (var i = 0; i < 2; i++) {
+        await tester.sendKeyEvent(LogicalKeyboardKey.arrowDown);
+        await tester.pump();
+      }
+      bool settingsFocused() =>
+          FocusManager.instance.primaryFocus?.context
+              ?.findAncestorWidgetOfExactType<IconButton>()
+              ?.tooltip ==
+          '設定';
+      for (var i = 0; i < 6 && !settingsFocused(); i++) {
+        await tester.sendKeyEvent(LogicalKeyboardKey.arrowRight);
+        await tester.pump();
+      }
+      expect(settingsFocused(), isTrue);
+      await tester.sendKeyEvent(LogicalKeyboardKey.select, platform: 'android');
+      await tester.pump(const Duration(milliseconds: 300));
+      expect(find.text('播放設定'), findsOneWidget);
+    }
+
+    testWidgets('播放設定用方向鍵選速度, 返回子選單後保留原項目', (tester) async {
+      await state.prefs.setRate(1);
+      await open(tester);
+      await settingsWithKeys(tester);
+      expect(focused(), 'settings-藍牙音訊／擴大機');
+      await tester.sendKeyEvent(LogicalKeyboardKey.arrowDown);
+      await tester.pump();
+      expect(focused(), 'settings-播放速度');
+      await tester.sendKeyEvent(LogicalKeyboardKey.select, platform: 'android');
+      await tester.pump(const Duration(milliseconds: 300));
+      expect(focused(), 'settings-播放速度-1.0');
+      await tester.binding.handlePopRoute();
+      await tester.pump(const Duration(milliseconds: 300));
+      expect(focused(), 'settings-播放速度');
+      await tester.sendKeyEvent(LogicalKeyboardKey.select, platform: 'android');
+      await tester.pump(const Duration(milliseconds: 300));
+      await tester.sendKeyEvent(LogicalKeyboardKey.arrowDown);
+      await tester.pump();
+      expect(focused(), 'settings-播放速度-1.25');
+      await tester.sendKeyEvent(LogicalKeyboardKey.select, platform: 'android');
+      await tester.pump(const Duration(milliseconds: 300));
+      expect(player.speed, 1.25);
+      expect(focused(), 'settings-播放速度');
+      await tester.binding.handlePopRoute();
+      await tester.pump(const Duration(milliseconds: 300));
+      await tester.pump();
+      expect(focused(), 'player-play');
+      expect(player.seeks, isEmpty);
+      expect(player.playing, isTrue);
+      await tester.pumpWidget(const SizedBox());
+    });
+
+    testWidgets('手機遙控可捲到每項設定、切換開關, 等待後焦點仍在選單', (tester) async {
+      await state.prefs.setRate(1);
+      await open(tester, size: const Size(960, 540));
+      await settingsWithKeys(tester);
+      final items = tester
+          .widgetList<TvSettingsTile>(find.byType(TvSettingsTile))
+          .map((tile) => tile.label)
+          .toList();
+      expect(items, containsAll(['畫質', '彈幕', '彈幕速度', '自動播放下一集']));
+      Future<void> press(RemoteKey key) async {
+        expect(RemoteKeys.press(key), isTrue);
+        await tester.pump();
+        await tester.pump();
+      }
+
+      await press(RemoteKey.up);
+      expect(focused(), 'settings-${items.first}', reason: '上邊界不能離開選單');
+      for (var i = 0; i < items.length; i++) {
+        final label = items[i];
+        expect(focused(), 'settings-$label');
+        final rect = tester.getRect(find.byWidgetPredicate(
+            (widget) => widget is TvSettingsTile && widget.label == label));
+        expect(rect.top, greaterThanOrEqualTo(0));
+        expect(rect.bottom, lessThanOrEqualTo(540), reason: '$label 應捲進畫面');
+        final tile = tester.widget<Material>(find
+            .descendant(
+                of: find.byWidgetPredicate((widget) =>
+                    widget is TvSettingsTile && widget.label == label),
+                matching: find.byType(Material))
+            .first);
+        expect((tile.shape! as RoundedRectangleBorder).side.color,
+            AgpColors.focusRing,
+            reason: '目前項目必須有明顯焦點框');
+        if (label == '彈幕' || label == '自動播放下一集') {
+          final before =
+              label == '彈幕' ? state.prefs.danmakuOn : state.prefs.autoNext;
+          await press(RemoteKey.ok);
+          expect(label == '彈幕' ? state.prefs.danmakuOn : state.prefs.autoNext,
+              !before);
+          expect(focused(), 'settings-$label', reason: '重建開關不能丟失焦點');
+        } else if ([
+          '播放速度',
+          '畫質',
+          '跳過片頭',
+          '彈幕透明度',
+          '彈幕顯示區域',
+          '彈幕字級',
+          '彈幕速度',
+          '畫面比例',
+          '畫面亮度'
+        ].contains(label)) {
+          await press(RemoteKey.ok);
+          expect(focused(), startsWith('settings-$label-'),
+              reason: '每層子選單都必須直接選到目前值');
+          await press(RemoteKey.ok);
+          expect(focused(), 'settings-$label');
+        }
+        await tester.pump(kControlsIdle + const Duration(seconds: 1));
+        expect(focused(), 'settings-$label');
+        await press(RemoteKey.left);
+        await press(RemoteKey.right);
+        expect(focused(), 'settings-$label');
+        await press(RemoteKey.down);
+      }
+      expect(focused(), 'settings-${items.last}', reason: '下邊界不能離開選單');
+      for (var i = items.length - 2; i >= 0; i--) {
+        await press(RemoteKey.up);
+        expect(focused(), 'settings-${items[i]}');
+      }
+      await press(RemoteKey.down);
+      await press(RemoteKey.ok);
+      expect(focused(), 'settings-播放速度-1.0');
+      await press(RemoteKey.down);
+      await press(RemoteKey.ok);
+      expect(player.speed, 1.25);
+      expect(focused(), 'settings-播放速度');
+      await tester.sendKeyEvent(LogicalKeyboardKey.escape);
+      await tester.pump(const Duration(milliseconds: 300));
+      await tester.pump();
+      expect(focused(), 'player-play');
+      expect(player.seeks, isEmpty);
+      expect(player.playing, isTrue);
+      expect(tester.takeException(), isNull);
+      await tester.pumpWidget(const SizedBox());
+    });
 
     testWidgets('電視控制列收起後不訂閱時鐘, 按 OK 立即重建並可操作設定', (tester) async {
       await open(tester);

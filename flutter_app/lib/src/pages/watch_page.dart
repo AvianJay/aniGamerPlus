@@ -54,6 +54,7 @@ import '../widgets/cast_sheet.dart';
 import '../widgets/common.dart';
 import '../widgets/active_builder.dart';
 import '../widgets/seek_preview_card.dart';
+import '../widgets/tv_settings_list.dart';
 import 'tv_remote_page.dart';
 
 // --------------------------------------------------------------- 常數
@@ -2509,7 +2510,7 @@ class _WatchPageState extends State<WatchPage> with WidgetsBindingObserver {
 
   void _armIdle() {
     _idleTimer?.cancel();
-    if (!_controlsVisible) return;
+    if (!_controlsVisible || _settingsOpen) return;
     _idleTimer = Timer(kControlsIdle, () {
       if (!mounted) return;
       if (!(_controller?.value.isPlaying ?? false)) return;
@@ -2636,6 +2637,7 @@ class _WatchPageState extends State<WatchPage> with WidgetsBindingObserver {
   /// 確認 = 暫停 / 播放, 上下 = 叫出控制列. 焦點在控制列的按鈕上時, 方向鍵
   /// 照常在按鈕之間移動.
   KeyEventResult _onPlayerKey(FocusNode node, KeyEvent event) {
+    if (_settingsOpen) return KeyEventResult.ignored;
     if (event is KeyUpEvent) return KeyEventResult.ignored;
     final key = event.logicalKey;
     final repeat = event is KeyRepeatEvent;
@@ -5120,6 +5122,7 @@ class _WatchPageState extends State<WatchPage> with WidgetsBindingObserver {
                 style: TextStyle(fontSize: 14, height: 1.5))),
         actions: [
           TextButton(
+              autofocus: Device.tv,
               onPressed: () => Navigator.of(dialogContext).pop(),
               child: const Text('關閉')),
           TextButton(
@@ -5145,11 +5148,13 @@ class _WatchPageState extends State<WatchPage> with WidgetsBindingObserver {
 
   void _openSettingsSheet() {
     _finishTimelineEdit(focusPlay: false);
+    _idleTimer?.cancel();
     if (Device.tv) setState(() => _settingsOpen = true);
     unawaited(_loadQualities());
     showModalBottomSheet<void>(
       context: context,
       isScrollControlled: true,
+      requestFocus: true,
       sheetAnimationStyle: Device.tv ? AnimationStyle.noAnimation : null,
       builder: (sheetContext) => StatefulBuilder(
         builder: (context, setSheetState) {
@@ -5158,18 +5163,19 @@ class _WatchPageState extends State<WatchPage> with WidgetsBindingObserver {
             setSheetState(() {});
           }
 
-          return SafeArea(
+          return TvSettingsList(
+              child: SafeArea(
             child: SingleChildScrollView(
               child: Column(
                 mainAxisSize: MainAxisSize.min,
                 children: [
                   const _SheetTitle('播放設定'),
                   if (Device.tv)
-                    ListTile(
-                      dense: true,
+                    _settingsTile(
+                      autofocus: true,
                       leading: const Icon(Icons.bluetooth_audio_rounded),
-                      title: const Text('藍牙音訊／擴大機'),
-                      subtitle: const Text('保留電視畫面, 將聲音送到藍牙音訊裝置'),
+                      title: '藍牙音訊／擴大機',
+                      subtitle: '保留電視畫面, 將聲音送到藍牙音訊裝置',
                       onTap: () {
                         Navigator.of(sheetContext).pop();
                         _openBluetoothAudio();
@@ -5200,9 +5206,8 @@ class _WatchPageState extends State<WatchPage> with WidgetsBindingObserver {
                           : (options.isEmpty ? '正在問伺服器這一集還有哪些畫質…' : ''),
                     ),
                   ),
-                  SwitchListTile(
-                    dense: true,
-                    title: const Text('彈幕'),
+                  _settingsSwitch(
+                    title: '彈幕',
                     subtitle: _danmaku.isEmpty
                         ? const Text('這一集沒有彈幕檔，開啟後畫面不會有變化。',
                             style: TextStyle(fontSize: 11.5))
@@ -5235,10 +5240,9 @@ class _WatchPageState extends State<WatchPage> with WidgetsBindingObserver {
                     }),
                   ),
                   if (prefs.pipEnabled)
-                    ListTile(
-                      dense: true,
+                    _settingsTile(
                       leading: const Icon(Icons.picture_in_picture_alt_rounded),
-                      title: const Text('開啟子母畫面'),
+                      title: '開啟子母畫面',
                       onTap: () {
                         Navigator.of(sheetContext).pop();
                         unawaited(_enterPip());
@@ -5321,18 +5325,16 @@ class _WatchPageState extends State<WatchPage> with WidgetsBindingObserver {
                         refresh(() => unawaited(_setBrightness(value / 100))),
                     note: '調整這次播放的螢幕亮度，離開播放器後恢復系統設定。',
                   ),
-                  SwitchListTile(
-                    dense: true,
-                    title: const Text('自動播放下一集'),
+                  _settingsSwitch(
+                    title: '自動播放下一集',
                     value: _autoNext,
                     onChanged: (value) => refresh(() {
                       setState(() => _autoNext = value);
                       unawaited(state.savePref(() => prefs.setAutoNext(value)));
                     }),
                   ),
-                  ListTile(
-                    dense: true,
-                    title: const Text('手勢說明'),
+                  _settingsTile(
+                    title: '手勢說明',
                     trailing: const Icon(Icons.chevron_right_rounded, size: 20),
                     onTap: () {
                       Navigator.of(sheetContext).pop();
@@ -5343,12 +5345,15 @@ class _WatchPageState extends State<WatchPage> with WidgetsBindingObserver {
                 ],
               ),
             ),
-          );
+          ));
         },
       ),
     ).whenComplete(() {
-      if (mounted && _settingsOpen) {
+      if (!mounted) return;
+      if (_settingsOpen) {
         setState(() => _settingsOpen = false);
+        if (ModalRoute.of(context)?.isCurrent ?? false) _focusPlay();
+      } else {
         _armIdle();
       }
     });
@@ -5362,25 +5367,29 @@ class _WatchPageState extends State<WatchPage> with WidgetsBindingObserver {
     void Function(T value) onPick, {
     String note = '',
   }) {
-    return ListTile(
-      dense: true,
-      title: Text(title),
-      subtitle: Text(note.isEmpty ? value : '$value · $note'),
+    return _settingsTile(
+      title: title,
+      subtitle: note.isEmpty ? value : '$value · $note',
       trailing: const Icon(Icons.chevron_right_rounded, size: 20),
       onTap: () async {
         final picked = await showModalBottomSheet<T>(
           context: context,
+          requestFocus: true,
           sheetAnimationStyle: Device.tv ? AnimationStyle.noAnimation : null,
-          builder: (sheetContext) => SafeArea(
+          builder: (sheetContext) => TvSettingsList(
+              child: SafeArea(
             child: SingleChildScrollView(
                 child: Column(
               mainAxisSize: MainAxisSize.min,
               children: [
                 _SheetTitle(title),
                 for (final choice in choices)
-                  ListTile(
-                    dense: true,
-                    title: Text(choice.label),
+                  _settingsTile(
+                    focusLabel: '$title-${choice.value}',
+                    autofocus: choice.value == current ||
+                        (!choices.any((c) => c.value == current) &&
+                            choice == choices.first),
+                    title: choice.label,
                     trailing: choice.value == current
                         ? const Icon(Icons.check_rounded,
                             size: 18, color: AgpColors.accent)
@@ -5390,12 +5399,55 @@ class _WatchPageState extends State<WatchPage> with WidgetsBindingObserver {
                 const SizedBox(height: 8),
               ],
             )),
-          ),
+          )),
         );
         if (picked != null && mounted) onPick(picked);
       },
     );
   }
+
+  Widget _settingsTile({
+    required String title,
+    required VoidCallback onTap,
+    String? subtitle,
+    String? focusLabel,
+    Widget? leading,
+    Widget? trailing,
+    bool autofocus = false,
+  }) =>
+      TvSettingsTile(
+        key: ValueKey(focusLabel ?? title),
+        label: focusLabel ?? title,
+        autofocus: autofocus,
+        onActivate: onTap,
+        child: ListTile(
+          dense: true,
+          title: Text(title),
+          subtitle: subtitle == null ? null : Text(subtitle),
+          leading: leading,
+          trailing: trailing,
+          onTap: onTap,
+        ),
+      );
+
+  Widget _settingsSwitch({
+    required String title,
+    required bool value,
+    required ValueChanged<bool> onChanged,
+    Widget? subtitle,
+  }) =>
+      TvSettingsTile(
+        key: ValueKey(title),
+        label: title,
+        onActivate: () => onChanged(!value),
+        child: SwitchListTile(
+          dense: true,
+          title: Text(title),
+          subtitle: subtitle,
+          value: value,
+          onChanged: onChanged,
+        ),
+      );
 
   void _openGestureSheet() {
     showModalBottomSheet<void>(
