@@ -10,6 +10,7 @@ import 'state/app_state.dart';
 import 'theme.dart';
 import 'util/build_config.dart';
 import 'util/device.dart';
+import 'widgets/active_builder.dart';
 
 class AgpApp extends StatefulWidget {
   const AgpApp({super.key, required this.state});
@@ -100,9 +101,9 @@ class _AgpAppState extends State<AgpApp> {
                 child: child!,
               )
           : null,
-      home: ListenableBuilder(
+      home: ActiveListenableBuilder(
         listenable: widget.state,
-        builder: (context, _) => widget.state.hasServer
+        builder: (context) => widget.state.hasServer
             ? RootPage(state: widget.state)
             : SetupPage(state: widget.state),
       ),
@@ -127,7 +128,7 @@ void _centerFocus(
   unawaited(Scrollable.ensureVisible(
     context,
     alignment: 0.5,
-    duration: const Duration(milliseconds: 180),
+    duration: Duration.zero,
     curve: Curves.easeOutCubic,
   ));
 }

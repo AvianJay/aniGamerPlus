@@ -232,6 +232,7 @@ ThemeData _forTv(ThemeData theme) {
     final base = style ?? const ButtonStyle();
     final side = base.side;
     return base.copyWith(
+      animationDuration: Duration.zero,
       side: WidgetStateProperty.resolveWith((states) => ring(
           states, side?.resolve(states),
           color: color ?? AgpColors.focusRing)),
@@ -240,6 +241,7 @@ ThemeData _forTv(ThemeData theme) {
 
   final chipSide = theme.chipTheme.side;
   return theme.copyWith(
+    splashFactory: NoSplash.splashFactory,
     focusColor: AgpColors.accent.withValues(alpha: 0.32),
     iconButtonTheme:
         IconButtonThemeData(style: withRing(theme.iconButtonTheme.style)),

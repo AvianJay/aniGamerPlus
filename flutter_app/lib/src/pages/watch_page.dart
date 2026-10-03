@@ -52,6 +52,7 @@ import '../util/device.dart';
 import '../util/format.dart';
 import '../widgets/cast_sheet.dart';
 import '../widgets/common.dart';
+import '../widgets/active_builder.dart';
 import '../widgets/seek_preview_card.dart';
 import 'tv_remote_page.dart';
 
@@ -498,6 +499,10 @@ class _WatchPageState extends State<WatchPage> with WidgetsBindingObserver {
   /// 播放鍵. 叫出控制列時焦點從這一顆開始.
   final FocusNode _playFocus = FocusNode(debugLabel: 'player-play');
 
+  final FocusNode _timelineFocus = FocusNode(debugLabel: 'player-timeline');
+  bool _timelineEditing = false;
+  bool _settingsOpen = false;
+
   /// 電視上: 手機遙控拖進度條時叫這個
   _RemoteSeek? _remoteSeek;
 
@@ -627,6 +632,7 @@ class _WatchPageState extends State<WatchPage> with WidgetsBindingObserver {
     // 最後一筆進度要在把 _clock 收掉之前記. _syncTime() 的前半段是同步的,
     // noteWatchTime() 當場就跑完, 所以下面的 flush 與通知都看得到它.
     _noteFinalPosition();
+    _timelineEditing = false;
     final deleteCompleted =
         prefs.downloadAutoDeleteWatched && _ended && store.isDownloaded(_sn);
     final controller = _controller;
@@ -654,6 +660,7 @@ class _WatchPageState extends State<WatchPage> with WidgetsBindingObserver {
     _qualities.dispose();
     _playerFocus.dispose();
     _playFocus.dispose();
+    _timelineFocus.dispose();
     // 離開播放頁就把進度落盤, 不要留著那一秒的 debounce 在後面等 —— 使用者
     // 退出去之後馬上把 app 滑掉的話, 那一秒就是進度不見的那一秒.
     unawaited(state.flushWatchTimesToDisk());
@@ -2528,6 +2535,92 @@ class _WatchPageState extends State<WatchPage> with WidgetsBindingObserver {
     _armIdle();
   }
 
+  void _focusPlay() {
+    _showControls();
+    // 電視收起控制列時會卸下按鈕, 要等重建後才有可接收焦點的節點.
+    if (_playFocus.context != null) {
+      _playFocus.requestFocus();
+    } else {
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (mounted && _controlsVisible && _playerFocus.hasFocus) {
+          _playFocus.requestFocus();
+        }
+      });
+    }
+  }
+
+  void _finishTimelineEdit({bool commit = false, bool focusPlay = true}) {
+    if (!mounted || !_timelineEditing) return;
+    final target = _scrubValue;
+    setState(() {
+      _timelineEditing = false;
+      _scrubbing = false;
+    });
+    if (commit) unawaited(_seekTo(target));
+    _armIdle();
+    if (focusPlay) _focusPlay();
+  }
+
+  KeyEventResult _onTimelineKey(FocusNode node, KeyEvent event) {
+    if (event is KeyUpEvent) return KeyEventResult.ignored;
+    final key = event.logicalKey;
+    final horizontal = key == LogicalKeyboardKey.arrowLeft ||
+        key == LogicalKeyboardKey.arrowRight;
+    final vertical = key == LogicalKeyboardKey.arrowUp ||
+        key == LogicalKeyboardKey.arrowDown;
+    if (_isConfirmKey(key)) {
+      if (event is KeyRepeatEvent) return KeyEventResult.handled;
+      if (_timelineEditing) {
+        _finishTimelineEdit(commit: true);
+      } else if (_canSeek && _playableDuration > 0) {
+        _idleTimer?.cancel();
+        setState(() {
+          _timelineEditing = true;
+          _scrubbing = true;
+          _scrubValue = _clampSeek(_positionNow());
+        });
+      }
+      return KeyEventResult.handled;
+    }
+    if (_timelineEditing && horizontal) {
+      final direction = key == LogicalKeyboardKey.arrowRight ? 1 : -1;
+      setState(() =>
+          _scrubValue = _clampSeek(_scrubValue + direction * kSkipSeconds));
+      return KeyEventResult.handled;
+    }
+    if (vertical || horizontal) {
+      _finishTimelineEdit(focusPlay: false);
+      _armIdle();
+      if (key == LogicalKeyboardKey.arrowDown) {
+        node.focusInDirection(TraversalDirection.down);
+      } else {
+        _focusPlay();
+      }
+      return KeyEventResult.handled;
+    }
+    if (_timelineEditing &&
+        (key == LogicalKeyboardKey.escape ||
+            key == LogicalKeyboardKey.goBack)) {
+      _finishTimelineEdit();
+      return KeyEventResult.handled;
+    }
+    // 媒體快進/暫停仍由播放區處理; 先取消尚未確認的進度.
+    if (_timelineEditing && key.keyLabel.startsWith('Media')) {
+      _finishTimelineEdit();
+    }
+    return KeyEventResult.ignored;
+  }
+
+  KeyEventResult _onFooterKey(FocusNode node, KeyEvent event) {
+    if (Device.tv &&
+        event is! KeyUpEvent &&
+        event.logicalKey == LogicalKeyboardKey.arrowUp) {
+      _focusPlay();
+      return KeyEventResult.handled;
+    }
+    return KeyEventResult.ignored;
+  }
+
   void _toggleControls() {
     setState(() => _controlsVisible = !_controlsVisible);
     if (!_controlsVisible) _reclaimFocus();
@@ -2589,8 +2682,7 @@ class _WatchPageState extends State<WatchPage> with WidgetsBindingObserver {
         key == LogicalKeyboardKey.arrowRight) {
       _keySeek(key == LogicalKeyboardKey.arrowRight ? 1 : -1);
     } else if (arrow) {
-      _showControls();
-      _playFocus.requestFocus();
+      _focusPlay();
     } else if (!repeat) {
       _confirmOnSurface();
     }
@@ -2630,8 +2722,7 @@ class _WatchPageState extends State<WatchPage> with WidgetsBindingObserver {
       return;
     }
     unawaited(_togglePlay());
-    _showControls();
-    _playFocus.requestFocus();
+    _focusPlay();
   }
 
   void _skipOpening(IntroSkip intro) {
@@ -2641,9 +2732,15 @@ class _WatchPageState extends State<WatchPage> with WidgetsBindingObserver {
 
   /// 電視上的返回鍵: 下一集的倒數、開著的控制列先收掉, 都沒有才離開.
   bool get _tvBackConsumes =>
-      _nextOffer != null || (_controlsVisible && _showsPlaying);
+      _timelineEditing ||
+      _nextOffer != null ||
+      (_controlsVisible && _showsPlaying);
 
   void _tvBack() {
+    if (_timelineEditing) {
+      _finishTimelineEdit();
+      return;
+    }
     if (_nextOffer != null) {
       _cancelNext();
       return;
@@ -3466,15 +3563,20 @@ class _WatchPageState extends State<WatchPage> with WidgetsBindingObserver {
                       if (_downloading.isNotEmpty) _downloadBadge(),
                       if (_airplay.active && !_chromecasting) _airplayBadge(),
                       AnimatedOpacity(
+                        key: const ValueKey('player-controls'),
                         opacity: _controlsVisible ? 1 : 0,
-                        duration: const Duration(milliseconds: 180),
+                        duration: Device.tv
+                            ? Duration.zero
+                            : const Duration(milliseconds: 180),
                         child: IgnorePointer(
                           ignoring: !_controlsVisible,
                           // 時間跟進度條一秒動十次. 收起來的時候 AnimatedOpacity
                           // 不再是重畫的邊界, 沒有這一層的話那十次會一路往上把
                           // 整個頁面拖去重畫.
-                          child: RepaintBoundary(
-                              child: _controls(mobileInline: mobileInline)),
+                          child: Device.tv && (!_controlsVisible || _settingsOpen)
+                              ? const SizedBox.shrink()
+                              : RepaintBoundary(
+                                  child: _controls(mobileInline: mobileInline)),
                         ),
                       ),
                       if (!_skipDismissed && _effectiveIntro != null)
@@ -3489,11 +3591,13 @@ class _WatchPageState extends State<WatchPage> with WidgetsBindingObserver {
                                           ? MediaQuery.paddingOf(context).bottom
                                           : 0),
                                   size.height - 48),
-                          child: ValueListenableBuilder<double>(
-                            valueListenable: _clock,
-                            builder: (context, position, _) {
+                          child: ClockVisibility(
+                            clock: _clock,
+                            visibleAt: (position) =>
+                                _effectiveIntro?.visibleAt(position) ?? false,
+                            child: Builder(builder: (context) {
                               final intro = _effectiveIntro;
-                              if (intro == null || !intro.visibleAt(position)) {
+                              if (intro == null) {
                                 return const SizedBox.shrink();
                               }
                               void skipOpening() => _skipOpening(intro);
@@ -3527,7 +3631,7 @@ class _WatchPageState extends State<WatchPage> with WidgetsBindingObserver {
                                   ),
                                 ),
                               );
-                            },
+                            }),
                           ),
                         ),
                       if (!_scrubbing && (_flash.isNotEmpty || _hud.isNotEmpty))
@@ -4031,7 +4135,7 @@ class _WatchPageState extends State<WatchPage> with WidgetsBindingObserver {
                       compact: constraints.maxWidth < 600 ||
                           (_fullscreen && constraints.maxHeight < 400),
                     )),
-                if (_scrubbing)
+                if (_scrubbing && !_timelineEditing)
                   _previewOverlay(constraints, mobileInline: mobileInline),
               ],
             ));
@@ -4144,33 +4248,48 @@ class _WatchPageState extends State<WatchPage> with WidgetsBindingObserver {
   }
 
   Widget _playbackButtons({bool compact = false}) {
-    return Row(
-      mainAxisSize: MainAxisSize.min,
-      children: [
-        _roundButton(
-          Icons.replay_10_rounded,
-          () => unawaited(_seekBy(-kSkipSeconds.toDouble())),
-          tooltip: '倒退 10 秒',
-          size: compact ? 38 : 48,
-          hitSize: compact ? 56 : 72,
-        ),
-        _roundButton(
-          Icons.forward_10_rounded,
-          () => unawaited(_seekBy(kSkipSeconds.toDouble())),
-          tooltip: '快轉 10 秒',
-          size: compact ? 38 : 48,
-          hitSize: compact ? 56 : 72,
-        ),
-        _roundButton(
-          _showsPlaying ? Icons.pause_circle_filled : Icons.play_circle_fill,
-          () => unawaited(_togglePlay()),
-          tooltip: _showsPlaying ? '暫停' : '播放',
-          size: compact ? 48 : 60,
-          hitSize: compact ? 56 : 72,
-          focusNode: _playFocus,
-        ),
-      ],
-    );
+    return Focus(
+        canRequestFocus: false,
+        skipTraversal: true,
+        onKeyEvent: (node, event) {
+          if (Device.tv &&
+              event is! KeyUpEvent &&
+              event.logicalKey == LogicalKeyboardKey.arrowDown) {
+            _showControls();
+            _timelineFocus.requestFocus();
+            return KeyEventResult.handled;
+          }
+          return KeyEventResult.ignored;
+        },
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            _roundButton(
+              Icons.replay_10_rounded,
+              () => unawaited(_seekBy(-kSkipSeconds.toDouble())),
+              tooltip: '倒退 10 秒',
+              size: compact ? 38 : 48,
+              hitSize: compact ? 56 : 72,
+            ),
+            _roundButton(
+              Icons.forward_10_rounded,
+              () => unawaited(_seekBy(kSkipSeconds.toDouble())),
+              tooltip: '快轉 10 秒',
+              size: compact ? 38 : 48,
+              hitSize: compact ? 56 : 72,
+            ),
+            _roundButton(
+              _showsPlaying
+                  ? Icons.pause_circle_filled
+                  : Icons.play_circle_fill,
+              () => unawaited(_togglePlay()),
+              tooltip: _showsPlaying ? '暫停' : '播放',
+              size: compact ? 48 : 60,
+              hitSize: compact ? 56 : 72,
+              focusNode: _playFocus,
+            ),
+          ],
+        ));
   }
 
   Widget _roundButton(IconData icon, VoidCallback onTap,
@@ -4239,9 +4358,9 @@ class _WatchPageState extends State<WatchPage> with WidgetsBindingObserver {
         padding: const EdgeInsets.fromLTRB(10, 0, 10, 4),
         child: Column(mainAxisSize: MainAxisSize.min, children: [
           IgnorePointer(
-              ignoring: _scrubbing,
+              ignoring: _scrubbing && !_timelineEditing,
               child: Opacity(
-                  opacity: _scrubbing ? 0 : 1,
+                  opacity: _scrubbing && !_timelineEditing ? 0 : 1,
                   child: Row(
                       crossAxisAlignment: CrossAxisAlignment.end,
                       children: [
@@ -4271,51 +4390,57 @@ class _WatchPageState extends State<WatchPage> with WidgetsBindingObserver {
                       ]))),
           _timeline(),
           if (!mobileInline)
-            Row(children: [
-              _barButton(Icons.skip_next_rounded, '下一集',
-                  _neighbour(1) == null ? null : () => _goRelative(1)),
-              Expanded(
-                  child: Padding(
-                padding: const EdgeInsets.symmetric(horizontal: 4),
-                child: Text(_hereLabel,
-                    maxLines: 1,
-                    overflow: TextOverflow.ellipsis,
-                    style: const TextStyle(color: Colors.white, fontSize: 12)),
-              )),
-              _barButton(
-                  _danmakuOn
-                      ? Icons.chat_bubble_outline_rounded
-                      : Icons.comments_disabled_outlined,
-                  _danmakuOn ? '關閉彈幕' : '開啟彈幕',
-                  () => unawaited(_setDanmaku(!_danmakuOn)),
-                  active: _danmakuOn),
-              _barButton(Icons.settings_outlined, '設定', _openSettingsSheet),
-              if (prefs.pipEnabled && !_chromecasting)
-                _barButton(Icons.picture_in_picture_alt_rounded, '子母畫面',
-                    () => unawaited(_enterPip())),
-              if (_fullscreen)
-                _barButton(Icons.fit_screen_outlined, '畫面比例', () {
-                  final index =
-                      kAspectModes.indexWhere((m) => m.value == _aspect);
-                  unawaited(_setAspect(
-                      kAspectModes[(index + 1) % kAspectModes.length].value));
-                }),
-              // 電視沒有不是全螢幕的版面
-              if (!Device.tv)
-                _barButton(
-                    _fullscreen
-                        ? Icons.fullscreen_exit_rounded
-                        : Icons.fullscreen_rounded,
-                    _fullscreen ? '離開全螢幕' : '全螢幕',
-                    () => unawaited(_setFullscreen(!_fullscreen))),
-            ]),
+            Focus(
+                canRequestFocus: false,
+                skipTraversal: true,
+                onKeyEvent: _onFooterKey,
+                child: Row(children: [
+                  _barButton(Icons.skip_next_rounded, '下一集',
+                      _neighbour(1) == null ? null : () => _goRelative(1)),
+                  Expanded(
+                      child: Padding(
+                    padding: const EdgeInsets.symmetric(horizontal: 4),
+                    child: Text(_hereLabel,
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style:
+                            const TextStyle(color: Colors.white, fontSize: 12)),
+                  )),
+                  _barButton(
+                      _danmakuOn
+                          ? Icons.chat_bubble_outline_rounded
+                          : Icons.comments_disabled_outlined,
+                      _danmakuOn ? '關閉彈幕' : '開啟彈幕',
+                      () => unawaited(_setDanmaku(!_danmakuOn)),
+                      active: _danmakuOn),
+                  _barButton(Icons.settings_outlined, '設定', _openSettingsSheet),
+                  if (prefs.pipEnabled && !_chromecasting)
+                    _barButton(Icons.picture_in_picture_alt_rounded, '子母畫面',
+                        () => unawaited(_enterPip())),
+                  if (_fullscreen)
+                    _barButton(Icons.fit_screen_outlined, '畫面比例', () {
+                      final index =
+                          kAspectModes.indexWhere((m) => m.value == _aspect);
+                      unawaited(_setAspect(
+                          kAspectModes[(index + 1) % kAspectModes.length]
+                              .value));
+                    }),
+                  // 電視沒有不是全螢幕的版面
+                  if (!Device.tv)
+                    _barButton(
+                        _fullscreen
+                            ? Icons.fullscreen_exit_rounded
+                            : Icons.fullscreen_rounded,
+                        _fullscreen ? '離開全螢幕' : '全螢幕',
+                        () => unawaited(_setFullscreen(!_fullscreen))),
+                ])),
         ]),
       ),
     );
   }
 
   Widget _timeline() {
-    return ValueListenableBuilder<double>(
+    final timeline = ValueListenableBuilder<double>(
       valueListenable: _clock,
       builder: (context, position, _) {
         final shown = _scrubbing ? _scrubValue : position;
@@ -4372,6 +4497,41 @@ class _WatchPageState extends State<WatchPage> with WidgetsBindingObserver {
           ),
         );
       },
+    );
+    if (!Device.tv) return timeline;
+    // Material Slider 的預設快捷鍵會把「上」當加進度. 電視另設導覽節點,
+    // 只有按 OK 進入調整後才接受左右, 也不在每次按鍵時抽取影片縮圖.
+    return Focus(
+      focusNode: _timelineFocus,
+      onKeyEvent: _onTimelineKey,
+      onFocusChange: (focused) {
+        if (!focused) _finishTimelineEdit(focusPlay: false);
+      },
+      child: ListenableBuilder(
+        listenable: _timelineFocus,
+        child: ExcludeFocus(child: timeline),
+        builder: (context, child) => Semantics(
+          label: '播放進度',
+          hint: _timelineEditing ? '左右調整, OK 確認, 返回取消' : '按 OK 調整進度',
+          child: Column(mainAxisSize: MainAxisSize.min, children: [
+            DecoratedBox(
+              decoration: BoxDecoration(
+                borderRadius: BorderRadius.circular(6),
+                border: Border.all(
+                  color: _timelineFocus.hasFocus
+                      ? AgpColors.accent
+                      : Colors.transparent,
+                  width: 2,
+                ),
+              ),
+              child: child,
+            ),
+            if (_timelineFocus.hasFocus)
+              Text(_timelineEditing ? '左右調整 · OK 確認 · 返回取消' : '按 OK 調整進度',
+                  style: const TextStyle(fontSize: 12, color: Colors.white)),
+          ]),
+        ),
+      ),
     );
   }
 
@@ -4893,6 +5053,7 @@ class _WatchPageState extends State<WatchPage> with WidgetsBindingObserver {
     showModalBottomSheet<void>(
       context: context,
       isScrollControlled: true,
+      sheetAnimationStyle: Device.tv ? AnimationStyle.noAnimation : null,
       builder: (sheetContext) => DraggableScrollableSheet(
         expand: false,
         initialChildSize: 0.55,
@@ -4938,11 +5099,58 @@ class _WatchPageState extends State<WatchPage> with WidgetsBindingObserver {
     );
   }
 
+  void _openBluetoothAudio() {
+    showDialog<void>(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        title: const Text('藍牙音訊／擴大機'),
+        content: const SingleChildScrollView(
+            child: Text(
+                '畫面留在電視, 聲音由電視系統送到藍牙音訊裝置。\n\n'
+                'Onkyo TX-NR6100：\n'
+                '1. 按擴大機的 BLUETOOTH 鍵, 看到 Now Pairing。'
+                '若已配對過其他裝置, 長按 BLUETOOTH 至少 5 秒。\n'
+                '2. 開啟下方「藍牙配對」, 選 Onkyo TX-NR6100。'
+                '需要密碼時輸入 0000。\n'
+                '3. 若連不上, 在擴大機設定的 Hardware → Bluetooth '
+                '將 Receiver 開啟、Transmitter 關閉。\n\n'
+                '影音同步：在電視的聲音設定將「影音同步／A/V sync」設為自動或開啟。'
+                '補償效果取決於電視與音訊裝置。\n\n'
+                '藍牙提供立體聲；需要多聲道或更低延遲時, 請使用 HDMI ARC。',
+                style: TextStyle(fontSize: 14, height: 1.5))),
+        actions: [
+          TextButton(
+              onPressed: () => Navigator.of(dialogContext).pop(),
+              child: const Text('關閉')),
+          TextButton(
+              onPressed: () {
+                Navigator.of(dialogContext).pop();
+                unawaited(Device.openAudioSettings().then((ok) {
+                  if (!ok && mounted) toast(context, '請從電視系統設定開啟聲音 → 影音同步。');
+                }));
+              },
+              child: const Text('影音同步設定')),
+          FilledButton(
+              onPressed: () {
+                Navigator.of(dialogContext).pop();
+                unawaited(Device.openBluetoothSettings().then((ok) {
+                  if (!ok && mounted) toast(context, '請從電視系統設定開啟藍牙／遙控器與配件。');
+                }));
+              },
+              child: const Text('藍牙配對')),
+        ],
+      ),
+    );
+  }
+
   void _openSettingsSheet() {
+    _finishTimelineEdit(focusPlay: false);
+    if (Device.tv) setState(() => _settingsOpen = true);
     unawaited(_loadQualities());
     showModalBottomSheet<void>(
       context: context,
       isScrollControlled: true,
+      sheetAnimationStyle: Device.tv ? AnimationStyle.noAnimation : null,
       builder: (sheetContext) => StatefulBuilder(
         builder: (context, setSheetState) {
           void refresh(VoidCallback action) {
@@ -4956,6 +5164,17 @@ class _WatchPageState extends State<WatchPage> with WidgetsBindingObserver {
                 mainAxisSize: MainAxisSize.min,
                 children: [
                   const _SheetTitle('播放設定'),
+                  if (Device.tv)
+                    ListTile(
+                      dense: true,
+                      leading: const Icon(Icons.bluetooth_audio_rounded),
+                      title: const Text('藍牙音訊／擴大機'),
+                      subtitle: const Text('保留電視畫面, 將聲音送到藍牙音訊裝置'),
+                      onTap: () {
+                        Navigator.of(sheetContext).pop();
+                        _openBluetoothAudio();
+                      },
+                    ),
                   _pickerTile<double>(
                     '播放速度',
                     _rate == 1 ? '正常' : '$_rate×',
@@ -5127,7 +5346,12 @@ class _WatchPageState extends State<WatchPage> with WidgetsBindingObserver {
           );
         },
       ),
-    );
+    ).whenComplete(() {
+      if (mounted && _settingsOpen) {
+        setState(() => _settingsOpen = false);
+        _armIdle();
+      }
+    });
   }
 
   Widget _pickerTile<T>(
@@ -5146,6 +5370,7 @@ class _WatchPageState extends State<WatchPage> with WidgetsBindingObserver {
       onTap: () async {
         final picked = await showModalBottomSheet<T>(
           context: context,
+          sheetAnimationStyle: Device.tv ? AnimationStyle.noAnimation : null,
           builder: (sheetContext) => SafeArea(
             child: SingleChildScrollView(
                 child: Column(

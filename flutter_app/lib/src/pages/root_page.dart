@@ -8,6 +8,7 @@ import '../state/app_state.dart';
 import '../theme.dart';
 import '../util/device.dart';
 import '../widgets/common.dart';
+import '../widgets/active_builder.dart';
 import 'all_tab.dart';
 import 'downloads_page.dart';
 import 'favourites_tab.dart';
@@ -27,6 +28,7 @@ class RootPage extends StatefulWidget {
 
 class _RootPageState extends State<RootPage> {
   int _index = 0;
+  final Set<int> _visited = {0};
   AppState get state => widget.state;
 
   /// 電視: 包著左邊分頁列, 開起來時把焦點放上去
@@ -64,9 +66,9 @@ class _RootPageState extends State<RootPage> {
 
   @override
   Widget build(BuildContext context) {
-    return ListenableBuilder(
+    return ActiveListenableBuilder(
       listenable: state,
-      builder: (context, _) {
+      builder: (context) {
         return PopScope(
           canPop: _index == 0,
           onPopInvokedWithResult: (didPop, _) {
@@ -142,6 +144,7 @@ class _RootPageState extends State<RootPage> {
     }
     setState(() {
       _index = index;
+      _visited.add(index);
     });
   }
 
@@ -149,13 +152,25 @@ class _RootPageState extends State<RootPage> {
     return IndexedStack(
       index: _index,
       children: [
-        HomeTab(state: state, onSeeAll: () => setState(() => _index = 1)),
-        AllTab(state: state, query: ''),
-        FavouritesTab(state: state),
-        HistoryTab(state: state),
-        MeTab(state: state),
+        for (var i = 0; i < _tabs.length; i++)
+          TickerMode(
+            enabled: i == _index,
+            child: RepaintBoundary(
+              child: _visited.contains(i) ? _tab(i) : const SizedBox.shrink(),
+            ),
+          ),
       ],
     );
+  }
+
+  Widget _tab(int index) {
+    return switch (index) {
+      0 => HomeTab(state: state, onSeeAll: () => _select(1)),
+      1 => AllTab(state: state, query: ''),
+      2 => FavouritesTab(state: state),
+      3 => HistoryTab(state: state),
+      _ => MeTab(state: state),
+    };
   }
 
   Widget _buildRail() {

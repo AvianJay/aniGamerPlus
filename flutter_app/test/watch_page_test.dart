@@ -1747,14 +1747,153 @@ void main() {
     String? focused() => FocusManager.instance.primaryFocus?.debugLabel;
 
     double controlsOpacity(WidgetTester tester) => tester
-        .widget<AnimatedOpacity>(find
-            .ancestor(
-                of: find.byType(Slider), matching: find.byType(AnimatedOpacity))
-            .first)
+        .widget<AnimatedOpacity>(find.byKey(const ValueKey('player-controls')))
         .opacity;
 
-    testWidgets('一進來就是全螢幕、焦點在播放區: 左右跳轉, OK 暫停並把焦點交給播放鍵',
-        (tester) async {
+    testWidgets('電視控制列收起後不訂閱時鐘, 按 OK 立即重建並可操作設定', (tester) async {
+      await open(tester);
+      expect(find.byType(Slider), findsOneWidget);
+      await tester.pump(kControlsIdle + const Duration(seconds: 1));
+      expect(find.byType(Slider), findsNothing);
+      expect(controlsOpacity(tester), 0);
+      for (var i = 0; i < 10; i++) {
+        player.actual += const Duration(milliseconds: 100);
+        await tester.pump(const Duration(milliseconds: 100));
+        expect(tester.binding.hasScheduledFrame, isFalse,
+            reason: '隱藏的播放控制列不該每次進度回報都要求幀');
+      }
+      await tester.sendKeyEvent(LogicalKeyboardKey.select, platform: 'android');
+      await tester.pump();
+      expect(find.byType(Slider), findsOneWidget);
+      expect(controlsOpacity(tester), 1);
+      await tester.tap(find.byTooltip('設定'));
+      await tester.pump(const Duration(milliseconds: 300));
+      expect(find.text('播放設定'), findsOneWidget);
+      expect(find.byKey(const ValueKey('player-timeline')), findsNothing,
+          reason: '設定選單蓋住控制列時不該繼續更新底下的進度條');
+      expect(tester.takeException(), isNull);
+      await tester.pumpWidget(const SizedBox());
+    });
+
+    testWidgets('上下導覽反覆回到播放鍵, 不會誤改進度', (tester) async {
+      await open(tester);
+      await tester.sendKeyEvent(LogicalKeyboardKey.arrowUp);
+      await tester.pump();
+      expect(focused(), 'player-play');
+      for (var i = 0; i < 8; i++) {
+        await tester.sendKeyEvent(LogicalKeyboardKey.arrowDown);
+        await tester.pump();
+        expect(focused(), 'player-timeline');
+        await tester.sendKeyEvent(LogicalKeyboardKey.arrowUp);
+        await tester.pump();
+        expect(focused(), 'player-play');
+        await tester.sendKeyEvent(LogicalKeyboardKey.arrowDown);
+        await tester.pump();
+        await tester.sendKeyEvent(LogicalKeyboardKey.arrowDown);
+        await tester.pump();
+        expect(focused(), isNot('player-timeline'));
+        await tester.sendKeyEvent(LogicalKeyboardKey.arrowUp);
+        await tester.pump();
+        expect(focused(), 'player-play', reason: '下方設定列往上要能選到暫停');
+      }
+      expect(player.seeks, isEmpty);
+      await tester.sendKeyEvent(LogicalKeyboardKey.select, platform: 'android');
+      await tester.pump();
+      expect(player.playing, isFalse, reason: '最後選到的要是暫停按鈕');
+      await tester.pumpWidget(const SizedBox());
+    });
+
+    testWidgets('控制列隱藏後按上, 重建完成仍選到播放鍵', (tester) async {
+      await open(tester);
+      await tester.pump(kControlsIdle + const Duration(seconds: 1));
+      expect(focused(), 'player-surface');
+      await tester.sendKeyEvent(LogicalKeyboardKey.arrowUp);
+      await tester.pump();
+      await tester.pump();
+      expect(focused(), 'player-play');
+      expect(player.seeks, isEmpty);
+      await tester.pumpWidget(const SizedBox());
+    });
+
+    testWidgets('進度條按 OK 才調整, 確認一次只跳轉一次', (tester) async {
+      await open(tester);
+      await tester.sendKeyEvent(LogicalKeyboardKey.arrowUp);
+      await tester.pump();
+      await tester.sendKeyEvent(LogicalKeyboardKey.arrowDown);
+      await tester.pump();
+      expect(focused(), 'player-timeline');
+      await tester.sendKeyEvent(LogicalKeyboardKey.arrowRight);
+      await tester.pump();
+      expect(player.seeks, isEmpty);
+      expect(focused(), 'player-play');
+      await tester.sendKeyEvent(LogicalKeyboardKey.arrowDown);
+      await tester.pump();
+      await tester.sendKeyEvent(LogicalKeyboardKey.select, platform: 'android');
+      await tester.pump();
+      expect(find.text('左右調整 · OK 確認 · 返回取消'), findsOneWidget);
+      await tester.sendKeyEvent(LogicalKeyboardKey.arrowRight);
+      await tester.pump();
+      expect(player.seeks, isEmpty, reason: '尚未确认不可送 seek');
+      await tester.sendKeyEvent(LogicalKeyboardKey.select, platform: 'android');
+      await tester.pump(const Duration(milliseconds: 150));
+      expect(player.seeks, hasLength(1));
+      expect(player.seeks.single.inSeconds, inInclusiveRange(29, 32));
+      expect(focused(), 'player-play');
+      await tester.pumpWidget(const SizedBox());
+      await tester.pump(const Duration(seconds: 1));
+    });
+
+    testWidgets('暫停時返回取消進度調整, 不離開播放頁也不跳轉', (tester) async {
+      await open(tester);
+      await tester.sendKeyEvent(LogicalKeyboardKey.select, platform: 'android');
+      await tester.pump();
+      expect(player.playing, isFalse);
+      await tester.sendKeyEvent(LogicalKeyboardKey.arrowDown);
+      await tester.pump();
+      await tester.sendKeyEvent(LogicalKeyboardKey.select, platform: 'android');
+      await tester.pump();
+      await tester.sendKeyEvent(LogicalKeyboardKey.arrowRight);
+      await tester.pump();
+      await tester.binding.handlePopRoute();
+      await tester.pump();
+      expect(focused(), 'player-play');
+      expect(controlsOpacity(tester), 1);
+      expect(player.seeks, isEmpty);
+      expect(find.byType(WatchPage), findsOneWidget);
+      await tester.pumpWidget(const SizedBox());
+    });
+
+    testWidgets('播放設定可開啟藍牙配對與影音同步系統設定', (tester) async {
+      final calls = <String>[];
+      const channel = MethodChannel('agp/device');
+      tester.binding.defaultBinaryMessenger.setMockMethodCallHandler(channel,
+          (call) async {
+        calls.add(call.method);
+        return true;
+      });
+      addTearDown(() => tester.binding.defaultBinaryMessenger
+          .setMockMethodCallHandler(channel, null));
+      await open(tester);
+      Future<void> guide() async {
+        await tester.tap(find.byTooltip('設定'));
+        await tester.pump(const Duration(milliseconds: 300));
+        await tester.tap(find.text('藍牙音訊／擴大機'));
+        await tester.pumpAndSettle();
+        expect(find.textContaining('Onkyo TX-NR6100'), findsOneWidget);
+      }
+
+      await guide();
+      await tester.tap(find.text('藍牙配對'));
+      await tester.pumpAndSettle();
+      expect(calls, ['bluetoothSettings']);
+      await guide();
+      await tester.tap(find.text('影音同步設定'));
+      await tester.pumpAndSettle();
+      expect(calls, ['bluetoothSettings', 'audioSettings']);
+      await tester.pumpWidget(const SizedBox());
+    });
+
+    testWidgets('一進來就是全螢幕、焦點在播放區: 左右跳轉, OK 暫停並把焦點交給播放鍵', (tester) async {
       await open(tester);
       // 電視沒有「離開全螢幕」可言
       expect(find.byTooltip('全螢幕'), findsNothing);

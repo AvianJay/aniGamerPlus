@@ -46,7 +46,10 @@ enum RemoteKey {
   fastForward,
   rewind,
   next,
-  previous;
+  previous,
+  volumeUp,
+  volumeDown,
+  mute;
 
   static RemoteKey? parse(Object? name) {
     for (final key in values) {

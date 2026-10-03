@@ -4,6 +4,9 @@ library;
 import 'dart:io';
 
 import 'package:agp_mobile/src/pages/root_page.dart';
+import 'package:agp_mobile/src/pages/home_tab.dart';
+import 'package:agp_mobile/src/pages/all_tab.dart';
+import 'package:agp_mobile/src/pages/favourites_tab.dart';
 import 'package:agp_mobile/src/state/app_state.dart';
 import 'package:agp_mobile/src/state/remote_setup.dart';
 import 'package:agp_mobile/src/util/device.dart';
@@ -55,6 +58,9 @@ void main() {
       await tester.pump();
       expect(find.byType(NavigationRail), findsOneWidget);
       expect(find.byType(NavigationBar), findsNothing);
+      expect(find.byType(AllTab, skipOffstage: false), findsNothing);
+      expect(find.byType(FavouritesTab, skipOffstage: false), findsNothing);
+      final home = tester.element(find.byType(HomeTab));
 
       await tester.tap(find.text('收藏').last);
       await tester.pump();
@@ -63,6 +69,13 @@ void main() {
               .widget<NavigationRail>(find.byType(NavigationRail))
               .selectedIndex,
           2);
+      expect(find.byType(FavouritesTab), findsOneWidget);
+      expect(TickerMode.of(home), isFalse);
+      await tester.tap(find.text('首頁').last);
+      await tester.pump();
+      expect(tester.element(find.byType(HomeTab)), same(home));
+      expect(TickerMode.of(home), isTrue);
+      expect(find.byType(FavouritesTab, skipOffstage: false), findsOneWidget);
 
       await tester.pumpWidget(const SizedBox());
       await tester.pump(const Duration(seconds: 2));

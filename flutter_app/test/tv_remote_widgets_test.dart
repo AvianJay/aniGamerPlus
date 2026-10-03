@@ -13,6 +13,7 @@ import 'package:agp_mobile/src/state/tv_remote_host.dart';
 import 'package:agp_mobile/src/state/tv_remote_protocol.dart';
 import 'package:agp_mobile/src/util/remote_keys.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:path_provider_platform_interface/path_provider_platform_interface.dart';
 import 'package:shared_preferences/shared_preferences.dart';
@@ -94,6 +95,24 @@ void main() {
   tearDown(() => deleteTempDir(temp));
 
   group('電視上', () {
+    testWidgets('音量指令不依賴焦點或播放頁, 送到電視音訊系統', (tester) async {
+      const channel = MethodChannel('agp/device');
+      final calls = <String>[];
+      tester.binding.defaultBinaryMessenger.setMockMethodCallHandler(channel,
+          (call) async {
+        expect(call.method, 'adjustVolume');
+        calls.add(call.arguments as String);
+        return true;
+      });
+      addTearDown(() => tester.binding.defaultBinaryMessenger
+          .setMockMethodCallHandler(channel, null));
+      final actions = AppTvRemoteActions(state, GlobalKey<NavigatorState>());
+      actions.key(RemoteKey.volumeUp);
+      actions.key(RemoteKey.volumeDown);
+      actions.key(RemoteKey.mute);
+      await tester.pump();
+      expect(calls, ['volumeUp', 'volumeDown', 'mute']);
+    });
     testWidgets('按鍵走實體遙控器那一條路: 方向鍵移焦點, 確認鍵按下去', (tester) async {
       var pressed = '';
       await tester.pumpWidget(MaterialApp(
@@ -247,6 +266,32 @@ void main() {
       await tester.tap(find.text('客廳電視'));
       await tester.pump();
       expect(remote.sent, ['connect 192.168.1.20']);
+    });
+
+    testWidgets('連上即可調整電視音量, 長按音量連發但靜音只送一次', (tester) async {
+      await open(tester);
+      remote.device = const TvDevice(id: 'tv-1', name: '客廳電視', host: 'x');
+      remote.show(TvRemotePhase.connected);
+      await tester.pump();
+      await tester.tap(find.bySemanticsLabel('降低音量'));
+      await tester.tap(find.bySemanticsLabel('提高音量'));
+      await tester.tap(find.bySemanticsLabel('靜音或取消靜音'));
+      await tester.pump();
+      expect(remote.sent, ['key volumeDown', 'key volumeUp', 'key mute']);
+      remote.sent.clear();
+      final hold = await tester
+          .startGesture(tester.getCenter(find.bySemanticsLabel('提高音量')));
+      await tester.pump(const Duration(seconds: 1));
+      await hold.up();
+      expect(remote.sent.length, greaterThan(3));
+      expect(remote.sent.every((s) => s == 'key volumeUp'), isTrue);
+      remote.sent.clear();
+      final mute = await tester
+          .startGesture(tester.getCenter(find.bySemanticsLabel('靜音或取消靜音')));
+      await tester.pump(const Duration(seconds: 1));
+      await mute.up();
+      expect(remote.sent, ['key mute']);
+      await tester.pumpWidget(const SizedBox());
     });
 
     testWidgets('配對碼打滿四位就送出', (tester) async {

@@ -9,6 +9,7 @@ import 'package:cached_network_image/cached_network_image.dart';
 
 import '../state/thumbnails.dart';
 import '../theme.dart';
+import '../util/device.dart';
 import '../util/format.dart';
 
 /// 封面. 抓不到圖就退回片名 hash 出來的漸層 —— 跟網頁版的 artFor() 同一組顏色.
@@ -155,9 +156,27 @@ class _CoverImageState extends State<CoverImage> {
 
   @override
   Widget build(BuildContext context) {
+    return LayoutBuilder(builder: (context, constraints) {
+      // 舊電視的封面只解碼到顯示尺寸. 用 64px 分桶, 免得小幅變動不停換快取 key.
+      final cacheWidth = Device.tv && constraints.hasBoundedWidth
+          ? ((constraints.maxWidth *
+                          (MediaQuery.maybeDevicePixelRatioOf(context) ?? 1) /
+                          64)
+                      .ceil() *
+                  64)
+              .clamp(64, 1024)
+          : null;
+      return _content(context, cacheWidth);
+    });
+  }
+
+  Widget _content(BuildContext context, int? cacheWidth) {
     final ratio = widget.aspectRatio;
     final name = widget.name;
     final local = widget.file ?? _resolved;
+    final localImage = local == null
+        ? null
+        : ResizeImage.resizeIfNeeded(cacheWidth, null, FileImage(local));
     final url = widget.url;
     final content = ClipRRect(
         borderRadius: BorderRadius.circular(widget.radius),
@@ -185,41 +204,52 @@ class _CoverImageState extends State<CoverImage> {
             ] else
               const ColoredBox(color: Color(0xFF000000)),
             if (local != null)
-              Image.file(local, fit: widget.fit,
+              Image(
+                  image: localImage!,
+                  fit: widget.fit,
                   errorBuilder: (context, error, stack) {
-                if (widget.file == null && _decodeRetries++ == 0) {
-                  WidgetsBinding.instance.addPostFrameCallback((_) async {
-                    await widget.cache?.invalidate(local);
-                    await FileImage(local).evict();
-                    if (!mounted) return;
-                    setState(() {
-                      _resolved = null;
-                      _asked = false;
-                      _sync();
-                    });
-                  });
-                }
-                return const SizedBox.shrink();
-              })
+                    if (widget.file == null && _decodeRetries++ == 0) {
+                      WidgetsBinding.instance.addPostFrameCallback((_) async {
+                        await widget.cache?.invalidate(local);
+                        await localImage.evict();
+                        if (!mounted) return;
+                        setState(() {
+                          _resolved = null;
+                          _asked = false;
+                          _sync();
+                        });
+                      });
+                    }
+                    return const SizedBox.shrink();
+                  })
             else if (!_managed && url != null && url.isNotEmpty)
               CachedNetworkImage(
                 imageUrl: url,
                 // key 只算網址, 不把 auth header 摻進去 —— 摻了的話每次 token
                 // 變動整份磁碟快取就等於全毀, 全部要重抓一遍.
                 cacheKey: url,
+                memCacheWidth: cacheWidth,
                 fit: widget.fit,
                 httpHeaders: widget.headers,
                 placeholder: (_, __) => const SizedBox.shrink(),
                 errorWidget: (_, __, ___) => const SizedBox.shrink(),
-                fadeInDuration: const Duration(milliseconds: 180),
+                fadeInDuration: Device.tv
+                    ? Duration.zero
+                    : const Duration(milliseconds: 180),
+                fadeOutDuration: Device.tv
+                    ? Duration.zero
+                    : const Duration(milliseconds: 1000),
               ),
             if (_loading && local == null)
-              const Center(
+              Center(
                   child: SizedBox(
                       width: 20,
                       height: 20,
-                      child: CircularProgressIndicator(
-                          strokeWidth: 2, color: Colors.white54))),
+                      child: Device.tv
+                          ? const Icon(Icons.image_outlined,
+                              size: 20, color: Colors.white54)
+                          : const CircularProgressIndicator(
+                              strokeWidth: 2, color: Colors.white54))),
           ],
         ));
     return ratio == null

@@ -230,6 +230,8 @@ class _DanmakuOverlayState extends State<DanmakuOverlay>
   late final Ticker _ticker;
   Timer? _tvFrames;
   int? _tvFrameId;
+  bool _tvRunning = false;
+  Duration _tvFrameDelay = const Duration(milliseconds: 25);
   bool _framesEnabled = true;
   Duration? _tickAt;
   int _rasterAttempts = 0;
@@ -268,6 +270,13 @@ class _DanmakuOverlayState extends State<DanmakuOverlay>
   @override
   void didChangeDependencies() {
     super.didChangeDependencies();
+    // 提前半個 vsync 要求下一幀, 讓 60Hz 電視穩定每兩個 vsync 更新一次.
+    // 自由跑的 33ms periodic timer 會逐漸跨過 vsync 邊界, 造成 16/50ms 交替.
+    final refresh = View.maybeOf(context)?.display.refreshRate ?? 60;
+    final hz = refresh > 0 ? refresh : 60.0;
+    final frames = (hz / 30 - 0.001).ceil().clamp(1, 16);
+    _tvFrameDelay =
+        Duration(microseconds: ((frames - 0.5) * 1000000 / hz).round());
     _framesEnabled = TickerMode.of(context);
     if (widget.lowPower && !_framesEnabled) {
       _rest();
@@ -285,15 +294,14 @@ class _DanmakuOverlayState extends State<DanmakuOverlay>
         widget.comments.isEmpty ||
         (widget.lowPower && !_framesEnabled) ||
         _ticker.isActive ||
-        _tvFrames != null) {
+        _tvRunning) {
       return;
     }
     _tickAt = null;
     if (widget.lowPower) {
       // 計時器只要求一次 vsync, 不補畫錯過的幀. 時間仍讀 vsync 的單調時鐘,
       // 因此掉幀、倍速和暫停都不會讓彈幕時間軸慢下來.
-      _tvFrames =
-          Timer.periodic(kDanmakuTvFrameInterval, (_) => _scheduleTvFrame());
+      _tvRunning = true;
       _scheduleTvFrame();
     } else {
       _ticker.start();
@@ -301,10 +309,16 @@ class _DanmakuOverlayState extends State<DanmakuOverlay>
   }
 
   void _scheduleTvFrame() {
-    if (_tvFrames == null || _tvFrameId != null) return;
+    if (!_tvRunning || _tvFrameId != null) return;
+    _tvFrames?.cancel();
+    _tvFrames = null;
     _tvFrameId = SchedulerBinding.instance.scheduleFrameCallback((elapsed) {
       _tvFrameId = null;
-      if (mounted && _tvFrames != null) _onTick(elapsed);
+      if (!mounted || !_tvRunning) return;
+      _onTick(elapsed);
+      if (_tvRunning && _tvFrameId == null) {
+        _tvFrames = Timer(_tvFrameDelay, _scheduleTvFrame);
+      }
     });
   }
 
@@ -312,6 +326,7 @@ class _DanmakuOverlayState extends State<DanmakuOverlay>
     if (_ticker.isActive) _ticker.stop();
     _tvFrames?.cancel();
     _tvFrames = null;
+    _tvRunning = false;
     final frameId = _tvFrameId;
     if (frameId != null) {
       SchedulerBinding.instance.cancelFrameCallbackWithId(frameId);

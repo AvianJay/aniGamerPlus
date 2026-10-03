@@ -465,6 +465,39 @@ class _TvRemotePageState extends State<TvRemotePage> {
           ],
         ),
         const SizedBox(height: 26),
+        const Text('電視音量', textAlign: TextAlign.center),
+        const SizedBox(height: 8),
+        Row(
+          mainAxisAlignment: MainAxisAlignment.spaceEvenly,
+          children: [
+            _PadKey(
+                label: '降低音量',
+                icon: Icons.volume_down_rounded,
+                size: 60,
+                ring: true,
+                onPress: () => _key(RemoteKey.volumeDown)),
+            _PadKey(
+                label: '靜音或取消靜音',
+                icon: Icons.volume_off_rounded,
+                size: 60,
+                ring: true,
+                repeat: false,
+                onPress: () => _key(RemoteKey.mute)),
+            _PadKey(
+                label: '提高音量',
+                icon: Icons.volume_up_rounded,
+                size: 60,
+                ring: true,
+                onPress: () => _key(RemoteKey.volumeUp)),
+          ],
+        ),
+        const SizedBox(height: 8),
+        Text('擴大機的音量連動取決於電視的音訊輸出設定。',
+            textAlign: TextAlign.center,
+            style: TextStyle(
+                fontSize: 12,
+                color: Theme.of(context).colorScheme.onSurfaceVariant)),
+        const SizedBox(height: 26),
         Row(
           children: [
             Expanded(

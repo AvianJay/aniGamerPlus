@@ -97,6 +97,15 @@ class AppTvRemoteActions implements TvRemoteActions {
   @override
   void key(RemoteKey key) {
     switch (key) {
+      case RemoteKey.volumeUp:
+      case RemoteKey.volumeDown:
+      case RemoteKey.mute:
+        unawaited(Device.adjustVolume(key.name).then((ok) {
+          final context = navigator.currentContext;
+          if (!ok && context != null && context.mounted) {
+            toast(context, '電視無法調整音量, 請使用電視或擴大機遙控器。');
+          }
+        }));
       // 跟實體遙控器的返回鍵同一條路: 有 PopScope 的頁面 (播放頁先收控制列)
       // 照樣先問它. 首頁那一層不會被關掉 —— 手機上按返回不該把電視上的 App 關了
       case RemoteKey.back:

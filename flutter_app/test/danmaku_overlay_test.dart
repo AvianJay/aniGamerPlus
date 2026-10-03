@@ -95,6 +95,29 @@ void main() {
 
   setUp(() => now = 0);
 
+  for (final hz in [60.0, 120.0]) {
+    testWidgets('電視在 ${hz.toInt()}Hz 均勻每 30fps 重畫, 避免短長幀交替', (tester) async {
+      tester.view.display.refreshRate = hz;
+      addTearDown(tester.view.display.resetRefreshRate);
+      await show(tester, [comment(0.1, 'smooth')], lowPower: true);
+      await play(tester, 0.3);
+      final frame = Duration(microseconds: (1000000 / hz).round());
+      final indices = <int>[];
+      var paints = debugDanmakuPaints;
+      for (var i = 0; i < hz.toInt(); i++) {
+        now += frame.inMicroseconds / 1000000;
+        await tester.pump(frame);
+        if (debugDanmakuPaints > paints) indices.add(i);
+        paints = debugDanmakuPaints;
+      }
+      expect(indices.length, inInclusiveRange(28, 32));
+      for (var i = 1; i < indices.length; i++) {
+        expect(indices[i] - indices[i - 1], (hz / 30).round());
+      }
+      await tester.pumpWidget(const SizedBox());
+    });
+  }
+
   testWidgets('字真的畫得出來, 透明度照樣生效', (tester) async {
     final comments = [comment(0.1, 'danmaku', DanmakuMode.top)];
     await show(tester, comments);

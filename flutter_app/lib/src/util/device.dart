@@ -23,6 +23,35 @@ class Device {
   /// UiModeManager 說是電視, 或是有 leanback 這個系統功能.
   static const MethodChannel _channel = MethodChannel('agp/device');
 
+  /// 交給電視系統處理, 保留藍牙與 HDMI 音訊裝置的音量路由.
+  static Future<bool> adjustVolume(String command) async {
+    if (!const {'volumeUp', 'volumeDown', 'mute'}.contains(command)) {
+      return false;
+    }
+    try {
+      return await _channel.invokeMethod<bool>('adjustVolume', command) ??
+          false;
+    } catch (_) {
+      return false;
+    }
+  }
+
+  static Future<bool> openBluetoothSettings() async {
+    try {
+      return await _channel.invokeMethod<bool>('bluetoothSettings') ?? false;
+    } catch (_) {
+      return false;
+    }
+  }
+
+  static Future<bool> openAudioSettings() async {
+    try {
+      return await _channel.invokeMethod<bool>('audioSettings') ?? false;
+    } catch (_) {
+      return false;
+    }
+  }
+
   static Future<void> detect() async {
     if (!Platform.isAndroid) return;
     try {

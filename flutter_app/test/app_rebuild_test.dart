@@ -8,6 +8,8 @@ import 'dart:io';
 
 import 'package:agp_mobile/src/api/models.dart';
 import 'package:agp_mobile/src/app.dart';
+import 'package:agp_mobile/src/pages/home_tab.dart';
+import 'package:agp_mobile/src/pages/root_page.dart';
 import 'package:agp_mobile/src/state/app_state.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -74,6 +76,32 @@ void main() {
 
     await tester.pumpWidget(const SizedBox());
     // 進度落盤那一秒的 debounce 走完
+    await tester.pump(const Duration(seconds: 2));
+  });
+
+  testWidgets('播放頁遮住首頁時暫停通知重建, 返回讀到最新紀錄', (tester) async {
+    state.offline = true;
+    state.finishBoot();
+    await tester.pumpWidget(MaterialApp(home: RootPage(state: state)));
+    await tester.pumpAndSettle();
+    final nav = tester.state<NavigatorState>(find.byType(Navigator));
+    nav.push(MaterialPageRoute<void>(
+        builder: (_) => const Scaffold(body: Text('player'))));
+    await tester.pumpAndSettle();
+    final homeBefore =
+        tester.widget<HomeTab>(find.byType(HomeTab, skipOffstage: false));
+    for (var i = 0; i < 3; i++) {
+      state.noteWatchTime(
+          '1', WatchTime(time: 10 + i, duration: 600, timestamp: 1));
+      await tester.pump();
+    }
+    expect(tester.widget<HomeTab>(find.byType(HomeTab, skipOffstage: false)),
+        same(homeBefore));
+    nav.pop();
+    await tester.pumpAndSettle();
+    expect(
+        tester.widget<HomeTab>(find.byType(HomeTab)), isNot(same(homeBefore)));
+    await tester.pumpWidget(const SizedBox());
     await tester.pump(const Duration(seconds: 2));
   });
 

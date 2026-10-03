@@ -227,11 +227,20 @@ void main() {
 
     client.key(RemoteKey.up);
     client.key(RemoteKey.ok);
+    client.key(RemoteKey.volumeUp);
+    client.key(RemoteKey.volumeDown);
+    client.key(RemoteKey.mute);
     client.text('葬送的芙莉蓮', submit: true);
     client.play('12345', at: 83.5, streaming: true);
     client.configure('http://192.168.1.10:5000', 'secret-token');
     await until(() => actions.configs.isNotEmpty);
-    expect(actions.keys, [RemoteKey.up, RemoteKey.ok]);
+    expect(actions.keys, [
+      RemoteKey.up,
+      RemoteKey.ok,
+      RemoteKey.volumeUp,
+      RemoteKey.volumeDown,
+      RemoteKey.mute
+    ]);
     expect(actions.texts.single, ('葬送的芙莉蓮', true));
     expect(actions.plays.single, ('12345', 83.5, true));
     expect(
