@@ -9,6 +9,7 @@ import 'dart:convert';
 import 'dart:io';
 
 import 'package:agp_mobile/src/state/tv_remote_client.dart';
+import 'package:agp_mobile/src/state/discord_crypto.dart';
 import 'package:agp_mobile/src/state/tv_remote_host.dart';
 import 'package:agp_mobile/src/state/tv_remote_protocol.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -82,6 +83,7 @@ void main() {
   late TvDevice tv;
   final clients = <TvRemoteClient>[];
   var saved = <TvDevice>[];
+  final discordTransfers = <(String, String)>[];
 
   TvRemoteClient phone({String id = 'phone-1', String name = 'Pixel'}) {
     final client = TvRemoteClient(
@@ -107,12 +109,17 @@ void main() {
   setUp(() async {
     actions = FakeActions();
     saved = [];
+    discordTransfers.clear();
     host = TvRemoteHost(
       actions: actions,
       id: 'tv-1',
       name: '客廳電視',
       port: 0,
       discoveryPort: 0,
+      onDiscordCredentials: (token, name) async {
+        discordTransfers.add((token, name));
+        return null;
+      },
     );
     await host.start();
     tv = TvDevice(
@@ -163,6 +170,32 @@ void main() {
     await until(() => again.connected);
     expect(actions.pairings, hasLength(1));
     expect(actions.connections, ['Pixel', 'Pixel']);
+  });
+
+  test('已配對手機可加密傳送 Discord，重播相同密文會被拒絕', () async {
+    final client = await paired();
+    await client.shareDiscord('fake-discord-credential', 'Test user');
+    expect(discordTransfers, [('fake-discord-credential', 'Test user')]);
+    final credential = client.device!.token;
+    client.disconnect();
+    final socket = await WebSocket.connect('ws://127.0.0.1:${host.boundPort}/remote/ws');
+    final messages = StreamIterator(socket);
+    addTearDown(() async { await messages.cancel(); await socket.close(); });
+    socket.add(jsonEncode({'t': 'hello', 'id': 'phone-1', 'name': 'Pixel', 'token': credential}));
+    expect(await messages.moveNext(), isTrue);
+    final welcome = jsonDecode(messages.current as String) as Map;
+    expect(welcome['t'], 'welcome');
+    await messages.moveNext(); // initial playback state
+    final encrypted = await DiscordTransfer.seal('second-fake-credential', 'Test user',
+        welcome['discord_key'], welcome['discord_challenge'], 'tv-1:phone-1:$credential');
+    socket.add(jsonEncode({'t': 'discord', ...encrypted}));
+    await messages.moveNext();
+    expect((jsonDecode(messages.current as String) as Map)['ok'], isTrue);
+    expect(discordTransfers, hasLength(2));
+    socket.add(jsonEncode({'t': 'discord', ...encrypted}));
+    await messages.moveNext();
+    expect((jsonDecode(messages.current as String) as Map)['ok'], isFalse);
+    expect(discordTransfers, hasLength(2));
   });
 
   test('配對碼錯三次就斷線, 什麼都沒記下來', () async {

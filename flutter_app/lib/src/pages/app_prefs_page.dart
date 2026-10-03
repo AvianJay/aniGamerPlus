@@ -18,6 +18,7 @@ import '../util/build_config.dart';
 import '../util/format.dart';
 import '../widgets/common.dart';
 import 'watch_page.dart';
+import 'discord_settings_page.dart';
 
 const List<String> kResolutionChoices = ['1080', '720', '540', '480', '360'];
 
@@ -79,6 +80,13 @@ class _AppPrefsPageState extends State<AppPrefsPage> {
       body: ListView(
         padding: const EdgeInsets.only(bottom: 30),
         children: [
+          ListTile(
+            title: const Text('Discord 播放動態'),
+            subtitle: const Text('顯示正在看的作品，也能加密同步到其他裝置'),
+            trailing: const Icon(Icons.chevron_right_rounded),
+            onTap: () => Navigator.of(context).push(MaterialPageRoute(
+                builder: (_) => DiscordSettingsPage(state: state))),
+          ),
           _group('播放'),
           _pick<double>(
             title: '預設播放速度',

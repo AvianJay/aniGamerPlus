@@ -103,6 +103,8 @@ def patch_manifest(path):
         application.set(attr('label'), LABEL)
         # 2. 自架的伺服器多半是區網 http://192.168.x.x:5000, 沒有憑證可言
         application.set(attr('usesCleartextTraffic'), 'true')
+        application.set(attr('fullBackupContent'), '@xml/agp_backup_rules')
+        application.set(attr('dataExtractionRules'), '@xml/agp_data_extraction_rules')
 
     # video_player_pip uses the Activity's system PiP window on Android.
     activity = application.find('activity') if application is not None else None
@@ -398,6 +400,34 @@ dependencies {
     with open(gradle_path, 'w', encoding='utf-8', newline='') as handle:
         handle.write(source)
     print('  patched', gradle_path, '(cast)')
+
+
+def patch_discord_storage(gradle_path, project_path):
+    # Secure storage stays on its originating device; preferences still back up.
+    xml_dir = os.path.join('android', 'app', 'src', 'main', 'res', 'xml')
+    os.makedirs(xml_dir, exist_ok=True)
+    exclusion = '<exclude domain="sharedpref" path="FlutterSecureStorage.xml"/>'
+    with open(os.path.join(xml_dir, 'agp_backup_rules.xml'), 'w', encoding='utf-8') as f:
+        f.write('<full-backup-content>' + exclusion + '</full-backup-content>')
+    with open(os.path.join(xml_dir, 'agp_data_extraction_rules.xml'), 'w', encoding='utf-8') as f:
+        f.write('<data-extraction-rules><cloud-backup>' + exclusion +
+                '</cloud-backup><device-transfer>' + exclusion +
+                '</device-transfer></data-extraction-rules>')
+    with open(gradle_path, encoding='utf-8') as f:
+        gradle = f.read()
+    gradle = gradle.replace('minSdk = flutter.minSdkVersion',
+                            'minSdk = maxOf(flutter.minSdkVersion, 24)')
+    with open(gradle_path, 'w', encoding='utf-8', newline='') as f:
+        f.write(gradle)
+    entitlements = {'keychain-access-groups': []}
+    with open(os.path.join('ios', 'Runner', 'Runner.entitlements'), 'wb') as f:
+        plistlib.dump(entitlements, f)
+    with open(project_path, encoding='utf-8') as f:
+        project = f.read()
+    project = project.replace('INFOPLIST_FILE = Runner/Info.plist;',
+        'INFOPLIST_FILE = Runner/Info.plist;\n\t\t\t\tCODE_SIGN_ENTITLEMENTS = Runner/Runner.entitlements;')
+    with open(project_path, 'w', encoding='utf-8', newline='') as f:
+        f.write(project)
 
 
 def patch_android_signing(path):
@@ -911,6 +941,8 @@ patch_app_delegate(os.path.join('ios', 'Runner', 'AppDelegate.swift'))
 # 要在 patch_ios_deployment 之後: 那一支把專案裡每一個部署目標都改成 15.0,
 # 這個 extension 得是 16.2
 add_live_activity_extension(os.path.join('ios', 'Runner.xcodeproj', 'project.pbxproj'))
+patch_discord_storage(os.path.join('android', 'app', 'build.gradle.kts'),
+                      os.path.join('ios', 'Runner.xcodeproj', 'project.pbxproj'))
 PYTHON
 
 echo "==> flutter pub get"

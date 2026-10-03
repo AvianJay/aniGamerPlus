@@ -13,6 +13,7 @@ import 'dart:io';
 import 'package:flutter/foundation.dart';
 
 import 'remote_setup.dart';
+import 'discord_crypto.dart';
 import 'tv_remote_protocol.dart';
 
 class TvDiscovery {
@@ -238,6 +239,8 @@ enum TvRemotePhase {
 }
 
 class TvRemoteClient extends ChangeNotifier {
+  String _discordKey = '', _discordChallenge = '';
+  Completer<String?>? _discordResult;
   TvRemoteClient({
     required this.phoneId,
     required this.phoneName,
@@ -358,6 +361,10 @@ class TvRemoteClient extends ChangeNotifier {
   }
 
   void _drop() {
+    _discordKey = '';
+    _discordChallenge = '';
+    _discordResult?.complete('電視連線已中斷');
+    _discordResult = null;
     final socket = _socket;
     _socket = null;
     if (socket != null) unawaited(socket.close());
@@ -408,6 +415,29 @@ class TvRemoteClient extends ChangeNotifier {
   void configure(String server, String token) =>
       _send({'t': 'config', 'server': server, 'token': token});
 
+  Future<void> shareDiscord(String token, String name) async {
+    if (!connected ||
+        _discordKey.isEmpty ||
+        _discordChallenge.isEmpty ||
+        device == null ||
+        _discordResult != null) {
+      throw StateError('請先連上已更新的電視，再傳送 Discord');
+    }
+    final generation = _generation;
+    final result = Completer<String?>();
+    _discordResult = result;
+    try {
+      final envelope = await DiscordTransfer.seal(token, name, _discordKey,
+          _discordChallenge, '${device!.id}:$phoneId:${device!.token}');
+      if (generation != _generation || !connected) throw StateError('電視連線已中斷');
+      _send({'t': 'discord', ...envelope});
+      final error = await result.future.timeout(const Duration(seconds: 25));
+      if (error != null) throw StateError(error);
+    } finally {
+      if (_discordResult == result) _discordResult = null;
+    }
+  }
+
   void _send(Map<String, dynamic> message) {
     try {
       _socket?.add(jsonEncode(message));
@@ -428,6 +458,8 @@ class TvRemoteClient extends ChangeNotifier {
     }
     switch (message['t']) {
       case 'welcome':
+        _discordKey = '${message['discord_key'] ?? ''}';
+        _discordChallenge = '${message['discord_challenge'] ?? ''}';
         device = device!.copyWith(
           id: '${message['id'] ?? device!.id}',
           name: '${message['name'] ?? ''}'.isEmpty
@@ -462,6 +494,13 @@ class TvRemoteClient extends ChangeNotifier {
       case 'notice':
         final text = '${message['message'] ?? ''}';
         if (text.isNotEmpty) _notices.add(text);
+      case 'discord-result':
+        _discordKey = '${message['discord_key'] ?? ''}';
+        _discordChallenge = '${message['discord_challenge'] ?? ''}';
+        _discordResult?.complete(message['ok'] == true
+            ? null
+            : '${message['message'] ?? 'Discord 傳送失敗'}');
+        _discordResult = null;
       case 'error':
         this.message = '${message['message'] ?? ''}';
         phase = TvRemotePhase.failed;
@@ -471,6 +510,10 @@ class TvRemoteClient extends ChangeNotifier {
 
   void _onClosed(int generation) {
     if (generation != _generation) return;
+    _discordKey = '';
+    _discordChallenge = '';
+    _discordResult?.complete('電視連線已中斷');
+    _discordResult = null;
     _socket = null;
     if (phase != TvRemotePhase.failed) {
       final wasConnected = phase == TvRemotePhase.connected;

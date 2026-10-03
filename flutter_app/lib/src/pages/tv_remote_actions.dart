@@ -41,6 +41,7 @@ class TvRemoteService {
       name: Device.name,
       paired: state.prefs.pairedPhones,
       onPairedChanged: state.prefs.setPairedPhones,
+      onDiscordCredentials: state.discord.acceptFromPhone,
     );
     TvRemoteHost.current = created;
     // 伺服器 / 帳號換了要讓手機知道 (手機據此決定要不要問「把設定傳過去」)

@@ -111,6 +111,13 @@ class Prefs {
   double get rate => _sp.getDouble('agp-rate') ?? 1.0;
   Future<void> setRate(double value) => _sp.setDouble('agp-rate', value);
 
+  bool get discordPresence => _sp.getBool('agp-discord-presence') ?? false;
+  String get discordAccount => _sp.getString('agp-discord-account') ?? '';
+  Future<void> setDiscordAccount(String value) =>
+      _sp.setString('agp-discord-account', value);
+  Future<void> setDiscordPresence(bool value) =>
+      _sp.setBool('agp-discord-presence', value);
+
   bool get danmakuOn => _sp.getBool('agp-danmaku') ?? true;
   Future<void> setDanmakuOn(bool value) => _sp.setBool('agp-danmaku', value);
 

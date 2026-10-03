@@ -17,6 +17,7 @@ import '../api/models.dart';
 import '../util/device.dart';
 import '../util/format.dart';
 import 'cast.dart';
+import 'discord_presence.dart';
 import 'downloads.dart';
 import 'download_background.dart';
 import 'download_network.dart';
@@ -48,6 +49,7 @@ class AppState extends ChangeNotifier {
     final prefs = await Prefs.load();
     final state = AppState._(prefs, api: client);
     _instance = state;
+    await state.discord.useAccount(prefs.server, prefs.discordAccount);
     state.downloadNetwork = DownloadNetwork(state.downloads);
     await state.downloadNetwork.start(wifiOnly: prefs.downloadWifiOnly);
     await state.downloads.init(concurrency: prefs.downloadConcurrency);
@@ -57,6 +59,7 @@ class AppState extends ChangeNotifier {
 
   final Prefs prefs;
   final AgpClient client;
+  late final DiscordPresence discord = DiscordPresence(prefs);
   late final DownloadStore downloads;
   late final DownloadNetwork downloadNetwork;
   late final DownloadBackground downloadBackground;
@@ -143,8 +146,10 @@ class AppState extends ChangeNotifier {
   // --------------------------------------------------------------- 伺服器設定
 
   Future<void> setServer(String url) async {
+    await discord.forget(bestEffort: true);
     client.baseUrl = url;
     await prefs.setServer(client.baseUrl);
+    await discord.useAccount(client.baseUrl, '');
     await refreshAll();
   }
 
@@ -233,6 +238,7 @@ class AppState extends ChangeNotifier {
 
     if (!serverInfo.userControl) {
       currentUser = null;
+      await discord.useAccount(client.baseUrl, '');
       return;
     }
     currentUser = await client.currentUser();
@@ -240,7 +246,9 @@ class AppState extends ChangeNotifier {
       // token 過期了
       await prefs.clearToken();
       client.token = null;
+      await discord.forget(bestEffort: true);
     }
+    await discord.useAccount(client.baseUrl, currentUser?.username ?? '');
   }
 
   Future<void> refreshLibrary() async {
@@ -631,6 +639,11 @@ class AppState extends ChangeNotifier {
     // 進度是一個帳號一份, 換人登入別把上一個人的紀錄合併進來
     await _clearWatchTimes();
     await refreshAll();
+    if (loggedIn) {
+      try {
+        await discord.unlock(client, password);
+      } catch (_) {/* Sync failure must not make server login fail. */}
+    }
   }
 
   /// 掃碼設定送來的: 位址 (跟有填的話, 登入拿到的 token) 已經在送來的那一刻
@@ -638,6 +651,7 @@ class AppState extends ChangeNotifier {
   /// 不必讓它等這一邊把整份片庫重新拉一遍.
   Future<void> applyRemoteSetup(
       {required String server, String token = ''}) async {
+    await discord.forget(bestEffort: true);
     client.baseUrl = server;
     await prefs.setServer(client.baseUrl);
     if (token.isNotEmpty) {
@@ -650,6 +664,7 @@ class AppState extends ChangeNotifier {
   }
 
   Future<void> logout() async {
+    await discord.forget(bestEffort: true);
     await client.logout();
     await prefs.clearToken();
     currentUser = null;

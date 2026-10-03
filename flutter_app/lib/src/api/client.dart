@@ -554,6 +554,37 @@ class AgpClient {
     return map['message']?.toString() ?? '密碼修改成功!';
   }
 
+  Future<Map<String, dynamic>?> discordCredentials() async {
+    final response = await _get('/user/discord');
+    if (response.statusCode == 404) return null;
+    _check(response);
+    final data = jsonDecode(response.body) as Map;
+    final value = data['credentials'];
+    return value is Map ? value.cast<String, dynamic>() : null;
+  }
+
+  void _check(http.Response response) {
+    if (response.statusCode < 200 || response.statusCode >= 300) {
+      throw ApiException(response.statusCode,
+          'Discord 同步失敗（${response.statusCode}），請確認伺服器已更新並啟用帳號功能');
+    }
+  }
+
+  Future<void> saveDiscordCredentials(Map<String, dynamic> value) async {
+    final request = http.Request('PUT', uri('/user/discord'))
+      ..followRedirects = false
+      ..headers.addAll({...authHeaders, 'Content-Type': 'application/json'})
+      ..body = jsonEncode(value);
+    _check(await http.Response.fromStream(await _http.send(request)));
+  }
+
+  Future<void> deleteDiscordCredentials() async {
+    final request = http.Request('DELETE', uri('/user/discord'))
+      ..followRedirects = false
+      ..headers.addAll(authHeaders);
+    _check(await http.Response.fromStream(await _http.send(request)));
+  }
+
   Future<void> logout() async {
     try {
       await _get('/logout');

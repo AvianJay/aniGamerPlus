@@ -604,6 +604,7 @@ class _WatchPageState extends State<WatchPage> with WidgetsBindingObserver {
   @override
   void dispose() {
     WidgetsBinding.instance.removeObserver(this);
+    state.discord.stopPlayback();
     _idleTimer?.cancel();
     _flashTimer?.cancel();
     _nextTimer?.cancel();
@@ -2756,6 +2757,19 @@ class _WatchPageState extends State<WatchPage> with WidgetsBindingObserver {
 
   /// 電視上: 手機的遙控器要畫進度條. 一秒兩次, 沒有手機連著就什麼都不做
   void _publishToPhones() {
+    if (!_initialising && !_ended && _error.isEmpty && !_dormant) {
+      state.discord.update(
+          sn: _sn,
+          title: _seriesName,
+          episode: _hereLabel,
+          position: _pendingSeek ?? _clock.value,
+          duration: _playableDuration,
+          playing: _showsPlaying,
+          rate: _rate,
+          cover: _series?.cover ?? '');
+    } else {
+      state.discord.stopPlayback();
+    }
     final remote = TvRemoteHost.current;
     if (remote == null || _remoteSeek == null || !remote.hasClients) return;
     remote.publish(NowPlaying(

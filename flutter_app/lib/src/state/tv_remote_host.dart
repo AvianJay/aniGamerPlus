@@ -13,6 +13,7 @@ import 'dart:math';
 import 'package:flutter/foundation.dart';
 
 import 'tv_remote_protocol.dart';
+import 'discord_crypto.dart';
 
 abstract class TvRemoteActions {
   /// 電視現在連的伺服器、登入的帳號 (沒有就是空字串)
@@ -63,6 +64,8 @@ class _Session {
 
   /// 配對過、認得了才有
   PairedPhone? phone;
+  DiscordTransfer? discordTransfer;
+  bool discordBusy = false;
 }
 
 class TvRemoteHost extends ChangeNotifier {
@@ -72,6 +75,7 @@ class TvRemoteHost extends ChangeNotifier {
     required this.name,
     List<PairedPhone> paired = const [],
     this.onPairedChanged,
+    this.onDiscordCredentials,
     this.port = kRemotePort,
     this.discoveryPort = kRemoteDiscoveryPort,
     this.pairingCooldown = const Duration(seconds: 30),
@@ -88,6 +92,8 @@ class TvRemoteHost extends ChangeNotifier {
 
   /// 配對清單變了, 要落盤
   final Future<void> Function(List<PairedPhone> phones)? onPairedChanged;
+  final Future<String?> Function(String token, String name)?
+      onDiscordCredentials;
 
   final int port;
   final int discoveryPort;
@@ -362,6 +368,34 @@ class TvRemoteHost extends ChangeNotifier {
     }
 
     switch (type) {
+      case 'discord':
+        final transfer = session.discordTransfer;
+        final callback = onDiscordCredentials;
+        if (transfer == null || callback == null || session.discordBusy) return;
+        session.discordBusy = true;
+        session.discordTransfer = null;
+        String? error;
+        try {
+          final value = await transfer.open(
+              message, '$id:${session.phone!.id}:${session.phone!.token}');
+          if (!_sessions.contains(session) || !_paired.contains(session.phone)) {
+            return;
+          }
+          error = await callback(value.token, value.name);
+        } catch (_) {
+          error = 'Discord 資料傳送失敗，請重新連線後再試。';
+        }
+        if (_sessions.contains(session)) {
+          session.discordTransfer = await DiscordTransfer.create();
+          session.discordBusy = false;
+          _send(session, {
+            't': 'discord-result',
+            'ok': error == null,
+            'message': error ?? 'Discord 已傳送到電視',
+            'discord_key': session.discordTransfer!.publicKey,
+            'discord_challenge': session.discordTransfer!.challenge
+          });
+        }
       case 'key':
         final key = RemoteKey.parse(message['k']);
         if (key != null) actions.key(key);
@@ -422,7 +456,7 @@ class TvRemoteHost extends ChangeNotifier {
 
     for (final phone in _paired) {
       if (phone.id == phoneId && token.isNotEmpty && phone.token == token) {
-        _authorize(session, phone);
+        unawaited(_authorize(session, phone));
         return;
       }
     }
@@ -490,12 +524,16 @@ class TvRemoteHost extends ChangeNotifier {
     _endPairing();
     await onPairedChanged?.call(paired);
     _send(session, {'t': 'paired', 'token': phone.token});
-    _authorize(session, phone);
+    await _authorize(session, phone);
   }
 
-  void _authorize(_Session session, PairedPhone phone) {
+  Future<void> _authorize(_Session session, PairedPhone phone) async {
     session.helloTimer?.cancel();
     session.phone = phone;
+    if (onDiscordCredentials != null) {
+      session.discordTransfer = await DiscordTransfer.create();
+      if (!_sessions.contains(session)) return;
+    }
     final status = actions.status;
     _send(session, {
       't': 'welcome',
@@ -504,6 +542,10 @@ class TvRemoteHost extends ChangeNotifier {
       'name': name,
       'server': status.server,
       'user': status.user,
+      if (session.discordTransfer != null) ...{
+        'discord_key': session.discordTransfer!.publicKey,
+        'discord_challenge': session.discordTransfer!.challenge,
+      },
     });
     _send(session, _state());
     actions.connected(phone.name);

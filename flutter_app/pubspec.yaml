@@ -22,6 +22,10 @@ dependencies:
 
   cached_network_image: ^3.4.1
   crypto: ^3.0.6
+  cryptography: ^2.9.0
+  cryptography_flutter: ^2.3.4
+  flutter_secure_storage: ^11.2.0
+  webview_flutter: ^4.14.1
 
   # 播放器 (mp4 + HLS 邊看邊下載)
   video_player: ">=2.8.0 <3.0.0"

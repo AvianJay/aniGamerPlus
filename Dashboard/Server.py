@@ -3754,6 +3754,80 @@ def _register_blocking(request, reqdata):
     return update_user_data(_append)
 
 
+def _discord_credentials_guard(request):
+    gated = _user_control_gate(_get_current_settings())
+    if gated is not None:
+        return gated
+    if not find_user_by_token(request.cookies.get('token')):
+        return JSONResponse({'message': 'login required'}, status_code=401)
+    return None
+
+
+def _validate_discord_credentials(value):
+    """Accept only the bounded, versioned client ciphertext envelope."""
+    import base64
+    import binascii
+    fields = {'v', 'kdf', 'iterations', 'salt', 'nonce', 'ciphertext', 'mac'}
+    if not isinstance(value, dict) or set(value) != fields:
+        return False
+    if (type(value['v']) is not int or value['v'] != 1
+            or value['kdf'] != 'pbkdf2-sha256'
+            or type(value['iterations']) is not int
+            or value['iterations'] != 600000):
+        return False
+    for name, minimum, maximum in (
+            ('salt', 16, 16), ('nonce', 12, 12), ('mac', 16, 16),
+            ('ciphertext', 1, 4096)):
+        raw = value[name]
+        if not isinstance(raw, str) or len(raw) > 5500:
+            return False
+        try:
+            size = len(base64.b64decode(raw, validate=True))
+        except (ValueError, binascii.Error):
+            return False
+        if not minimum <= size <= maximum:
+            return False
+    return True
+
+
+@app.api_route('/user/discord', methods=['GET', 'PUT', 'DELETE'])
+async def discord_credentials(request: Request):
+    denied = await run_in_threadpool(_discord_credentials_guard, request)
+    if denied is not None:
+        return denied
+    payload = None
+    if request.method == 'PUT':
+        try:
+            payload = await request.json()
+        except (ValueError, UnicodeDecodeError):
+            return JSONResponse({'message': 'invalid ciphertext'}, status_code=400)
+    return await run_in_threadpool(_discord_credentials_blocking, request, payload)
+
+
+def _discord_credentials_blocking(request, payload):
+    denied = _discord_credentials_guard(request)
+    if denied is not None:
+        return denied
+    if request.method == 'PUT' and not _validate_discord_credentials(payload):
+        return JSONResponse({'message': 'invalid ciphertext'}, status_code=400)
+
+    def apply(userdata):
+        user = find_user_by_token(request.cookies.get('token'), userdata)
+        if not user:
+            return (JSONResponse({'message': 'login required'}, status_code=401), False)
+        if request.method == 'GET':
+            response = JSONResponse({'credentials': user.get('discord_presence')},
+                                    headers={'Cache-Control': 'no-store'})
+            return (response, False)
+        if request.method == 'PUT':
+            user['discord_presence'] = dict(payload)
+        else:
+            user.pop('discord_presence', None)
+        return (JSONResponse({'status': '200'}, headers={'Cache-Control': 'no-store'}), True)
+
+    return update_user_data(apply)
+
+
 @app.api_route('/usermanage', methods=['GET', 'POST'])
 async def usermanage_v2(request: Request):
     if request.method == 'GET':
@@ -3781,6 +3855,7 @@ def _usermanage_blocking(request, reqdata):
             safe_user.pop('password', None)
             safe_user.pop('password_hash', None)
             safe_user.pop('token', None)
+            safe_user.pop('discord_presence', None)
             users.append(safe_user)
         # 手機 app 沒有辦法解析 usermanage.html, 拿同一份資料的 JSON 版
         if request.query_params.get('format') == 'json':
@@ -3844,6 +3919,7 @@ def _usermanage_blocking(request, reqdata):
                 target_user['password_hash'] = precomputed_hash
                 target_user.pop('password', None)
                 target_user['token'] = precomputed_token
+                target_user.pop('discord_presence', None)
             if reqdata.get('role') is not None:
                 target_user['role'] = _normalize_role(reqdata.get('role'))
             else:
@@ -3903,6 +3979,7 @@ def _userinfo_blocking(request, reqdata):
         safe_user.pop('password', None)
         safe_user.pop('password_hash', None)
         safe_user.pop('token', None)
+        safe_user.pop('discord_presence', None)
         return _render(request, 'userinfo.html', {'user': safe_user})
 
     if not reqdata:
@@ -3919,6 +3996,7 @@ def _userinfo_blocking(request, reqdata):
         ret_data.pop('token', None)
         ret_data.pop('password', None)
         ret_data.pop('password_hash', None)
+        ret_data.pop('discord_presence', None)
         return JSONResponse(ret_data)
 
     if action in ('changepassword', 'change'):
@@ -3950,6 +4028,8 @@ def _userinfo_blocking(request, reqdata):
             fresh_user['password_hash'] = new_hash
             fresh_user.pop('password', None)
             fresh_user['token'] = new_token
+            # The old password-derived ciphertext is no longer unlockable.
+            fresh_user.pop('discord_presence', None)
             return (JSONResponse({"status": "200", "message": "密碼修改成功!", "logout": True}), True)
 
         return update_user_data(_apply_pw)
