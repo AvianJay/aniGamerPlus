@@ -173,4 +173,138 @@ void main() {
         isNull);
     expect(calls, 2);
   });
+
+  test('valid OP after a long cold open is retained', () async {
+    final client = MockClient((request) async {
+      if (request.url.host == 'api.bgm.tv') {
+        return reply({
+          'data': [subject]
+        });
+      }
+      if (request.url.host == 'graphql.anilist.co') return reply(anilist);
+      return reply({
+        'found': true,
+        'results': [
+          {
+            'skipType': 'op',
+            'episodeLength': 1420,
+            'interval': {'startTime': 570, 'endTime': 660},
+          }
+        ]
+      });
+    });
+    addTearDown(client.close);
+    expect(
+        await OpeningSkipLookup(client).find(
+            title: title,
+            seasonStart: '2023/01/04',
+            episode: '10',
+            duration: 1420),
+        [570, 660]);
+  });
+
+  const rezero = 'Re：從零開始的異世界生活 第四季';
+  const native = 'Re:ゼロから始める異世界生活 4th season';
+  final cours = [
+    {
+      'name': '$native 喪失編',
+      'name_cn': 'Re：从零开始的异世界生活 第四季 丧失篇',
+      'date': '2026-04-08',
+      'eps': 11
+    },
+    {
+      'name': '$native 奪還編',
+      'name_cn': 'Re：从零开始的异世界生活 第四季 夺还篇',
+      'date': '2026-08-12',
+      'eps': 8
+    },
+  ];
+
+  for (final episodes in [19, 11]) {
+    test('split arcs require matching combined episode count ($episodes)',
+        () async {
+      final requested = <Uri>[];
+      final client = MockClient((request) async {
+        requested.add(request.url);
+        if (request.url.host == 'api.bgm.tv') return reply({'data': cours});
+        if (request.url.host == 'graphql.anilist.co') {
+          final body = jsonDecode(request.body);
+          return reply({
+            'data': {
+              'Page': {
+                'media': body['variables']['s'] != native
+                    ? []
+                    : [
+                        {
+                          'idMal': 61316,
+                          'episodes': episodes,
+                          'title': {'native': native},
+                          'startDate': {'year': 2026, 'month': 4, 'day': 8},
+                        }
+                      ],
+              }
+            }
+          });
+        }
+        return reply({
+          'found': true,
+          'results': [
+            {
+              'skipType': 'op',
+              'episodeLength': 1420,
+              'interval': {'startTime': 500, 'endTime': 590},
+            }
+          ]
+        });
+      });
+      addTearDown(client.close);
+      final result = await OpeningSkipLookup(client).find(
+          title: rezero,
+          seasonStart: '2026/04/08',
+          episode: '17',
+          duration: 1420);
+      if (episodes == 19) {
+        expect(result, [500, 590]);
+        expect(requested.last.path, '/v2/skip-times/61316/17');
+      } else {
+        expect(result, isNull);
+        expect(
+            requested.where((uri) => uri.host == 'api.aniskip.com'), isEmpty);
+      }
+    });
+  }
+
+  test('split arcs with no exact premiere date remain ambiguous', () async {
+    var calls = 0;
+    final client = MockClient((request) async {
+      calls++;
+      return reply({'data': cours});
+    });
+    addTearDown(client.close);
+    expect(
+        await OpeningSkipLookup(client).find(
+            title: rezero, seasonStart: '2026', episode: '17', duration: 1420),
+        isNull);
+    expect(calls, 1);
+  });
+
+  test('missing OP records are not replaced with a guessed interval', () async {
+    final client = MockClient((request) async {
+      if (request.url.host == 'api.bgm.tv') {
+        return reply({
+          'data': [subject]
+        });
+      }
+      if (request.url.host == 'graphql.anilist.co') return reply(anilist);
+      return reply({'found': false}, 404);
+    });
+    addTearDown(client.close);
+    expect(
+        await OpeningSkipLookup(client).find(
+            title: title,
+            seasonStart: '2023/01/04',
+            episode: '10',
+            duration: 1420),
+        isNull);
+  });
 }
