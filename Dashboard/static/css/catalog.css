@@ -128,6 +128,22 @@ a.agp-slot:hover { background: var(--agp-bg-card-hover); }
 }
 .agp-catalog-filters select + label { margin-left: 10px; }
 .agp-catalog-filters select:focus-visible { outline: 2px solid var(--agp-accent); }
+.agp-catalog-filters select:disabled { cursor: not-allowed; opacity: .5; }
+
+/* 動畫瘋以外的來源 (anime1.me 之類). 站上沒有封面, 卡片是生成的色塊 ——
+   角落標個來源, 同名作品兩邊都有的時候才分得出點進去是哪一邊 */
+.agp-poster-source {
+  background: rgb(8 8 10 / 78%);
+  border-radius: 4px;
+  color: #fff;
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: .02em;
+  padding: 2px 6px;
+  position: absolute;
+  right: 6px;
+  top: 6px;
+}
 body.agp-no-catalog .agp-catalog-filters { display: none; }
 
 .agp-count {

@@ -23,6 +23,7 @@ from ui_harness import (  # noqa: E402
     STATIC_PATH,
     VIDEO_LIST,
     CATALOG_ALL,
+    CATALOG_DOWNLOADS,
     CATALOG_LANDING_LOCAL_SN,
     CATALOG_LOCAL_SN,
     CATALOG_SEASON,
@@ -62,6 +63,13 @@ def server():
 def server_without_catalog():
     """A dashboard with ``online_watch`` off, where /catalog/* does not exist."""
     with HarnessServer(catalog=False) as running:
+        yield running
+
+
+@pytest.fixture(scope='session')
+def server_with_anime1():
+    """A dashboard with the anime1.me plugin on: 所有動畫 lists both sources."""
+    with HarnessServer(providers=True) as running:
         yield running
 
 
@@ -427,6 +435,84 @@ def test_catalog_tag_and_sort_filters_use_the_server(page, server):
     page.fill('#homeSearch', '所有動畫 1')
     expect(page.locator('#homeCatalog .agp-count')).to_have_text('找到 3 部作品')
     assert page.locator('#catalogTag').input_value() == '異世界'
+    assert page.errors == []
+
+
+def test_catalog_source_filter_stays_away_without_plugin_sources(page, server):
+    # 只有動畫瘋一個來源時沒什麼好選的, 篩選列跟以前一模一樣
+    open_home(page, server)
+    expect(page.locator('#catalogTag option')).to_have_count(4)
+    expect(page.locator('#catalogProvider')).to_be_hidden()
+    expect(page.locator('label[for="catalogProvider"]')).to_be_hidden()
+    assert page.locator('.agp-poster-source').count() == 0
+    assert page.errors == []
+
+
+def test_catalog_finds_plugin_titles_and_queues_their_episodes(page, server_with_anime1):
+    server = server_with_anime1
+    del CATALOG_DOWNLOADS[:]
+    open_home(page, server)
+    # 所有來源 + 動畫瘋 + Anime1.me + 只能看
+    expect(page.locator('#catalogProvider option')).to_have_count(4)
+
+    # 搜尋會同時翻到 anime1.me 的作品, 角落標著來源
+    page.fill('#homeSearch', '第四季')
+    expect(page.locator('#homeCatalog .agp-count')).to_have_text('找到 1 部作品')
+    card = page.locator('#homeCatalog .agp-poster')
+    expect(card.locator('.agp-poster-source')).to_have_text('Anime1.me')
+    card.click()
+
+    sheet = page.locator('#catalogSheet')
+    page.wait_for_selector('#catalogSheet .agp-epgroup')
+    expect(sheet.locator('.agp-chip').first).to_have_text('Anime1.me')
+    expect(sheet.locator('.agp-sheet-actions a[href*="watch?id="]')).to_have_attribute(
+        'href', './watch?id=' + FIRST_SN)
+    expect(sheet.locator('.agp-ep.is-local')).to_have_count(1)
+    # 動畫瘋專用的東西不能出現: 邊看邊下載走的是動畫瘋的 HLS, 站上也沒畫質可挑
+    assert sheet.locator('[data-stream]').count() == 0
+    assert sheet.locator('#catalogResolution').count() == 0
+    expect(sheet.locator('a[href="https://anime1.me/category/re0/"]')).to_contain_text('在 Anime1.me 開啟')
+
+    sheet.locator('[data-provider-episode="30202"]').click()
+    expect(sheet.locator('.agp-ep.is-queued')).to_have_count(1)
+    assert CATALOG_DOWNLOADS == [{'sn': 'anime1:1878', 'mode': 'single', 'episodes': ['30202']}]
+
+    sheet.locator('.agp-sheet-actions [data-download="all"]').click()
+    # 整部加入下載之後, 除了片庫已經有的那一集, 每一格都是排隊中
+    expect(sheet.locator('.agp-ep.is-queued')).to_have_count(3)
+    assert CATALOG_DOWNLOADS[-1] == {'sn': 'anime1:1878', 'mode': 'all', 'episodes': []}
+
+    page.keyboard.press('Escape')
+    page.fill('#homeSearch', '')
+    page.locator('#catalogProvider').select_option('anime1')
+    expect(page.locator('#homeCatalog .agp-count')).to_have_text('共 2 部作品')
+    # 標籤是動畫瘋的分類, 只看插件來源時沒得選
+    expect(page.locator('#catalogTag')).to_be_disabled()
+    page.locator('#catalogProvider').select_option('bahamut')
+    expect(page.locator('#homeCatalog .agp-count')).to_have_text('共 %d 部作品' % len(CATALOG_ALL))
+    expect(page.locator('#catalogTag')).to_be_enabled()
+    assert page.errors == []
+
+
+def test_catalog_sheet_follows_what_the_source_declares(page, server_with_anime1):
+    """按鈕跟篩選看來源宣告的 features, 不是看「是不是動畫瘋」."""
+    server = server_with_anime1
+    del CATALOG_DOWNLOADS[:]
+    open_home(page, server)
+    expect(page.locator('#catalogProvider option')).to_have_count(4)
+    # 這個來源宣告了 tags, 所以只看它的時候標籤篩選還是能用
+    page.locator('#catalogProvider').select_option('viewer')
+    expect(page.locator('#catalogTag')).to_be_enabled()
+    page.locator('#catalogProvider').select_option('anime1')
+    expect(page.locator('#catalogTag')).to_be_disabled()
+
+    # 只能瀏覽的來源: 沒有加入下載, 集數也不是按鈕, 說明要講清楚
+    sheet = open_sheet(page, server, 'viewer:1')
+    expect(sheet.locator('.agp-sheet-hint')).to_contain_text('只能瀏覽')
+    assert sheet.locator('[data-download]').count() == 0
+    assert sheet.locator('[data-provider-episode]').count() == 0
+    expect(sheet.locator('.agp-ep')).to_have_count(2)
+    assert CATALOG_DOWNLOADS == []
     assert page.errors == []
 
 

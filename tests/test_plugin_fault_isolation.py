@@ -13,7 +13,7 @@ import pytest
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from plugin_system import PluginManager
+from plugin_system import CatalogProvider, PluginManager
 
 
 class ExplodingPlugin:
@@ -39,6 +39,18 @@ class ExplodingPlugin:
 
     def on_auto_update(self, context):
         raise RuntimeError('壞了')
+
+    def catalog_providers(self):
+        raise RuntimeError('片單壞了')
+
+    def catalog_items(self, provider):
+        raise RuntimeError('片單壞了')
+
+    def catalog_anime(self, provider, anime_id):
+        raise RuntimeError('分類頁壞了')
+
+    def catalog_download(self, provider, anime_id, episodes, mode, context):
+        raise RuntimeError('下載壞了')
 
 
 class SilentPlugin:
@@ -82,9 +94,104 @@ def test_no_plugin_handles_upload_leaves_it_unhandled():
     lambda m: m.get_commands(),
     lambda m: m.run_command('whatever', [], {}),
     lambda m: m.auto_update({}),
+    lambda m: m.catalog_providers(),
+    lambda m: m.catalog_items('anime1'),
+    lambda m: m.catalog_anime('anime1', '1878'),
+    lambda m: m.catalog_download('anime1', '1878', ['30259'], 'single', {}),
 ])
 def test_every_hook_swallows_plugin_exceptions(call):
     call(_manager_with(ExplodingPlugin()))  # 不該拋出任何東西
+
+
+ALL_DOWNLOADS = {'tags': False, 'download': True, 'subscribe': True}
+
+
+class CatalogPlugin:
+    """只認 anime1 這個來源的片單插件, 照方法名自己寫的, 沒宣告 features."""
+
+    def catalog_providers(self):
+        return [{'id': 'anime1', 'name': 'Anime1.me'}, 'garbage', {'id': ''}]
+
+    def catalog_items(self, provider):
+        return [{'animeSn': '1878', 'title': 'Re:0'}] if provider == 'anime1' else None
+
+    def catalog_anime(self, provider, anime_id):
+        return {'title': 'Re:0'} if provider == 'anime1' else None
+
+    def catalog_download(self, provider, anime_id, episodes, mode, context):
+        if provider != 'anime1':
+            return None
+        return {'success': True, 'scheduled': len(episodes)}
+
+
+def test_a_broken_catalog_plugin_does_not_hide_the_next_one():
+    # 片單這幾個 hook 是「第一個回答的說了算」: 炸掉的插件當它沒回答, 後面的照樣算數
+    manager = _manager_with(ExplodingPlugin(), CatalogPlugin())
+    assert manager.catalog_providers() == [{'id': 'anime1', 'name': 'Anime1.me', 'features': ALL_DOWNLOADS}]
+    assert manager.catalog_items('anime1') == [{'animeSn': '1878', 'title': 'Re:0'}]
+    assert manager.catalog_anime('anime1', '1878') == {'title': 'Re:0'}
+
+
+def test_catalog_hooks_for_an_unknown_provider_come_back_empty():
+    manager = _manager_with(CatalogPlugin())
+    assert manager.catalog_items('nope') == []
+    assert manager.catalog_anime('nope', '1') is None
+    assert manager.catalog_download('nope', '1', [], 'all', {})['handled'] is False
+
+
+def test_catalog_download_exception_is_a_handled_failure():
+    # 插件已經接手這次下載, 炸了就是下載失敗 —— 不能往下問別的插件, 更不能往上炸
+    result = _manager_with(ExplodingPlugin(), CatalogPlugin()).catalog_download(
+        'anime1', '1878', ['30259'], 'single', {})
+    assert result['handled'] is True and result['success'] is False
+
+
+def test_duplicate_provider_ids_keep_the_first_plugin():
+    class Impostor:
+        def catalog_providers(self):
+            return [{'id': 'anime1', 'name': '冒牌'}]
+
+    providers = _manager_with(CatalogPlugin(), Impostor()).catalog_providers()
+    assert providers == [{'id': 'anime1', 'name': 'Anime1.me', 'features': ALL_DOWNLOADS}]
+
+
+def test_features_default_from_what_the_plugin_implements():
+    # 照方法名自己寫、沒宣告 features 的插件: 有 catalog_download 就當它能下載
+    class ListOnly:
+        def catalog_providers(self):
+            return [{'id': 'viewer', 'name': '只能看'}]
+
+    manager = _manager_with(CatalogPlugin(), ListOnly())
+    features = {provider['id']: provider['features'] for provider in manager.catalog_providers()}
+    assert features == {'anime1': ALL_DOWNLOADS,
+                        'viewer': {'tags': False, 'download': False, 'subscribe': False}}
+
+
+def test_declared_features_win_and_unknown_keys_are_dropped():
+    class Declared(CatalogProvider):
+        provider_id = 'tagged'
+        provider_name = '有標籤'
+        features = {'tags': True, 'subscribe': False, 'stream': True}
+
+    assert _manager_with(Declared()).catalog_providers() == [{
+        'id': 'tagged', 'name': '有標籤',
+        # 繼承 CatalogProvider 的一定有 catalog_download (base 回 None), 所以沒宣告的就是不支援
+        'features': {'tags': True, 'download': False, 'subscribe': False}}]
+
+
+def test_catalog_provider_base_only_answers_for_its_own_id():
+    class Mine(CatalogProvider):
+        provider_id = 'mine'
+
+        def catalog_items(self, provider):
+            return [{'animeSn': '1', 'title': 'x'}] if self.owns(provider) else None
+
+    manager = _manager_with(Mine())
+    assert manager.catalog_items('mine') == [{'animeSn': '1', 'title': 'x'}]
+    assert manager.catalog_items('other') == []
+    # base 沒實作的 hook 一律是「不是我的」, 不會被當成下載失敗
+    assert manager.catalog_download('mine', '1', ['1'], 'single', {})['handled'] is False
+    assert CatalogProvider().catalog_providers() == []
 
 
 def test_has_remote_and_playback_fall_through_to_next_plugin():

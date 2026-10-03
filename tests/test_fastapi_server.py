@@ -24,6 +24,7 @@ import time
 import pytest
 
 import Dashboard.Server as server
+from plugin_system import CatalogProvider
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
@@ -672,6 +673,220 @@ def test_catalog_anime_detail(client, autouse_settings, monkeypatch):
     assert response.status_code == 200
     assert response.json()['videoSn'] == '123'
     assert client.get('/catalog/anime.json?sn=x').status_code == 400
+
+
+# ------------------------------------------------- plugin catalog providers
+
+class FakeAnime1Plugin:
+    """片單插件的替身: anime1 兩部作品, 其中一部的第 1 集已經在片庫."""
+
+    def __init__(self, library_dir):
+        self.library_dir = library_dir
+        self.downloads = []
+
+    def catalog_providers(self):
+        return [{'id': 'anime1', 'name': 'Anime1.me'}]
+
+    def catalog_items(self, provider):
+        if provider != 'anime1':
+            return None
+        return [
+            {'animeSn': '1878', 'title': 'Re:從零開始 第四季', 'info': '2026 春', 'volume': '連載中(19)'},
+            {'animeSn': '1866', 'title': 'Alpha 摩緒', 'info': '2026 春', 'volume': '1-26'},
+            {'animeSn': 'bad id', 'title': '編號不合法的一列'},
+        ]
+
+    def catalog_anime(self, provider, anime_id):
+        if provider != 'anime1':
+            return None
+        return {
+            'title': 'Re:從零開始 第四季',
+            'seasonStart': '2026 春',
+            'publisher': '喵萌奶茶屋',
+            'totalEpisode': '2',
+            'sourceUrl': 'https://anime1.me/category/re0/',
+            'groups': [{'name': '本篇', 'episodes': [
+                {'id': '30200', 'episode': '1', 'path': os.path.join(self.library_dir, 'Re [01].mp4')},
+                {'id': '30259', 'episode': '2', 'path': os.path.join(self.library_dir, 'Re [02].mp4')},
+            ]}],
+        }
+
+    def catalog_download(self, provider, anime_id, episodes, mode, context):
+        if provider != 'anime1':
+            return None
+        self.downloads.append((anime_id, list(episodes), mode))
+        return {'success': True, 'scheduled': len(episodes), 'message': '已排入'}
+
+
+@pytest.fixture
+def anime1(monkeypatch, autouse_settings, tmp_path):
+    plugin = FakeAnime1Plugin(str(tmp_path))
+    monkeypatch.setattr(server.plugin_manager, '_plugins', [plugin])
+    # _sync_plugin_manager 看到設定換了就 reload, 那會把替身換掉
+    monkeypatch.setattr(server.plugin_manager, 'reload', lambda settings: None)
+    monkeypatch.setattr(server, '_get_catalog_all', lambda: [
+        {'animeSn': '7', 'title': 'Alpha 動畫瘋', 'popular': '72萬'}])
+    monkeypatch.setattr(server, '_get_catalog_tag', lambda tag: [
+        {'animeSn': '7', 'title': 'Alpha 動畫瘋', 'popular': '72萬'}])
+    monkeypatch.setattr(server, '_catalog_refreshing', lambda name: False)
+    monkeypatch.setattr(server, '_read_video_list_file', lambda: {'videos': [
+        {'sn': '4100012300001', 'path': os.path.join(str(tmp_path), 'Re [01].mp4'),
+         'resolution': 1080, 'source': 'Anime1.me'}]})
+    return plugin
+
+
+def test_catalog_providers_lists_plugin_sources(client, anime1):
+    providers = client.get('/catalog/providers.json').json()['providers']
+    assert providers == [
+        {'id': 'bahamut', 'name': '動畫瘋',
+         'features': {'tags': True, 'download': True, 'subscribe': True}},
+        {'id': 'anime1', 'name': 'Anime1.me',
+         'features': {'tags': False, 'download': True, 'subscribe': True}},
+    ]
+
+
+class TaggedViewerPlugin(CatalogProvider):
+    """第二個來源: 有分類標籤, 但只能看不能下載 (沒宣告就是不支援)."""
+
+    provider_id = 'viewer'
+    provider_name = '只能看'
+    features = {'tags': True}
+
+    def catalog_items(self, provider):
+        if not self.owns(provider):
+            return None
+        return [{'animeSn': 'a', 'title': '異世界那部', 'tags': ['異世界', '奇幻']},
+                {'animeSn': 'b', 'title': '校園那部', 'tags': ['校園']}]
+
+    def catalog_anime(self, provider, anime_id):
+        return {'title': '異世界那部', 'groups': []} if provider == 'viewer' else None
+
+
+def test_tag_filter_keeps_plugin_titles_only_from_sources_with_tags(client, anime1, monkeypatch):
+    monkeypatch.setattr(server.plugin_manager, '_plugins', [anime1, TaggedViewerPlugin()])
+    body = client.get('/catalog/all.json?provider=all&tag=異世界').json()
+    assert [item['animeSn'] for item in body['items']] == ['7', 'viewer:a']
+    assert body['items'][1]['tags'] == ['異世界', '奇幻']
+
+    # 只看某個插件來源、篩完一部不剩: 那是篩選的結果, 不是來源掛了, 不該叫前端重試
+    empty = client.get('/catalog/all.json?provider=anime1&tag=異世界')
+    assert empty.json()['total'] == 0 and empty.json()['retryAfter'] == 0
+    assert 'Retry-After' not in empty.headers
+
+
+def test_plugin_detail_carries_the_sources_features(client, anime1, monkeypatch):
+    monkeypatch.setattr(server.plugin_manager, '_plugins', [anime1, TaggedViewerPlugin()])
+    assert client.get('/catalog/anime.json?sn=anime1:1878').json()['features'] == {
+        'tags': False, 'download': True, 'subscribe': True}
+    assert client.get('/catalog/anime.json?sn=viewer:a').json()['features']['download'] is False
+
+
+def test_catalog_download_refuses_what_the_source_does_not_support(client, anime1, monkeypatch):
+    monkeypatch.setattr(server.plugin_manager, '_plugins', [anime1, TaggedViewerPlugin()])
+    monkeypatch.setattr(server, 'catalog_download_handler',
+                        lambda *args: pytest.fail('unsupported download reached the downloader'))
+    single = client.post('/catalog/download', json={'sn': 'viewer:a', 'mode': 'single', 'episodes': ['1']})
+    assert single.status_code == 400 and '不支援單集下載' in single.json()['message']
+    whole = client.post('/catalog/download', json={'sn': 'viewer:a', 'mode': 'all'})
+    assert whole.status_code == 400 and '不支援整部加入下載' in whole.json()['message']
+
+
+def test_catalog_all_without_provider_stays_bahamut_only(client, anime1):
+    # 舊版 App 不帶 provider, 也不認得插件來源的作品 —— 它們拿到的必須跟以前一樣
+    body = client.get('/catalog/all.json').json()
+    assert [item['animeSn'] for item in body['items']] == ['7']
+
+
+def test_catalog_all_merges_plugin_sources_with_prefixed_ids(client, anime1):
+    body = client.get('/catalog/all.json?provider=all').json()
+    assert [item['animeSn'] for item in body['items']] == ['7', 'anime1:1878', 'anime1:1866']
+    merged = body['items'][1]
+    assert merged['provider'] == 'anime1' and merged['providerName'] == 'Anime1.me'
+    assert merged['volume'] == '連載中(19)'
+
+    only = client.get('/catalog/all.json?provider=anime1&q=alpha').json()
+    assert [item['animeSn'] for item in only['items']] == ['anime1:1866']
+
+    searched = client.get('/catalog/all.json?provider=all&q=alpha').json()
+    assert [item['animeSn'] for item in searched['items']] == ['7', 'anime1:1866']
+
+
+def test_catalog_all_tag_filter_drops_untagged_plugin_items(client, anime1):
+    # 插件來源沒有動畫瘋的分類標籤, 選了標籤還混進來就是錯的結果
+    body = client.get('/catalog/all.json?provider=all&tag=異世界').json()
+    assert [item['animeSn'] for item in body['items']] == ['7']
+    assert client.get('/catalog/all.json?provider=nope').status_code == 400
+
+
+def test_catalog_anime_for_a_plugin_source_marks_local_episodes(client, anime1):
+    response = client.get('/catalog/anime.json?sn=anime1:1878')
+    assert response.status_code == 200
+    detail = response.json()
+    assert detail['provider'] == 'anime1' and detail['animeSn'] == 'anime1:1878'
+    assert detail['sourceUrl'] == 'https://anime1.me/category/re0/'
+    first, second = detail['groups'][0]['episodes']
+    # 片庫的 sn 是掃資料夾時編的, 插件只知道檔案在哪 —— 用路徑對回去
+    assert first == {'videoSn': '4100012300001', 'episodeId': '30200', 'episode': '1',
+                     'cover': '', 'local': True, 'resolution': 1080}
+    assert second['local'] is False and second['videoSn'] == ''
+    assert 'path' not in second, '伺服器上的檔案路徑不該送到瀏覽器'
+
+
+def test_catalog_anime_for_a_plugin_source_only_knows_listed_titles(client, anime1):
+    # 不在片單上的編號不准叫插件去翻人家的分類頁
+    assert client.get('/catalog/anime.json?sn=anime1:9999').status_code == 404
+    assert client.get('/catalog/anime.json?sn=nope:1878').status_code == 400
+    assert client.get('/catalog/anime.json?sn=anime1:../etc').status_code == 400
+
+
+def test_catalog_download_routes_to_the_main_process_handler(client, anime1, monkeypatch):
+    calls = []
+
+    def handler(provider, anime_id, episodes, mode):
+        calls.append((provider, anime_id, episodes, mode))
+        return {'handled': True, 'success': True, 'scheduled': len(episodes), 'message': '已排入 1 集'}
+
+    monkeypatch.setattr(server, 'catalog_download_handler', handler)
+    response = client.post('/catalog/download',
+                           json={'sn': 'anime1:1878', 'mode': 'single', 'episodes': ['30259']})
+    assert response.status_code == 200
+    assert response.json() == {'success': True, 'message': '已排入 1 集', 'scheduled': 1}
+    assert calls == [('anime1', '1878', ['30259'], 'single')]
+
+    assert client.post('/catalog/download', json={'sn': 'anime1:1878', 'mode': 'all'}).status_code == 200
+    assert calls[-1] == ('anime1', '1878', [], 'all')
+
+
+@pytest.mark.parametrize('payload', [
+    {'sn': '1878', 'mode': 'single', 'episodes': ['1']},          # 沒有來源前綴
+    {'sn': 'nope:1878', 'mode': 'single', 'episodes': ['1']},     # 沒有這個來源
+    {'sn': 'anime1:1878', 'mode': 'latest', 'episodes': ['1']},   # 不支援的模式
+    {'sn': 'anime1:1878', 'mode': 'single', 'episodes': []},      # 單集卻沒選集數
+    {'sn': 'anime1:1878', 'mode': 'single', 'episodes': ['../x']},
+    {'sn': 'anime1:1878', 'mode': 'single', 'episodes': '30259'},
+])
+def test_catalog_download_rejects_bad_requests(client, anime1, monkeypatch, payload):
+    monkeypatch.setattr(server, 'catalog_download_handler',
+                        lambda *args: pytest.fail('bad request reached the downloader'))
+    assert client.post('/catalog/download', json=payload).status_code == 400
+
+
+def test_catalog_download_without_a_downloader_is_503(client, anime1, monkeypatch):
+    # 單獨跑 Server.py 沒有主程式, 也就沒有下載器
+    monkeypatch.setattr(server, 'catalog_download_handler', None)
+    response = client.post('/catalog/download',
+                           json={'sn': 'anime1:1878', 'mode': 'single', 'episodes': ['30259']})
+    assert response.status_code == 503
+
+
+def test_catalog_download_is_admin_only(client, anime1, settings, userdata, monkeypatch):
+    settings['dashboard']['user_control']['enabled'] = True
+    monkeypatch.setattr(server, 'catalog_download_handler',
+                        lambda *args: pytest.fail('plain user reached the downloader'))
+    payload = {'sn': 'anime1:1878', 'mode': 'all'}
+    assert client.post('/catalog/download', json=payload).status_code == 401
+    auth_client(client, 'usertoken456')
+    assert client.post('/catalog/download', json=payload).status_code == 403
 
 
 # ------------------------------------------------- HLS routes

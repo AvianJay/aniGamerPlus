@@ -129,6 +129,7 @@ docker run -td --name anigamerplus \
 * [命令行使用](#命令行使用)
 * [Web控制臺使用](#Dashboard)
 * [線上觀看](#線上觀看)
+    * [其他片單來源](#其他片單來源)
 * [Flutter App](#flutter-app)
 
 ## 特性
@@ -141,7 +142,7 @@ docker run -td --name anigamerplus \
  - 自定義下載檔名前綴後綴及是否添加清晰度
  - 下載失敗, 下載過慢自動重啓任務
  - 支援使用FTP上傳至伺服器, 支援斷點續傳(適配Pure-Ftpd), 掉綫重傳, 支援 FTP over TLS
- - 支援插件系統, 可擴展上傳與播放來源
+ - 支援插件系統, 可擴展上傳、播放與線上片庫的來源 (內建 Anime1.me)
  - 檢查程序更新功能
  - 支援新番分類
  - v6.0 開始支援cookie自動刷新
@@ -634,6 +635,50 @@ Web控制臺截圖:
 - 手機瀏覽器可以加到主畫面, 當 PWA 用
 
 開了帳號系統 (`dashboard.user_control.enabled`) 的話, 可以再把 `online_watch_requires_login` 打開, 要求登入才能線上看.
+
+### 其他片單來源
+
+「所有動畫」除了動畫瘋, 也可以列出插件提供的其他站. 開了這類插件, 篩選列會多一個「來源」選單, 搜尋會同時翻所有來源, 作品卡片角落標著來源名稱.
+
+**Anime1.me** 就是這樣的插件 (`plugins/anime1me.py`). 在 `config.json` 裡啟用它:
+
+```json
+"plugins": { "enabled": ["anime1me"] }
+```
+
+作品資訊可以看集數表、點單集下載, 或「加入下載」—— 那會把作品寫進工作目錄的 `anime1me_list.txt` (all 模式), 之後出的新集數也會自動下載. 下載的檔案跟動畫瘋的一樣進片庫, 可以直接線上播. 沒有彈幕, 也沒有邊看邊下載 (那是動畫瘋 HLS 下載的功能).
+
+**自己寫一個來源**: 在 `plugins/` 放一個模組, 提供 `create_plugin(settings)`, 回傳一個繼承 `plugin_system.CatalogProvider` 的物件:
+
+```python
+from plugin_system import CatalogProvider
+
+class MySite(CatalogProvider):
+    provider_id = 'mysite'          # 英數字、底線、減號
+    provider_name = 'My Site'
+    features = {'tags': False, 'download': True, 'subscribe': False}
+
+    def catalog_items(self, provider):              # 整份片單
+        if not self.owns(provider):
+            return None
+        return [{'animeSn': '42', 'title': '作品名', 'info': '2026 春', 'volume': '1-12'}]
+
+    def catalog_anime(self, provider, anime_id): ...     # 作品資訊與集數表
+    def catalog_download(self, provider, anime_id, episodes, mode, context): ...
+
+def create_plugin(settings):
+    return MySite()
+```
+
+`features` 宣告這個來源能做什麼, 前端照著決定要不要擺出按鈕, 伺服器也會擋掉沒宣告的操作:
+
+| 功能 | 意思 |
+|---|---|
+| `tags` | 作品帶 `tags`, 可以用動畫瘋的分類標籤篩選 |
+| `download` | 可以下載單集 |
+| `subscribe` | 可以整部加入下載並追蹤新集數 |
+
+每個 hook 的參數與回傳格式寫在 `plugin_system.py` 的 `CatalogProvider` 說明裡, 完整的例子是 `plugins/anime1me.py`. 插件拋例外只會讓那個來源暫時沒東西, 不會讓片單或下載整個掛掉.
 
 ## Flutter App
 

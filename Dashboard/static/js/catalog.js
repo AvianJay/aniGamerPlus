@@ -28,6 +28,11 @@
         query: '',
         tag: '',
         sort: 'relevance',
+        /* 片單來源. all 是動畫瘋加上插件提供的 (anime1.me 之類); 沒有插件來源時
+           伺服器回的就只有動畫瘋, 跟以前一樣 */
+        provider: 'all',
+        /* /catalog/providers.json 那一份, 各來源宣告了哪些功能 */
+        providers: [],
         weekday: 1,
         sheetSn: '',
         pushed: false,
@@ -130,6 +135,8 @@
            路 —— 先排一個 single 任務再進播放器, 不然只會拿到一個 404 */
         var episode = episodeBySn(detail, last.sn);
         var playable = !!(episode && episode.local);
+        /* 插件來源沒有邊看邊下載 —— 那條路是動畫瘋的 HLS 下載. 不在片庫就不給按鈕 */
+        if (!playable && detail.provider) { return ''; }
         var action = playable
             ? '<a class="agp-btn agp-continue-play" href="./watch?id=' +
                 AGP.escapeHtml(encodeURIComponent(last.sn)) + '">' +
@@ -149,11 +156,20 @@
             action + '</div>';
     }
 
+    /* 動畫瘋以外的作品標出來源: 同一部作品兩邊都有的時候, 光看標題分不出
+       點進去是哪一邊的集數表 */
+    function sourceBadge(item) {
+        return item.providerName
+            ? '<span class="agp-poster-source">' + AGP.escapeHtml(item.providerName) + '</span>'
+            : '';
+    }
+
     function catalogPoster(item, rank) {
         var watched = watchedLabel(item);
         return '<a class="agp-poster"' + cardAttrs(item) + '>' +
             '<span class="agp-poster-art">' + coverArt(item) +
             (rank ? '<span class="agp-poster-rank">' + rank + '</span>' : '') +
+            sourceBadge(item) +
             '</span>' +
             '<span class="agp-poster-foot"><strong>' + AGP.escapeHtml(item.title) + '</strong>' +
             '<small>' + (watched
@@ -272,7 +288,8 @@
         } else if (!payload.items.length) {
             body = '<p class="agp-empty">' + (query || state.tag
                 ? '找不到符合篩選條件的作品。'
-                : '目前拿不到動畫瘋的片單。') + '</p>';
+                : state.provider === 'all' || state.provider === 'bahamut'
+                    ? '目前拿不到動畫瘋的片單。' : '目前拿不到這個來源的片單。') + '</p>';
         } else {
             body = '<p class="agp-count">' + (query ? '找到 ' : '共 ') + state.total + ' 部作品</p>' +
                 posterGrid(payload.items, false) + pagerHtml();
@@ -304,7 +321,8 @@
         var url = './catalog/all.json?page=' + state.page +
             (state.query.trim() ? '&q=' + encodeURIComponent(state.query.trim()) : '') +
             (state.tag ? '&tag=' + encodeURIComponent(state.tag) : '') +
-            '&sort=' + encodeURIComponent(state.sort);
+            '&sort=' + encodeURIComponent(state.sort) +
+            '&provider=' + encodeURIComponent(state.provider);
         var payload;
         try {
             var response = await fetch(url, { signal: catalogController.signal });
@@ -373,6 +391,36 @@
         return null;
     }
 
+    /* 插件來源的集數沒有動畫瘋的 videoSn —— 還沒下載的那幾集在片庫裡根本
+       還沒有編號. 排下載用的是來源自己的集數編號 */
+    function providerQueueKey(detail, episodeId) {
+        return (detail.animeSn || '') + '#' + episodeId;
+    }
+
+    /* 插件來源宣告了自己能做什麼 (plugin_system.CATALOG_FEATURES). 伺服器一律
+       補齊每一個鍵, 沒有 features 的是舊伺服器 —— 那時候插件來源都能下載 */
+    function can(detail, feature) {
+        var features = detail && detail.features;
+        return features ? !!features[feature] : feature !== 'tags';
+    }
+
+    function providerEpisodeHtml(episode, here, mark) {
+        var label = episode.episode || '?';
+        if (state.queued[providerQueueKey(state.detail, episode.episodeId)]) {
+            return '<span class="agp-ep is-queued' + (here ? ' is-here' : '') + '" title="已加入下載">' +
+                AGP.icon('clock', 12) + AGP.escapeHtml(label) + mark + '</span>';
+        }
+        /* 這個來源不能單集下載, 或者這個帳號不能下載: 格子只是一個集數, 按了沒用
+           的按鈕比沒有按鈕更糟 */
+        if (!can(state.detail, 'download') || !canDownload()) {
+            return '<span class="agp-ep' + (here ? ' is-here' : '') + '">' +
+                AGP.escapeHtml(label) + mark + '</span>';
+        }
+        return '<button class="agp-ep' + (here ? ' is-here' : '') + '" type="button" data-provider-episode="' +
+            AGP.escapeHtml(episode.episodeId) + '" title="下載這一集">' +
+            AGP.escapeHtml(label) + mark + '</button>';
+    }
+
     function episodeHtml(episode) {
         var label = episode.episode || '?';
         /* 上次看到的那一格標出來 —— 不必在一百多格裡自己找 */
@@ -383,6 +431,7 @@
                 AGP.escapeHtml(encodeURIComponent(episode.videoSn)) + '">' +
                 AGP.icon('check', 12) + AGP.escapeHtml(label) + mark + '</a>';
         }
+        if (episode.episodeId) { return providerEpisodeHtml(episode, here, mark); }
         var queued = state.queued[episode.videoSn];
         if (queued) {
             /* 排進去的那一刻就能看了, 沒有理由讓它繼續是一個按不動的灰格子.
@@ -408,7 +457,46 @@
             '</div>';
     }
 
+    /* 插件來源: 立即觀看 (片庫有的話)、整部加入下載、回原站. 沒有邊看邊下載,
+       也沒有畫質可挑 —— 站上每一集只有一種檔案 */
+    function providerActionsHtml(detail) {
+        var local = firstLocalEpisode(detail);
+        var buttons = [];
+        if (local) {
+            buttons.push('<a class="agp-btn" href="./watch?id=' +
+                AGP.escapeHtml(encodeURIComponent(local.videoSn)) + '">' +
+                AGP.icon('play', 16) + ' 立即觀看</a>');
+        }
+        var subscribe = can(detail, 'subscribe');
+        var single = can(detail, 'download');
+        if (canDownload() && subscribe) {
+            buttons.push('<button class="agp-btn' + (local ? ' agp-btn--ghost' : '') +
+                '" type="button" data-download="all">' +
+                AGP.icon('plusSquare', 16) + ' 加入下載</button>');
+        }
+        if (detail.sourceUrl) {
+            buttons.push('<a class="agp-btn agp-btn--ghost" target="_blank" rel="noopener noreferrer" href="' +
+                AGP.escapeHtml(detail.sourceUrl) + '">' + AGP.icon('share', 15) + ' 在 ' +
+                AGP.escapeHtml(detail.providerName || '原站') + ' 開啟</a>');
+        }
+        var hint;
+        if (!subscribe && !single) {
+            hint = '這個來源只能瀏覽，不能從這裡下載。';
+        } else if (!canDownload()) {
+            hint = '請聯絡站台管理員加入下載。';
+        } else if (subscribe && single) {
+            hint = '「加入下載」會下載全部集數並追蹤之後的更新，點下面的集數則只下載那一集。';
+        } else if (subscribe) {
+            hint = '「加入下載」會下載全部集數並追蹤之後的更新。';
+        } else {
+            hint = '點下面的集數下載那一集。';
+        }
+        return '<div class="agp-sheet-actions">' + buttons.join('') + '</div>' +
+            (local ? '' : '<p class="agp-sheet-hint">這部作品還沒有下載到片庫，' + hint + '</p>');
+    }
+
     function actionsHtml(detail) {
+        if (detail.provider) { return providerActionsHtml(detail); }
         var local = firstLocalEpisode(detail);
         /* 「這一集下載過了嗎」跟「這部下載過了嗎」是兩件事. 按下去播的是
            detail.videoSn 那一集, 所以要問的也是那一集 -- 不然看完第 41 集,
@@ -461,7 +549,8 @@
             return;
         }
 
-        var meta = chip('star', detail.score || '') + chip('eye', detail.popular) +
+        var meta = chip('', detail.providerName) +
+            chip('star', detail.score || '') + chip('eye', detail.popular) +
             chip('clock', detail.seasonStart) +
             chip('', detail.totalEpisode ? '共 ' + detail.totalEpisode + ' 集' : '') +
             chip('', detail.publisher) + chip('', detail.director);
@@ -642,6 +731,34 @@
         return true;
     }
 
+    /* 插件來源的下載. 伺服器轉給插件去排 —— 單集就是那幾集, all 是整部追番 */
+    async function queueProviderDownload(detail, episodeIds, mode) {
+        var body = {};
+        try {
+            var response = await fetch('./catalog/download', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json;charset=utf-8' },
+                body: JSON.stringify({ sn: detail.animeSn, mode: mode, episodes: episodeIds })
+            });
+            body = await response.json().catch(function () { return {}; });
+            if (!response.ok) { throw response.status; }
+        } catch (status) {
+            toast(status === 401 || status === 403 ? '需要管理員權限才能下載。'
+                : (body && body.message) || '加入下載失敗。');
+            return false;
+        }
+        (detail.groups || []).forEach(function (group) {
+            group.episodes.forEach(function (episode) {
+                if (!episode.local && (mode === 'all' || episodeIds.indexOf(episode.episodeId) >= 0)) {
+                    state.queued[providerQueueKey(detail, episode.episodeId)] = true;
+                }
+            });
+        });
+        toast(body.message || '已加入下載佇列。');
+        if (state.detail === detail) { renderSheet(); }
+        return true;
+    }
+
     /* 排下載, 然後就走. 失敗的話 queueDownload 已經吐過 toast 說明原因了, 這裡再
        跳過去只會讓人對著一個永遠不會開始的播放器等 */
     async function startStreaming(videoSn) {
@@ -715,7 +832,17 @@
             return;
         }
 
+        var providerEpisode = event.target.closest('[data-provider-episode]');
+        if (providerEpisode && state.detail && state.detail.provider) {
+            queueProviderDownload(state.detail, [providerEpisode.dataset.providerEpisode], 'single');
+            return;
+        }
+
         var download = event.target.closest('[data-download]');
+        if (download && state.detail && state.detail.provider) {
+            queueProviderDownload(state.detail, [], 'all');
+            return;
+        }
         if (download && state.detail && state.detail.videoSn) {
             queueDownload(state.detail.videoSn, download.dataset.download);
         }
@@ -738,7 +865,26 @@
     function wireFilters() {
         var tag = el('catalogTag');
         var sort = el('catalogSort');
+        var provider = el('catalogProvider');
         if (!tag || !sort) { return; }
+        if (provider) {
+            provider.addEventListener('change', function () {
+                state.provider = provider.value;
+                /* 標籤是動畫瘋的分類, 插件來源有宣告 tags 才用得上. 只看一個沒有
+                   標籤的來源時就別讓人選一個一定是零筆的篩選 */
+                var chosen = state.providers.filter(function (item) {
+                    return item.id === state.provider;
+                })[0];
+                var tagged = state.provider === 'all' || can(chosen, 'tags');
+                tag.disabled = !tagged;
+                if (!tagged && state.tag) {
+                    state.tag = '';
+                    tag.value = '';
+                }
+                state.page = 1;
+                loadCatalog();
+            });
+        }
         tag.addEventListener('change', function () {
             state.tag = tag.value;
             state.page = 1;
@@ -763,6 +909,29 @@
                 tag.appendChild(option);
             });
         } catch (error) { /* catalogue still works without the tag list */ }
+    }
+
+    /* 只有動畫瘋一個來源的話 (沒開 anime1.me 之類的插件), 來源篩選整個不出現 */
+    async function loadProviders() {
+        var select = el('catalogProvider');
+        if (!select) { return; }
+        try {
+            var payload = await getJson('./catalog/providers.json');
+            if (catalogDisabled || !Array.isArray(payload.providers) || payload.providers.length < 2) {
+                return;
+            }
+            state.providers = payload.providers;
+            payload.providers.forEach(function (provider) {
+                var option = document.createElement('option');
+                option.value = String(provider.id);
+                option.textContent = String(provider.name);
+                select.appendChild(option);
+            });
+            select.value = state.provider;
+            select.hidden = false;
+            var label = document.querySelector('label[for="catalogProvider"]');
+            if (label) { label.hidden = false; }
+        } catch (error) { /* 拿不到就只是少一個篩選, 片單照樣是全部來源 */ }
     }
 
     /* Nothing here can run without the routes, which exist only when
@@ -808,6 +977,7 @@
         // detail link, and a cold full-catalogue crawl must not delay the index.
         loadCatalog();
         loadTags();
+        loadProviders();
         syncSheetToHash();
         try {
             state.index = await getJson('./catalog/index.json');

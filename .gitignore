@@ -113,6 +113,7 @@ cookie.txt
 invalid_cookie.txt
 config.json
 sn_list.txt
+anime1me_list.txt
 aniGamer.db
 .idea/aniGamerPlus-Git.iml
 .idea/inspectionProfiles/
@@ -159,3 +160,5 @@ Dashboard/sslkey/server.crt
 
 plugins/*.py
 plugins/*.json
+# 線上片庫的 anime1.me 來源是跟著核心的片單 hook 一起維護的, 測試也用得到它
+!plugins/anime1me.py
