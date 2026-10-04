@@ -2429,12 +2429,11 @@ class _WatchPageState extends State<WatchPage> with WidgetsBindingObserver {
 
   Future<void> _resumeLocalPlayer(VideoPlayerController controller) async {
     if (Device.tv && _refreshOnResume) {
-      final position = await controller.position;
       if (!mounted || _background || controller != _controller) return;
+      // 暫停時剛 seek 過, native position 也可能仍停在舊位置. 播放頁的
+      // 時鐘保留的是使用者選定的位置, 重建不能把它倒回舊的 native 值.
       await _openSource(
-        seekTo: position == null
-            ? _clock.value
-            : position.inMilliseconds / 1000,
+        seekTo: _positionNow(),
         releaseDecoder: true,
       );
     } else {

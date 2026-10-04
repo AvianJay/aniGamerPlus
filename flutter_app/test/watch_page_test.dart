@@ -2280,6 +2280,23 @@ void main() {
       await tester.pumpWidget(const SizedBox());
     });
 
+    testWidgets('長暫停後先跳轉再播放, 重建保留新目標而非 native 舊位置',
+        (tester) async {
+      await open(tester);
+      player.seekWaitsForPlay = true;
+      await tester.sendKeyEvent(LogicalKeyboardKey.mediaPause);
+      await tester.pump(kTvPauseRefreshAfter + const Duration(seconds: 1));
+      seek(tester, 300);
+      await tester.pump(const Duration(milliseconds: 350));
+      expect(player.actual, const Duration(seconds: 20));
+      expect(find.text('05:00 / 10:00'), findsOneWidget);
+      await tester.sendKeyEvent(LogicalKeyboardKey.mediaPlay);
+      await settleIo(tester, () => player.creations == 2 && player.playing);
+      expect(player.actual, const Duration(seconds: 300));
+      expect(player.seeks.last, const Duration(seconds: 300));
+      await tester.pumpWidget(const SizedBox());
+    });
+
     testWidgets('電視倒回十秒後彈幕重新對時, 保留留言與啟用狀態', (tester) async {
       await tester.runAsync(() async {
         await state.downloads.writeCachedDanmaku(
