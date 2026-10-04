@@ -32,6 +32,67 @@ void main() {
   http.Response reply(Object data, [int status = 200]) =>
       http.Response.bytes(utf8.encode(jsonEncode(data)), status);
 
+  test('Bocchi traditional title searches Bangumi in simplified characters',
+      () async {
+    final client = MockClient((request) async {
+      if (request.url.host == 'api.bgm.tv') {
+        final keyword = (jsonDecode(request.body) as Map)['keyword'];
+        return reply({
+          'data': keyword == '孤独摇滚！'
+              ? [
+                  {
+                    'name': 'ぼっち・ざ・ろっく！',
+                    'name_cn': '孤独摇滚！',
+                    'date': '2022-10-08',
+                  }
+                ]
+              : [
+                  {
+                    'name': 'Invisible Loneliness',
+                    'name_cn': '透明的孤独',
+                    'date': null,
+                  }
+                ]
+        });
+      }
+      if (request.url.host == 'graphql.anilist.co') {
+        return reply({
+          'data': {
+            'Page': {
+              'media': [
+                {
+                  'idMal': 47917,
+                  'episodes': 12,
+                  'title': {'native': 'ぼっち・ざ・ろっく！'},
+                  'startDate': {'year': 2022, 'month': 10, 'day': 9},
+                }
+              ]
+            }
+          }
+        });
+      }
+      expect(request.url.path, '/v2/skip-times/47917/1');
+      return reply({
+        'found': true,
+        'results': [
+          {
+            'skipType': 'op',
+            'episodeLength': 1460,
+            'interval': {'startTime': 115.96, 'endTime': 205.96},
+          }
+        ]
+      });
+    });
+    addTearDown(client.close);
+    expect(
+        await OpeningSkipLookup(client).find(
+            title: '孤獨搖滾！',
+            seasonStart: '2022/10/09',
+            episode: '1',
+            duration: 1440),
+        [115.96, 205.96]);
+  });
+
   test('episode 10 shows AniSkip at the screenshot position', () async {
     final requested = <Uri>[];
     final client = MockClient((request) async {

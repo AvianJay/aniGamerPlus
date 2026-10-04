@@ -51,3 +51,20 @@ def test_mal_mapping_and_op_bounds():
                                       session=session) is None
     assert OpeningSkip.aniskip_op(16498, 1, 1440, session=session) == (128.4, 218.4)
     assert OpeningSkip.aniskip_op(16498, 1, 300, session=session) is None
+
+
+def test_bocchi_search_simplifies_the_bangumi_keyword():
+    class BocchiSession:
+        def post(self, url, **kwargs):
+            if 'bgm.tv' in url:
+                if kwargs['json']['keyword'] != '孤独摇滚！':
+                    return Response({'data': [{'name': 'Invisible Loneliness',
+                                             'name_cn': '透明的孤独'}]})
+                return Response({'data': [{'name': 'ぼっち・ざ・ろっく！',
+                    'name_cn': '孤独摇滚！', 'date': '2022-10-08'}]})
+            return Response({'data': {'Page': {'media': [{
+                'idMal': 47917, 'title': {'native': 'ぼっち・ざ・ろっく！'},
+                'startDate': {'year': 2022},
+            }]}}})
+    assert OpeningSkip.resolve_mal_id('孤獨搖滾！', '2022/10/09',
+                                    session=BocchiSession()) == 47917

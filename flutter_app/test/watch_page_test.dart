@@ -462,7 +462,13 @@ void main() {
   });
 
   Future<void> seedIntro(WidgetTester tester,
-      {int at = 162, (double, double) interval = (160.776, 250.776)}) async {
+      {int at = 162,
+      (double, double) interval = (160.776, 250.776),
+      bool bocchi = false}) async {
+    final native = bocchi ? 'ぼっち・ざ・ろっく！' : '転生王女と天才令嬢の魔法革命';
+    final title = bocchi ? '孤獨搖滾！' : '轉生公主與天才千金的魔法革命';
+    final year = bocchi ? 2022 : 2023;
+    final duration = bocchi ? 1440 : 1420;
     http.Response reply(Object data) =>
         http.Response.bytes(utf8.encode(jsonEncode(data)), 200);
     final api = AgpClient(
@@ -470,12 +476,13 @@ void main() {
       httpClient: MockClient((request) async {
         switch (request.url.host) {
           case 'api.bgm.tv':
+            if (bocchi) expect(jsonDecode(request.body)['keyword'], '孤独摇滚！');
             return reply({
               'data': [
                 {
-                  'name': '転生王女と天才令嬢の魔法革命',
-                  'name_cn': '转生公主与天才千金的魔法革命',
-                  'date': '2023-01-04',
+                  'name': native,
+                  'name_cn': bocchi ? '孤独摇滚！' : '转生公主与天才千金的魔法革命',
+                  'date': bocchi ? '2022-10-08' : '2023-01-04',
                 }
               ]
             });
@@ -485,9 +492,9 @@ void main() {
                 'Page': {
                   'media': [
                     {
-                      'idMal': 52736,
-                      'title': {'native': '転生王女と天才令嬢の魔法革命'},
-                      'startDate': {'year': 2023},
+                      'idMal': bocchi ? 47917 : 52736,
+                      'title': {'native': native},
+                      'startDate': {'year': year},
                     }
                   ]
                 }
@@ -499,7 +506,7 @@ void main() {
               'results': [
                 {
                   'skipType': 'op',
-                  'episodeLength': 1420,
+                  'episodeLength': bocchi ? 1460 : duration,
                   'interval': {
                     'startTime': interval.$1,
                     'endTime': interval.$2
@@ -517,23 +524,41 @@ void main() {
     await state.prefs.setOpeningSkipMode('aniskip-first');
     state.client.seedSeriesJson('1', {
       'videoSn': '1',
-      'title': '轉生公主與天才千金的魔法革命',
-      'seasonStart': '2023/01/04',
+      'title': title,
+      'seasonStart': bocchi ? '2022/10/09' : '2023/01/04',
       'groups': [
         {
           'name': '',
           'episodes': [
-            {'videoSn': '1', 'episode': '10', 'local': true},
-            {'videoSn': '2', 'episode': '11', 'local': true},
+            {'videoSn': '1', 'episode': bocchi ? '1' : '10', 'local': true},
+            {'videoSn': '2', 'episode': bocchi ? '2' : '11', 'local': true},
           ],
         }
       ],
     });
-    state.noteWatchTime('1', WatchTime(time: at, duration: 1420),
+    state.noteWatchTime('1', WatchTime(time: at, duration: duration),
         notify: false);
-    player.duration = const Duration(seconds: 1420);
+    player.duration = Duration(seconds: duration);
     player.actual = Duration(milliseconds: (at * 1000).round());
   }
+
+  testWidgets('Bocchi app counts down and skips the recorded first-episode OP',
+      (tester) async {
+    await seedIntro(tester, at: 120, interval: (115.96, 205.96), bocchi: true);
+    await open(tester);
+    await settleIo(
+        tester,
+        () =>
+            find.byKey(const ValueKey('skip-intro')).evaluate().isNotEmpty &&
+            player.playing);
+    expect(find.text('立即跳過 (8)'), findsOneWidget);
+    await tester.pump(const Duration(seconds: 8));
+    player.actual = const Duration(milliseconds: 205960);
+    await tester.pump(const Duration(milliseconds: 350));
+    expect(player.seeks.last.inMilliseconds, 205960);
+    expect(find.byKey(const ValueKey('skip-intro')), findsNothing);
+    await tester.pumpWidget(const SizedBox());
+  });
 
   testWidgets(
       'intro countdown fits above tablet, phone and fullscreen controls',

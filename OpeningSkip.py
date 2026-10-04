@@ -67,7 +67,7 @@ def resolve_mal_id(title, season_start='', *, session=requests):
     """Only accept a uniquely matching Bangumi subject and AniList title."""
     response = session.post(
         'https://api.bgm.tv/v0/search/subjects',
-        json={'keyword': title, 'filter': {'type': [2]}, 'limit': 20},
+        json={'keyword': _simplify(title), 'filter': {'type': [2]}, 'limit': 20},
         headers={'User-Agent': 'aniGamerPlus/1.0 (opening skip)'}, timeout=8)
     response.raise_for_status()
     rows = (response.json() or {}).get('data') or []

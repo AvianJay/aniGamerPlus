@@ -101,7 +101,10 @@ class OpeningSkipLookup {
               'User-Agent': 'aniGamerPlus/1.0 (opening skip)',
             },
             body: jsonEncode({
-              'keyword': title,
+              'keyword': title.runes.map((rune) {
+                final ch = String.fromCharCode(rune);
+                return characters[ch] ?? ch;
+              }).join(),
               'filter': {
                 'type': [2]
               },

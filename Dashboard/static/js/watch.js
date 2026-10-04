@@ -397,7 +397,10 @@ async function openingMalId(title, seasonStart) {
         var chars = await openingCharacters();
         var response = await fetch('https://api.bgm.tv/v0/search/subjects', {
             method: 'POST', headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ keyword: title, filter: { type: [2] }, limit: 20 })
+            body: JSON.stringify({
+                keyword: Array.from(title).map(function (ch) { return chars[ch] || ch; }).join(''),
+                filter: { type: [2] }, limit: 20
+            })
         });
         if (!response.ok) { throw new Error('Bangumi ' + response.status); }
         var data = await response.json();

@@ -37,6 +37,7 @@ from ui_harness import (  # noqa: E402
     SN_LIST_ADDITIONS,
     NO_SERIES_INFO_ANIME,
     WATCH_TIMES,
+    WATCH_SERIES,
     WATCH_SERIES_STREAMING,
     WATCH_SERIES_TOTAL,
     WATCH_SYNOPSIS,
@@ -1014,6 +1015,70 @@ def _mock_client_aniskip(page, start=40, end=90):
         ]})
     page.route('https://api.aniskip.com/v2/skip-times/**', skip)
     return requested
+
+
+def test_bocchi_traditional_title_finds_and_skips_the_recorded_op(page, server):
+    video = next(row for row in VIDEO_LIST['videos']
+                 if row['anime_name'] == '孤獨搖滾！' and row['episode'] == '1')
+    detail = dict(WATCH_SERIES[video['sn']], seasonStart='2022/10/09')
+    page.route('**/watch/series.json*', lambda route: route.fulfill(json=detail))
+    keywords, requested = [], []
+    cors = {
+        'access-control-allow-origin': '*',
+        'access-control-allow-methods': 'GET, POST, OPTIONS',
+        'access-control-allow-headers': 'content-type',
+    }
+
+    def answer(route, payload):
+        if route.request.method == 'OPTIONS':
+            route.fulfill(status=204, headers=cors)
+        else:
+            route.fulfill(json=payload, headers=cors)
+
+    def bangumi(route):
+        if route.request.method == 'OPTIONS':
+            answer(route, {})
+            return
+        keyword = route.request.post_data_json['keyword']
+        keywords.append(keyword)
+        rows = ([{'name': 'ぼっち・ざ・ろっく！', 'name_cn': '孤独摇滚！',
+                  'date': '2022-10-08'}] if keyword == '孤独摇滚！' else
+                [{'name': 'Invisible Loneliness', 'name_cn': '透明的孤独'}])
+        answer(route, {'data': rows})
+
+    page.route('https://api.bgm.tv/v0/search/subjects', bangumi)
+    page.route('https://graphql.anilist.co/**', lambda route: answer(route, {
+        'data': {'Page': {'media': [
+            {'idMal': 47917, 'title': {'native': 'ぼっち・ざ・ろっく！'},
+             'startDate': {'year': 2022, 'month': 10, 'day': 9}}
+        ]}}
+    }))
+
+    def skip(route):
+        if route.request.method != 'OPTIONS':
+            requested.append(route.request.url)
+        answer(route, {'found': True, 'results': [
+            {'skipType': 'op', 'episodeLength': 1460,
+             'interval': {'startTime': 115.96, 'endTime': 205.96}}
+        ]})
+
+    page.route('https://api.aniskip.com/v2/skip-times/**', skip)
+    goto_watch(page, server, sn=video['sn'])
+    _mock_full_episode(page)
+    page.evaluate('''() => {
+        window.page.player.video.currentTime = 120;
+        window.page.player.updateProgress();
+    }''')
+    button = page.locator('#skipIntro')
+    expect(button).to_be_visible()
+    expect(button).to_have_attribute('aria-label', '跳過片頭 · AniSkip')
+    assert keywords == ['孤独摇滚！']
+    assert any('/47917/1?' in url for url in requested)
+    expect(page.locator('#watchTitleBar')).to_contain_text('孤獨搖滾！')
+    button.click()
+    assert page.evaluate('() => window.page.player.video.currentTime') == 205.96
+    expect(button).to_be_hidden()
+    assert page.errors == []
 
 
 def test_aniskip_button_is_manual_and_skip_setting_persists(page, server):
