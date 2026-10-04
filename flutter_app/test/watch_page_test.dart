@@ -30,12 +30,19 @@ import 'package:http/testing.dart';
 
 import 'support/temp_dir.dart';
 import 'support/ui_capture.dart';
+import 'support/mp4_fixture.dart';
 
 class Paths extends PathProviderPlatform {
   Paths(this.path);
   final String path;
   @override
   Future<String?> getApplicationDocumentsPath() async => path;
+}
+
+class CachePaths extends Paths {
+  CachePaths(super.path);
+  @override
+  Future<String?> getApplicationSupportPath() async => path;
 }
 
 class Wake extends WakelockPlusPlatformInterface {
@@ -472,11 +479,13 @@ void main() {
 
   Future<void> seedIntro(
     WidgetTester tester, {
-    int at = 162,
+    int at = 164,
     (double, double) interval = (160.776, 250.776),
     bool bocchi = false,
     String? episode,
     bool animeSkip = false,
+    (double, double)? ending,
+    String baseUrl = 'http://localhost:12345',
   }) async {
     final native = bocchi ? 'ぼっち・ざ・ろっく！' : '転生王女と天才令嬢の魔法革命';
     final title = bocchi ? '孤獨搖滾！' : '轉生公主與天才千金的魔法革命';
@@ -485,7 +494,7 @@ void main() {
     http.Response reply(Object data) =>
         http.Response.bytes(utf8.encode(jsonEncode(data)), 200);
     final api = AgpClient(
-      baseUrl: 'http://localhost:12345',
+      baseUrl: baseUrl,
       httpClient: MockClient((request) async {
         switch (request.url.host) {
           case 'api.bgm.tv':
@@ -516,6 +525,19 @@ void main() {
             });
           case 'api.aniskip.com':
             if (animeSkip) return http.Response('{}', 404);
+            if (request.url.queryParameters['types'] == 'ed') {
+              return reply({
+                'found': ending != null,
+                'results': [
+                  if (ending != null)
+                    {
+                      'skipType': 'ed',
+                      'episodeLength': duration,
+                      'interval': {'startTime': ending.$1, 'endTime': ending.$2}
+                    }
+                ]
+              });
+            }
             return reply({
               'found': true,
               'results': [
@@ -532,9 +554,9 @@ void main() {
           case 'api.anime-skip.com':
             return reply(
               jsonDecode(
-                await File(
+                File(
                   '../tests/fixtures/bocchi_anime_skip.json',
-                ).readAsString(),
+                ).readAsStringSync(),
               ),
             );
         }
@@ -613,9 +635,8 @@ void main() {
     player.duration = const Duration(seconds: 120);
     await open(tester);
     expect(find.byKey(const ValueKey('skip-intro')), findsNothing);
-    final controller = tester
-        .widget<VideoPlayer>(find.byType(VideoPlayer))
-        .controller;
+    final controller =
+        tester.widget<VideoPlayer>(find.byType(VideoPlayer)).controller;
     controller.value = controller.value.copyWith(
       duration: const Duration(seconds: 1420),
     );
@@ -681,9 +702,8 @@ void main() {
   testWidgets('暫停時的跳轉不用等解碼器輸出, 再按播放能恢復', (tester) async {
     await open(tester);
     player.seekWaitsForPlay = true;
-    final controller = tester
-        .widget<VideoPlayer>(find.byType(VideoPlayer))
-        .controller;
+    final controller =
+        tester.widget<VideoPlayer>(find.byType(VideoPlayer)).controller;
     await controller.pause();
     await tester.pump();
     seek(tester, 300);
@@ -724,7 +744,7 @@ void main() {
 
   testWidgets('Bocchi AnimeSkip backup displays its source and counts down',
       (tester) async {
-    await seedIntro(tester, at: 223, bocchi: true, animeSkip: true);
+    await seedIntro(tester, at: 225, bocchi: true, animeSkip: true);
     await open(tester);
     await settleIo(
         tester,
@@ -830,6 +850,135 @@ void main() {
     await tester.pumpWidget(const SizedBox());
   });
 
+  testWidgets(
+      'player warms OP destination only after foreground buffer is ready',
+      (tester) async {
+    final movie = sampleMovie(scale: 40);
+    var requests = 0;
+    final server = (await tester
+        .runAsync(() => HttpServer.bind(InternetAddress.loopbackIPv4, 0)))!;
+    server.listen((request) async {
+      requests++;
+      final parts =
+          (request.headers.value(HttpHeaders.rangeHeader) ?? 'bytes=0-')
+              .substring(6)
+              .split('-');
+      final start = int.parse(parts[0]);
+      final end = int.tryParse(parts[1]) ?? movie.length - 1;
+      request.response
+        ..statusCode = 206
+        ..headers.set(
+            HttpHeaders.contentRangeHeader, 'bytes $start-$end/${movie.length}')
+        ..headers.set(HttpHeaders.etagHeader, '"op-test"')
+        ..contentLength = end - start + 1
+        ..add(movie.sublist(start, end + 1));
+      await request.response.close();
+    });
+    addTearDown(() async {
+      await state.videoCache?.close();
+      await server.close(force: true);
+    });
+    await seedIntro(tester,
+        at: 20, interval: (0, 60), baseUrl: 'http://localhost:${server.port}');
+    state.offline = false;
+    PathProviderPlatform.instance = CachePaths(temp.path);
+    await open(tester);
+    await settleIo(tester, () => player.playing);
+    final controller =
+        tester.widget<VideoPlayer>(find.byType(VideoPlayer)).controller;
+    expect(Uri.parse(controller.dataSource).port, state.videoCache!.port);
+    await settleIo(tester, () => requests > 0);
+    final initialRequests = requests;
+    player.events.add(VideoEvent(
+        eventType: VideoEventType.bufferingUpdate,
+        buffered: [DurationRange(Duration.zero, const Duration(seconds: 24))]));
+    await tester.pump(const Duration(seconds: 1));
+    await tester
+        .runAsync(() => Future<void>.delayed(const Duration(milliseconds: 50)));
+    expect(requests, initialRequests,
+        reason: 'do not spend bandwidth with only four seconds buffered');
+    player.events.add(VideoEvent(
+        eventType: VideoEventType.bufferingUpdate,
+        buffered: [DurationRange(Duration.zero, const Duration(seconds: 45))]));
+    final destination = File('${temp.path}/video-cache/v1-0/3.blk');
+    await settleIo(tester, () => destination.existsSync());
+    expect(requests, greaterThan(initialRequests));
+    expect(player.creations, 1,
+        reason: 'preloading never opens another hardware decoder');
+    expect(player.seeks.every((at) => at.inSeconds == 20), isTrue);
+    await tester.pumpWidget(const SizedBox());
+  });
+
+  testWidgets(
+      'terminal ED offers next episode early and pauses countdown with playback',
+      (tester) async {
+    await seedIntro(tester, at: 1331, ending: (1330, 1420));
+    await open(tester);
+    final offer = find.byKey(const ValueKey('next-episode-countdown'));
+    await settleIo(tester, () => offer.evaluate().isNotEmpty);
+    expect(state.watchTimeOf('1')?.ended, isFalse,
+        reason: 'the episode is still playing its ED');
+    final controller =
+        tester.widget<VideoPlayer>(find.byType(VideoPlayer)).controller;
+    await controller.pause();
+    await tester.pump(const Duration(seconds: 12));
+    expect(find.text('立即播放 (8)'), findsOneWidget);
+    expect(player.creations, 1);
+    await controller.play();
+    await tester.pump(const Duration(seconds: 8));
+    await settleIo(tester, () => player.creations == 2);
+    expect(state.watchTimeOf('1')?.ended, isTrue);
+    await tester.pumpWidget(const SizedBox());
+  });
+
+  testWidgets(
+      'cancel terminal ED then rewind resets the offer without reappearing in the same ED',
+      (tester) async {
+    await seedIntro(tester, at: 1331, ending: (1330, 1420));
+    await open(tester);
+    final offer = find.byKey(const ValueKey('next-episode-countdown'));
+    await settleIo(tester, () => offer.evaluate().isNotEmpty);
+    await tester.tap(find.byKey(const ValueKey('cancel-next-episode')));
+    await tester.pump(const Duration(seconds: 12));
+    expect(offer, findsNothing);
+    expect(player.creations, 1);
+    seek(tester, 1300);
+    player.actual = const Duration(seconds: 1300);
+    await tester.pump(const Duration(milliseconds: 500));
+    player.actual = const Duration(seconds: 1331);
+    await tester.pump(const Duration(milliseconds: 500));
+    expect(offer, findsOneWidget);
+    await tester.pumpWidget(const SizedBox());
+  });
+
+  testWidgets(
+      '30 seconds of post-credit content suppresses early next-episode prompt',
+      (tester) async {
+    await seedIntro(tester, at: 1301, ending: (1300, 1390));
+    await open(tester);
+    await tester.pump(const Duration(seconds: 12));
+    expect(find.byKey(const ValueKey('next-episode-countdown')), findsNothing);
+    expect(player.creations, 1);
+    await finishEpisode(tester);
+    expect(
+        find.byKey(const ValueKey('next-episode-countdown')), findsOneWidget);
+    await tester.pumpWidget(const SizedBox());
+  });
+
+  testWidgets(
+      'auto-next disabled still offers terminal ED without changing episode',
+      (tester) async {
+    await seedIntro(tester, at: 1331, ending: (1330, 1420));
+    await state.prefs.setAutoNext(false);
+    await open(tester);
+    final offer = find.byKey(const ValueKey('next-episode-countdown'));
+    await settleIo(tester, () => offer.evaluate().isNotEmpty);
+    await tester.pump(const Duration(seconds: 12));
+    expect(find.text('立即播放'), findsOneWidget);
+    expect(player.creations, 1);
+    await tester.pumpWidget(const SizedBox());
+  });
+
   testWidgets('intro countdown disabled never auto-seeks', (tester) async {
     await seedIntro(tester);
     await state.prefs.setOpeningSkipMode('off');
@@ -843,7 +992,7 @@ void main() {
 
   testWidgets('intro countdown accepts OP after a long cold open',
       (tester) async {
-    await seedIntro(tester, at: 572, interval: (570, 660));
+    await seedIntro(tester, at: 574, interval: (570, 660));
     await open(tester);
     await settleIo(
         tester,
@@ -2323,6 +2472,71 @@ void main() {
     });
 
     String? focused() => FocusManager.instance.primaryFocus?.debugLabel;
+
+    for (final phone in [false, true]) {
+      testWidgets(
+          'repeated Up reaches quality and episode selection (phone=$phone)',
+          (tester) async {
+        state.client.seedSeriesJson('1', {
+          'videoSn': '1',
+          'title': '測試動畫',
+          'groups': [
+            {
+              'name': '',
+              'episodes': [
+                {'videoSn': '1', 'episode': '1', 'local': true},
+                {'videoSn': '2', 'episode': '2', 'local': true}
+              ]
+            }
+          ]
+        });
+        await open(tester, size: const Size(1280, 720));
+        Future<void> press(RemoteKey key) async {
+          if (phone) {
+            RemoteKeys.press(key);
+          } else {
+            final logical = {
+              RemoteKey.up: LogicalKeyboardKey.arrowUp,
+              RemoteKey.down: LogicalKeyboardKey.arrowDown,
+              RemoteKey.left: LogicalKeyboardKey.arrowLeft,
+              RemoteKey.right: LogicalKeyboardKey.arrowRight,
+              RemoteKey.ok: LogicalKeyboardKey.select
+            }[key]!;
+            await tester.sendKeyEvent(logical, platform: 'android');
+          }
+          await tester.pump(const Duration(milliseconds: 100));
+        }
+
+        await press(RemoteKey.up);
+        expect(focused(), 'player-play');
+        await press(RemoteKey.up);
+        expect(focused(), 'player-quality');
+        for (var i = 0; i < 5; i++) {
+          await press(RemoteKey.up);
+        }
+        expect(focused(), 'player-quality');
+        await press(RemoteKey.ok);
+        expect(focused(), startsWith('settings-畫質-'));
+        await press(RemoteKey.up);
+        expect(focused(), startsWith('settings-畫質-'));
+        await tester.binding.handlePopRoute();
+        await tester.pump(const Duration(milliseconds: 100));
+        await tester.pump();
+        expect(focused(), 'player-quality');
+        await press(RemoteKey.right);
+        expect(focused(), 'player-episodes');
+        await press(RemoteKey.ok);
+        expect(focused(), contains('settings-選集-'));
+        await press(RemoteKey.down);
+        expect(find.text('第 2 集'), findsOneWidget);
+        expect(player.seeks, isEmpty);
+        await press(RemoteKey.ok);
+        await settleIo(tester, () => player.creations == 2);
+        // The page changes its internal episode; the source confirms the selection.
+        expect(player.sources.last.dataSource.uri, contains('id=2'));
+        await tester.pumpWidget(const SizedBox());
+      });
+    }
 
     double controlsOpacity(WidgetTester tester) => tester
         .widget<AnimatedOpacity>(find.byKey(const ValueKey('player-controls')))

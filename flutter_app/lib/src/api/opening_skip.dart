@@ -16,6 +16,18 @@ class OpeningSkipResult {
   List<double> get interval => [start, end];
 }
 
+class EndingSkipResult {
+  const EndingSkipResult(this.start, this.end, this.source,
+      {required this.terminal});
+  final double start, end;
+  final String source;
+
+  /// Only plain credits covering the end of this cut may offer auto-next.
+  /// A following canon/preview/unknown section is never skipped.
+  final bool terminal;
+  bool coversEnd(double duration) => terminal && (end - duration).abs() <= 1;
+}
+
 class OpeningSkipLookup {
   OpeningSkipLookup(this._http);
 
@@ -136,6 +148,93 @@ class OpeningSkipLookup {
       }
     }
     return best;
+  }
+
+  Future<EndingSkipResult?> findEnding({
+    required String title,
+    required String seasonStart,
+    required String episode,
+    required double duration,
+  }) async {
+    final number = parseEpisodeNumber(episode);
+    if (title.trim().isEmpty ||
+        number == null ||
+        !duration.isFinite ||
+        duration < 600 ||
+        duration > 7200) {
+      return null;
+    }
+    final key = '$title\u0000$seasonStart';
+    final series = await (_malIds[key] ??= _resolveMalId(title, seasonStart));
+    if (series == null || (series.$2 != null && number > series.$2!)) {
+      return null;
+    }
+    Object? failure;
+    try {
+      final uri =
+          Uri.https('api.aniskip.com', '/v2/skip-times/${series.$1}/$number', {
+        'types': 'ed',
+        'episodeLength': duration.round().toString(),
+      });
+      final response = await _http.get(uri).timeout(const Duration(seconds: 8));
+      if (response.statusCode != 404) {
+        _check(response);
+        final payload = jsonDecode(utf8.decode(response.bodyBytes));
+        final rows = payload is Map && payload['found'] == true
+            ? payload['results']
+            : null;
+        final valid = <EndingSkipResult>[];
+        if (rows is List) {
+          for (final row in rows.whereType<Map>()) {
+            if (row['skipType'] != 'ed' || row['interval'] is! Map) continue;
+            final start = _number(row['interval']['startTime']);
+            final end = _number(row['interval']['endTime']);
+            final length = _number(row['episodeLength']);
+            if (_validEnding(start, end, length, duration)) {
+              valid.add(
+                  EndingSkipResult(start!, end!, 'AniSkip', terminal: true));
+            }
+          }
+        }
+        if (valid.isNotEmpty) return _agreeEnding(valid);
+      }
+    } catch (error) {
+      failure = error;
+    }
+    try {
+      final result = await _animeSkipEnding(series.$3, number, duration);
+      if (result != null) return result;
+    } catch (error) {
+      failure ??= error;
+    }
+    if (failure != null) throw failure;
+    return null;
+  }
+
+  static bool _validEnding(
+          double? start, double? end, double? length, double duration) =>
+      start != null &&
+      end != null &&
+      length != null &&
+      start.isFinite &&
+      end.isFinite &&
+      length.isFinite &&
+      (length - duration).abs() <= 5 &&
+      start >= duration * .6 &&
+      end > start &&
+      end - start >= 20 &&
+      end - start <= 240 &&
+      end <= duration + 1;
+
+  static EndingSkipResult? _agreeEnding(List<EndingSkipResult> results) {
+    if (results.any((a) => results.any((b) =>
+        (a.start - b.start).abs() > 3 ||
+        (a.end - b.end).abs() > 1 ||
+        a.terminal != b.terminal))) {
+      return null;
+    }
+    results.sort((a, b) => a.end.compareTo(b.end));
+    return results.first;
   }
 
   Future<(int, int?, Map)?> _resolveMalId(
@@ -319,7 +418,7 @@ class OpeningSkipLookup {
     }
   }
 
-  Future<List<double>?> _animeSkip(
+  Future<List<Map>> _animeEpisodeRows(
       Map media, int number, double duration) async {
     final chars = await _t2s;
     final titles = media['title'] is Map ? media['title'] as Map : const {};
@@ -328,7 +427,7 @@ class OpeningSkipLookup {
     final search =
         (titles['english'] ?? titles['romaji'] ?? titles['native'] ?? '')
             .toString();
-    if (id is! int && search.isEmpty) return null;
+    if (id is! int && search.isEmpty) return const [];
     final key = id is int ? 'id:$id' : 'title:$search';
     List shows;
     try {
@@ -350,32 +449,82 @@ class OpeningSkipLookup {
                   names.contains(_plain(row['originalName'], chars))))
           .toList();
     }
-    if (shows.length != 1 || shows.single is! Map) return null;
+    if (shows.length != 1 || shows.single is! Map) return const [];
     final episodes = shows.single['episodes'];
-    if (episodes is! List) return null;
+    if (episodes is! List) return const [];
     final seasons = episodes
         .whereType<Map>()
         .map((row) => (row['season'] ?? '1').toString().trim())
         .toSet();
     // A show containing several seasons has no reliable per-MAL season mapping.
     if (seasons.length != 1 || int.tryParse(seasons.single) == null) {
-      return null;
+      return const [];
     }
-    final valid = <(List<double>, int, double)>[];
-    for (final row in episodes.whereType<Map>()) {
-      if (parseEpisodeNumber('${row['number']}') != number) continue;
+    return episodes.whereType<Map>().where((row) {
       final length = _number(row['baseDuration']);
-      // Different streaming cuts must not be aligned by guessing an offset.
-      if (length == null || !length.isFinite || (length - duration).abs() > 5) {
+      return parseEpisodeNumber('${row['number']}') == number &&
+          length != null &&
+          length.isFinite &&
+          (length - duration).abs() <= 5;
+    }).toList();
+  }
+
+  static List<Map> _stamps(Map row) {
+    final raw = row['timestamps'];
+    final length = _number(row['baseDuration']);
+    if (raw is! List || length == null) return const [];
+    return raw.whereType<Map>().where((stamp) {
+      final at = _number(stamp['at']);
+      return at != null && at.isFinite && at >= 0 && at <= length;
+    }).toList()
+      ..sort((a, b) => _number(a['at'])!.compareTo(_number(b['at'])!));
+  }
+
+  Future<EndingSkipResult?> _animeSkipEnding(
+      Map media, int number, double duration) async {
+    final episodes = await _animeEpisodeRows(media, number, duration);
+    final valid = <EndingSkipResult>[];
+    for (final row in episodes) {
+      final length = _number(row['baseDuration'])!;
+      final stamps = _stamps(row);
+      // Filtering malformed timestamps must never turn an unknown tail into
+      // terminal credits. End-of-episode offers require the complete timeline.
+      if (row['timestamps'] is! List ||
+          stamps.length != (row['timestamps'] as List).length) {
         continue;
       }
-      final raw = row['timestamps'];
-      if (raw is! List) continue;
-      final stamps = raw.whereType<Map>().where((stamp) {
-        final at = _number(stamp['at']);
-        return at != null && at.isFinite && at >= 0 && at <= length;
-      }).toList()
-        ..sort((a, b) => _number(a['at'])!.compareTo(_number(b['at'])!));
+      for (var i = 0; i < stamps.length; i++) {
+        final type = stamps[i]['type'];
+        if (type is! Map ||
+            !['Credits', 'New Credits'].contains(type['name'])) {
+          continue;
+        }
+        final start = _number(stamps[i]['at'])!;
+        var last = i + 1;
+        while (last < stamps.length &&
+            stamps[last]['type'] is Map &&
+            ['Credits', 'New Credits'].contains(stamps[last]['type']['name'])) {
+          last++;
+        }
+        final end =
+            last < stamps.length ? _number(stamps[last]['at'])! : length;
+        if (_validEnding(start, end, length, duration)) {
+          valid.add(EndingSkipResult(start, end, 'AnimeSkip',
+              terminal: last == stamps.length || end == length));
+        }
+        i = last - 1;
+      }
+    }
+    return valid.isEmpty ? null : _agreeEnding(valid);
+  }
+
+  Future<List<double>?> _animeSkip(
+      Map media, int number, double duration) async {
+    final episodes = await _animeEpisodeRows(media, number, duration);
+    final valid = <(List<double>, int, double)>[];
+    for (final row in episodes) {
+      final length = _number(row['baseDuration'])!;
+      final stamps = _stamps(row);
       for (var i = 0; i + 1 < stamps.length; i++) {
         final type = stamps[i]['type'];
         if (type is! Map || !['Intro', 'New Intro'].contains(type['name'])) {

@@ -37,6 +37,7 @@ import 'package:wakelock_plus/wakelock_plus.dart';
 
 import '../api/client.dart';
 import '../api/models.dart';
+import '../api/opening_skip.dart';
 import '../danmaku/ass.dart';
 import '../danmaku/danmaku_overlay.dart';
 import '../state/app_state.dart';
@@ -511,6 +512,10 @@ class _WatchPageState extends State<WatchPage> with WidgetsBindingObserver {
   final FocusNode _playFocus = FocusNode(debugLabel: 'player-play');
 
   final FocusNode _timelineFocus = FocusNode(debugLabel: 'player-timeline');
+  final FocusNode _qualityFocus = FocusNode(debugLabel: 'player-quality');
+  final FocusNode _episodesFocus = FocusNode(debugLabel: 'player-episodes');
+  final FocusNode _rateFocus = FocusNode(debugLabel: 'player-rate');
+  final FocusNode _backFocus = FocusNode(debugLabel: 'player-back');
   bool _timelineEditing = false;
   bool _settingsOpen = false;
 
@@ -539,6 +544,15 @@ class _WatchPageState extends State<WatchPage> with WidgetsBindingObserver {
   SeriesEpisode? _nextOffer;
   int _nextCountdown = 0;
   Timer? _nextTimer;
+  EndingSkipResult? _endingSkip;
+  String _endingRequestKey = '';
+  bool _endingDismissed = false;
+  bool _nextFromEnding = false;
+  String _opPrefetchKey = '';
+  bool _opPrefetchBusy = false;
+  bool _opPrefetchDone = false;
+  int _opPrefetchSerial = 0;
+  int _opPrefetchRetryAt = 0;
 
   // =============================================================== 生命週期
 
@@ -602,6 +616,7 @@ class _WatchPageState extends State<WatchPage> with WidgetsBindingObserver {
       _sampleSpeed();
       _watchStall();
       _publishToPhones();
+      _maybePrefetchOpening();
     });
     final remote = TvRemoteHost.current;
     if (remote != null) {
@@ -614,6 +629,7 @@ class _WatchPageState extends State<WatchPage> with WidgetsBindingObserver {
 
   @override
   void dispose() {
+    _cancelOpeningPrefetch();
     _pauseRefreshTimer?.cancel();
     WidgetsBinding.instance.removeObserver(this);
     state.discord.stopPlayback();
@@ -675,6 +691,10 @@ class _WatchPageState extends State<WatchPage> with WidgetsBindingObserver {
     _qualities.dispose();
     _playerFocus.dispose();
     _playFocus.dispose();
+    _qualityFocus.dispose();
+    _episodesFocus.dispose();
+    _rateFocus.dispose();
+    _backFocus.dispose();
     _timelineFocus.dispose();
     // 離開播放頁就把進度落盤, 不要留著那一秒的 debounce 在後面等 —— 使用者
     // 退出去之後馬上把 app 滑掉的話, 那一秒就是進度不見的那一秒.
@@ -783,6 +803,7 @@ class _WatchPageState extends State<WatchPage> with WidgetsBindingObserver {
   /// 邊看邊下載的進度照樣問, 播完照樣接下一集 (見 [_dormant]).
   void _goBackground({bool? resume}) {
     if (_background) return;
+    _cancelOpeningPrefetch();
     _background = true;
     final controller = _controller;
     _resumeAfterBackground = resume ??
@@ -814,6 +835,10 @@ class _WatchPageState extends State<WatchPage> with WidgetsBindingObserver {
       _ended = false;
       _hasPlayed = false;
       _nextOffer = null;
+      _endingSkip = null;
+      _endingRequestKey = '';
+      _endingDismissed = false;
+      _nextFromEnding = false;
       // 換一集就重來: 上一集挑的畫質不該讓這一集直接放棄手機裡那份離線檔
       _qualityPicked = false;
       _streamResolution = 0;
@@ -968,6 +993,7 @@ class _WatchPageState extends State<WatchPage> with WidgetsBindingObserver {
   /// 建立 / 換掉 VideoPlayerController
   Future<void> _openSource(
       {double? seekTo, bool autoplay = true, bool releaseDecoder = false}) async {
+    _cancelOpeningPrefetch();
     if (_castSupported && cast.connected) {
       await _openOnChromecast(seekTo: seekTo, autoplay: autoplay);
       return;
@@ -1050,8 +1076,12 @@ class _WatchPageState extends State<WatchPage> with WidgetsBindingObserver {
           videoPlayerOptions: VideoPlayerOptions(allowBackgroundPlayback: true),
           viewType: viewType);
     } else if (_streaming) {
+      final direct = client.hlsPlaylistUrl(_sn, castTicket: ticket);
+      final cached = airplay ? direct
+          : await _cachedHlsUrl(direct, 'h$_sn-$_streamPlaylistId');
+      usedCache = cached != direct;
       controller = VideoPlayerController.networkUrl(
-        client.hlsPlaylistUrl(_sn, castTicket: ticket),
+        cached,
         httpHeaders: client.authHeaders,
         videoPlayerOptions: VideoPlayerOptions(allowBackgroundPlayback: true),
         viewType: viewType,
@@ -1558,6 +1588,7 @@ class _WatchPageState extends State<WatchPage> with WidgetsBindingObserver {
   Future<void> _loadOpeningSkip() async {
     final duration = _playableDuration;
     if (duration < 600 || !mounted) return;
+    unawaited(_loadEndingSkip());
     if (_danmaku.isNotEmpty) {
       final suggestion = danmakuIntro(_danmaku, duration);
       if (suggestion != _danmakuIntro) {
@@ -1613,6 +1644,134 @@ class _WatchPageState extends State<WatchPage> with WidgetsBindingObserver {
       // No AniSkip match or no network: the conservative danmaku vote still
       // works with the downloaded ASS file.
     }
+  }
+
+  Future<void> _loadEndingSkip() async {
+    final duration = _playableDuration;
+    final title = _series?.title.isNotEmpty == true
+        ? _series!.title
+        : (_video?.animeName ?? '');
+    final episode = _currentEpisode?.episode ?? _video?.episode ?? '';
+    if (duration < 600 ||
+        title.isEmpty ||
+        episode.isEmpty ||
+        _neighbour(1) == null) {
+      return;
+    }
+    final key = '$_sn:${duration.round()}:$title:$episode';
+    if (_endingRequestKey == key) return;
+    _endingRequestKey = key;
+    _endingSkip = null;
+    final sn = _sn;
+    try {
+      final result = await client.endingSkip(
+          title: title,
+          seasonStart: _series?.seasonStart ?? '',
+          episode: episode,
+          duration: duration);
+      if (!mounted || sn != _sn || _endingRequestKey != key) return;
+      _endingSkip = result;
+      _maybeOfferEnding();
+    } catch (_) {
+      if (mounted && sn == _sn && _endingRequestKey == key) {
+        _endingRequestKey = '';
+      }
+    }
+  }
+
+  void _cancelOpeningPrefetch() {
+    if (_opPrefetchBusy) state.videoCache?.cancelPrefetch();
+    _opPrefetchSerial++;
+    _opPrefetchKey = '';
+    _opPrefetchBusy = _opPrefetchDone = false;
+    _opPrefetchRetryAt = 0;
+  }
+
+  void _maybePrefetchOpening() {
+    final intro = _effectiveIntro;
+    final controller = _controller;
+    final cache = state.videoCache;
+    if (!mounted ||
+        intro == null ||
+        controller == null ||
+        cache == null ||
+        cache.closed ||
+        _airplay.active ||
+        _chromecasting) {
+      return;
+    }
+    if (_background || _buffering || !_showsPlaying || _pendingSeek != null) {
+      if (_opPrefetchBusy) {
+        _cancelOpeningPrefetch();
+        _opPrefetchRetryAt = DateTime.now().millisecondsSinceEpoch + 5000;
+      }
+      return;
+    }
+    final position = _clock.value;
+    if (position >= intro.end - 5 ||
+        DateTime.now().millisecondsSinceEpoch < _opPrefetchRetryAt) {
+      return;
+    }
+    // Keep enough foreground buffer before spending bandwidth on the OP end.
+    if (!controller.value.buffered.any((range) =>
+        range.start.inMilliseconds / 1000 <= position + .5 &&
+        range.end.inMilliseconds / 1000 >= position + 8)) {
+      if (_opPrefetchBusy) {
+        _cancelOpeningPrefetch();
+        _opPrefetchRetryAt = DateTime.now().millisecondsSinceEpoch + 5000;
+      }
+      return;
+    }
+    final key = '${controller.dataSource}:${intro.end}';
+    if (key == _opPrefetchKey && (_opPrefetchDone || _opPrefetchBusy)) return;
+    final source = Uri.tryParse(controller.dataSource);
+    if (source == null ||
+        source.host != '127.0.0.1' ||
+        source.port != cache.port) {
+      return;
+    }
+    _opPrefetchKey = key;
+    _opPrefetchBusy = true;
+    final serial = ++_opPrefetchSerial;
+    unawaited(cache.prefetch(source, intro.end).then((success) {
+      if (!mounted || serial != _opPrefetchSerial) return;
+      _opPrefetchBusy = false;
+      _opPrefetchDone = success;
+      if (!success) {
+        _opPrefetchRetryAt = DateTime.now().millisecondsSinceEpoch + 15000;
+      }
+    }));
+  }
+
+  void _maybeOfferEnding() {
+    final ending = _endingSkip;
+    if (_nextFromEnding &&
+        (_clock.value < (ending?.start ?? double.infinity))) {
+      _nextTimer?.cancel();
+      setState(() {
+        _nextOffer = null;
+        _nextFromEnding = false;
+        _endingDismissed = false;
+      });
+    }
+    if (ending == null ||
+        !ending.coversEnd(_playableDuration) ||
+        _endingDismissed ||
+        _ended ||
+        _nextOffer != null ||
+        !_showsPlaying ||
+        _buffering ||
+        _pendingSeek != null ||
+        _scrubbing ||
+        _background ||
+        _settingsOpen ||
+        !_routeIsCurrent ||
+        _clock.value < ending.start ||
+        _clock.value >= _playableDuration) {
+      return;
+    }
+    final next = _neighbour(1);
+    if (next != null) _offerNext(next, fromEnding: true);
   }
 
   /// 這一頁現在在最上面 (沒有被別的頁面、選單、面板蓋住). 在 build 裡記下來.
@@ -1809,9 +1968,10 @@ class _WatchPageState extends State<WatchPage> with WidgetsBindingObserver {
     _qualitiesLoading = true;
     // 開設定選單時才問, 不放在開頁流程裡: 伺服器那一支會真的去動畫瘋解析播放位址,
     // 每開一集就打一次太重了, 而且絕大多數人根本不會動畫質
-    final list = await client.streamSources(_sn);
+    final sn = _sn;
+    final list = await client.streamSources(sn);
     _qualitiesLoading = false;
-    if (!mounted) return;
+    if (!mounted || sn != _sn) return;
     _qualities.value = list;
   }
 
@@ -2131,6 +2291,7 @@ class _WatchPageState extends State<WatchPage> with WidgetsBindingObserver {
         unawaited(WakelockPlus.disable());
       }
     }
+    _maybeOfferEnding();
   }
 
   // =============================================================== 進度同步
@@ -2737,6 +2898,28 @@ class _WatchPageState extends State<WatchPage> with WidgetsBindingObserver {
     return KeyEventResult.ignored;
   }
 
+  KeyEventResult _onTopToolsKey(FocusNode node, KeyEvent event) {
+    if (!Device.tv || event is KeyUpEvent) return KeyEventResult.ignored;
+    final key = event.logicalKey;
+    if (key == LogicalKeyboardKey.arrowDown) {
+      _focusPlay();
+    } else if (key == LogicalKeyboardKey.arrowUp) {
+      _armIdle(); // stay on this row at the top edge
+    } else if (key == LogicalKeyboardKey.arrowLeft ||
+        key == LogicalKeyboardKey.arrowRight) {
+      final row = [_backFocus, _rateFocus, _qualityFocus, _episodesFocus];
+      final at = row.indexWhere((focus) => focus.hasFocus);
+      if (at < 0) return KeyEventResult.ignored;
+      final target = (at + (key == LogicalKeyboardKey.arrowRight ? 1 : -1))
+          .clamp(0, row.length - 1);
+      row[target].requestFocus();
+      _armIdle();
+    } else {
+      return KeyEventResult.ignored;
+    }
+    return KeyEventResult.handled;
+  }
+
   void _toggleControls() {
     setState(() => _controlsVisible = !_controlsVisible);
     if (!_controlsVisible) _reclaimFocus();
@@ -2828,9 +3011,7 @@ class _WatchPageState extends State<WatchPage> with WidgetsBindingObserver {
     }
     final next = _nextOffer;
     if (next != null) {
-      _nextTimer?.cancel();
-      setState(() => _nextOffer = null);
-      unawaited(_switchTo(next));
+      _playNextOffer(next);
       return;
     }
     final intro = _effectiveIntro;
@@ -2852,7 +3033,9 @@ class _WatchPageState extends State<WatchPage> with WidgetsBindingObserver {
       !_skipDismissed && (_effectiveIntro?.visibleAt(_clock.value) ?? false);
 
   void _onIntroClock() {
-    if (!Device.tv || !mounted) return;
+    if (!mounted) return;
+    _maybeOfferEnding();
+    if (!Device.tv) return;
     final visible = _introVisible;
     if (visible != _introBackVisible) {
       // PopScope must update when the OP enters/exits even with controls hidden.
@@ -3110,6 +3293,7 @@ class _WatchPageState extends State<WatchPage> with WidgetsBindingObserver {
       return;
     }
     await _syncTime(force: true);
+    _cancelOpeningPrefetch();
     _sourceGeneration++;
     _pendingSeek = null;
     _stopPoll();
@@ -3171,6 +3355,7 @@ class _WatchPageState extends State<WatchPage> with WidgetsBindingObserver {
     }
     if (!mounted) return;
     await _syncTime(force: true);
+    _cancelOpeningPrefetch();
     _sourceGeneration++;
     _pendingSeek = null;
     _stopPoll();
@@ -3222,9 +3407,15 @@ class _WatchPageState extends State<WatchPage> with WidgetsBindingObserver {
       unawaited(_advanceInBackground(next));
       return;
     }
+    if (_nextOffer != null || (_endingDismissed && _nextFromEnding)) return;
+    _offerNext(next);
+  }
+
+  void _offerNext(SeriesEpisode next, {bool fromEnding = false}) {
     setState(() {
       _nextOffer = next;
       _nextCountdown = kNextEpisodeCountdown;
+      _nextFromEnding = fromEnding;
       _controlsVisible = true;
     });
     if (!_autoNext) return;
@@ -3235,12 +3426,20 @@ class _WatchPageState extends State<WatchPage> with WidgetsBindingObserver {
         return;
       }
       if (_dormant) return;
+      if (fromEnding &&
+          ((!_showsPlaying && !_ended) ||
+              _buffering ||
+              _pendingSeek != null ||
+              _scrubbing ||
+              _settingsOpen ||
+              !_routeIsCurrent)) {
+        return;
+      }
       setState(() => _nextCountdown -= 1);
       if (_nextCountdown <= 0) {
         timer.cancel();
         final target = _nextOffer;
-        setState(() => _nextOffer = null);
-        if (target != null) unawaited(_switchTo(target));
+        if (target != null) _playNextOffer(target);
       }
     });
   }
@@ -3258,7 +3457,21 @@ class _WatchPageState extends State<WatchPage> with WidgetsBindingObserver {
 
   void _cancelNext() {
     _nextTimer?.cancel();
+    setState(() {
+      _nextOffer = null;
+      if (_nextFromEnding) _endingDismissed = true;
+    });
+    if (Device.tv && !_settingsOpen) _focusPlay();
+  }
+
+  void _playNextOffer(SeriesEpisode next) {
+    _nextTimer?.cancel();
+    if (_nextFromEnding &&
+        (_endingSkip?.coversEnd(_playableDuration) ?? false)) {
+      _ended = true; // the user accepted skipping only the terminal credits
+    }
     setState(() => _nextOffer = null);
+    unawaited(_switchTo(next));
   }
 
   // =============================================================== 標題等雜項
@@ -4110,15 +4323,14 @@ class _WatchPageState extends State<WatchPage> with WidgetsBindingObserver {
       right: 14,
       bottom: 70,
       child: PlaybackCountdownCard(
+        key: const ValueKey('next-episode-countdown'),
+        actionKey: const ValueKey('play-next-episode'),
+        cancelKey: const ValueKey('cancel-next-episode'),
         title: '即將播放下一集',
         detail: '$label · $_seriesName',
         action:
             _autoNext && _nextCountdown > 0 ? '立即播放 ($_nextCountdown)' : '立即播放',
-        onAction: () {
-          _nextTimer?.cancel();
-          setState(() => _nextOffer = null);
-          unawaited(_switchTo(next));
-        },
+        onAction: () => _playNextOffer(next),
         onCancel: _cancelNext,
       ),
     );
@@ -4188,55 +4400,65 @@ class _WatchPageState extends State<WatchPage> with WidgetsBindingObserver {
                     top: 6,
                     child: SafeArea(
                       bottom: false,
-                      child: Row(
-                        children: [
-                          if (_fullscreen)
-                            IconButton(
-                              icon: const Icon(Icons.arrow_back_rounded,
-                                  color: Colors.white),
-                              tooltip: '返回',
-                              // 箭頭就是「回上一頁」. 只離開全螢幕的話右下角
-                              // 那顆本來就在做這件事, 這裡再放一顆一樣的,
-                              // 從觀看紀錄點進來的人要按兩次才回得去.
-                              // 先收掉全螢幕再 pop, 免得上一頁閃一下橫的.
-                              onPressed: () async {
-                                // 電視一直都是全螢幕, 返回鍵又會先收控制列 ——
-                                // 這一顆是「真的要走」
-                                if (Device.tv) {
-                                  Navigator.of(context).pop();
-                                  return;
-                                }
-                                if (_fullscreen) await _setFullscreen(false);
-                                if (!mounted) return;
-                                await Navigator.of(context).maybePop();
-                              },
-                            ),
-                          Expanded(
-                            child: Text(
-                              _fullscreen ? '$_seriesName · $_hereLabel' : '',
-                              maxLines: 1,
-                              overflow: TextOverflow.ellipsis,
-                              style: const TextStyle(
-                                fontSize: 14,
-                                color: Colors.white,
-                                fontWeight: FontWeight.w700,
+                      child: Focus(
+                          canRequestFocus: false,
+                          skipTraversal: true,
+                          onKeyEvent: _onTopToolsKey,
+                          child: Row(
+                            children: [
+                              if (_fullscreen)
+                                IconButton(
+                                  focusNode: _backFocus,
+                                  icon: const Icon(Icons.arrow_back_rounded,
+                                      color: Colors.white),
+                                  tooltip: '返回',
+                                  // 箭頭就是「回上一頁」. 只離開全螢幕的話右下角
+                                  // 那顆本來就在做這件事, 這裡再放一顆一樣的,
+                                  // 從觀看紀錄點進來的人要按兩次才回得去.
+                                  // 先收掉全螢幕再 pop, 免得上一頁閃一下橫的.
+                                  onPressed: () async {
+                                    // 電視一直都是全螢幕, 返回鍵又會先收控制列 ——
+                                    // 這一顆是「真的要走」
+                                    if (Device.tv) {
+                                      Navigator.of(context).pop();
+                                      return;
+                                    }
+                                    if (_fullscreen) {
+                                      await _setFullscreen(false);
+                                    }
+                                    if (!mounted) return;
+                                    await Navigator.of(context).maybePop();
+                                  },
+                                ),
+                              Expanded(
+                                child: Text(
+                                  _fullscreen
+                                      ? '$_seriesName · $_hereLabel'
+                                      : '',
+                                  maxLines: 1,
+                                  overflow: TextOverflow.ellipsis,
+                                  style: const TextStyle(
+                                    fontSize: 14,
+                                    color: Colors.white,
+                                    fontWeight: FontWeight.w700,
+                                  ),
+                                ),
                               ),
-                            ),
-                          ),
-                          ..._castButtons(),
-                          _rateMenu(),
-                          _qualityMenu(),
-                          // 連過電視的人才擺出來, 沒有電視的人不必多一顆看不懂的鍵.
-                          // 圖示不用投放的那一個: 那是 Chromecast 的
-                          if (!Device.tv &&
-                              (state.tvRemote.connected ||
-                                  state.tvRemote.saved.isNotEmpty))
-                            _barButton(Icons.connected_tv_rounded, '在電視上播放',
-                                () => unawaited(_castToTv())),
-                          _barButton(Icons.video_library_outlined, '選集',
-                              _openEpisodeSheet),
-                        ],
-                      ),
+                              ..._castButtons(),
+                              _rateMenu(),
+                              _qualityMenu(),
+                              // 連過電視的人才擺出來, 沒有電視的人不必多一顆看不懂的鍵.
+                              // 圖示不用投放的那一個: 那是 Chromecast 的
+                              if (!Device.tv &&
+                                  (state.tvRemote.connected ||
+                                      state.tvRemote.saved.isNotEmpty))
+                                _barButton(Icons.connected_tv_rounded, '在電視上播放',
+                                    () => unawaited(_castToTv())),
+                              _barButton(Icons.video_library_outlined, '選集',
+                                  _openEpisodeSheet,
+                                  focusNode: _episodesFocus),
+                            ],
+                          )),
                     ),
                   ),
                 Positioned(
@@ -4260,6 +4482,8 @@ class _WatchPageState extends State<WatchPage> with WidgetsBindingObserver {
         current: _rate,
         choices: [for (final r in kPlaybackRates) PlayerChoice(r, '${r}x')],
         onPick: (r) => unawaited(_setRate(r)),
+        focusNode: _rateFocus,
+        menuTitle: '播放速度',
         onSurface: onSurface,
       );
 
@@ -4270,8 +4494,12 @@ class _WatchPageState extends State<WatchPage> with WidgetsBindingObserver {
           label: '${_currentQuality}p',
           current: _currentQuality,
           choices: _qualityChoices(options).reversed.toList(),
-          onOpen: () => unawaited(_loadQualities()),
+          onOpen: _loadQualities,
           onPick: (r) => unawaited(_switchQuality(r)),
+          focusNode: _qualityFocus,
+          menuTitle: '畫質',
+          refreshedChoices: () =>
+              _qualityChoices(_qualities.value).reversed.toList(),
           onSurface: onSurface,
         ),
       );
@@ -4313,13 +4541,45 @@ class _WatchPageState extends State<WatchPage> with WidgetsBindingObserver {
       required T current,
       required List<PlayerChoice<T>> choices,
       required ValueChanged<T> onPick,
+      required FocusNode focusNode,
+      required String menuTitle,
+      List<PlayerChoice<T>> Function()? refreshedChoices,
       bool onSurface = false,
-      VoidCallback? onOpen}) {
+      Future<void> Function()? onOpen}) {
+    if (Device.tv) {
+      return AnimatedBuilder(
+        animation: focusNode,
+        builder: (context, _) => Material(
+          color:
+              focusNode.hasFocus ? const Color(0x5539C5BB) : Colors.transparent,
+          shape: RoundedRectangleBorder(
+              side: BorderSide(
+                  width: 3,
+                  color: focusNode.hasFocus
+                      ? AgpColors.focusRing
+                      : Colors.transparent)),
+          child: InkWell(
+            focusNode: focusNode,
+            onTap: () => unawaited(_openTopMenu(
+                menuTitle, current, choices, onPick, focusNode,
+                onOpen: onOpen, refreshedChoices: refreshedChoices)),
+            child: Padding(
+                padding:
+                    const EdgeInsets.symmetric(horizontal: 12, vertical: 14),
+                child: Text(label,
+                    style: const TextStyle(
+                        color: Colors.white,
+                        fontSize: 16,
+                        fontWeight: FontWeight.w800))),
+          ),
+        ),
+      );
+    }
     return PopupMenuButton<T>(
       tooltip: label,
       onOpened: () {
         _idleTimer?.cancel();
-        onOpen?.call();
+        unawaited(onOpen?.call());
       },
       onCanceled: _armIdle,
       onSelected: (value) {
@@ -4360,11 +4620,36 @@ class _WatchPageState extends State<WatchPage> with WidgetsBindingObserver {
     );
   }
 
+  Future<void> _openTopMenu<T>(String title, T current,
+      List<PlayerChoice<T>> choices, ValueChanged<T> onPick, FocusNode focus,
+      {Future<void> Function()? onOpen,
+      List<PlayerChoice<T>> Function()? refreshedChoices}) async {
+    _idleTimer?.cancel();
+    setState(() => _settingsOpen = true);
+    unawaited(onOpen?.call());
+    final picked = await _choosePlayerOption(title, choices, current,
+        refreshedChoices: refreshedChoices);
+    if (!mounted) return;
+    setState(() => _settingsOpen = false);
+    if (picked != null) onPick(picked);
+    _showControls();
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (mounted && _controlsVisible && !_settingsOpen) focus.requestFocus();
+    });
+  }
+
   Widget _playbackButtons({bool compact = false}) {
     return Focus(
         canRequestFocus: false,
         skipTraversal: true,
         onKeyEvent: (node, event) {
+          if (Device.tv &&
+              event is! KeyUpEvent &&
+              event.logicalKey == LogicalKeyboardKey.arrowUp) {
+            _qualityFocus.requestFocus();
+            _armIdle();
+            return KeyEventResult.handled;
+          }
           if (Device.tv &&
               event is! KeyUpEvent &&
               event.logicalKey == LogicalKeyboardKey.arrowDown) {
@@ -4654,8 +4939,9 @@ class _WatchPageState extends State<WatchPage> with WidgetsBindingObserver {
   static const double kBarSlot = 48;
 
   Widget _barButton(IconData icon, String tooltip, VoidCallback? onTap,
-      {bool active = false, Color? foregroundColor}) {
+      {bool active = false, Color? foregroundColor, FocusNode? focusNode}) {
     return IconButton(
+      focusNode: focusNode,
       tooltip: tooltip,
       iconSize: kBarIcon,
       constraints:
@@ -5163,6 +5449,20 @@ class _WatchPageState extends State<WatchPage> with WidgetsBindingObserver {
     final groups = info != null && info.groups.isNotEmpty
         ? info.groups
         : [SeriesGroup(name: '', episodes: _orderedEpisodes())];
+    if (Device.tv) {
+      final choices = [
+        for (final group in groups)
+          for (final episode in group.episodes)
+            PlayerChoice(
+                episode,
+                '${group.name.isEmpty ? '' : '${group.name} · '}'
+                '${episodeLabel(episode.episode)}')
+      ];
+      if (choices.isEmpty) return;
+      unawaited(_openTopMenu('選集', _currentEpisode ?? choices.first.value,
+          choices, (episode) => unawaited(_switchTo(episode)), _episodesFocus));
+      return;
+    }
     showModalBottomSheet<void>(
       context: context,
       isScrollControlled: true,
@@ -5386,6 +5686,11 @@ class _WatchPageState extends State<WatchPage> with WidgetsBindingObserver {
                     value: _autoNext,
                     onChanged: (value) => refresh(() {
                       setState(() => _autoNext = value);
+                      _nextTimer?.cancel();
+                      final next = _nextOffer;
+                      if (value && next != null) {
+                        _offerNext(next, fromEnding: _nextFromEnding);
+                      }
                       unawaited(state.savePref(() => prefs.setAutoNext(value)));
                     }),
                   ),
@@ -5430,39 +5735,56 @@ class _WatchPageState extends State<WatchPage> with WidgetsBindingObserver {
       subtitle: note.isEmpty ? value : '$value · $note',
       trailing: const Icon(Icons.chevron_right_rounded, size: 20),
       onTap: () async {
-        final picked = await showModalBottomSheet<T>(
-          context: context,
-          requestFocus: true,
-          sheetAnimationStyle: Device.tv ? AnimationStyle.noAnimation : null,
-          builder: (sheetContext) => TvSettingsList(
-              child: SafeArea(
-            child: SingleChildScrollView(
-                child: Column(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                _SheetTitle(title),
-                for (final choice in choices)
-                  _settingsTile(
-                    focusLabel: '$title-${choice.value}',
-                    autofocus: choice.value == current ||
-                        (!choices.any((c) => c.value == current) &&
-                            choice == choices.first),
-                    title: choice.label,
-                    trailing: choice.value == current
-                        ? const Icon(Icons.check_rounded,
-                            size: 18, color: AgpColors.accent)
-                        : null,
-                    onTap: () => Navigator.of(sheetContext).pop(choice.value),
-                  ),
-                const SizedBox(height: 8),
-              ],
-            )),
-          )),
-        );
+        final picked = await _choosePlayerOption(title, choices, current);
         if (picked != null && mounted) onPick(picked);
       },
     );
   }
+
+  Future<T?> _choosePlayerOption<T>(
+          String title, List<PlayerChoice<T>> choices, T current,
+          {List<PlayerChoice<T>> Function()? refreshedChoices}) =>
+      showModalBottomSheet<T>(
+        context: context,
+        requestFocus: true,
+        sheetAnimationStyle: Device.tv ? AnimationStyle.noAnimation : null,
+        builder: (sheetContext) {
+          Widget options(List<PlayerChoice<T>> choices) => TvSettingsList(
+                child: SafeArea(
+                  child: SingleChildScrollView(
+                    child: Column(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        _SheetTitle(title),
+                        for (final choice in choices)
+                          _settingsTile(
+                            focusLabel:
+                                '$title-${choice.value is SeriesEpisode ? (choice.value as SeriesEpisode).videoSn : choice.value}',
+                            autofocus: choice.value == current ||
+                                (!choices.any((c) => c.value == current) &&
+                                    choice == choices.first),
+                            title: choice.label,
+                            trailing: choice.value == current
+                                ? const Icon(Icons.check_rounded,
+                                    size: 18, color: AgpColors.accent)
+                                : null,
+                            onTap: () =>
+                                Navigator.of(sheetContext).pop(choice.value),
+                          ),
+                        const SizedBox(height: 8),
+                      ],
+                    ),
+                  ),
+                ),
+              );
+          return refreshedChoices == null
+              ? options(choices)
+              : ValueListenableBuilder<List<int>>(
+                  valueListenable: _qualities,
+                  builder: (context, value, child) =>
+                      options(refreshedChoices()));
+        },
+      );
 
   Widget _settingsTile({
     required String title,

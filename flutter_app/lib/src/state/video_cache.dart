@@ -11,8 +11,8 @@
 /// 「已經載過的就不要再載一次」在這裡是字面上的意思 —— 不分檔頭還是影片內容,
 /// 看過的段落 app 重開之後照樣算數.
 ///
-/// 刻意不做預抓. 快取只從「播放器本來就要的東西」順手撿, 所以永遠不會跟正在
-/// 看的那一集搶頻寬 —— 慢線路上那是最要命的事.
+/// 平常只存播放器要求的資料. 唯一的預抓是 OP 跳轉後的小段, 播放頁確認目前
+/// 有足夠緩衝後才啟動; 換集、緩衝不足或離開頁面就取消.
 ///
 /// 整台跑在自己的 isolate 裡. 播放器讀的每一個 byte 都要經過這裡一手 (複製、
 /// 落盤、再寫回 socket), 以前這些全擠在畫面那條執行緒上, 跟彈幕搶同一顆核心
@@ -26,9 +26,12 @@ import 'dart:convert';
 import 'dart:io';
 import 'dart:isolate';
 import 'dart:math' as math;
+import 'dart:typed_data';
 
 import 'package:http/http.dart' as http;
 import 'package:http/io_client.dart';
+
+import 'mp4_prefetch.dart';
 
 /// 一塊多大. 小塊比較省 (跳轉時對齊浪費的少), 但一集會生出很多檔案;
 /// 1 MB 的話 428 MB 的一集全看完大約 428 塊.
@@ -130,6 +133,7 @@ class VideoCacheServer {
 
   int _token = 0;
   bool _closed = false;
+  int _prefetchRequest = 0;
 
   /// 起一台. 起不來 (權限、沒有 loopback) 就回 null, 呼叫端退回直連.
   ///
@@ -274,6 +278,34 @@ class VideoCacheServer {
     return Uri.parse('http://127.0.0.1:$port/h/$token/playlist.m3u8');
   }
 
+  /// Warm the seek destination without another video decoder. All parsing,
+  /// requests and disk writes stay in the cache isolate. At most one job runs.
+  Future<bool> prefetch(Uri source, double seconds) async {
+    if (_closed ||
+        !seconds.isFinite ||
+        seconds < 0 ||
+        source.host != '127.0.0.1' ||
+        source.port != port) {
+      return false;
+    }
+    final generation = ++_prefetchRequest;
+    final reply = ReceivePort();
+    try {
+      _commands.send(['prefetch', source.toString(), seconds, reply.sendPort]);
+      return await reply.first.timeout(const Duration(seconds: 30)) == true;
+    } catch (_) {
+      if (generation == _prefetchRequest) cancelPrefetch();
+      return false;
+    } finally {
+      reply.close();
+    }
+  }
+
+  void cancelPrefetch() {
+    _prefetchRequest++;
+    if (!_closed) _commands.send('cancel-prefetch');
+  }
+
   /// 收掉. 要等那一頭真的放開檔案才回來 —— 接著要刪快取目錄的人 (清除快取、
   /// 測試收尾) 在 Windows 上會撞到還開著的檔案.
   Future<void> close() async {
@@ -336,6 +368,12 @@ void _workerMain(_WorkerConfig config) {
             hls: message[5] as bool,
           ),
         );
+      } else if (message is List && message[0] == 'prefetch') {
+        final reply = message[3] as SendPort;
+        reply.send(await worker.prefetch(
+            Uri.parse(message[1] as String), message[2] as double));
+      } else if (message == 'cancel-prefetch') {
+        worker.cancelPrefetch();
       } else if (message == 'close') {
         await worker.close();
         config.events.send('closed');
@@ -370,6 +408,167 @@ class _CacheWorker {
   final http.Client _http;
   final Map<String, _Target> _targets = {};
   final Map<String, Future<_Meta?>> _metaWork = {};
+  HttpClient? _prefetchClient;
+  int _prefetchGeneration = 0;
+  int _partNumber = 0;
+  final Map<String, Future<void>> _saveWork = {};
+
+  Future<void> _savePart(File part, File file,
+      {String? key, int? block}) async {
+    final previous = _saveWork[file.path];
+    final done = Completer<void>();
+    _saveWork[file.path] = done.future;
+    try {
+      await previous;
+      final saved = await part.length();
+      final had = key != null && block != null
+          ? _blockCovered(key, block)
+          : (await file.exists() ? await file.length() : 0);
+      if (saved > had) {
+        await part.rename(file.path);
+        if (key != null && block != null) _coverage(key)[block] = saved;
+        _grew(saved - had);
+      } else {
+        await part.delete();
+      }
+    } catch (_) {
+      if (await part.exists()) await part.delete();
+      rethrow;
+    } finally {
+      done.complete();
+      if (identical(_saveWork[file.path], done.future)) {
+        _saveWork.remove(file.path);
+      }
+    }
+  }
+
+  void cancelPrefetch() {
+    _prefetchGeneration++;
+    _prefetchClient?.close(force: true);
+    _prefetchClient = null;
+  }
+
+  Future<bool> prefetch(Uri source, double seconds) async {
+    cancelPrefetch();
+    final generation = _prefetchGeneration;
+    final token = source.pathSegments.length > 1 ? source.pathSegments[1] : '';
+    final target = _targets[token];
+    if (target == null || _closed) return false;
+    final client = HttpClient()..connectionTimeout = const Duration(seconds: 4);
+    _prefetchClient = client;
+    const budget = 8 * 1024 * 1024;
+    var used = 0;
+    Future<Uint8List> read(Uri uri,
+        {int? start, int? end, int limit = budget}) async {
+      if (_closed || generation != _prefetchGeneration) {
+        throw StateError('cancelled');
+      }
+      final request = await client.getUrl(uri);
+      if (start != null) {
+        request.headers.set(HttpHeaders.rangeHeader, 'bytes=$start-$end');
+      }
+      final response =
+          await request.close().timeout(const Duration(seconds: 4));
+      if (response.statusCode >= 400 ||
+          response.contentLength > limit ||
+          (start != null &&
+              (response.statusCode != 206 ||
+                  !((response.headers.value(HttpHeaders.contentRangeHeader) ??
+                          '')
+                      .startsWith('bytes $start-'))))) {
+        throw const HttpException('unsupported prefetch response');
+      }
+      final bytes = BytesBuilder(copy: false);
+      await for (final chunk in response.timeout(const Duration(seconds: 4))) {
+        if (generation != _prefetchGeneration ||
+            bytes.length + chunk.length > limit) {
+          throw StateError('prefetch budget exceeded or cancelled');
+        }
+        bytes.add(chunk);
+      }
+      if (start != null && bytes.length != end! - start + 1) {
+        throw const HttpException('short prefetch range');
+      }
+      return bytes.takeBytes();
+    }
+
+    try {
+      if (target.hls) {
+        final playlist = utf8.decode(await read(source, limit: 256 * 1024));
+        var at = 0.0;
+        var length = 0.0;
+        var fetched = 0;
+        for (final line in const LineSplitter().convert(playlist)) {
+          if (line.startsWith('#EXTINF:')) {
+            length = double.tryParse(line.substring(8).split(',').first) ?? 0;
+          } else if (line.isNotEmpty && !line.startsWith('#') && length > 0) {
+            final next = at + length;
+            final uri = source.resolve(line.trim());
+            // Only this app's indexed segments are cached. Master playlists,
+            // byte-range HLS and foreign URLs are not guessed or followed.
+            if (uri.host == source.host &&
+                uri.port == source.port &&
+                uri.path.endsWith('/segment.ts') &&
+                uri.queryParameters.containsKey('n') &&
+                next > math.max(0, seconds - 2) &&
+                at < seconds + 12) {
+              final bytes = await read(uri, limit: budget - used);
+              used += bytes.length;
+              fetched++;
+            }
+            at = next;
+            length = 0;
+            if (at >= seconds + 12 || fetched >= 4 || used >= budget) break;
+          }
+        }
+        return fetched > 0;
+      }
+      final meta = await _metaFor(target);
+      if (meta == null) return false;
+      Uint8List? moov;
+      var at = 0;
+      for (var boxes = 0; boxes < 32 && at + 16 <= meta.total; boxes++) {
+        final header = await read(source, start: at, end: at + 15, limit: 16);
+        final data = ByteData.sublistView(header);
+        var size = data.getUint32(0);
+        final type = String.fromCharCodes(header.sublist(4, 8));
+        final headerSize = size == 1 ? 16 : 8;
+        if (size == 1) size = data.getUint64(8);
+        if (size < headerSize || at + size > meta.total) return false;
+        if (type == 'moov') {
+          if (size > 4 * 1024 * 1024) return false;
+          moov = await read(source,
+              start: at, end: at + size - 1, limit: 4 * 1024 * 1024);
+          break;
+        }
+        at += size;
+      }
+      if (moov == null) return false;
+      final ranges = mp4PrefetchRanges(moov, seconds, meta.total);
+      final blocks = <int>{};
+      for (final range in ranges) {
+        for (var block = _blockOf(range.$1);
+            block <= _blockOf(range.$2);
+            block++) {
+          blocks.add(block);
+          if (blocks.length > 8) break;
+        }
+        if (blocks.length > 8) break;
+      }
+      for (final block in blocks.take(8)) {
+        final start = _blockStart(block), size = _blockLength(block, meta);
+        if (used + size > budget) break;
+        await read(source, start: start, end: start + size - 1, limit: size);
+        used += size;
+      }
+      return used > 0;
+    } catch (_) {
+      return false; // optional warming must never fail or seek the player
+    } finally {
+      client.close(force: true);
+      if (identical(_prefetchClient, client)) _prefetchClient = null;
+    }
+  }
 
   /// 最近 wrap 過的幾集, 淘汰時跳過
   final LinkedHashSet<String> _recentKeys = LinkedHashSet<String>();
@@ -459,7 +658,8 @@ class _CacheWorker {
 
   Directory _episodeDir(String key) => Directory('${_dir.path}/$key');
   File _metaFile(String key) => File('${_dir.path}/$key/meta.json');
-  File _blockFile(String key, int index) => File('${_dir.path}/$key/$index.blk');
+  File _blockFile(String key, int index) =>
+      File('${_dir.path}/$key/$index.blk');
 
   int _blockOf(int offset) => offset ~/ kCacheBlockBytes;
   int _blockStart(int index) => index * kCacheBlockBytes;
@@ -483,8 +683,7 @@ class _CacheWorker {
       if (dir.existsSync()) {
         for (final item in dir.listSync()) {
           if (item is! File) continue;
-          final match =
-              _blockName.firstMatch(item.uri.pathSegments.last);
+          final match = _blockName.firstMatch(item.uri.pathSegments.last);
           if (match == null) continue;
           final length = item.lengthSync();
           if (length > 0) found[int.parse(match.group(1)!)] = length;
@@ -792,9 +991,9 @@ class _CacheWorker {
   }
 
   /// 抓一片, 邊送邊存
-  Future<void> _fetchSegment(_Target target, Uri upstream, File file,
-      HttpResponse response) async {
-    final part = File('${file.path}.part');
+  Future<void> _fetchSegment(
+      _Target target, Uri upstream, File file, HttpResponse response) async {
+    final part = File('${file.path}.${++_partNumber}.part');
     IOSink? sink;
     try {
       await Directory('${_dir.path}/${target.key}').create(recursive: true);
@@ -807,8 +1006,8 @@ class _CacheWorker {
       final result = await _open(upstream, target.headers);
       if (result.statusCode >= 400) {
         response.statusCode = result.statusCode;
-        await response.close();
-        return;
+        unawaited(result.stream.drain<void>().catchError((Object _) {}));
+        throw HttpException('upstream segment failed: ${result.statusCode}');
       }
       response.statusCode = HttpStatus.ok;
       response.headers.set(HttpHeaders.contentTypeHeader, 'video/mp2t');
@@ -828,8 +1027,7 @@ class _CacheWorker {
       sink = null;
       final saved = part.existsSync() ? await part.length() : 0;
       if (saved > 0) {
-        await part.rename(file.path);
-        _grew(saved);
+        await _savePart(part, file);
       }
       await response.close();
     } catch (_) {
@@ -927,12 +1125,13 @@ class _CacheWorker {
   /// 起點會往前對齊到塊的開頭 (最多多要 1 MB). 不對齊的話, 跳轉之後那一塊
   /// 永遠只拿得到半塊, 也就永遠存不起來 —— moov 在檔尾又不對齊, 正是會一直
   /// 踩到這件事的地方.
-  Future<bool> _fetchAndStore(_Target target, _Meta meta,
-      HttpResponse response, int start, int stop) async {
+  Future<bool> _fetchAndStore(_Target target, _Meta meta, HttpResponse response,
+      int start, int stop) async {
     final aligned = _blockStart(_blockOf(start));
     IOSink? sink;
     var sinkBlock = -1;
     var pos = aligned;
+    final partId = ++_partNumber;
 
     Future<void> settle({required bool keep}) async {
       final open = sink;
@@ -945,7 +1144,7 @@ class _CacheWorker {
       } catch (_) {
         ok = false;
       }
-      final part = File('${_blockFile(target.key, block).path}.part');
+      final part = File('${_blockFile(target.key, block).path}.$partId.part');
       try {
         if (ok && part.existsSync()) {
           final grown = await part.length();
@@ -953,9 +1152,8 @@ class _CacheWorker {
           // 半塊也留著 —— 但只有在比手上那份更長的時候才換, 不然中途被掐斷
           // 的一小段會把已經存好的整塊蓋掉
           if (grown > 0 && grown > had) {
-            await part.rename(_blockFile(target.key, block).path);
-            _coverage(target.key)[block] = grown;
-            _grew(grown - had);
+            await _savePart(part, _blockFile(target.key, block),
+                key: target.key, block: block);
           } else {
             await part.delete();
           }
@@ -989,8 +1187,8 @@ class _CacheWorker {
             await settle(keep: true);
             sinkBlock = block;
             try {
-              sink =
-                  File('${_blockFile(target.key, block).path}.part').openWrite();
+              sink = File('${_blockFile(target.key, block).path}.$partId.part')
+                  .openWrite();
             } catch (_) {
               sink = null;
             }
@@ -1098,8 +1296,7 @@ class _CacheWorker {
         // 使用者清快取) 會讓刪除那一邊拿到奇怪的錯
         if (_closed) return;
         if (item is! Directory) continue;
-        final key =
-            item.uri.pathSegments.where((part) => part.isNotEmpty).last;
+        final key = item.uri.pathSegments.where((part) => part.isNotEmpty).last;
         var size = 0;
         await for (final file in item.list()) {
           if (_closed) return;
@@ -1136,6 +1333,7 @@ class _CacheWorker {
 
   Future<void> close() async {
     _closed = true;
+    cancelPrefetch();
     _report();
     _targets.clear();
     _metaWork.clear();

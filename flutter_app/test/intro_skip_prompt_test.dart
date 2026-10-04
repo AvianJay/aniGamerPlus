@@ -45,11 +45,36 @@ void main() {
   final skip = find.byKey(const ValueKey('skip-intro'));
   final cancel = find.byKey(const ValueKey('cancel-intro'));
 
+  testWidgets(
+      'countdown starts three playback seconds after OP, manual skip stays available',
+      (tester) async {
+    clock.value = 157;
+    await show(tester);
+    expect(find.text('跳過片頭'), findsWidgets);
+    for (final position in [160.0, 161.0, 162.99]) {
+      clock.value = position;
+      await tester.pump(const Duration(seconds: 5));
+      expect(skips, 0);
+      expect(find.text('立即跳過 (8)'), findsNothing);
+    }
+    clock.value = 163;
+    await tester.pump();
+    expect(find.text('立即跳過 (8)'), findsOneWidget);
+    await tester.pump(const Duration(seconds: 1));
+    expect(find.text('立即跳過 (7)'), findsOneWidget);
+    await tester.pumpWidget(const SizedBox());
+    clock.value = 160;
+    await show(tester, episode: '2');
+    await tester.tap(skip);
+    await tester.pump();
+    expect(skips, 1);
+  });
+
   testWidgets('enters OP with eight seconds and seeks once when it expires',
       (tester) async {
     await show(tester);
     expect(card, findsNothing);
-    clock.value = 162;
+    clock.value = 164;
     await tester.pump();
     expect(find.text('立即跳過 (8)'), findsOneWidget);
     await tester.pump(const Duration(seconds: 1));
@@ -65,7 +90,7 @@ void main() {
 
   testWidgets('pause, buffering and covered menus hold the remaining countdown',
       (tester) async {
-    clock.value = 162;
+    clock.value = 164;
     await show(tester);
     await tester.pump(const Duration(seconds: 2));
     expect(find.text('立即跳過 (6)'), findsOneWidget);
@@ -87,7 +112,7 @@ void main() {
 
   testWidgets('clock updates within OP do not rebuild the card',
       (tester) async {
-    clock.value = 162;
+    clock.value = 164;
     await show(tester);
     final before = tester.widget<PlaybackCountdownCard>(card);
     for (var i = 0; i < 5; i++) {
@@ -101,14 +126,14 @@ void main() {
     await tester.pump(const Duration(seconds: 10));
     expect(card, findsNothing);
     expect(skips, 0);
-    clock.value = 162;
+    clock.value = 164;
     await tester.pump();
     expect(find.text('立即跳過 (8)'), findsOneWidget);
     await tester.pumpWidget(const SizedBox());
   });
 
   testWidgets('cancel stays dismissed until the next episode', (tester) async {
-    clock.value = 162;
+    clock.value = 164;
     await show(tester);
     await tester.tap(cancel);
     await tester.pump(const Duration(seconds: 10));
@@ -127,7 +152,7 @@ void main() {
     testWidgets('TV confirms skip and navigates to cancel (phone=$phone)',
         (tester) async {
       await show(tester, tv: true);
-      clock.value = 162;
+      clock.value = 164;
       await tester.pump();
       await tester.pump();
       expect(tester.widget<FilledButton>(skip).focusNode!.hasFocus, isTrue);

@@ -10,10 +10,10 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:agp_mobile/src/state/video_cache.dart';
 
 import 'support/temp_dir.dart';
+import 'support/mp4_fixture.dart';
 
 /// 一支假的 mp4: 每個 byte 都是它自己位移的低八位, 所以任何一段都驗得出來
-List<int> body(int total) =>
-    List<int>.generate(total, (index) => index % 251);
+List<int> body(int total) => List<int>.generate(total, (index) => index % 251);
 
 class Upstream {
   Upstream(this.server, this.data);
@@ -33,6 +33,8 @@ class Upstream {
 
   /// 分片被跟上游要了幾次
   int segmentHits = 0;
+  final segmentNumbers = <int>[];
+  String? playlistBody;
 
   /// 接下來這幾個請求連回應標頭都不給, 就這樣掛著 —— 切過網路之後, 連線池
   /// 裡那條死連線就是這個樣子
@@ -58,19 +60,21 @@ class Upstream {
       }
       // 換畫質那條路: /stream/playlist.m3u8 + 相對路徑的分片
       if (request.uri.path.endsWith('playlist.m3u8')) {
-        response.headers.set(HttpHeaders.contentTypeHeader,
-            'application/vnd.apple.mpegurl');
-        response.write('#EXTM3U\n#EXT-X-VERSION:3\n'
-            '#EXT-X-TARGETDURATION:4\n#EXT-X-PLAYLIST-TYPE:VOD\n'
-            '#EXTINF:4.0,\nsegment.ts?id=1&res=720&n=0\n'
-            '#EXTINF:4.0,\nsegment.ts?id=1&res=720&n=1\n'
-            '#EXT-X-ENDLIST\n');
+        response.headers.set(
+            HttpHeaders.contentTypeHeader, 'application/vnd.apple.mpegurl');
+        response.write(upstream.playlistBody ??
+            '#EXTM3U\n#EXT-X-VERSION:3\n'
+                '#EXT-X-TARGETDURATION:4\n#EXT-X-PLAYLIST-TYPE:VOD\n'
+                '#EXTINF:4.0,\nsegment.ts?id=1&res=720&n=0\n'
+                '#EXTINF:4.0,\nsegment.ts?id=1&res=720&n=1\n'
+                '#EXT-X-ENDLIST\n');
         await response.close();
         return;
       }
       if (request.uri.path.endsWith('segment.ts')) {
         final n = int.tryParse(request.uri.queryParameters['n'] ?? '0') ?? 0;
         upstream.segmentHits++;
+        upstream.segmentNumbers.add(n);
         response.headers.set(HttpHeaders.contentTypeHeader, 'video/mp2t');
         response.add(List<int>.filled(4096, 100 + n));
         await response.close();
@@ -89,8 +93,8 @@ class Upstream {
         }
         if (end > data.length - 1) end = data.length - 1;
         response.statusCode = HttpStatus.partialContent;
-        response.headers.set(HttpHeaders.contentRangeHeader,
-            'bytes $start-$end/${data.length}');
+        response.headers.set(
+            HttpHeaders.contentRangeHeader, 'bytes $start-$end/${data.length}');
       }
       response.headers.set(HttpHeaders.etagHeader, '"stub-v1"');
       response.headers.set(HttpHeaders.acceptRangesHeader, 'bytes');
@@ -199,8 +203,61 @@ void main() {
     }
   });
 
-  Uri wrap() => cache.wrap(
-      upstream: upstream.url, headers: const {}, key: 'v123-1080');
+  test('OP-end HLS segments are cached before the player seeks', () async {
+    upstream.playlistBody = '#EXTM3U\n'
+        '${[
+      for (var n = 0; n < 12; n++) '#EXTINF:10,\nsegment.ts?id=1&res=720&n=$n\n'
+    ].join()}'
+        '#EXT-X-ENDLIST\n';
+    final url = cache.wrapHls(
+        playlist: upstream.playlist, headers: const {}, key: 'op-hls');
+    expect(await cache.prefetch(url, 32), isTrue);
+    expect(upstream.segmentNumbers, [3, 4]);
+    upstream.refuse = true;
+    final bytes = await fetch(url.resolve('segment.ts?id=1&res=720&n=3'));
+    expect(bytes, List<int>.filled(4096, 103));
+    expect(upstream.segmentNumbers, [3, 4],
+        reason: 'the seek reads disk, not the network');
+  });
+
+  for (final tail in [false, true]) {
+    test(
+        'MP4 OP-end prefetch reads indexed chunks without a decoder (tail=$tail)',
+        () async {
+      final movie = sampleMovie(tailMoov: tail, scale: 40);
+      upstream.data
+        ..clear()
+        ..addAll(movie);
+      final url =
+          cache.wrap(upstream: upstream.url, headers: const {}, key: 'op-mp4');
+      expect(await cache.prefetch(url, 32), isTrue);
+      upstream.refuse = true;
+      final bytes = await fetch(url, range: 'bytes=1100000-1150000');
+      expect(bytes, movie.sublist(1100000, 1150001));
+    });
+  }
+
+  test(
+      'cancelling OP prefetch interrupts its socket and retains completed blocks',
+      () async {
+    upstream.data
+      ..clear()
+      ..addAll(sampleMovie(scale: 40));
+    upstream.chunkDelay = const Duration(milliseconds: 100);
+    final url =
+        cache.wrap(upstream: upstream.url, headers: const {}, key: 'cancel-op');
+    final work = cache.prefetch(url, 32);
+    await Future<void>.delayed(const Duration(milliseconds: 150));
+    cache.cancelPrefetch();
+    expect(await work.timeout(const Duration(seconds: 2)), isFalse);
+    // A subsequent foreground read still works; cancellation only closes the prefetch client.
+    upstream.chunkDelay = Duration.zero;
+    expect(
+        await fetch(url, range: 'bytes=0-100'), upstream.data.sublist(0, 101));
+  });
+
+  Uri wrap() =>
+      cache.wrap(upstream: upstream.url, headers: const {}, key: 'v123-1080');
 
   /// 這一段有沒有被存下來 (整塊整塊算)
   bool blocksCached(int start, int end) {
@@ -248,8 +305,7 @@ void main() {
 
     upstream.refuse = true;
     final again = await fetch(url, range: 'bytes=$from-');
-    expect(again, equals(upstream.data.sublist(from)),
-        reason: '不對齊的跳轉沒有被快取住');
+    expect(again, equals(upstream.data.sublist(from)), reason: '不對齊的跳轉沒有被快取住');
   });
 
   test('一半在快取一半不在, 要拼得起來', () async {
@@ -482,8 +538,8 @@ void main() {
     await fetch(url, range: 'bytes=0-$to'); // 先存進快取, 之後不必問上游 (它也在主 isolate 上)
 
     // 播放器那一頭在主 isolate 忙到一半的時候才開口要
-    final done = fetchElsewhere(
-        url, 'bytes=0-$to', const Duration(milliseconds: 900));
+    final done =
+        fetchElsewhere(url, 'bytes=0-$to', const Duration(milliseconds: 900));
     await Future<void>.delayed(const Duration(milliseconds: 300));
     final busyFrom = DateTime.now().millisecondsSinceEpoch;
     final busyUntil = DateTime.now().add(const Duration(milliseconds: 2000));
@@ -495,8 +551,7 @@ void main() {
     expect(result[0], to + 1);
     expect(result[1], greaterThan(busyFrom),
         reason: '測試本身沒排好: 播放器應該是在主 isolate 忙的時候才開口要');
-    expect(result[2], lessThan(freedAt),
-        reason: '主 isolate 一忙, 播放器就拿不到資料');
+    expect(result[2], lessThan(freedAt), reason: '主 isolate 一忙, 播放器就拿不到資料');
   });
 
   test('轉手過的量算得出速度, 從磁碟讀的不算', () async {
@@ -505,7 +560,8 @@ void main() {
     expect(cache.bytesPerSecond, greaterThan(0));
 
     // 等取樣視窗過去, 然後只讀快取住的那一段: 沒有流量, 速度該回到 0
-    await Future<void>.delayed(kSpeedWindow + const Duration(milliseconds: 200));
+    await Future<void>.delayed(
+        kSpeedWindow + const Duration(milliseconds: 200));
     expect(cache.bytesPerSecond, 0);
     await fetch(url, range: 'bytes=0-65535');
     expect(cache.bytesPerSecond, 0);

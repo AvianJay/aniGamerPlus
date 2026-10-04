@@ -341,6 +341,18 @@ class AgpClient {
           duration: duration,
           animeSkipFallback: animeSkipFallback);
 
+  Future<EndingSkipResult?> endingSkip({
+    required String title,
+    required String seasonStart,
+    required String episode,
+    required double duration,
+  }) =>
+      _openingSkip.findEnding(
+          title: title,
+          seasonStart: seasonStart,
+          episode: episode,
+          duration: duration);
+
   // -------------------------------------------------------------------- 片單
 
   Future<CatalogIndex> catalogIndex() async =>

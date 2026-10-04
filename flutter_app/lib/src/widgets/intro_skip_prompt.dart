@@ -45,6 +45,7 @@ class IntroSkipPromptState extends State<IntroSkipPrompt> {
   Timer? _timer;
   bool _visible = false;
   bool _acted = false;
+  bool _countdownReady = false;
   late int _remaining = widget.seconds;
 
   bool get hasFocus => _group.hasFocus;
@@ -60,6 +61,10 @@ class IntroSkipPromptState extends State<IntroSkipPrompt> {
 
   void _sync({bool rebuild = false}) {
     final visible = !_acted && widget.intro.visibleAt(widget.clock.value);
+    final ready = widget.clock.value >= widget.intro.start + 3;
+    final readyChanged = ready != _countdownReady;
+    if (!ready && readyChanged) _remaining = widget.seconds;
+    _countdownReady = ready;
     if (visible != _visible) {
       final release = !visible && hasFocus;
       _visible = visible;
@@ -75,14 +80,15 @@ class IntroSkipPromptState extends State<IntroSkipPrompt> {
         });
       }
     }
-    if (!_visible || !widget.canCount()) {
+    if (readyChanged && rebuild && mounted && _visible) setState(() {});
+    if (!_visible || !_countdownReady || !widget.canCount()) {
       _timer?.cancel();
       _timer = null;
     } else {
       _timer ??= Timer.periodic(const Duration(seconds: 1), (_) {
         // Recheck current state, including menus/lifecycle, before any seek.
         _sync(rebuild: true);
-        if (!_visible || !widget.canCount()) return;
+        if (!_visible || !_countdownReady || !widget.canCount()) return;
         if (_remaining <= 1) {
           _act(widget.onSkip);
         } else {
@@ -170,7 +176,7 @@ class IntroSkipPromptState extends State<IntroSkipPrompt> {
             key: const ValueKey('intro-countdown'),
             title: '即將跳過片頭',
             detail: '跳過片頭 · ${widget.intro.source}',
-            action: '立即跳過 ($_remaining)',
+            action: _countdownReady ? '立即跳過 ($_remaining)' : '跳過片頭',
             actionKey: const ValueKey('skip-intro'),
             cancelKey: const ValueKey('cancel-intro'),
             actionFocus: _skip,
