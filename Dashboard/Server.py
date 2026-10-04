@@ -2893,7 +2893,7 @@ def catalog_all(request: Request):
 
 @app.get('/watch/skip.json')
 def watch_skip(request: Request):
-    """An AniSkip OP for a real library/queued episode, if IDs match safely."""
+    """A database OP for a real library/queued episode, if IDs match safely."""
     current_settings = _get_current_settings()
     gated = _online_watch_gate(current_settings)
     if gated is not None:
@@ -2935,26 +2935,26 @@ def watch_skip(request: Request):
         return JSONResponse({'interval': None}, headers={'Cache-Control': 'private, max-age=600'})
     title = Catalog.series_title(anime.get('title'))
     season_start = anime.get('seasonStart') or ''
-    cache_name = 'skip_' + hashlib.sha256(
-        f'{title}|{season_start}|{episode}|{round(duration / 10)}'.encode('utf-8')
+    cache_name = 'skip_v2_' + hashlib.sha256(
+        f'{title}|{season_start}|{episode}|{duration}'.encode('utf-8')
     ).hexdigest()[:20]
     cached = _read_catalog_cache(cache_name, 7 * 24 * 3600)
     if cached is not None:
         return JSONResponse(cached, headers={'Cache-Control': 'private, max-age=600'})
-    mal_cache_name = 'mal_' + hashlib.sha256(
+    mal_cache_name = 'opening_series_v2_' + hashlib.sha256(
         f'{title}|{season_start}'.encode('utf-8')).hexdigest()[:20]
     try:
         mal_cache = _read_catalog_cache(mal_cache_name, 30 * 24 * 3600)
         if mal_cache is None:
-            mal_id = OpeningSkip.resolve_mal_id(title, season_start)
-            _write_catalog_cache(mal_cache_name, {'id': mal_id})
+            series = OpeningSkip.resolve_series(title, season_start)
+            _write_catalog_cache(mal_cache_name, {'series': series})
         else:
-            mal_id = mal_cache.get('id')
-        interval = OpeningSkip.aniskip_op(mal_id, episode, duration) if mal_id else None
+            series = mal_cache.get('series')
+        result = OpeningSkip.opening_op(series, episode, duration)
     except Exception:
-        logger.exception('AniSkip lookup failed for %s', sn)
+        logger.exception('Opening skip lookup failed for %s', sn)
         return JSONResponse({'interval': None}, headers={'Cache-Control': 'no-store'})
-    payload = {'interval': list(interval) if interval else None}
+    payload = result or {'interval': None}
     _write_catalog_cache(cache_name, payload)
     return JSONResponse(payload, headers={'Cache-Control': 'private, max-age=600'})
 

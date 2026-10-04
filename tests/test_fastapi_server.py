@@ -634,7 +634,8 @@ def test_catalog_tag_and_sort_are_server_side(client, autouse_settings, monkeypa
     assert '異世界' in client.get('/catalog/tags.json').json()['tags']
 
 
-def test_watch_skip_only_for_known_regular_episodes(client, autouse_settings, monkeypatch):
+@pytest.mark.parametrize('source', ['AniSkip', 'AnimeSkip'])
+def test_watch_skip_only_for_known_regular_episodes(client, autouse_settings, monkeypatch, source):
     info = {'anime': {'title': '進擊的巨人 [1]', 'seasonStart': '2013/04/07',
                       'episodes': {'0': [{'videoSn': '123', 'episode': 1}]}},
             'video': {}}
@@ -645,12 +646,12 @@ def test_watch_skip_only_for_known_regular_episodes(client, autouse_settings, mo
     monkeypatch.setattr(server, '_get_anime_info', lambda sn: info)
     monkeypatch.setattr(server, '_read_catalog_cache', lambda name, ttl: None)
     monkeypatch.setattr(server, '_write_catalog_cache', lambda name, payload: None)
-    monkeypatch.setattr(server.OpeningSkip, 'resolve_mal_id',
-                        lambda title, season: 16498)
-    monkeypatch.setattr(server.OpeningSkip, 'aniskip_op',
-                        lambda mal, episode, duration: (128.4, 218.4))
+    monkeypatch.setattr(server.OpeningSkip, 'resolve_series',
+                        lambda title, season: {'malId': 16498})
+    monkeypatch.setattr(server.OpeningSkip, 'opening_op',
+                        lambda series, episode, duration: {'interval': [128.4, 218.4], 'source': source})
     assert client.get('/watch/skip.json?id=123&duration=1440').json() == {
-        'interval': [128.4, 218.4]}
+        'interval': [128.4, 218.4], 'source': source}
     assert client.get('/watch/skip.json?id=999&duration=1440').status_code == 404
     assert client.get('/watch/skip.json?id=123&duration=0').status_code == 400
     monkeypatch.setattr(server, '_find_video_entry',

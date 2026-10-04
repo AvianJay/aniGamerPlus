@@ -31,7 +31,7 @@ var ASPECT_MODES = [
     { key: 'fill', label: '完整填滿' }
 ];
 var OPENING_SKIP_MODES = [
-    { value: 'aniskip-first', label: 'AniSkip 優先' },
+    { value: 'aniskip-first', label: '片頭資料庫優先' },
     { value: 'danmaku-first', label: '彈幕優先' },
     { value: 'aniskip-only', label: '只用 AniSkip' },
     { value: 'danmaku-only', label: '只用彈幕' },
@@ -324,9 +324,20 @@ function episodeNumber(video) {
 }
 
 /* Bahamut SNs are not MAL IDs. Match the Chinese series title at Bangumi,
-   verify its original title and year at AniList, then query AniSkip. */
+   verify its original title/year at AniList or Jikan, then query AniSkip
+   with AnimeSkip as a fallback. */
 var openingCharactersPromise = null;
 var openingMalIds = new Map();
+var openingAnimeShows = new Map();
+async function openingJson(url, options) {
+    var controller = new AbortController();
+    var timer = setTimeout(function () { controller.abort(); }, 8000);
+    try {
+        var response = await fetch(url, Object.assign({}, options, { signal: controller.signal }));
+        if (!response.ok) { var error = new Error('Opening API ' + response.status); error.status = response.status; throw error; }
+        return await response.json();
+    } finally { clearTimeout(timer); }
+}
 function openingCharacters() {
     if (!openingCharactersPromise) {
         openingCharactersPromise = fetch('./static/data/opening_t2s.json?v=1')
@@ -395,15 +406,13 @@ async function openingMalId(title, seasonStart) {
     if (openingMalIds.has(key)) { return openingMalIds.get(key); }
     var work = (async function () {
         var chars = await openingCharacters();
-        var response = await fetch('https://api.bgm.tv/v0/search/subjects', {
+        var data = await openingJson('https://api.bgm.tv/v0/search/subjects', {
             method: 'POST', headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
                 keyword: Array.from(title).map(function (ch) { return chars[ch] || ch; }).join(''),
                 filter: { type: [2] }, limit: 20
             })
         });
-        if (!response.ok) { throw new Error('Bangumi ' + response.status); }
-        var data = await response.json();
         var scored = (data.data || []).map(function (row) {
             return { row: row, score: openingSubjectScore(title, row, chars) };
         }).sort(function (a, b) { return b.score - a.score; });
@@ -415,46 +424,75 @@ async function openingMalId(title, seasonStart) {
         if (!original || (year && openingYear(seasonStart) && year !== openingYear(seasonStart))) {
             return null;
         }
-        response = await fetch('https://graphql.anilist.co', {
+        var failure, media = [];
+        try {
+        data = await openingJson('https://graphql.anilist.co', {
             method: 'POST', headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
-                query: 'query($s:String){Page(perPage:10){media(search:$s,type:ANIME){idMal title{native} startDate{year}}}}',
+                query: 'query($s:String){Page(perPage:10){media(search:$s,type:ANIME){id idMal episodes title{native romaji english} startDate{year}}}}',
                 variables: { s: original }
             })
         });
-        if (!response.ok) { throw new Error('AniList ' + response.status); }
-        data = await response.json();
-        var media = (((data || {}).data || {}).Page || {}).media || [];
-        var matches = media.filter(function (row) {
+        media = (((data || {}).data || {}).Page || {}).media || [];
+        } catch (error) { failure = error; }
+        function match(rows) { return rows.filter(function (row) {
             return Number.isInteger(row.idMal) && row.idMal > 0 &&
                 openingPlain((row.title || {}).native, chars) === openingPlain(original, chars) &&
                 (!year || String((row.startDate || {}).year) === year);
-        });
-        return matches.length === 1 ? matches[0].idMal : null;
+        }); }
+        var matches = match(media);
+        if (!matches.length) {
+            try {
+                data = await openingJson('https://api.jikan.moe/v4/anime?q=' + encodeURIComponent(original) + '&limit=25');
+                media = (data.data || []).map(function (row) {
+                    var aired = new Date((row.aired || {}).from || '');
+                    return { idMal: row.mal_id, episodes: row.episodes,
+                        title: { native: row.title_japanese, romaji: row.title, english: row.title_english },
+                        startDate: { year: aired.getUTCFullYear() } };
+                });
+                matches = match(media);
+            } catch (error) { throw failure || error; }
+            if (!matches.length && failure) { throw failure; }
+        }
+        return matches.length === 1 ? matches[0] : null;
     }());
     openingMalIds.set(key, work);
     try { return await work; } catch (error) { openingMalIds.delete(key); throw error; }
 }
-async function clientOpeningSkip(title, seasonStart, episode, duration) {
+async function clientOpeningSkip(title, seasonStart, episode, duration, animeSkipFallback) {
     var number = openingEpisode(episode);
     if (!title || !number || !isFinite(duration) || duration < 600 || duration > 7200) {
         return null;
     }
-    var malId = await openingMalId(title, seasonStart);
-    if (!malId) { return null; }
+    var series = await openingMalId(title, seasonStart);
+    if (!series || (Number.isInteger(series.episodes) && number > series.episodes)) { return null; }
+    var failure;
+    try {
+        var interval = await openingAniSkip(series.idMal, number, duration);
+        if (interval) { return { start: interval[0], end: interval[1], source: 'AniSkip' }; }
+    } catch (error) { failure = error; }
+    if (animeSkipFallback !== false) {
+        try {
+            interval = await openingAnimeSkip(series, number, duration);
+            if (interval) { return { start: interval[0], end: interval[1], source: 'AnimeSkip' }; }
+        } catch (error) { failure = failure || error; }
+    }
+    if (failure) { throw failure; }
+    return null;
+}
+async function openingAniSkip(malId, number, duration) {
     var url = 'https://api.aniskip.com/v2/skip-times/' + malId + '/' + number +
         '?types=op&episodeLength=' + Math.round(duration);
-    var response = await fetch(url);
-    if (response.status === 404) { return null; }
-    if (!response.ok) { throw new Error('AniSkip ' + response.status); }
-    var payload = await response.json();
+    var payload;
+    try { payload = await openingJson(url); }
+    catch (error) { if (error.status === 404) { return null; } throw error; }
     if (!payload.found || !Array.isArray(payload.results)) { return null; }
     var valid = payload.results.filter(function (row) {
         if (!row || row.skipType !== 'op' || !row.interval) { return false; }
         var start = Number(row.interval.startTime), end = Number(row.interval.endTime);
         var length = row.episodeLength == null ? duration : Number(row.episodeLength);
         return isFinite(start) && isFinite(end) && isFinite(length) &&
-            start >= 0 && end > start && end <= Math.min(420, duration * .4) &&
+            start >= 0 && end > start &&
             end - start >= 40 && end - start <= 210 && end <= duration - 300 &&
             Math.abs(length - duration) <= Math.max(60, duration * .1);
     }).sort(function (a, b) {
@@ -463,6 +501,57 @@ async function clientOpeningSkip(title, seasonStart, episode, duration) {
     });
     return valid.length ? [Number(valid[0].interval.startTime),
         Number(valid[0].interval.endTime)] : null;
+}
+
+async function openingAnimeSkip(series, number, duration) {
+    var chars = await openingCharacters(), titles = series.title || {};
+    var id = Number.isInteger(series.id) && series.id > 0 ? series.id : null;
+    var search = titles.english || titles.romaji || titles.native || '';
+    if (!id && !search) { return null; }
+    var key = id ? 'id:' + id : 'title:' + search;
+    if (!openingAnimeShows.has(key)) {
+        var work = openingJson('https://api.anime-skip.com/graphql', {
+            method: 'POST', headers: { 'Content-Type': 'application/json',
+                // Official shared public client, documented by AnimeSkip.
+                'X-Client-ID': 'ZGfO0sMF3eCwLYf8yMSCJjlynwNGRXWE' },
+            body: JSON.stringify({ query: id
+                ? 'query($id:String!){shows:findShowsByExternalId(service:ANILIST,serviceId:$id){id name originalName episodes{season number baseDuration timestamps{at type{name}}}}}'
+                : 'query($search:String!){shows:searchShows(search:$search,limit:10){id name originalName episodes{season number baseDuration timestamps{at type{name}}}}}',
+                variables: id ? { id: String(id) } : { search: search } })
+        }).then(function (data) {
+            if (data.errors && data.errors.length) { throw new Error('AnimeSkip query failed'); }
+            return (data.data || {}).shows || [];
+        }).catch(function (error) {
+            openingAnimeShows.delete(key);
+            if (error.status === 404) { return []; } throw error;
+        });
+        openingAnimeShows.set(key, work);
+    }
+    var shows = await openingAnimeShows.get(key);
+    if (!id) {
+        var names = Object.values(titles).map(function (name) { return openingPlain(name, chars); }).filter(Boolean);
+        shows = shows.filter(function (row) { return names.includes(openingPlain(row.name, chars)) || names.includes(openingPlain(row.originalName, chars)); });
+    }
+    if (shows.length !== 1 || !Array.isArray(shows[0].episodes)) { return null; }
+    var episodes = shows[0].episodes;
+    var seasons = new Set(episodes.map(function (row) { return String(row.season == null ? '1' : row.season).trim(); }));
+    if (seasons.size !== 1 || !/^\d+$/.test(Array.from(seasons)[0])) { return null; }
+    var valid = [];
+    episodes.forEach(function (row) {
+        var length = row.baseDuration;
+        if (openingEpisode(String(row.number)) !== number || typeof length !== 'number' || !isFinite(length) || Math.abs(length - duration) > 5 || !Array.isArray(row.timestamps)) { return; }
+        var stamps = row.timestamps.filter(function (stamp) { return typeof stamp.at === 'number' && isFinite(stamp.at) && stamp.at >= 0 && stamp.at <= length; }).sort(function (a, b) { return a.at - b.at; });
+        stamps.forEach(function (stamp, index) {
+            if (!['Intro', 'New Intro'].includes((stamp.type || {}).name) || index + 1 >= stamps.length) { return; }
+            var end = stamps[index + 1].at;
+            if (end - stamp.at >= 40 && end - stamp.at <= 210 && end <= duration - 300) {
+                valid.push({ start: stamp.at, end: end, count: stamps.length, difference: Math.abs(length - duration) });
+            }
+        });
+    });
+    if (!valid.length || valid.some(function (a) { return valid.some(function (b) { return Math.abs(a.start - b.start) > 3 || Math.abs(a.end - b.end) > 3; }); })) { return null; }
+    valid.sort(function (a, b) { return b.count - a.count || a.difference - b.difference; });
+    return [valid[0].start, valid[0].end];
 }
 
 function episodeLabel(video) {
@@ -1646,17 +1735,18 @@ AgpPlayer.prototype.loadOpeningSkip = function () {
     var here = officialEpisode(info, this.videoData.sn);
     var episode = (here && here.episode) || this.videoData.episode || '';
     if (!title || !openingEpisode(episode)) { return; }
-    var key = this.videoData.sn + ':' + rounded + ':' + title + ':' + seasonStart + ':' + episode;
+    var animeSkipFallback = this.skipMode !== 'aniskip-only';
+    var key = this.videoData.sn + ':' + rounded + ':' + title + ':' + seasonStart + ':' + episode + ':' + animeSkipFallback;
     if (key === this.skipRequestKey) { return; }
     if (Date.now() < this.skipRetryAfter) { return; }
     this.skipRequestKey = key;
     this.aniskipIntro = null;
     this.syncSkipButton();
     var self = this;
-    clientOpeningSkip(title, seasonStart, episode, duration)
+    clientOpeningSkip(title, seasonStart, episode, duration, animeSkipFallback)
         .then(function (interval) {
             if (self.skipRequestKey !== key || !interval) { return; }
-            self.aniskipIntro = { start: interval[0], end: interval[1], source: 'AniSkip' };
+            self.aniskipIntro = interval;
             self.syncSkipButton();
         }).catch(function () {
             if (self.skipRequestKey === key) {
@@ -1670,7 +1760,7 @@ AgpPlayer.prototype.selectedOpening = function () {
     switch (this.skipMode) {
         case 'off': return null;
         case 'danmaku-only': return this.danmakuIntro;
-        case 'aniskip-only': return this.aniskipIntro;
+        case 'aniskip-only': return this.aniskipIntro && this.aniskipIntro.source === 'AniSkip' ? this.aniskipIntro : null;
         case 'danmaku-first': return this.danmakuIntro || this.aniskipIntro;
         default: return this.aniskipIntro || this.danmakuIntro;
     }

@@ -1,4 +1,4 @@
-/// Resolve a Bahamut series to a MAL ID on the client, then ask AniSkip for OP.
+/// Resolve a Bahamut series, then ask AniSkip with AnimeSkip as a fallback.
 /// Unknown or ambiguous titles are deliberately left to the danmaku fallback.
 library;
 
@@ -8,11 +8,20 @@ import 'dart:math' as math;
 import 'package:flutter/services.dart';
 import 'package:http/http.dart' as http;
 
+class OpeningSkipResult {
+  const OpeningSkipResult(this.start, this.end, this.source);
+  final double start;
+  final double end;
+  final String source;
+  List<double> get interval => [start, end];
+}
+
 class OpeningSkipLookup {
   OpeningSkipLookup(this._http);
 
   final http.Client _http;
-  final Map<String, Future<(int, int?)?>> _malIds = {};
+  final Map<String, Future<(int, int?, Map)?>> _malIds = {};
+  final Map<String, Future<List>> _animeShows = {};
   static Map<String, String>? _characters;
   static Future<Map<String, String>>? _loadingCharacters;
 
@@ -32,6 +41,20 @@ class OpeningSkipLookup {
     required String seasonStart,
     required String episode,
     required double duration,
+  }) async =>
+      (await findWithSource(
+              title: title,
+              seasonStart: seasonStart,
+              episode: episode,
+              duration: duration))
+          ?.interval;
+
+  Future<OpeningSkipResult?> findWithSource({
+    required String title,
+    required String seasonStart,
+    required String episode,
+    required double duration,
+    bool animeSkipFallback = true,
   }) async {
     final number = parseEpisodeNumber(episode);
     if (title.trim().isEmpty ||
@@ -47,8 +70,33 @@ class OpeningSkipLookup {
       return null;
     }
 
-    final uri =
-        Uri.https('api.aniskip.com', '/v2/skip-times/${series.$1}/$number', {
+    Object? failure;
+    try {
+      final interval = await _aniSkip(series.$1, number, duration);
+      if (interval != null) {
+        return OpeningSkipResult(interval[0], interval[1], 'AniSkip');
+      }
+    } catch (error) {
+      failure = error;
+    }
+    if (!animeSkipFallback) {
+      if (failure != null) throw failure;
+      return null;
+    }
+    try {
+      final interval = await _animeSkip(series.$3, number, duration);
+      if (interval != null) {
+        return OpeningSkipResult(interval[0], interval[1], 'AnimeSkip');
+      }
+    } catch (error) {
+      failure ??= error;
+    }
+    if (failure != null) throw failure;
+    return null;
+  }
+
+  Future<List<double>?> _aniSkip(int malId, int number, double duration) async {
+    final uri = Uri.https('api.aniskip.com', '/v2/skip-times/$malId/$number', {
       'types': 'op',
       'episodeLength': duration.round().toString(),
     });
@@ -90,7 +138,8 @@ class OpeningSkipLookup {
     return best;
   }
 
-  Future<(int, int?)?> _resolveMalId(String title, String seasonStart) async {
+  Future<(int, int?, Map)?> _resolveMalId(
+      String title, String seasonStart) async {
     try {
       final characters = await _t2s;
       final search = await _http
@@ -143,7 +192,7 @@ class OpeningSkipLookup {
       final original = (subject['name'] ?? '').toString();
       if (original.isEmpty) return null;
       final year = _year(subject['date']);
-      final media = await _anilistMedia(original);
+      final media = await _media(original, year, characters);
       final matches = media.where((row) {
         if (row is! Map || row['idMal'] is! int || (row['idMal'] as int) <= 0) {
           return false;
@@ -159,7 +208,7 @@ class OpeningSkipLookup {
       if (matches.length == 1) {
         final row = matches.single as Map;
         final episodes = row['episodes'] is int ? row['episodes'] as int : null;
-        return (row['idMal'] as int, episodes);
+        return (row['idMal'] as int, episodes, row);
       }
       if (matches.isNotEmpty) return null;
 
@@ -168,7 +217,7 @@ class OpeningSkipLookup {
       // dates, and a verified total episode count; never guess a cour offset.
       final merged = _mergedSeason(contenders, requestedDate);
       if (merged == null) return null;
-      final combined = await _anilistMedia(merged.$1);
+      final combined = await _media(merged.$1, _year(seasonStart), characters);
       final fullSeason = combined.where((row) {
         if (row is! Map ||
             row['idMal'] is! int ||
@@ -185,7 +234,11 @@ class OpeningSkipLookup {
             _plain(native, characters) == _plain(merged.$1, characters);
       }).toList();
       return fullSeason.length == 1
-          ? ((fullSeason.single as Map)['idMal'] as int, merged.$2)
+          ? (
+              (fullSeason.single as Map)['idMal'] as int,
+              merged.$2,
+              fullSeason.single as Map
+            )
           : null;
     } catch (_) {
       // A temporary API failure must be retried on the next request.
@@ -201,7 +254,7 @@ class OpeningSkipLookup {
           headers: {'Content-Type': 'application/json'},
           body: jsonEncode({
             'query':
-                'query(\$s:String){Page(perPage:10){media(search:\$s,type:ANIME){idMal episodes title{native} startDate{year month day}}}}',
+                'query(\$s:String){Page(perPage:10){media(search:\$s,type:ANIME){id idMal episodes title{native romaji english} startDate{year month day}}}}',
             'variables': {'s': original},
           }),
         )
@@ -213,6 +266,169 @@ class OpeningSkipLookup {
             ? data['data']['Page']['media']
             : null;
     return media is List ? media : const [];
+  }
+
+  Future<List> _media(
+      String original, String? year, Map<String, String> chars) async {
+    Object? failure;
+    try {
+      final rows = await _anilistMedia(original);
+      if (rows.any((row) =>
+          row is Map &&
+          row['idMal'] is int &&
+          row['idMal'] > 0 &&
+          _plain(row['title'] is Map ? row['title']['native'] : null, chars) ==
+              _plain(original, chars) &&
+          (year == null || '${(row['startDate'] as Map?)?['year']}' == year))) {
+        return rows;
+      }
+    } catch (error) {
+      failure = error;
+    }
+    try {
+      final response = await _http
+          .get(Uri.https(
+              'api.jikan.moe', '/v4/anime', {'q': original, 'limit': '25'}))
+          .timeout(const Duration(seconds: 8));
+      _check(response);
+      final payload = jsonDecode(utf8.decode(response.bodyBytes));
+      final data = payload is Map ? payload['data'] : null;
+      if (data is! List) return const [];
+      final rows = data.whereType<Map>().map((row) {
+        final aired = row['aired'] is Map ? row['aired']['from'] : null;
+        final date = aired is String ? DateTime.tryParse(aired) : null;
+        return {
+          'idMal': row['mal_id'],
+          'episodes': row['episodes'],
+          'title': {
+            'native': row['title_japanese'],
+            'romaji': row['title'],
+            'english': row['title_english']
+          },
+          'startDate': {
+            'year': date?.year,
+            'month': date?.month,
+            'day': date?.day
+          }
+        };
+      }).toList();
+      if (rows.isEmpty && failure != null) throw failure;
+      return rows;
+    } catch (error) {
+      throw failure ?? error;
+    }
+  }
+
+  Future<List<double>?> _animeSkip(
+      Map media, int number, double duration) async {
+    final chars = await _t2s;
+    final titles = media['title'] is Map ? media['title'] as Map : const {};
+    final rawId = media['id'];
+    final id = rawId is int && rawId > 0 ? rawId : null;
+    final search =
+        (titles['english'] ?? titles['romaji'] ?? titles['native'] ?? '')
+            .toString();
+    if (id is! int && search.isEmpty) return null;
+    final key = id is int ? 'id:$id' : 'title:$search';
+    List shows;
+    try {
+      shows = await (_animeShows[key] ??=
+          _fetchAnimeShows(id is int ? id : null, search));
+    } catch (_) {
+      _animeShows.remove(key);
+      rethrow;
+    }
+    if (id is! int) {
+      final names = titles.values
+          .map((name) => _plain(name, chars))
+          .where((name) => name.isNotEmpty)
+          .toSet();
+      shows = shows
+          .where((row) =>
+              row is Map &&
+              (names.contains(_plain(row['name'], chars)) ||
+                  names.contains(_plain(row['originalName'], chars))))
+          .toList();
+    }
+    if (shows.length != 1 || shows.single is! Map) return null;
+    final episodes = shows.single['episodes'];
+    if (episodes is! List) return null;
+    final seasons = episodes
+        .whereType<Map>()
+        .map((row) => (row['season'] ?? '1').toString().trim())
+        .toSet();
+    // A show containing several seasons has no reliable per-MAL season mapping.
+    if (seasons.length != 1 || int.tryParse(seasons.single) == null) {
+      return null;
+    }
+    final valid = <(List<double>, int, double)>[];
+    for (final row in episodes.whereType<Map>()) {
+      if (parseEpisodeNumber('${row['number']}') != number) continue;
+      final length = _number(row['baseDuration']);
+      // Different streaming cuts must not be aligned by guessing an offset.
+      if (length == null || !length.isFinite || (length - duration).abs() > 5) {
+        continue;
+      }
+      final raw = row['timestamps'];
+      if (raw is! List) continue;
+      final stamps = raw.whereType<Map>().where((stamp) {
+        final at = _number(stamp['at']);
+        return at != null && at.isFinite && at >= 0 && at <= length;
+      }).toList()
+        ..sort((a, b) => _number(a['at'])!.compareTo(_number(b['at'])!));
+      for (var i = 0; i + 1 < stamps.length; i++) {
+        final type = stamps[i]['type'];
+        if (type is! Map || !['Intro', 'New Intro'].contains(type['name'])) {
+          continue;
+        }
+        final start = _number(stamps[i]['at'])!,
+            end = _number(stamps[i + 1]['at'])!;
+        if (end - start >= 40 && end - start <= 210 && end <= duration - 300) {
+          valid.add(([start, end], stamps.length, (length - duration).abs()));
+        }
+      }
+    }
+    if (valid.isEmpty) return null;
+    // Duplicate submissions must agree before any can be used to seek.
+    if (valid.any((a) => valid.any((b) =>
+        (a.$1[0] - b.$1[0]).abs() > 3 || (a.$1[1] - b.$1[1]).abs() > 3))) {
+      return null;
+    }
+    valid.sort((a, b) {
+      final count = b.$2.compareTo(a.$2);
+      return count != 0 ? count : a.$3.compareTo(b.$3);
+    });
+    return valid.first.$1;
+  }
+
+  Future<List> _fetchAnimeShows(int? id, String search) async {
+    final response = await _http
+        .post(Uri.https('api.anime-skip.com', '/graphql'),
+            headers: {
+              'Content-Type': 'application/json',
+              // Official shared public client; this is not a private credential.
+              'X-Client-ID': const String.fromEnvironment(
+                  'ANIME_SKIP_CLIENT_ID',
+                  defaultValue: 'ZGfO0sMF3eCwLYf8yMSCJjlynwNGRXWE')
+            },
+            body: jsonEncode({
+              'query': id != null
+                  ? 'query(\$id:String!){shows:findShowsByExternalId(service:ANILIST,serviceId:\$id){id name originalName episodes{season number baseDuration timestamps{at type{name}}}}}'
+                  : 'query(\$search:String!){shows:searchShows(search:\$search,limit:10){id name originalName episodes{season number baseDuration timestamps{at type{name}}}}}',
+              'variables': id != null ? {'id': '$id'} : {'search': search}
+            }))
+        .timeout(const Duration(seconds: 8));
+    if (response.statusCode == 404) return const [];
+    _check(response);
+    final data = jsonDecode(utf8.decode(response.bodyBytes));
+    if (data is Map &&
+        data['errors'] is List &&
+        (data['errors'] as List).isNotEmpty) {
+      throw StateError('AnimeSkip query failed');
+    }
+    final shows =
+        data is Map && data['data'] is Map ? data['data']['shows'] : null;
+    return shows is List ? shows : const [];
   }
 
   static void _check(http.Response response) {

@@ -464,11 +464,12 @@ void main() {
   Future<void> seedIntro(WidgetTester tester,
       {int at = 162,
       (double, double) interval = (160.776, 250.776),
-      bool bocchi = false}) async {
+      bool bocchi = false,
+      bool animeSkip = false}) async {
     final native = bocchi ? 'ぼっち・ざ・ろっく！' : '転生王女と天才令嬢の魔法革命';
     final title = bocchi ? '孤獨搖滾！' : '轉生公主與天才千金的魔法革命';
     final year = bocchi ? 2022 : 2023;
-    final duration = bocchi ? 1440 : 1420;
+    final duration = bocchi && !animeSkip ? 1440 : 1420;
     http.Response reply(Object data) =>
         http.Response.bytes(utf8.encode(jsonEncode(data)), 200);
     final api = AgpClient(
@@ -493,6 +494,7 @@ void main() {
                   'media': [
                     {
                       'idMal': bocchi ? 47917 : 52736,
+                      'id': bocchi ? 130003 : 142193,
                       'title': {'native': native},
                       'startDate': {'year': year},
                     }
@@ -501,6 +503,7 @@ void main() {
               }
             });
           case 'api.aniskip.com':
+            if (animeSkip) return http.Response('{}', 404);
             return reply({
               'found': true,
               'results': [
@@ -514,6 +517,10 @@ void main() {
                 }
               ]
             });
+          case 'api.anime-skip.com':
+            return reply(jsonDecode(
+                await File('../tests/fixtures/bocchi_anime_skip.json')
+                    .readAsString()));
         }
         return http.Response('', 404);
       }),
@@ -530,7 +537,11 @@ void main() {
         {
           'name': '',
           'episodes': [
-            {'videoSn': '1', 'episode': bocchi ? '1' : '10', 'local': true},
+            {
+              'videoSn': '1',
+              'episode': bocchi ? (animeSkip ? '3' : '1') : '10',
+              'local': true
+            },
             {'videoSn': '2', 'episode': bocchi ? '2' : '11', 'local': true},
           ],
         }
@@ -556,6 +567,25 @@ void main() {
     player.actual = const Duration(milliseconds: 205960);
     await tester.pump(const Duration(milliseconds: 350));
     expect(player.seeks.last.inMilliseconds, 205960);
+    expect(find.byKey(const ValueKey('skip-intro')), findsNothing);
+    await tester.pumpWidget(const SizedBox());
+  });
+
+  testWidgets('Bocchi AnimeSkip backup displays its source and counts down',
+      (tester) async {
+    await seedIntro(tester, at: 223, bocchi: true, animeSkip: true);
+    await open(tester);
+    await settleIo(
+        tester,
+        () =>
+            find.byKey(const ValueKey('skip-intro')).evaluate().isNotEmpty &&
+            player.playing);
+    expect(find.text('跳過片頭 · AnimeSkip'), findsOneWidget);
+    expect(find.text('立即跳過 (8)'), findsOneWidget);
+    await tester.pump(const Duration(seconds: 8));
+    player.actual = const Duration(milliseconds: 311372);
+    await tester.pump(const Duration(milliseconds: 350));
+    expect(player.seeks.last.inMilliseconds, 311372);
     expect(find.byKey(const ValueKey('skip-intro')), findsNothing);
     await tester.pumpWidget(const SizedBox());
   });

@@ -1,0 +1,540 @@
+{
+  "data": {
+    "shows": [
+      {
+        "id": "4ffd31f2-0e5c-481a-8bda-73f4bb551075",
+        "name": "BOCCHI THE ROCK!",
+        "originalName": "Bocchi the Rock!",
+        "episodes": [
+          {
+            "id": "dfa12769-91f5-46f6-866f-ff8e45fad6e4",
+            "season": null,
+            "number": "10",
+            "baseDuration": 1420.0800000000006,
+            "timestamps": [
+              {
+                "at": 0,
+                "type": {
+                  "name": "Canon"
+                }
+              },
+              {
+                "at": 146.930299,
+                "type": {
+                  "name": "Intro"
+                }
+              },
+              {
+                "at": 237.500372,
+                "type": {
+                  "name": "Canon"
+                }
+              },
+              {
+                "at": 1324.913,
+                "type": {
+                  "name": "Credits"
+                }
+              }
+            ]
+          },
+          {
+            "id": "7c179d5c-fdea-4277-9d41-c3143e786fdf",
+            "season": null,
+            "number": "3",
+            "baseDuration": 1419.9600000000003,
+            "timestamps": [
+              {
+                "at": 0,
+                "type": {
+                  "name": "Canon"
+                }
+              },
+              {
+                "at": 220.823737,
+                "type": {
+                  "name": "Intro"
+                }
+              },
+              {
+                "at": 311.37238,
+                "type": {
+                  "name": "Canon"
+                }
+              },
+              {
+                "at": 1324.757064,
+                "type": {
+                  "name": "Credits"
+                }
+              }
+            ]
+          },
+          {
+            "id": "12904638-e980-4c5b-acaa-c4c96c2990a4",
+            "season": null,
+            "number": "8",
+            "baseDuration": 1419.9999999999998,
+            "timestamps": [
+              {
+                "at": 0,
+                "type": {
+                  "name": "Canon"
+                }
+              },
+              {
+                "at": 1324.603082,
+                "type": {
+                  "name": "New Credits"
+                }
+              }
+            ]
+          },
+          {
+            "id": "a1167508-8322-4682-a91b-4cfbd58d0ecb",
+            "season": null,
+            "number": "11",
+            "baseDuration": 1420.000000000001,
+            "timestamps": [
+              {
+                "at": 0,
+                "type": {
+                  "name": "Canon"
+                }
+              },
+              {
+                "at": 185.040266,
+                "type": {
+                  "name": "Intro"
+                }
+              },
+              {
+                "at": 276.421374,
+                "type": {
+                  "name": "Canon"
+                }
+              },
+              {
+                "at": 1325.035688,
+                "type": {
+                  "name": "Credits"
+                }
+              }
+            ]
+          },
+          {
+            "id": "ecd27621-8ccb-438f-9369-ba3bb9562d62",
+            "season": null,
+            "number": "6",
+            "baseDuration": 1420.0000000000016,
+            "timestamps": [
+              {
+                "at": 0,
+                "type": {
+                  "name": "Canon"
+                }
+              },
+              {
+                "at": 303.020205,
+                "type": {
+                  "name": "Intro"
+                }
+              },
+              {
+                "at": 393.353793,
+                "type": {
+                  "name": "Canon"
+                }
+              },
+              {
+                "at": 1324.895088,
+                "type": {
+                  "name": "Credits"
+                }
+              }
+            ]
+          },
+          {
+            "id": "425c3ec8-fb9a-45e2-bea2-23ccadaca6e5",
+            "season": null,
+            "number": "9",
+            "baseDuration": 1420.0000000000007,
+            "timestamps": [
+              {
+                "at": 0,
+                "type": {
+                  "name": "Canon"
+                }
+              },
+              {
+                "at": 173.020162,
+                "type": {
+                  "name": "Intro"
+                }
+              },
+              {
+                "at": 263.385508,
+                "type": {
+                  "name": "Canon"
+                }
+              },
+              {
+                "at": 1324.728976,
+                "type": {
+                  "name": "Credits"
+                }
+              }
+            ]
+          },
+          {
+            "id": "2b7fd292-fd35-4342-9e79-807dbf26e89a",
+            "season": null,
+            "number": "1",
+            "baseDuration": 1420.0867299999952,
+            "timestamps": [
+              {
+                "at": 174,
+                "type": {
+                  "name": "Intro"
+                }
+              },
+              {
+                "at": 264,
+                "type": {
+                  "name": "Canon"
+                }
+              }
+            ]
+          },
+          {
+            "id": "176c6056-4339-4ba3-8825-f887e49718e7",
+            "season": null,
+            "number": "10",
+            "baseDuration": 1420.1701519999951,
+            "timestamps": [
+              {
+                "at": 147,
+                "type": {
+                  "name": "Intro"
+                }
+              },
+              {
+                "at": 237,
+                "type": {
+                  "name": "Canon"
+                }
+              }
+            ]
+          },
+          {
+            "id": "2bd9874b-d70b-4e92-a2dd-d4c565d22b81",
+            "season": null,
+            "number": "11",
+            "baseDuration": 1420.0450189999951,
+            "timestamps": [
+              {
+                "at": 186,
+                "type": {
+                  "name": "Intro"
+                }
+              },
+              {
+                "at": 275,
+                "type": {
+                  "name": "Canon"
+                }
+              }
+            ]
+          },
+          {
+            "id": "02a7aa74-e0a4-47eb-a389-b6145bcbb391",
+            "season": null,
+            "number": "2",
+            "baseDuration": 1420.1284409999953,
+            "timestamps": [
+              {
+                "at": 34,
+                "type": {
+                  "name": "Intro"
+                }
+              },
+              {
+                "at": 127,
+                "type": {
+                  "name": "Canon"
+                }
+              }
+            ]
+          },
+          {
+            "id": "e6411fd3-5443-4cea-9f97-ae9068540ad6",
+            "season": null,
+            "number": "3",
+            "baseDuration": 1420.0033189999951,
+            "timestamps": [
+              {
+                "at": 221,
+                "type": {
+                  "name": "Intro"
+                }
+              },
+              {
+                "at": 309,
+                "type": {
+                  "name": "Canon"
+                }
+              }
+            ]
+          },
+          {
+            "id": "c573672b-9fcd-4579-a240-e0fc379b26e4",
+            "season": null,
+            "number": "4",
+            "baseDuration": 1420.0033189999951,
+            "timestamps": [
+              {
+                "at": 105,
+                "type": {
+                  "name": "Intro"
+                }
+              },
+              {
+                "at": 195,
+                "type": {
+                  "name": "Canon"
+                }
+              }
+            ]
+          },
+          {
+            "id": "a088b9c9-676b-4143-91e2-8f8419292934",
+            "season": null,
+            "number": "5",
+            "baseDuration": 1420.1284409999953,
+            "timestamps": [
+              {
+                "at": 167,
+                "type": {
+                  "name": "Intro"
+                }
+              },
+              {
+                "at": 257,
+                "type": {
+                  "name": "Canon"
+                }
+              }
+            ]
+          },
+          {
+            "id": "5b0964bf-3931-48ab-b1e4-aadde24779a4",
+            "season": null,
+            "number": "6",
+            "baseDuration": 1420.0867299999952,
+            "timestamps": []
+          },
+          {
+            "id": "7007085f-f85d-4c8f-abdd-aa01da5b1b04",
+            "season": null,
+            "number": "9",
+            "baseDuration": 1420.0450189999951,
+            "timestamps": [
+              {
+                "at": 4,
+                "type": {
+                  "name": "Intro"
+                }
+              }
+            ]
+          },
+          {
+            "id": "1c90f824-20dd-44f6-a9f7-2960ec016637",
+            "season": null,
+            "number": "5",
+            "baseDuration": 1420.0400000000009,
+            "timestamps": [
+              {
+                "at": 0,
+                "type": {
+                  "name": "Canon"
+                }
+              },
+              {
+                "at": 166.128425,
+                "type": {
+                  "name": "Intro"
+                }
+              },
+              {
+                "at": 257.371098,
+                "type": {
+                  "name": "Canon"
+                }
+              },
+              {
+                "at": 1325.068938,
+                "type": {
+                  "name": "Credits"
+                }
+              }
+            ]
+          },
+          {
+            "id": "c39e18af-f902-45e0-9d67-9d7329ab0617",
+            "season": null,
+            "number": "4",
+            "baseDuration": 1419.9200000000003,
+            "timestamps": [
+              {
+                "at": 0,
+                "type": {
+                  "name": "Canon"
+                }
+              },
+              {
+                "at": 104.743621,
+                "type": {
+                  "name": "Intro"
+                }
+              },
+              {
+                "at": 195.440381,
+                "type": {
+                  "name": "Canon"
+                }
+              },
+              {
+                "at": 1324.845869,
+                "type": {
+                  "name": "Credits"
+                }
+              }
+            ]
+          },
+          {
+            "id": "70e28587-6dfe-406e-a1f7-13ec8a3b274b",
+            "season": null,
+            "number": "1",
+            "baseDuration": 1420.0000000000007,
+            "timestamps": [
+              {
+                "at": 0,
+                "type": {
+                  "name": "Canon"
+                }
+              },
+              {
+                "at": 173.890538,
+                "type": {
+                  "name": "Intro"
+                }
+              },
+              {
+                "at": 264.517622,
+                "type": {
+                  "name": "Canon"
+                }
+              },
+              {
+                "at": 1324.912266,
+                "type": {
+                  "name": "Credits"
+                }
+              }
+            ]
+          },
+          {
+            "id": "f38f911d-8373-4e42-aa85-0d3f4e103546",
+            "season": null,
+            "number": "12",
+            "baseDuration": 1420.0000000000002,
+            "timestamps": [
+              {
+                "at": 0,
+                "type": {
+                  "name": "Canon"
+                }
+              },
+              {
+                "at": 1252.253312,
+                "type": {
+                  "name": "New Credits"
+                }
+              },
+              {
+                "at": 1401.999824,
+                "type": {
+                  "name": "Canon"
+                }
+              }
+            ]
+          },
+          {
+            "id": "87a08e59-ef5c-4066-a789-1d0351280a3f",
+            "season": null,
+            "number": "2",
+            "baseDuration": 1420.04,
+            "timestamps": [
+              {
+                "at": 0,
+                "type": {
+                  "name": "Canon"
+                }
+              },
+              {
+                "at": 33.078032,
+                "type": {
+                  "name": "Intro"
+                }
+              },
+              {
+                "at": 124.584096,
+                "type": {
+                  "name": "Canon"
+                }
+              },
+              {
+                "at": 1324.390772,
+                "type": {
+                  "name": "Credits"
+                }
+              }
+            ]
+          },
+          {
+            "id": "9835add0-65fc-47b7-8673-325bc2286c7f",
+            "season": null,
+            "number": "7",
+            "baseDuration": 1420.0000000000005,
+            "timestamps": [
+              {
+                "at": 0,
+                "type": {
+                  "name": "Canon"
+                }
+              },
+              {
+                "at": 165.10057,
+                "type": {
+                  "name": "Intro"
+                }
+              },
+              {
+                "at": 256.539745,
+                "type": {
+                  "name": "Canon"
+                }
+              },
+              {
+                "at": 1324.743989,
+                "type": {
+                  "name": "Credits"
+                }
+              }
+            ]
+          }
+        ]
+      }
+    ]
+  }
+}

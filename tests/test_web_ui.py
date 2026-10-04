@@ -968,16 +968,16 @@ def test_settings_menu_nests_and_applies(page, server):
     expect(menu.locator('header strong')).to_have_text('設定')
 
 
-def _mock_full_episode(page):
-    page.evaluate("""() => {
+def _mock_full_episode(page, duration=1440):
+    page.evaluate("""(duration) => {
         const player = window.page.player;
         Object.defineProperty(player.video, 'currentTime', {
             configurable: true, writable: true, value: 0
         });
-        player.playableDuration = () => 1440;
-        player.seekableDuration = () => 1440;
+        player.playableDuration = () => duration;
+        player.seekableDuration = () => duration;
         player.updateProgress();
-    }""")
+    }""", duration)
 
 
 def _mock_client_aniskip(page, start=40, end=90):
@@ -1078,6 +1078,95 @@ def test_bocchi_traditional_title_finds_and_skips_the_recorded_op(page, server):
     button.click()
     assert page.evaluate('() => window.page.player.video.currentTime') == 205.96
     expect(button).to_be_hidden()
+    assert page.errors == []
+
+
+def _mock_bocchi_backups(page, *, anilist_down=False, scenario='normal'):
+    video = next(row for row in VIDEO_LIST['videos']
+                 if row['anime_name'] == '孤獨搖滾！' and row['episode'] == '1')
+    detail = json.loads(json.dumps(WATCH_SERIES[video['sn']]))
+    detail['seasonStart'] = '2022/10/09'
+    for group in detail['groups']:
+        for episode in group['episodes']:
+            if episode['videoSn'] == video['sn']:
+                episode['episode'] = '3'
+    page.route('**/watch/series.json*', lambda route: route.fulfill(json=detail))
+    cors = {'access-control-allow-origin': '*',
+            'access-control-allow-methods': 'GET, POST, OPTIONS',
+            'access-control-allow-headers': 'content-type,x-client-id'}
+    requested = []
+
+    def answer(route, payload, status=200):
+        if route.request.method == 'OPTIONS':
+            route.fulfill(status=204, headers=cors)
+        else:
+            requested.append(route.request.url)
+            route.fulfill(json=payload, status=status, headers=cors)
+
+    page.route('https://api.bgm.tv/**', lambda route: answer(route, {
+        'data': [{'name': 'ぼっち・ざ・ろっく！', 'name_cn': '孤独摇滚！', 'date': '2022-10-08'}]}))
+    page.route('https://graphql.anilist.co/**', lambda route: answer(route, {
+        'data': {'Page': {'media': [{'id': 130003, 'idMal': 47917, 'episodes': 12,
+            'title': {'native': 'ぼっち・ざ・ろっく！', 'english': 'Bocchi the Rock!'},
+            'startDate': {'year': 2022}}]}}}, 503 if anilist_down else 200))
+    page.route('https://api.jikan.moe/**', lambda route: answer(route, {
+        'data': [{'mal_id': 47917, 'episodes': 12, 'title_japanese': 'ぼっち・ざ・ろっく！',
+            'title_english': 'Bocchi the Rock!', 'aired': {'from': '2022-10-09'}}]}))
+    page.route('https://api.aniskip.com/**', lambda route: answer(route, {}, 404))
+    with open(os.path.join(os.path.dirname(__file__), 'fixtures/bocchi_anime_skip.json'), encoding='utf-8') as stream:
+        data = json.load(stream)
+    rows = data['data']['shows'][0]['episodes']
+    if scenario == 'conflict':
+        next(row for row in rows if row['number'] == '3')['timestamps'][2]['at'] = 400
+    elif scenario == 'season':
+        rows[0]['season'] = '2'
+    elif scenario == 'mixed':
+        for row in rows:
+            for stamp in row['timestamps']:
+                if stamp['type']['name'] == 'Intro':
+                    stamp['type']['name'] = 'Mixed Intro'
+
+    def anime_skip(route):
+        if route.request.method != 'OPTIONS':
+            assert route.request.post_data_json['variables'] == (
+                {'search': 'Bocchi the Rock!'} if anilist_down else {'id': '130003'})
+            assert route.request.headers['x-client-id']
+        answer(route, data)
+
+    page.route('https://api.anime-skip.com/**', anime_skip)
+    return video['sn'], requested
+
+
+@pytest.mark.parametrize('anilist_down', [False, True])
+def test_bocchi_anime_skip_backup_button_and_aniskip_only(page, server, anilist_down):
+    sn, requested = _mock_bocchi_backups(page, anilist_down=anilist_down)
+    goto_watch(page, server, sn=sn)
+    _mock_full_episode(page, duration=1420)
+    page.evaluate('() => { window.page.player.video.currentTime = 223; window.page.player.updateProgress(); }')
+    button = page.locator('#skipIntro')
+    expect(button).to_be_visible()
+    expect(button).to_have_attribute('aria-label', '跳過片頭 · AnimeSkip')
+    button.click()
+    assert page.evaluate('() => window.page.player.video.currentTime') == 311.37238
+    expect(button).to_be_hidden()
+    assert any('jikan.moe' in url for url in requested) == anilist_down
+    page.locator('#settingsToggle').click()
+    page.locator('#settingsMenu [data-view="opening-skip"]').click()
+    page.locator('#settingsMenu [data-value="aniskip-only"]').click()
+    page.evaluate('() => { window.page.player.video.currentTime = 223; window.page.player.updateProgress(); }')
+    expect(button).to_be_hidden()
+    assert sum('anime-skip.com' in url for url in requested) == 1
+    assert page.errors == []
+
+
+@pytest.mark.parametrize('scenario', ['conflict', 'season', 'mixed', 'cut', 'credits'])
+def test_anime_skip_web_rejects_unsafe_intervals(page, server, scenario):
+    sn, _ = _mock_bocchi_backups(page, scenario=scenario)
+    goto_watch(page, server, sn=sn)
+    result = page.evaluate('''async ({episode, duration}) =>
+        await clientOpeningSkip('孤獨搖滾！', '2022/10/09', episode, duration)''',
+        {'episode': '8' if scenario == 'credits' else '3', 'duration': 1440 if scenario == 'cut' else 1420})
+    assert result is None
     assert page.errors == []
 
 

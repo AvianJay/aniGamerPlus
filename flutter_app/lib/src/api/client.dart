@@ -327,17 +327,19 @@ class AgpClient {
     return utf8.decode(response.bodyBytes, allowMalformed: true);
   }
 
-  Future<List<double>?> openingSkip({
+  Future<OpeningSkipResult?> openingSkip({
     required String title,
     required String seasonStart,
     required String episode,
     required double duration,
+    bool animeSkipFallback = true,
   }) =>
-      _openingSkip.find(
+      _openingSkip.findWithSource(
           title: title,
           seasonStart: seasonStart,
           episode: episode,
-          duration: duration);
+          duration: duration,
+          animeSkipFallback: animeSkipFallback);
 
   // -------------------------------------------------------------------- 片單
 

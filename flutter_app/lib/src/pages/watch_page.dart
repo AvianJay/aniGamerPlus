@@ -442,7 +442,7 @@ class _WatchPageState extends State<WatchPage> with WidgetsBindingObserver {
 
   IntroSkip? get _effectiveIntro => switch (prefs.openingSkipMode) {
         'off' => null,
-        'aniskip-only' => _aniskipIntro,
+        'aniskip-only' => _aniskipIntro?.source == 'AniSkip' ? _aniskipIntro : null,
         'danmaku-only' => _danmakuIntro,
         'danmaku-first' => _danmakuIntro ?? _aniskipIntro,
         _ => _aniskipIntro ?? _danmakuIntro,
@@ -1556,7 +1556,9 @@ class _WatchPageState extends State<WatchPage> with WidgetsBindingObserver {
     final seasonStart = _series?.seasonStart ?? '';
     final episode = _currentEpisode?.episode ?? _video?.episode ?? '';
     if (title.isEmpty || episode.isEmpty) return;
-    final key = '$_sn:${duration.round()}:$title:$seasonStart:$episode';
+    final animeSkipFallback = prefs.openingSkipMode != 'aniskip-only';
+    final key =
+        '$_sn:${duration.round()}:$title:$seasonStart:$episode:$animeSkipFallback';
     if (_skipRequestKey == key) return;
     _skipRequestKey = key;
     if (_aniskipIntro != null) {
@@ -1568,16 +1570,17 @@ class _WatchPageState extends State<WatchPage> with WidgetsBindingObserver {
           title: title,
           seasonStart: seasonStart,
           episode: episode,
-          duration: duration);
+          duration: duration,
+          animeSkipFallback: animeSkipFallback);
       if (!mounted || _sn != sn || _skipRequestKey != key || interval == null) {
         return;
       }
-      final start = interval[0];
-      final end = interval[1];
+      final start = interval.start;
+      final end = interval.end;
       if (start >= 0 &&
           end > start + 40 &&
           end < duration - 300) {
-        setState(() => _aniskipIntro = IntroSkip(start, end, 'AniSkip'));
+        setState(() => _aniskipIntro = IntroSkip(start, end, interval.source));
       }
     } catch (_) {
       if (mounted && _sn == sn && _skipRequestKey == key) {
@@ -5169,10 +5172,10 @@ class _WatchPageState extends State<WatchPage> with WidgetsBindingObserver {
                       'aniskip-only' => '只用 AniSkip',
                       'danmaku-only' => '只用彈幕',
                       'off' => '關閉',
-                      _ => 'AniSkip 優先',
+                      _ => '片頭資料庫優先',
                     },
                     const [
-                      PlayerChoice('aniskip-first', 'AniSkip 優先'),
+                      PlayerChoice('aniskip-first', '片頭資料庫優先'),
                       PlayerChoice('danmaku-first', '彈幕優先'),
                       PlayerChoice('aniskip-only', '只用 AniSkip'),
                       PlayerChoice('danmaku-only', '只用彈幕'),
