@@ -8,8 +8,11 @@ class IntroSkip {
   final double end;
   final String source;
 
+  double get countdownStart => math.max(0, start - 6);
+  double get autoSkipAt => start + 3;
+
   bool visibleAt(double position) =>
-      position >= math.max(0, start - 3) && position < end - 5;
+      position >= countdownStart && position < end - 5;
 }
 
 // No author IDs survive the ASS export. Require several differently worded or

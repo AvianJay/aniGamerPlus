@@ -3967,7 +3967,6 @@ class _WatchPageState extends State<WatchPage> with WidgetsBindingObserver {
                             episodeKey: '$_sn:$_introTimeline',
                             tv: Device.tv,
                             compact: mobileInline,
-                            seconds: kNextEpisodeCountdown,
                             canCount: () =>
                                 _sn == introEpisode &&
                                 _effectiveIntro == intro &&

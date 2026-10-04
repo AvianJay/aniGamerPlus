@@ -594,12 +594,12 @@ void main() {
     player.actual = Duration(milliseconds: (at * 1000).round());
   }
 
-  testWidgets('Bocchi 第六集到 5:03 的片頭才顯示按鈕, 跳到 6:33', (tester) async {
+  testWidgets('Bocchi 第六集片頭前 6 秒顯示倒數, 手動跳到 6:33', (tester) async {
     Device.tv = true;
     addTearDown(() => Device.tv = false);
     await seedIntro(
       tester,
-      at: 299,
+      at: 296,
       interval: (303, 393),
       bocchi: true,
       episode: '6',
@@ -607,12 +607,13 @@ void main() {
     await open(tester);
     await settleIo(tester, () => player.playing);
     expect(find.byKey(const ValueKey('skip-intro')), findsNothing);
-    player.actual = const Duration(seconds: 303);
+    player.actual = const Duration(seconds: 297);
     await settleIo(
       tester,
       () => find.byKey(const ValueKey('skip-intro')).evaluate().isNotEmpty,
     );
     expect(find.text('跳過片頭 · AniSkip'), findsOneWidget);
+    expect(find.text('立即跳過 (9)'), findsOneWidget);
     await tester.pump();
     await tester.sendKeyEvent(LogicalKeyboardKey.select);
     await tester.pump();
@@ -733,8 +734,9 @@ void main() {
         () =>
             find.byKey(const ValueKey('skip-intro')).evaluate().isNotEmpty &&
             player.playing);
-    expect(find.text('立即跳過 (8)'), findsOneWidget);
-    await tester.pump(const Duration(seconds: 8));
+    expect(find.text('立即跳過 (9)'), findsOneWidget);
+    player.actual += const Duration(seconds: 9);
+    await tester.pump(const Duration(milliseconds: 350));
     player.actual = const Duration(milliseconds: 205960);
     await tester.pump(const Duration(milliseconds: 350));
     expect(player.seeks.last.inMilliseconds, 205960);
@@ -752,8 +754,9 @@ void main() {
             find.byKey(const ValueKey('skip-intro')).evaluate().isNotEmpty &&
             player.playing);
     expect(find.text('跳過片頭 · AnimeSkip'), findsOneWidget);
-    expect(find.text('立即跳過 (8)'), findsOneWidget);
-    await tester.pump(const Duration(seconds: 8));
+    expect(find.text('立即跳過 (9)'), findsOneWidget);
+    player.actual += const Duration(seconds: 9);
+    await tester.pump(const Duration(milliseconds: 350));
     player.actual = const Duration(milliseconds: 311372);
     await tester.pump(const Duration(milliseconds: 350));
     expect(player.seeks.last.inMilliseconds, 311372);
@@ -788,7 +791,7 @@ void main() {
     }
 
     expect(skip, findsOneWidget);
-    expect(find.text('立即跳過 (8)'), findsOneWidget);
+    expect(find.text('立即跳過 (9)'), findsOneWidget);
     var bounds = tester.getRect(card);
     var forward = tester.getRect(find.byTooltip('快轉 10 秒'));
     expect(bounds.width, lessThanOrEqualTo(268));
@@ -828,24 +831,34 @@ void main() {
     await tester.pumpWidget(const SizedBox());
   });
 
-  testWidgets('intro countdown automatically seeks to the exact OP end',
+  testWidgets('OP at 03:26 counts from 03:20 and automatically skips at 03:29',
       (tester) async {
-    await seedIntro(tester);
+    await seedIntro(tester, at: 199, interval: (206, 296));
     await open(tester);
-    await settleIo(
-        tester,
-        () =>
-            find.byKey(const ValueKey('skip-intro')).evaluate().isNotEmpty &&
-            player.playing);
-    await tester.pump(const Duration(seconds: 8));
-    expect(player.seeks.where((seek) => seek.inMilliseconds == 250776),
+    await settleIo(tester, () => player.playing);
+    expect(find.byKey(const ValueKey('skip-intro')), findsNothing);
+    player.actual = const Duration(seconds: 200);
+    await settleIo(tester,
+        () => find.byKey(const ValueKey('skip-intro')).evaluate().isNotEmpty);
+    expect(find.text('立即跳過 (9)'), findsOneWidget);
+    for (final position in [206000, 208700]) {
+      player.actual = Duration(milliseconds: position);
+      await tester.pump(const Duration(milliseconds: 350));
+      expect(player.seeks.where((seek) => seek.inSeconds == 296), isEmpty);
+      expect(find.text('立即跳過 (${position == 206000 ? 3 : 1})'),
+          findsOneWidget);
+    }
+    player.actual = const Duration(seconds: 209);
+    await tester.pump(const Duration(milliseconds: 350));
+    await tester.pump();
+    expect(player.seeks.where((seek) => seek.inSeconds == 296),
         hasLength(1));
-    player.actual = const Duration(milliseconds: 250776);
+    player.actual = const Duration(seconds: 296);
     await tester.pump(const Duration(milliseconds: 350));
     expect(find.byKey(const ValueKey('skip-intro')), findsNothing);
     expect(player.playing, isTrue);
     await tester.pump(const Duration(seconds: 3));
-    expect(player.seeks.where((seek) => seek.inMilliseconds == 250776),
+    expect(player.seeks.where((seek) => seek.inSeconds == 296),
         hasLength(1));
     await tester.pumpWidget(const SizedBox());
   });
@@ -999,7 +1012,8 @@ void main() {
         () =>
             find.byKey(const ValueKey('skip-intro')).evaluate().isNotEmpty &&
             player.playing);
-    await tester.pump(const Duration(seconds: 8));
+    player.actual += const Duration(seconds: 9);
+    await tester.pump(const Duration(milliseconds: 350));
     expect(player.seeks.last.inSeconds, 660);
     player.actual = const Duration(seconds: 660);
     await tester.pump(const Duration(milliseconds: 350));
@@ -1023,7 +1037,8 @@ void main() {
         player.seeks.where((seek) => seek.inMilliseconds == 250776), isEmpty);
     player.events.add(VideoEvent(eventType: VideoEventType.bufferingEnd));
     await tester.pump();
-    await tester.pump(const Duration(seconds: 8));
+    player.actual += const Duration(seconds: 9);
+    await tester.pump(const Duration(milliseconds: 350));
     player.actual = const Duration(milliseconds: 250776);
     await tester.pump(const Duration(milliseconds: 350));
     expect(player.seeks.last.inMilliseconds, 250776);
@@ -1050,7 +1065,8 @@ void main() {
         () =>
             player.creations == 2 &&
             find.byKey(const ValueKey('skip-intro')).evaluate().isNotEmpty);
-    await tester.pump(const Duration(seconds: 8));
+    player.actual += const Duration(seconds: 9);
+    await tester.pump(const Duration(milliseconds: 350));
     player.actual = const Duration(milliseconds: 250776);
     await tester.pump(const Duration(milliseconds: 350));
     expect(player.seeks.where((seek) => seek.inMilliseconds == 250776),
@@ -1120,7 +1136,8 @@ void main() {
         player.seeks.where((seek) => seek.inMilliseconds == 250776), isEmpty);
     await tester.binding.handlePopRoute();
     await tester.pump(const Duration(milliseconds: 350));
-    await tester.pump(const Duration(seconds: 8));
+    player.actual += const Duration(seconds: 9);
+    await tester.pump(const Duration(milliseconds: 350));
     player.actual = const Duration(milliseconds: 250776);
     await tester.pump(const Duration(milliseconds: 350));
     expect(player.seeks.last.inMilliseconds, 250776);
