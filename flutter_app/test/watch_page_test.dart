@@ -10,6 +10,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 import 'package:path_provider_platform_interface/path_provider_platform_interface.dart';
 import 'package:video_player_pip/index.dart' show VideoPlayerPip;
 import 'package:video_player_platform_interface/video_player_platform_interface.dart';
+import 'package:video_player/video_player.dart';
 import 'package:wakelock_plus_platform_interface/wakelock_plus_platform_interface.dart';
 import 'package:agp_mobile/src/api/models.dart';
 import 'package:agp_mobile/src/api/client.dart';
@@ -102,6 +103,9 @@ class DelayedPlayer extends VideoPlayerPlatform {
 
   /// 跳轉之後回報「在緩衝」—— 真的播放器跳到沒載過的地方就是這樣
   bool bufferOnSeek = false;
+  bool seekWaitsForPlay = false;
+  bool stallFirstPlayerSeek = false;
+  Duration? _nativeSeek;
 
   /// 第一個播放器的那一條. 多數測試只會有這一個.
   StreamController<VideoEvent> get events => _streamFor(1);
@@ -159,11 +163,16 @@ class DelayedPlayer extends VideoPlayerPlatform {
   @override
   Future<void> play(int id) async {
     playing = true;
+    if (seekWaitsForPlay && _nativeSeek != null &&
+        (!stallFirstPlayerSeek || id > 1)) {
+      actual = _nativeSeek!;
+    }
   }
 
   @override
   Future<void> seekTo(int id, Duration position) async {
     seeks.add(position);
+    _nativeSeek = position;
     if (bufferOnSeek) {
       _streamFor(id).add(VideoEvent(eventType: VideoEventType.bufferingStart));
     }
@@ -461,11 +470,14 @@ void main() {
     expect(files.every((file) => file.existsSync()), isTrue);
   });
 
-  Future<void> seedIntro(WidgetTester tester,
-      {int at = 162,
-      (double, double) interval = (160.776, 250.776),
-      bool bocchi = false,
-      bool animeSkip = false}) async {
+  Future<void> seedIntro(
+    WidgetTester tester, {
+    int at = 162,
+    (double, double) interval = (160.776, 250.776),
+    bool bocchi = false,
+    String? episode,
+    bool animeSkip = false,
+  }) async {
     final native = bocchi ? 'ぼっち・ざ・ろっく！' : '転生王女と天才令嬢の魔法革命';
     final title = bocchi ? '孤獨搖滾！' : '轉生公主與天才千金的魔法革命';
     final year = bocchi ? 2022 : 2023;
@@ -484,8 +496,8 @@ void main() {
                   'name': native,
                   'name_cn': bocchi ? '孤独摇滚！' : '转生公主与天才千金的魔法革命',
                   'date': bocchi ? '2022-10-08' : '2023-01-04',
-                }
-              ]
+                },
+              ],
             });
           case 'graphql.anilist.co':
             return reply({
@@ -497,10 +509,10 @@ void main() {
                       'id': bocchi ? 130003 : 142193,
                       'title': {'native': native},
                       'startDate': {'year': year},
-                    }
-                  ]
-                }
-              }
+                    },
+                  ],
+                },
+              },
             });
           case 'api.aniskip.com':
             if (animeSkip) return http.Response('{}', 404);
@@ -512,15 +524,19 @@ void main() {
                   'episodeLength': bocchi ? 1460 : duration,
                   'interval': {
                     'startTime': interval.$1,
-                    'endTime': interval.$2
+                    'endTime': interval.$2,
                   },
-                }
-              ]
+                },
+              ],
             });
           case 'api.anime-skip.com':
-            return reply(jsonDecode(
-                await File('../tests/fixtures/bocchi_anime_skip.json')
-                    .readAsString()));
+            return reply(
+              jsonDecode(
+                await File(
+                  '../tests/fixtures/bocchi_anime_skip.json',
+                ).readAsString(),
+              ),
+            );
         }
         return http.Response('', 404);
       }),
@@ -539,19 +555,154 @@ void main() {
           'episodes': [
             {
               'videoSn': '1',
-              'episode': bocchi ? (animeSkip ? '3' : '1') : '10',
-              'local': true
+              'episode': episode ?? (bocchi ? (animeSkip ? '3' : '1') : '10'),
+              'local': true,
             },
             {'videoSn': '2', 'episode': bocchi ? '2' : '11', 'local': true},
           ],
-        }
+        },
       ],
     });
-    state.noteWatchTime('1', WatchTime(time: at, duration: duration),
-        notify: false);
+    state.noteWatchTime(
+      '1',
+      WatchTime(time: at, duration: duration),
+      notify: false,
+    );
     player.duration = Duration(seconds: duration);
     player.actual = Duration(milliseconds: (at * 1000).round());
   }
+
+  testWidgets('Bocchi 第六集到 5:03 的片頭才顯示按鈕, 跳到 6:33', (tester) async {
+    Device.tv = true;
+    addTearDown(() => Device.tv = false);
+    await seedIntro(
+      tester,
+      at: 299,
+      interval: (303, 393),
+      bocchi: true,
+      episode: '6',
+    );
+    await open(tester);
+    await settleIo(tester, () => player.playing);
+    expect(find.byKey(const ValueKey('skip-intro')), findsNothing);
+    player.actual = const Duration(seconds: 303);
+    await settleIo(
+      tester,
+      () => find.byKey(const ValueKey('skip-intro')).evaluate().isNotEmpty,
+    );
+    expect(find.text('跳過片頭 · AniSkip'), findsOneWidget);
+    await tester.pump();
+    await tester.sendKeyEvent(LogicalKeyboardKey.select);
+    await tester.pump();
+    player.actual = const Duration(seconds: 393);
+    await tester.pump(const Duration(milliseconds: 350));
+    expect(player.seeks.last, const Duration(seconds: 393));
+    await tester.pumpWidget(const SizedBox());
+  });
+
+  testWidgets('片長稍後才變完整時也會查詢第六集片頭', (tester) async {
+    await seedIntro(
+      tester,
+      at: 0,
+      interval: (303, 393),
+      bocchi: true,
+      episode: '6',
+    );
+    // 模擬剛開始下載時, 播放器和觀看紀錄都只知道一小段片長.
+    state.noteWatchTime('1', WatchTime(time: 0, duration: 120), notify: false);
+    player.duration = const Duration(seconds: 120);
+    await open(tester);
+    expect(find.byKey(const ValueKey('skip-intro')), findsNothing);
+    final controller = tester
+        .widget<VideoPlayer>(find.byType(VideoPlayer))
+        .controller;
+    controller.value = controller.value.copyWith(
+      duration: const Duration(seconds: 1420),
+    );
+    player.actual = const Duration(seconds: 303);
+    await settleIo(
+      tester,
+      () => find.byKey(const ValueKey('skip-intro')).evaluate().isNotEmpty,
+    );
+    expect(find.text('跳過片頭 · AniSkip'), findsOneWidget);
+    await tester.pumpWidget(const SizedBox());
+  });
+
+  testWidgets('Android 跳轉需先續播才回報位置: 時鐘、彈幕、片頭一起恢復', (tester) async {
+    Device.tv = true;
+    addTearDown(() => Device.tv = false);
+    await seedIntro(
+      tester,
+      at: 20,
+      interval: (303, 393),
+      bocchi: true,
+      episode: '6',
+    );
+    player.seekWaitsForPlay = true;
+    await tester.runAsync(() async {
+      final ass = (await File('../tests/fixtures/sample.ass').readAsString())
+          .replaceFirst('0:00:00.30', '0:05:03.00')
+          .replaceFirst('0:00:08.30', '0:05:11.00');
+      await state.downloads.writeCachedDanmaku('1', ass);
+    });
+    await open(tester);
+    await settleIo(
+      tester,
+      () => player.playing && find.byType(DanmakuOverlay).evaluate().isNotEmpty,
+    );
+    seek(tester, 303);
+    await tester.pump(const Duration(milliseconds: 350));
+    expect(player.actual, const Duration(seconds: 303));
+    expect(player.playing, isTrue);
+    expect(find.byKey(const ValueKey('skip-intro')), findsOneWidget);
+    expect(
+      tester.widget<DanmakuOverlay>(find.byType(DanmakuOverlay)).playing,
+      isTrue,
+    );
+    player.actual = const Duration(seconds: 306);
+    await tester.pump(const Duration(milliseconds: 350));
+    expect(find.text('05:06 / 24:00'), findsOneWidget);
+    // 取消過的片頭倒回後還要能再次操作.
+    tester
+        .widget<OutlinedButton>(find.byKey(const ValueKey('cancel-intro')))
+        .onPressed!();
+    await tester.pump();
+    expect(find.byKey(const ValueKey('skip-intro')), findsNothing);
+    seek(tester, 303);
+    await tester.pump(const Duration(milliseconds: 350));
+    expect(find.byKey(const ValueKey('skip-intro')), findsOneWidget);
+    await tester.sendKeyEvent(LogicalKeyboardKey.select);
+    await tester.pump(const Duration(milliseconds: 350));
+    expect(player.actual, const Duration(seconds: 393));
+    expect(player.playing, isTrue);
+    await tester.pumpWidget(const SizedBox());
+  });
+
+  testWidgets('暫停時的跳轉不用等解碼器輸出, 再按播放能恢復', (tester) async {
+    await open(tester);
+    player.seekWaitsForPlay = true;
+    final controller = tester
+        .widget<VideoPlayer>(find.byType(VideoPlayer))
+        .controller;
+    await controller.pause();
+    await tester.pump();
+    seek(tester, 300);
+    await tester.pump(const Duration(milliseconds: 350));
+    expect(player.playing, isFalse);
+    expect(find.text('05:00 / 10:00'), findsOneWidget);
+    tester
+        .widget<InkWell>(
+          find.descendant(
+            of: find.byTooltip('播放').last,
+            matching: find.byType(InkWell),
+          ),
+        )
+        .onTap!();
+    await tester.pump(const Duration(milliseconds: 350));
+    expect(player.playing, isTrue);
+    expect(player.actual, const Duration(seconds: 300));
+    await tester.pumpWidget(const SizedBox());
+  });
 
   testWidgets('Bocchi app counts down and skips the recorded first-episode OP',
       (tester) async {
@@ -866,7 +1017,8 @@ void main() {
     await tester.pump(const Duration(milliseconds: 100));
     await tester.pump(const Duration(seconds: 2));
     expect(tester.widget<Slider>(find.byType(Slider)).value, 300);
-    expect(player.playing, false);
+    expect(player.playing, true,
+        reason: '先允許原生輸出, 但舊位置仍不可覆蓋等待中的目標');
     seek(tester, 420);
     await tester.pump(const Duration(milliseconds: 150));
     await tester.pump(const Duration(milliseconds: 150));
@@ -2039,6 +2191,117 @@ void main() {
       final overlay = tester.widget<DanmakuOverlay>(find.byType(DanmakuOverlay));
       expect(overlay.comments, isNotEmpty);
       expect(overlay.lowPower, isTrue);
+      await tester.pumpWidget(const SizedBox());
+    });
+
+    testWidgets('電視長暫停續播先釋放解碼器, 保留原位與彈幕', (tester) async {
+      await tester.runAsync(() async {
+        await state.downloads.writeCachedDanmaku(
+          '1',
+          await File('../tests/fixtures/sample.ass').readAsString(),
+        );
+      });
+      await open(tester);
+      await settleIo(
+        tester,
+        () => find.byType(DanmakuOverlay).evaluate().isNotEmpty,
+      );
+      final comments = tester
+          .widget<DanmakuOverlay>(find.byType(DanmakuOverlay))
+          .comments;
+      await tester.sendKeyEvent(LogicalKeyboardKey.mediaPause);
+      await tester.pump();
+      expect(player.playing, isFalse);
+      await tester.pump(kTvPauseRefreshAfter + const Duration(seconds: 1));
+      expect(player.creations, 1, reason: '暫停中不應重開或偷播');
+      player.disposeBarrier = Completer<void>();
+      await tester.sendKeyEvent(LogicalKeyboardKey.mediaPlay);
+      await tester.pump();
+      expect(player.creations, 1, reason: '必須先等舊解碼器釋放');
+      player.disposeBarrier!.complete();
+      await settleIo(tester, () => player.creations == 2 && player.playing);
+      expect(player.disposed, contains(1));
+      expect(player.creations, 2);
+      expect(player.playing, isTrue);
+      expect(player.seeks.last, const Duration(seconds: 20));
+      expect(
+        tester.widget<DanmakuOverlay>(find.byType(DanmakuOverlay)).comments,
+        same(comments),
+      );
+      await tester.pumpWidget(const SizedBox());
+    });
+
+    testWidgets('電視短暫停不重開, 長背景暫停續播會更新解碼器', (tester) async {
+      await open(tester);
+      await tester.sendKeyEvent(LogicalKeyboardKey.mediaPause);
+      await tester.pump(const Duration(seconds: 2));
+      await tester.sendKeyEvent(LogicalKeyboardKey.mediaPlay);
+      await tester.pump();
+      expect(player.creations, 1);
+      expect(player.seeks, isEmpty);
+      tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.paused);
+      await tester.pump(kTvPauseRefreshAfter + const Duration(seconds: 1));
+      tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.resumed);
+      await settleIo(tester, () => player.creations == 2 && player.playing);
+      expect(player.creations, 2);
+      expect(player.seeks.last, const Duration(seconds: 20));
+      expect(player.playing, isTrue);
+      // 已經自己按暫停時, 進出背景再久也不能自行續播.
+      await tester.sendKeyEvent(LogicalKeyboardKey.mediaPause);
+      await tester.pump();
+      tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.paused);
+      await tester.pump(kTvPauseRefreshAfter + const Duration(seconds: 1));
+      tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.resumed);
+      await tester.pump();
+      expect(player.creations, 2);
+      expect(player.playing, isFalse);
+      await tester.pumpWidget(const SizedBox());
+    });
+
+    testWidgets('native 接受跳轉卻留在舊位置時只重開一次, 不鎖住時鐘', (tester) async {
+      await open(tester);
+      player.seekWaitsForPlay = true;
+      player.stallFirstPlayerSeek = true;
+      seek(tester, 300);
+      for (var i = 0; i < 55 && player.creations == 1; i++) {
+        await tester.pump(const Duration(milliseconds: 100));
+        expect(
+          tester.widget<Slider>(find.byType(Slider)).value,
+          300,
+          reason: '等待和重建期間不接受舊的 20 秒回報',
+        );
+      }
+      await settleIo(tester, () => player.creations == 2 && player.playing);
+      expect(player.actual, const Duration(seconds: 300));
+      player.actual = const Duration(seconds: 302);
+      await tester.pump(const Duration(milliseconds: 350));
+      expect(find.text('05:02 / 10:00'), findsOneWidget);
+      expect(player.creations, 2);
+      await tester.pumpWidget(const SizedBox());
+    });
+
+    testWidgets('電視倒回十秒後彈幕重新對時, 保留留言與啟用狀態', (tester) async {
+      await tester.runAsync(() async {
+        await state.downloads.writeCachedDanmaku(
+          '1',
+          await File('../tests/fixtures/sample.ass').readAsString(),
+        );
+      });
+      await open(tester);
+      await settleIo(
+        tester,
+        () => find.byType(DanmakuOverlay).evaluate().isNotEmpty,
+      );
+      final before = tester.widget<DanmakuOverlay>(find.byType(DanmakuOverlay));
+      await tester.sendKeyEvent(LogicalKeyboardKey.mediaRewind);
+      player.actual = player.seeks.last;
+      await tester.pump(const Duration(milliseconds: 350));
+      final after = tester.widget<DanmakuOverlay>(find.byType(DanmakuOverlay));
+      expect(player.seeks.last.inSeconds, inInclusiveRange(10, 11));
+      expect(after.timeline, greaterThan(before.timeline));
+      expect(after.comments, same(before.comments));
+      expect(after.enabled, isTrue);
+      expect(after.playing, isTrue);
       await tester.pumpWidget(const SizedBox());
     });
 

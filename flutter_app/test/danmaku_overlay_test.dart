@@ -35,6 +35,7 @@ void main() {
       double scale = 1,
       double pixelRatio = 1,
       bool framesEnabled = true,
+      int timeline = 0,
       bool enabled = true}) {
     return tester.pumpWidget(MaterialApp(
       home: MediaQuery(
@@ -56,6 +57,7 @@ void main() {
                   lowPower: lowPower,
                   scale: scale,
                   enabled: enabled,
+                  timeline: timeline,
                 ),
               ),
             ),
@@ -293,6 +295,39 @@ void main() {
         reason: '照一倍速算醒來的時間, 兩倍速時會錯過開頭那幾條');
     await tester.pumpWidget(const SizedBox());
   });
+
+  for (final lowPower in [false, true]) {
+    testWidgets('休眠稍晚醒來仍補送留言 (lowPower=$lowPower)', (tester) async {
+      final alive = debugDanmakuSpritesAlive;
+      await show(tester, [comment(30, 'wake', DanmakuMode.top)],
+          lowPower: lowPower);
+      await tester.pump();
+      now = 30.08;
+      await tester.pump(const Duration(seconds: 31));
+      await tester.pump(const Duration(milliseconds: 40));
+      expect(debugDanmakuSpritesAlive - alive, 1);
+      expect(await topBandAlpha(tester), greaterThan(0));
+      await tester.pumpWidget(const SizedBox());
+      expect(debugDanmakuSpritesAlive, alive);
+    });
+
+    testWidgets('彈幕全部播完後倒回, 明確對時會喚醒並重新出場 (lowPower=$lowPower)', (tester) async {
+      final alive = debugDanmakuSpritesAlive;
+      final comments = [comment(10, 'rewind', DanmakuMode.top)];
+      now = 20;
+      await show(tester, comments, lowPower: lowPower);
+      await tester.pump();
+      expect(tester.binding.hasScheduledFrame, isFalse);
+      now = 10.1;
+      await show(tester, comments, lowPower: lowPower, timeline: 1);
+      await tester.pump(const Duration(milliseconds: 40));
+      expect(debugDanmakuSpritesAlive - alive, 1);
+      expect(await topBandAlpha(tester), greaterThan(0));
+      await play(tester, 16);
+      expect(debugDanmakuSpritesAlive, alive);
+      await tester.pumpWidget(const SizedBox());
+    });
+  }
 
   testWidgets('暫停了就停下來, 再播就醒來', (tester) async {
     final comments = [comment(0.1, '一'), comment(0.2, '二')];

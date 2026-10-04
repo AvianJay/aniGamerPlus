@@ -86,6 +86,7 @@ class AppTvRemoteActions implements TvRemoteActions {
 
   final AppState state;
   final GlobalKey<NavigatorState> navigator;
+  final Set<String> _welcomedPhones = {};
 
   NavigatorState? get _nav => navigator.currentState;
 
@@ -179,8 +180,13 @@ class AppTvRemoteActions implements TvRemoteActions {
 
   @override
   void connected(String phoneName) {
+    // 手機休眠、Wi-Fi 重連會再握手; 同一支手機不要反覆遮住影片.
+    if (!_welcomedPhones.add(phoneName)) return;
     final context = _nav?.context;
-    if (context != null) toast(context, '「$phoneName」連上來遙控這台電視了。');
+    if (context != null) {
+      toast(context, '「$phoneName」已連線',
+          duration: const Duration(milliseconds: 1200));
+    }
   }
 }
 

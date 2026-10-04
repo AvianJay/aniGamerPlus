@@ -375,14 +375,15 @@ class EmptyState extends StatelessWidget {
 }
 
 /// agp-shell.js 的 toast()
-void toast(BuildContext context, String message) {
+void toast(BuildContext context, String message,
+    {Duration duration = const Duration(milliseconds: 3200)}) {
   final messenger = ScaffoldMessenger.maybeOf(context);
   if (messenger == null) return;
   messenger
     ..clearSnackBars()
     ..showSnackBar(SnackBar(
       content: Text(message),
-      duration: const Duration(milliseconds: 3200),
+      duration: duration,
     ));
 }
 

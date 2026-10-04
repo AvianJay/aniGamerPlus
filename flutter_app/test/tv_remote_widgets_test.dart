@@ -95,6 +95,28 @@ void main() {
   tearDown(() => deleteTempDir(temp));
 
   group('電視上', () {
+    testWidgets('手機連線提示只顯示 1.2 秒, 重連不反覆遮畫面', (tester) async {
+      final navigator = GlobalKey<NavigatorState>();
+      final actions = AppTvRemoteActions(state, navigator);
+      await tester.pumpWidget(MaterialApp(
+          navigatorKey: navigator, home: const Scaffold(body: Text('home'))));
+      actions.connected('Pixel');
+      await tester.pump();
+      expect(find.text('「Pixel」已連線'), findsOneWidget);
+      expect(tester.widget<SnackBar>(find.byType(SnackBar)).duration,
+          const Duration(milliseconds: 1200));
+      await tester.pump(const Duration(milliseconds: 300));
+      await tester.pump(const Duration(milliseconds: 1300));
+      await tester.pump(const Duration(milliseconds: 300));
+      expect(find.byType(SnackBar), findsNothing);
+      actions.connected('Pixel');
+      await tester.pump();
+      expect(find.byType(SnackBar), findsNothing);
+      actions.connected('iPhone');
+      await tester.pump();
+      expect(find.text('「iPhone」已連線'), findsOneWidget);
+      await tester.pumpWidget(const SizedBox());
+    });
     testWidgets('音量指令不依賴焦點或播放頁, 送到電視音訊系統', (tester) async {
       const channel = MethodChannel('agp/device');
       final calls = <String>[];

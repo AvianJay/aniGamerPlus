@@ -183,6 +183,7 @@ class DanmakuOverlay extends StatefulWidget {
     this.scale = 1.0,
     this.speed = 1.0,
     this.lowPower = false,
+    this.timeline = 0,
   });
 
   final List<DanmakuComment> comments;
@@ -209,6 +210,9 @@ class DanmakuOverlay extends StatefulWidget {
 
   /// 低階裝置的貼圖與顯示量預算. 播放頁在 Android TV 自動啟用.
   final bool lowPower;
+
+  /// 播放頁跳轉 / 重建播放器時遞增. 即使已經休眠也要重新對時與排程.
+  final int timeline;
 
   @override
   State<DanmakuOverlay> createState() => _DanmakuOverlayState();
@@ -350,11 +354,13 @@ class _DanmakuOverlayState extends State<DanmakuOverlay>
     // 字級 / 範圍 / 速度是烤進圖或軌道算式裡的, 換了只能整層重來;
     // 透明度只是貼圖那支筆的 alpha, 換掉就好 —— 不然拉那條 slider 的時候
     // 每動一格畫面就空一次
-    if (oldWidget.comments != widget.comments ||
+    if (oldWidget.timeline != widget.timeline ||
+        oldWidget.comments != widget.comments ||
         oldWidget.scale != widget.scale ||
         oldWidget.area != widget.area ||
         oldWidget.speed != widget.speed ||
         oldWidget.lowPower != widget.lowPower) {
+      _shown = widget.position();
       _reset();
       _repaint.value++;
     }
@@ -545,7 +551,9 @@ class _DanmakuOverlayState extends State<DanmakuOverlay>
       _scrollLanes.clear();
       _topLanes.clear();
       _bottomLanes.clear();
-      _cursor = _indexAt(now);
+      // 計時器醒來或 seek 完成通常比留言時間晚幾十毫秒. 保留既有的
+      // 1.5 秒補送範圍, 否則長空檔之後的第一條會被二分搜尋跳過.
+      _cursor = _indexAt(now - 1.5);
     }
     _lastTime = now;
 

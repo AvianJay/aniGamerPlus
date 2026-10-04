@@ -75,6 +75,9 @@ const double kMinBrightness = 0.2;
 const Duration kControlsIdle = Duration(seconds: 5);
 const int kNextEpisodeCountdown = 8;
 
+/// 舊 Android TV 的解碼器長時間停住後可能只恢復音訊. 續播前從原位重建.
+const Duration kTvPauseRefreshAfter = Duration(seconds: 30);
+
 /// 彈幕檔小於這個大小 (字元) 就直接在畫面這條執行緒上解析. 大約一千多行,
 /// 解析只要幾毫秒, 比開一個 isolate 還快.
 const int kDanmakuParseInline = 128 * 1024;
@@ -391,6 +394,7 @@ class _WatchPageState extends State<WatchPage> with WidgetsBindingObserver {
   String _skipRequestKey = '';
   Timer? _skipRetryTimer;
   bool _skipDismissed = false;
+  int _introTimeline = 0;
   final _introPromptKey = GlobalKey<IntroSkipPromptState>();
   bool _introBackVisible = false;
   StreamSubscription<bool>? _pipSubscription;
@@ -485,6 +489,9 @@ class _WatchPageState extends State<WatchPage> with WidgetsBindingObserver {
   double? _pendingSeek;
   bool _seekWorkerRunning = false;
   bool _resumeAfterSeek = false;
+  int _danmakuTimeline = 0;
+  Timer? _pauseRefreshTimer;
+  bool _refreshOnResume = false;
   int _sourceGeneration = 0;
   bool _scrubbing = false;
   double _scrubValue = 0;
@@ -607,6 +614,7 @@ class _WatchPageState extends State<WatchPage> with WidgetsBindingObserver {
 
   @override
   void dispose() {
+    _pauseRefreshTimer?.cancel();
     WidgetsBinding.instance.removeObserver(this);
     state.discord.stopPlayback();
     _clock.removeListener(_onIntroClock);
@@ -714,8 +722,7 @@ class _WatchPageState extends State<WatchPage> with WidgetsBindingObserver {
               seekTo: _clock.value, autoplay: _resumeAfterBackground);
           return;
         }
-        // Retain the native player and its buffered media. Never seek or reopen
-        // merely because the app returned from the background.
+        // 短暫切回前景保留緩衝; TV 長暫停則由 _resumeLocalPlayer 更新解碼器.
         final position = await controller.position;
         if (!mounted || _background || controller != _controller) return;
         if (_pendingSeek == null && position != null) {
@@ -723,7 +730,7 @@ class _WatchPageState extends State<WatchPage> with WidgetsBindingObserver {
           _clock.value = _anchor;
         }
         if (_resumeAfterBackground && _pendingSeek == null) {
-          await controller.play();
+          await _resumeLocalPlayer(controller);
         }
         if (!mounted || _background) return;
         if (_streaming) _startPoll();
@@ -959,23 +966,34 @@ class _WatchPageState extends State<WatchPage> with WidgetsBindingObserver {
   }
 
   /// 建立 / 換掉 VideoPlayerController
-  Future<void> _openSource({double? seekTo, bool autoplay = true}) async {
+  Future<void> _openSource(
+      {double? seekTo, bool autoplay = true, bool releaseDecoder = false}) async {
     if (_castSupported && cast.connected) {
       await _openOnChromecast(seekTo: seekTo, autoplay: autoplay);
       return;
     }
     final generation = ++_sourceGeneration;
+    _pauseRefreshTimer?.cancel();
+    _refreshOnResume = false;
+    _danmakuTimeline++;
     _scrubbing = false;
     _preview.cancel();
     _pendingSeek = null;
     _playIntent = null;
     final previous = _controller;
+    if (mounted) setState(() => _initialising = true);
     if (previous != null) {
       previous.removeListener(_onPlayerUpdate);
       _controller = null;
-      unawaited(previous.dispose());
+      final release = previous.dispose();
+      if (releaseDecoder) {
+        // 電視可能只有一組硬體解碼器; 舊的放掉後才建立新的.
+        await release;
+        if (!mounted || generation != _sourceGeneration) return;
+      } else {
+        unawaited(release);
+      }
     }
-    if (mounted) setState(() => _initialising = true);
 
     // 剛剛才離開這一集的話, 原生播放器還停在架上. 它已經 initialize 過, 緩衝
     // 也還在 —— 直接接手, 省掉重新要一次檔頭的那幾秒.
@@ -1898,6 +1916,7 @@ class _WatchPageState extends State<WatchPage> with WidgetsBindingObserver {
       }
     }
 
+    final previousDuration = _playableDuration;
     setState(() {
       _streamMode = status.mode;
       _streamReady = status.readyDuration;
@@ -1906,6 +1925,9 @@ class _WatchPageState extends State<WatchPage> with WidgetsBindingObserver {
       if (status.totalDuration > _duration) _duration = status.totalDuration;
       _downloading = _downloadingLabel(status);
     });
+    // EVENT playlist 開場的片長可能只有幾十秒. 整集片長稍後才到, 不能
+    // 只在 initialize 那一刻查一次, 否則這一集一直沒有片頭按鈕.
+    if (previousDuration != _playableDuration) unawaited(_loadOpeningSkip());
 
     if (!_streamAttached && status.ready > 0) {
       _streamAttached = true;
@@ -2030,6 +2052,17 @@ class _WatchPageState extends State<WatchPage> with WidgetsBindingObserver {
     if (!value.isInitialized) return;
 
     final position = value.position.inMilliseconds / 1000.0;
+    if (value.isPlaying) {
+      _pauseRefreshTimer?.cancel();
+      _refreshOnResume = false;
+    } else if (Device.tv && _playing && _pendingSeek == null) {
+      _pauseRefreshTimer?.cancel();
+      _pauseRefreshTimer = Timer(kTvPauseRefreshAfter, () {
+        if (mounted && controller == _controller && !controller.value.isPlaying) {
+          _refreshOnResume = true;
+        }
+      });
+    }
     if (_pendingSeek == null && !_scrubbing) {
       final running = value.isPlaying && !value.isBuffering;
       // 播放器每一次回報都重新對時的話, 內插出來的時間軸會跟著它回報的
@@ -2074,12 +2107,13 @@ class _WatchPageState extends State<WatchPage> with WidgetsBindingObserver {
 
     // 真的在推進畫面了才算「開始播」—— isPlaying 在還在緩衝的時候就會是 true
     final started = value.isPlaying && !value.isBuffering;
+    final durationChanged = duration > 0 && (duration - _duration).abs() > 0.5;
 
     if (value.isPlaying != _playing ||
         value.isBuffering != _buffering ||
         (started && !_hasPlayed) ||
         intentSettled ||
-        (duration > 0 && (duration - _duration).abs() > 0.5)) {
+        durationChanged) {
       if (!mounted) return;
       setState(() {
         _playing = value.isPlaying;
@@ -2090,6 +2124,7 @@ class _WatchPageState extends State<WatchPage> with WidgetsBindingObserver {
           _duration = math.max(duration, _streaming ? _streamTotal : 0);
         }
       });
+      if (durationChanged) unawaited(_loadOpeningSkip());
       if (value.isPlaying) {
         unawaited(WakelockPlus.enable());
       } else {
@@ -2227,18 +2262,25 @@ class _WatchPageState extends State<WatchPage> with WidgetsBindingObserver {
     }
     final controller = _controller;
     if (controller == null || !controller.value.isInitialized) return;
-    if (_pendingSeek == null) {
-      _resumeAfterSeek = resume ?? controller.value.isPlaying;
+    if (_pendingSeek == null && !_seekWorkerRunning) {
+      _resumeAfterSeek = resume ?? _showsPlaying;
+    } else if (resume != null) {
+      _resumeAfterSeek = resume;
     }
     final target = _clampSeek(seconds);
     setState(() {
       _pendingSeek = target;
       _ended = false;
+      _danmakuTimeline++;
+      _introTimeline++;
+      if (_effectiveIntro?.visibleAt(target) == true) _skipDismissed = false;
     });
     _clock.value = target;
     if (_seekWorkerRunning) return;
     _seekWorkerRunning = true;
     var workingGeneration = _sourceGeneration;
+    double? recoveryTarget;
+    var recoveries = 0;
     try {
       while (mounted && _pendingSeek != null) {
         if (_background) {
@@ -2249,6 +2291,10 @@ class _WatchPageState extends State<WatchPage> with WidgetsBindingObserver {
         final generation = _sourceGeneration;
         workingGeneration = generation;
         final wanted = _pendingSeek!;
+        if (recoveryTarget != wanted) {
+          recoveryTarget = wanted;
+          recoveries = 0;
+        }
         if (active == null) break;
         await active.pause();
         if (!mounted ||
@@ -2271,31 +2317,77 @@ class _WatchPageState extends State<WatchPage> with WidgetsBindingObserver {
           continue;
         }
         await active.seekTo(Duration(milliseconds: (wanted * 1000).round()));
-        final deadline = DateTime.now().add(const Duration(seconds: 45));
-        // 位置一對就放手, 不等緩衝. 以前這裡還會再等「緩衝完」最多 1.2 秒才按
-        // 播放 —— 但還在緩衝時按下播放本來就是「一有資料就開始」, 多等的那段
-        // 只是白白加在每一次續播、每一次跳轉的開頭. 而且跳轉沒放手之前, 播放
-        // 鍵按下去只會改「跳完要不要續播」, 按鈕看起來像壞掉.
+        if (!mounted ||
+            generation != _sourceGeneration ||
+            _pendingSeek != wanted) {
+          continue;
+        }
+        // 有些 Android 解碼器要開始輸出後才回報新位置. 不能先 pause、等
+        // getPosition 到目標才 play: 那會把時鐘、彈幕和片頭按鈕一起鎖死.
+        // 繼續用 pendingSeek 擋掉舊位置, 但讓原生播放器先恢復輸出.
+        if (_resumeAfterSeek && !_background) await active.play();
+        final startedAt = DateTime.now();
+        var checks = 0;
+        var reopen = false;
         while (mounted &&
             generation == _sourceGeneration &&
             _pendingSeek == wanted) {
-          final actual = await active.position;
-          final atTarget = actual != null &&
-              (actual.inMilliseconds / 1000 - wanted).abs() <= 1.5;
+          // 暫停時 seek 指令完成就能放手, 沒有必要等解碼器開始輸出.
+          if (!_resumeAfterSeek || _background) break;
+          Duration? actual;
+          try {
+            actual = await active.position.timeout(const Duration(seconds: 2));
+          } on TimeoutException {
+            reopen = true;
+            break;
+          }
+          final elapsed =
+              DateTime.now().difference(startedAt).inMilliseconds / 1000;
+          final advanced = active.value.isPlaying
+              ? elapsed * (_boosting ? 2 : _rate)
+              : 0.0;
+          final atTarget =
+              actual != null &&
+              actual.inMilliseconds / 1000 >= wanted - 1.5 &&
+              actual.inMilliseconds / 1000 <= wanted + advanced + 1.5;
           // 壞掉的播放器也可能回報「到了」—— 那不算, 要走下面的失敗收尾,
           // 那裡才知道要去哪裡、跳完要不要播
           if (atTarget && !active.value.hasError) break;
-          if (active.value.hasError || DateTime.now().isAfter(deadline)) {
+          if (active.value.hasError) {
             throw StateError('跳轉逾時，請重試或檢查網路');
+          }
+          if (++checks >= 50 || elapsed >= 5) {
+            reopen = true;
+            break;
           }
           await Future<void>.delayed(const Duration(milliseconds: 100));
         }
         if (!mounted) return;
         if (generation != _sourceGeneration || _pendingSeek != wanted) continue;
-        setState(() => _pendingSeek = null);
+        if (reopen) {
+          if (recoveries++ > 0) throw StateError('跳轉失敗');
+          // 即使 native 沒報錯也可能卡在舊位置. 不讓整頁的時鐘永遠等它;
+          // 原位重開一次, 最後一次的播放 / 暫停意圖一起帶過去.
+          await _openSource(
+            seekTo: wanted,
+            autoplay: _resumeAfterSeek,
+            releaseDecoder: Device.tv,
+          );
+          continue;
+        }
+        setState(() {
+          _pendingSeek = null;
+          _danmakuTimeline++;
+        });
+        _clockRunning = active.value.isPlaying && !active.value.isBuffering;
         _setAnchor(wanted);
         _clock.value = wanted;
-        if (_resumeAfterSeek && !_background) await active.play();
+        // 等待期間的播放 / 暫停操作仍以使用者最後一次選擇為準.
+        if (_resumeAfterSeek && !_background) {
+          if (!active.value.isPlaying) await active.play();
+        } else if (active.value.isPlaying) {
+          await active.pause();
+        }
         unawaited(_syncTime(force: true));
       }
     } catch (_) {
@@ -2335,6 +2427,21 @@ class _WatchPageState extends State<WatchPage> with WidgetsBindingObserver {
 
   Future<void> _seekBy(double delta) => _seekTo(_clock.value + delta);
 
+  Future<void> _resumeLocalPlayer(VideoPlayerController controller) async {
+    if (Device.tv && _refreshOnResume) {
+      final position = await controller.position;
+      if (!mounted || _background || controller != _controller) return;
+      await _openSource(
+        seekTo: position == null
+            ? _clock.value
+            : position.inMilliseconds / 1000,
+        releaseDecoder: true,
+      );
+    } else {
+      await controller.play();
+    }
+  }
+
   Future<void> _togglePlay() async {
     if (_chromecasting) {
       await _togglePlayOnChromecast();
@@ -2360,7 +2467,7 @@ class _WatchPageState extends State<WatchPage> with WidgetsBindingObserver {
           await _seekTo(0);
         }
         _streamAutoplayed = true;
-        await controller.play();
+        await _resumeLocalPlayer(controller);
         unawaited(WakelockPlus.enable());
       }
     } catch (_) {
@@ -3579,6 +3686,7 @@ class _WatchPageState extends State<WatchPage> with WidgetsBindingObserver {
                           child: DanmakuOverlay(
                             comments: _danmaku,
                             position: _positionNow,
+                            timeline: _danmakuTimeline,
                             rate: _boosting ? 2 : _rate,
                             playing: _playing &&
                                 !_scrubbing &&
@@ -3644,7 +3752,7 @@ class _WatchPageState extends State<WatchPage> with WidgetsBindingObserver {
                             key: _introPromptKey,
                             clock: _clock,
                             intro: intro,
-                            episodeKey: _sn,
+                            episodeKey: '$_sn:$_introTimeline',
                             tv: Device.tv,
                             compact: mobileInline,
                             seconds: kNextEpisodeCountdown,
