@@ -8,6 +8,7 @@ library;
 import 'dart:async';
 
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 
 import '../state/app_state.dart';
 import '../state/downloads.dart';
@@ -249,21 +250,34 @@ class _DownloadsPageState extends State<DownloadsPage> {
           ? () => Navigator.of(context).push(MaterialPageRoute(
                 builder: (_) => WatchPage(state: state, sn: entry.sn),
               ))
-          : null,
+          : entry.status == DownloadStatus.failed
+              ? () => _showError(entry)
+              : null,
       footer: entry.status == DownloadStatus.done
           ? null
-          : ClipRRect(
-              borderRadius: BorderRadius.circular(999),
-              child: LinearProgressIndicator(
-                // 等伺服器的那段沒有進度可言, 給一條不動的底線比跑馬燈誠實
-                value: entry.status != DownloadStatus.running
-                    ? 0
-                    : entry.total > 0
-                        ? entry.progress
-                        : null,
-                minHeight: 4,
-                backgroundColor: const Color(0x1FFFFFFF),
-              ),
+          : Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                ClipRRect(
+                  borderRadius: BorderRadius.circular(999),
+                  child: LinearProgressIndicator(
+                    // 等伺服器的那段沒有進度可言, 給一條不動的底線比跑馬燈誠實
+                    value: entry.status != DownloadStatus.running
+                        ? 0
+                        : entry.total > 0
+                            ? entry.progress
+                            : null,
+                    minHeight: 4,
+                    backgroundColor: const Color(0x1FFFFFFF),
+                  ),
+                ),
+                if (entry.status == DownloadStatus.failed)
+                  TextButton.icon(
+                    onPressed: () => _showError(entry),
+                    icon: const Icon(Icons.info_outline_rounded, size: 18),
+                    label: const Text('查看錯誤詳情'),
+                  ),
+              ],
             ),
       trailing: Row(
         mainAxisSize: MainAxisSize.min,
@@ -330,6 +344,37 @@ class _DownloadsPageState extends State<DownloadsPage> {
       case DownloadStatus.failed:
         return '下載失敗: ${entry.error.isEmpty ? '未知原因' : entry.error}';
     }
+  }
+
+  Future<void> _showError(DownloadEntry entry) async {
+    final details = [
+      '${entry.displayName} · ${episodeLabel(entry.episode)}',
+      'SN: ${entry.sn}',
+      if (entry.resolution > 0) '畫質: ${entry.resolution}P',
+      '',
+      entry.error.isEmpty ? '未知原因' : entry.error,
+    ].join('\n');
+    await showDialog<void>(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        title: const Text('下載失敗'),
+        scrollable: true,
+        content: SelectableText(details),
+        actions: [
+          TextButton(
+            onPressed: () async {
+              await Clipboard.setData(ClipboardData(text: details));
+              if (dialogContext.mounted) toast(dialogContext, '已複製錯誤詳情');
+            },
+            child: const Text('複製'),
+          ),
+          TextButton(
+            onPressed: () => Navigator.of(dialogContext).pop(),
+            child: const Text('關閉'),
+          ),
+        ],
+      ),
+    );
   }
 
   Future<void> _confirmDelete(DownloadEntry entry) async {

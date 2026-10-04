@@ -206,33 +206,36 @@ public final class BackgroundDownloadSession: NSObject {
     let part = dir.appendingPathComponent(meta.name + ".part")
     let target = dir.appendingPathComponent(meta.name)
     let status = response?.statusCode ?? 0
+    var operation = "建立下載目錄"
     do {
       try manager.createDirectory(at: dir, withIntermediateDirectories: true)
+      operation = "檢查伺服器回應"
       switch status {
       case 200, 206 where meta.offset == 0:
         // 從頭抓的, 或伺服器不吃 Range 回了整支
         if status == 206, let start = Self.rangeStart(response), start != 0 {
           throw TransferError(message: "續傳位置對不上")
         }
+        operation = "保存下載影片"
+        try DownloadFileStore.save(location, to: target)
         try? manager.removeItem(at: part)
-        try? manager.removeItem(at: target)
-        try manager.moveItem(at: location, to: target)
       case 206:
         guard Self.rangeStart(response) == meta.offset,
               Self.size(of: part) == meta.offset
         else {
           throw TransferError(message: "續傳位置對不上")
         }
+        operation = "合併續傳影片"
         try Self.append(location, to: part)
-        try? manager.removeItem(at: target)
-        try manager.moveItem(at: part, to: target)
+        operation = "保存續傳影片"
+        try DownloadFileStore.promote(part, to: target)
       case 416:
         // 其實已經抓完了, 只是上次沒改名
         guard manager.fileExists(atPath: part.path) else {
           throw TransferError(message: "伺服器回應 416")
         }
-        try? manager.removeItem(at: target)
-        try manager.moveItem(at: part, to: target)
+        operation = "保存續傳影片"
+        try DownloadFileStore.promote(part, to: target)
       case 404:
         return .notFound
       default:
@@ -241,7 +244,7 @@ public final class BackgroundDownloadSession: NSObject {
       dropResume(name: meta.name)
       return .done(Self.size(of: target) ?? 0)
     } catch {
-      return .failed(error.localizedDescription)
+      return .failed("\(operation)失敗（HTTP \(status)）：\n\(downloadErrorDescription(error))")
     }
   }
 
@@ -394,11 +397,11 @@ extension BackgroundDownloadSession: URLSessionDownloadDelegate {
           result["status"] = "cancelled"
         } else {
           result["status"] = "failed"
-          result["error"] = error.localizedDescription
+          result["error"] = downloadErrorDescription(error)
         }
       } else {
         result["status"] = "failed"
-        result["error"] = error?.localizedDescription ?? "下載中斷"
+        result["error"] = error.map { downloadErrorDescription($0) } ?? "下載中斷"
       }
     }
 

@@ -182,6 +182,15 @@ jobs:
           xcodebuild -version
           flutter --version
 
+      - name: Test native download file storage
+        run: |
+          set -euo pipefail
+          xcrun swiftc -swift-version 5 \
+            packages/background_download/ios/Classes/DownloadFileStore.swift \
+            packages/background_download/ios/Tests/DownloadFileStoreTests.swift \
+            -o "${RUNNER_TEMP}/download-file-store-tests"
+          "${RUNNER_TEMP}/download-file-store-tests"
+
       - name: Generate the platform shell
         run: bash tool/prepare_platforms.sh
 

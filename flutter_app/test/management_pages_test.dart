@@ -9,9 +9,11 @@ import 'package:agp_mobile/src/pages/app_prefs_page.dart';
 import 'package:agp_mobile/src/pages/downloads_page.dart';
 import 'package:agp_mobile/src/pages/settings_page.dart';
 import 'package:agp_mobile/src/state/app_state.dart';
+import 'package:agp_mobile/src/state/downloads.dart';
 import 'package:agp_mobile/src/theme.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/rendering.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:http/http.dart' as http;
 import 'package:http/testing.dart';
@@ -97,8 +99,7 @@ void main() {
     Brightness brightness = Brightness.dark,
     double scale = 1,
   }) async {
-    await tester.binding.setSurfaceSize(size);
-    addTearDown(() => tester.binding.setSurfaceSize(null));
+    await resizeViewport(tester, size);
     await tester.pumpWidget(RepaintBoundary(
       key: const ValueKey('management-capture'),
       child: MaterialApp(
@@ -165,6 +166,65 @@ void main() {
     await tester.tap(find.text('已完成 0'));
     await tester.pump();
     expect(find.text('還沒有已完成的下載'), findsOneWidget);
+    await tester.pumpWidget(const SizedBox());
+  });
+
+  testWidgets('download errors can be opened, scrolled and copied in full',
+      (tester) async {
+    final error = [
+      '保存下載影片失敗（HTTP 200）：',
+      '"CFNetworkDownload_Jenz4o.tmp" could not be moved.',
+      '[NSCocoaErrorDomain 513]',
+      ...List.generate(12, (i) => '詳細原因 $i: permission denied'),
+      '最後一行 [NSPOSIXErrorDomain 13]',
+    ].join('\n');
+    await tester.runAsync(() async {
+      final entry = await state.downloads.enqueue(
+          VideoItem(sn: '103', animeName: '下載失敗測試', episode: '1'),
+          withDanmaku: false);
+      entry
+        ..status = DownloadStatus.failed
+        ..error = error;
+    });
+    String? copied;
+    tester.binding.defaultBinaryMessenger
+        .setMockMethodCallHandler(SystemChannels.platform, (call) async {
+      if (call.method == 'Clipboard.setData') {
+        copied = (call.arguments as Map)['text'] as String;
+      }
+      return null;
+    });
+    addTearDown(() => tester.binding.defaultBinaryMessenger
+        .setMockMethodCallHandler(SystemChannels.platform, null));
+
+    await open(tester, DownloadsPage(state: state),
+        size: const Size(320, 480), scale: 1.4);
+    await settleIo(tester);
+    await tester.ensureVisible(find.text('查看錯誤詳情'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('查看錯誤詳情'));
+    await tester.pumpAndSettle();
+    expect(tester.takeException(), isNull);
+    final text = tester.widget<SelectableText>(find.byType(SelectableText));
+    expect(text.data, contains(error));
+    expect(text.maxLines, isNull);
+    await tester.drag(
+        find
+            .descendant(
+                of: find.byType(AlertDialog),
+                matching: find.byType(SingleChildScrollView))
+            .first,
+        const Offset(0, -900));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('複製'));
+    await tester.pumpAndSettle();
+    expect(copied, contains(error));
+    expect(copied, contains('SN: 103'));
+    await tester.tap(find.text('關閉'));
+    await tester.pumpAndSettle();
+    expect(find.byType(AlertDialog), findsNothing);
+    expect(find.byTooltip('重試'), findsOneWidget);
+    expect(tester.takeException(), isNull);
     await tester.pumpWidget(const SizedBox());
   });
 
