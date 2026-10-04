@@ -134,6 +134,7 @@ class VideoCacheServer {
   int _token = 0;
   bool _closed = false;
   int _prefetchRequest = 0;
+  final Set<Completer<bool>> _pendingPrefetch = {};
 
   /// 起一台. 起不來 (權限、沒有 loopback) 就回 null, 呼叫端退回直連.
   ///
@@ -288,21 +289,31 @@ class VideoCacheServer {
         source.port != port) {
       return false;
     }
+    cancelPrefetch();
     final generation = ++_prefetchRequest;
     final reply = ReceivePort();
+    final result = Completer<bool>();
+    _pendingPrefetch.add(result);
+    reply.listen((message) {
+      if (!result.isCompleted) result.complete(message == true);
+    });
     try {
       _commands.send(['prefetch', source.toString(), seconds, reply.sendPort]);
-      return await reply.first.timeout(const Duration(seconds: 30)) == true;
+      return await result.future.timeout(const Duration(seconds: 30));
     } catch (_) {
       if (generation == _prefetchRequest) cancelPrefetch();
       return false;
     } finally {
+      _pendingPrefetch.remove(result);
       reply.close();
     }
   }
 
   void cancelPrefetch() {
     _prefetchRequest++;
+    for (final result in _pendingPrefetch) {
+      if (!result.isCompleted) result.complete(false);
+    }
     if (!_closed) _commands.send('cancel-prefetch');
   }
 
@@ -310,6 +321,7 @@ class VideoCacheServer {
   /// 測試收尾) 在 Windows 上會撞到還開著的檔案.
   Future<void> close() async {
     if (_closed && _exited.isCompleted) return;
+    cancelPrefetch();
     _closed = true;
     try {
       _commands.send('close');
