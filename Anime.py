@@ -34,15 +34,8 @@ class Anime:
         self._temp_dir = self._settings['temp_dir']
         self._gost_port = str(gost_port)
 
-        self._session = requests.session()
-        if 'firefox' in self._settings['ua'].lower():
-            impersonate = 'firefox'
-        else:
-            impersonate = 'chrome'
-        bf = self._settings.get('browser_fingerprint', {})
-        self._fingerprint_session = curl_requests.Session(impersonate=impersonate
-                                                          , ja3=bf.get('ja3') or None
-                                                          , akamai=bf.get('akamai') or None)
+        self.__init_session()
+        self._identity_generation = 0  # 中途換過幾次登入身分, 見 __renew_identity()
         self._title = ''
         self._sn = sn
         self._bangumi_name = ''
@@ -285,7 +278,27 @@ class Anime:
         else:
             self._req_header = self._web_header
 
-    def __request(self, req, no_cookies=False, show_fail=True, max_retry=3, addition_header=None, verify_fingerprint=False):
+    def __init_session(self):
+        self._session = requests.session()
+        if 'firefox' in self._settings['ua'].lower():
+            impersonate = 'firefox'
+        else:
+            impersonate = 'chrome'
+        bf = self._settings.get('browser_fingerprint', {})
+        self._fingerprint_session = curl_requests.Session(impersonate=impersonate
+                                                          , ja3=bf.get('ja3') or None
+                                                          , akamai=bf.get('akamai') or None)
+
+    def __renew_identity(self):
+        # 中途換了一份登入, 這個實例就要變得跟登入之後才建立的一樣: 舊 session 的 cookie jar
+        # 還留著舊登入那幾次回應發下來的東西, 自動登入也會順手把 UA、JA3、Akamai 換成登入用
+        # 的那個瀏覽器的 (Loginer.update_browser_identity)
+        self._settings = Config.read_settings()
+        self.__init_session()
+        self.__init_header()
+        self._identity_generation += 1
+
+    def __request(self, req, no_cookies=False, show_fail=True, max_retry=3, addition_header=None, verify_fingerprint=False, resend_on_reset=True):
         # 设置 header
         current_header = self._req_header
         if addition_header is None:
@@ -331,6 +344,10 @@ class Anime:
                 if 'deleted' in f.headers.get('set-cookie'):
                     # set-cookie刷新cookie只有一次机会, 如果其他线程先收到, 则此处会返回 deleted
                     # 等待其他线程刷新了cookie, 重新读入cookie
+                    if not resend_on_reset:
+                        # 這已經是換上新 cookie 重送的那一次了, 還是被拒絕就到此為止, 不要再登入一輪
+                        return f
+                    rejected_token = Config.login_token(self._cookies)
 
                     if self._settings['use_mobile_api'] and 'X-Bahamut-App-Android' in self._req_header:
                         # 使用移动API将无法进行 cookie 刷新, 改回 header 刷新 cookie
@@ -364,13 +381,22 @@ class Anime:
                             # 将失效cookie更名/嘗試自動登入(如果有設定)
                             if Config.invalid_cookie():
                                 self._cookies = Config.read_cookie()
-                                self.__request('https://ani.gamer.com.tw/')
                             else:
                                 err_print(0, '使用游客身份訪問', status=1, no_sn=True)
 
                         if self._settings['use_mobile_api'] and 'X-Bahamut-App-Android' not in self._req_header:
                             # 即使切换 header cookie 也无法刷新, 那么恢复 header, 好歹广告只有 3s
                             self._req_header = self._mobile_header
+
+                    if Config.login_token(self._cookies) not in (None, rejected_token):
+                        # 換到新 cookie 了 (別的執行緒刷新的, 或剛自動登入拿的), 但 f 是帶著被拒絕的
+                        # 舊 cookie 換來的回應, 不能交回去: getdeviceid.php 的話, 那個 deviceid 新登入
+                        # 不認, 拿去要 token 就是 code=1007 裝置驗證異常 —— 自動登入完的第一集一定
+                        # 死在這. 整組身分換新, 這個請求用新 cookie 重送一次
+                        err_print(self._sn, '換上新cookie重送請求', display=False)
+                        self.__renew_identity()
+                        return self.__request(req, no_cookies, show_fail, max_retry, addition_header,
+                                              verify_fingerprint, resend_on_reset=False)
 
                 else:
                     # 本线程收到了新cookie
@@ -504,7 +530,13 @@ class Anime:
             self._m3u8_dict = m3u8_dict
 
         get_device_id()
+        identity_generation = self._identity_generation
         user_info = gain_access()
+        if 'error' in user_info.keys() and self._identity_generation != identity_generation:
+            # 要 token 的途中才換了一份登入 (見 __request): 手上的 deviceid 是舊登入拿的,
+            # 新登入不認. deviceid 跟 token 都用新登入重拿一次
+            get_device_id()
+            user_info = gain_access()
         if not self._settings['use_mobile_api']:
             unlock()
             check_lock()
