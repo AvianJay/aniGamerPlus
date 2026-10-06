@@ -104,14 +104,14 @@ enum DownloadFileStoreTests {
     // 認得出來 (NSCocoaErrorDomain 513 或 NSPOSIXErrorDomain 1), 才能改用
     // 前景 session 重抓.
     let handover = NSError(domain: NSCocoaErrorDomain, code: NSFileWriteNoPermissionError,
-      userInfo: [NSUnderlyingErrorKey: NSError(domain: NSPOSIXErrorDomain, code: EPERM)])
+      userInfo: [NSUnderlyingErrorKey: NSError(domain: NSPOSIXErrorDomain, code: Int(EPERM))])
     precondition(DownloadFileStore.isHandoverDenied(handover))
     precondition(DownloadFileStore.isHandoverDenied(
       NSError(domain: NSCocoaErrorDomain, code: NSFileWriteNoPermissionError)))
     precondition(!DownloadFileStore.isHandoverDenied(
       NSError(domain: NSCocoaErrorDomain, code: NSFileWriteOutOfSpaceError)))
     precondition(!DownloadFileStore.isHandoverDenied(
-      NSError(domain: NSPOSIXErrorDomain, code: ENOSPC)))
+      NSError(domain: NSPOSIXErrorDomain, code: Int(ENOSPC))))
     print("DownloadFileStore tests passed")
   }
 }
