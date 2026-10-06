@@ -123,11 +123,13 @@ public final class BackgroundDownloadSession: NSObject {
         }
         let task: URLSessionDownloadTask
         // 續傳資料裡夾著當初那一個請求 (含 allowsCellularAccess). 起點或行動網路
-        // 設定不一樣了就不能用, 從 .part 的尾巴重新要.
-        if !self.foregroundOnly,
-           let saved = self.loadResume(name: name),
+        // 設定不一樣了就不能用, 從 .part 的尾巴重新要; 兩個 session 的續傳資料
+        // 也不能互換 (前景的暫存檔在 App 自己的 tmp, 背景的在系統手上).
+        if let saved = self.loadResume(name: name),
+           saved.foreground == self.foregroundOnly,
            saved.meta.offset == offset, saved.meta.allowCellular == allowCellular {
-          task = self.session.downloadTask(withResumeData: saved.data)
+          let target = saved.foreground ? self.foregroundSession! : self.session!
+          task = target.downloadTask(withResumeData: saved.data)
         } else {
           var request = URLRequest(url: url)
           for (key, value) in headers {
@@ -161,17 +163,17 @@ public final class BackgroundDownloadSession: NSObject {
       let group = DispatchGroup()
       for ref in matching {
         let task = ref.task
-        // 前景的沒有系統續傳資料可言, 直接停; 背景的留續傳資料給下一次.
-        guard ref.isBackground,
-              let download = task as? URLSessionDownloadTask,
+        // 兩個 session 都留續傳資料: 前景的沒留的話, 暫停就等於整集重抓.
+        guard let download = task as? URLSessionDownloadTask,
               let meta = TransferMeta(task: task) else {
           task.cancel()
           continue
         }
+        let isBackground = ref.isBackground
         group.enter()
         download.cancel(byProducingResumeData: { data in
           self.state.async {
-            if let data = data { self.saveResume(meta, data) }
+            if let data = data { self.saveResume(meta, data, foreground: !isBackground) }
             group.leave()
           }
         })
@@ -368,22 +370,24 @@ public final class BackgroundDownloadSession: NSObject {
      storage.appendingPathComponent("resume-\(name).json"))
   }
 
-  private func saveResume(_ meta: TransferMeta, _ data: Data) {
+  private func saveResume(_ meta: TransferMeta, _ data: Data, foreground: Bool) {
     let files = resumeFiles(name: meta.name)
-    guard let encoded = try? JSONEncoder().encode(meta) else { return }
+    guard let encoded = try? JSONEncoder().encode(
+      SavedResume(meta: meta, foreground: foreground))
+    else { return }
     try? data.write(to: files.data, options: .atomic)
     try? encoded.write(to: files.meta, options: .atomic)
   }
 
-  private func loadResume(name: String) -> (meta: TransferMeta, data: Data)? {
+  private func loadResume(name: String) -> (meta: TransferMeta, data: Data, foreground: Bool)? {
     let files = resumeFiles(name: name)
     guard let data = try? Data(contentsOf: files.data),
           let raw = try? Data(contentsOf: files.meta),
-          let meta = try? JSONDecoder().decode(TransferMeta.self, from: raw)
+          let saved = try? JSONDecoder().decode(SavedResume.self, from: raw)
     else {
       return nil
     }
-    return (meta, data)
+    return (saved.meta, data, saved.foreground)
   }
 
   private func dropResume(name: String) {
@@ -490,7 +494,9 @@ extension BackgroundDownloadSession: URLSessionDownloadDelegate {
     case nil:
       result["received"] = meta.offset + task.countOfBytesReceived
       if let error = error as? URLError {
-        if let data = error.downloadTaskResumeData { saveResume(meta, data) }
+        if let data = error.downloadTaskResumeData {
+          saveResume(meta, data, foreground: session !== self.session)
+        }
         if error.code == .cancelled {
           result["status"] = "cancelled"
         } else {
@@ -538,6 +544,12 @@ extension BackgroundDownloadSession: URLSessionDownloadDelegate {
     eventsCompletion = nil
     Self.finishEvents(handler)
   }
+}
+
+/// 續傳資料連同它是哪一個 session 產生的 —— 背景與前景的續傳資料不能互換.
+struct SavedResume: Codable {
+  var meta: TransferMeta
+  var foreground: Bool
 }
 
 /// 跟著每個工作走的資料, 放在 taskDescription 裡 —— App 被收掉重開之後
