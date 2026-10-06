@@ -24,7 +24,10 @@ import 'package:package_info_plus/package_info_plus.dart';
 import 'package:path_provider/path_provider.dart';
 import 'package:url_launcher/url_launcher.dart';
 
-const String kUpdateRepo = 'AvianJay/aniGamerPlus';
+/// 這個 fork 自己發 nightly，所以更新也看自己這一份: 上游的 build number
+/// 永遠比 fork 大，指過去只會一直跳「有新版本」, 裝回上游又會把 iOS
+/// sideload 的下載修正蓋掉.
+const String kUpdateRepo = 'nka551774-hue/aniGamerPlus';
 const String kNightlyTag = 'nightly';
 const String kNightlyManifest = 'flutter-nightly.json';
 
