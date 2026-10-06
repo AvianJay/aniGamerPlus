@@ -687,3 +687,31 @@ def create_plugin(settings):
 **把整集下載到手機, 沒網路也能看** (連彈幕一起抓, 離線播放照樣有彈幕).
 
 詳細說明見 [flutter_app/README.md](flutter_app/README.md).
+
+### iOS 下載修正（此 fork）
+
+sideload 用共用／萬用憑證重簽的安裝, 下載會在收尾時失敗:
+
+```
+保存下載影片失敗（HTTP 200）：
+"CFNetworkDownload_CsKlwB.tmp" couldn't be moved because you don't have permission to access "downloads". [NSCocoaErrorDomain 513]
+原因：The operation couldn't be completed. Operation not permitted [NSPOSIXErrorDomain 1]
+```
+
+影片其實已經抓完了（HTTP 200）, 卡住的是系統把背景暫存檔交給 App 那一步 ——
+重簽過的 App 拿不到那個檔案的 sandbox extension. 修法:
+
+* `DownloadFileStore.isHandoverDenied(_:)` 認得這類錯誤（沿著 `NSUnderlyingErrorKey`
+  鏈找 `NSCocoaErrorDomain 513`、`NSPOSIXErrorDomain` 的 `EPERM`／`EACCES`）.
+* 收尾失敗就用同一個請求在**前景 session**（暫存檔在 App 自己的 tmp, 不經過
+  `nsurlsessiond`）重抓一次, 並寫下 `foreground-only` 標記, 之後的下載直接走
+  前景, 不會再跳錯誤.
+* 限制: 這種安裝下載時 App 要留在前景（被系統暫停就停住, 下次開啟續傳）;
+  TrollStore 或帶正確 entitlement 的簽章不會踩到, 仍然走原本的背景下載.
+
+這個 fork 自己建置的未簽名 IPA:
+<https://github.com/nka551774-hue/aniGamerPlus/releases/download/nightly/aniGamerPlus-nightly-unsigned.ipa>
+
+App 內更新的來源也指回這個 fork（`flutter_app/lib/src/state/updater.dart` 的
+`kUpdateRepo`）, 免得一直提示要裝回上游那一版. 詳見
+<https://github.com/nka551774-hue/aniGamerPlus/issues/1>.
