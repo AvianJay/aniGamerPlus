@@ -230,6 +230,11 @@ lib/
 都會上傳成 artifact, 發 release 的時候 APK 跟 IPA 會自動附上去.
 `Python-build.yml` 也會把伺服器執行檔放進同一個 `nightly` release.
 
+這個 fork (`nka551774-hue/aniGamerPlus`) 自己發 nightly: 未簽名 IPA 在
+`releases/download/nightly/aniGamerPlus-nightly-unsigned.ipa`, App 內更新
+(`lib/src/state/updater.dart` 的 `kUpdateRepo`) 也指回這一份, 免得一直提示
+要裝回上游那一版.
+
 ### App 內更新
 
 APK / IPA 提供 App 內更新。AAB 建置時傳入 `--dart-define=APP_UPDATER=false`，
