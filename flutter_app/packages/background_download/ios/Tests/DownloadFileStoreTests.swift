@@ -4,12 +4,13 @@ import Darwin
 // Run with the production helper using swiftc (no Flutter engine or device required).
 private final class DeniedMoveManager: FileManager {
   let source: URL
-  let denyCopy: Bool
+  /// 複製那一步要丟出來的錯誤; nil = 複製成功.
+  let copyError: NSError?
   var copies = 0
 
-  init(source: URL, denyCopy: Bool = false) {
+  init(source: URL, copyError: NSError? = nil) {
     self.source = source
-    self.denyCopy = denyCopy
+    self.copyError = copyError
     super.init()
   }
 
@@ -22,10 +23,10 @@ private final class DeniedMoveManager: FileManager {
 
   override func copyItem(at srcURL: URL, to dstURL: URL) throws {
     copies += 1
-    if denyCopy {
+    if let copyError {
       // A failed copy may have created a partial destination.
       try Data([0]).write(to: dstURL)
-      throw NSError(domain: NSCocoaErrorDomain, code: NSFileWriteOutOfSpaceError)
+      throw copyError
     }
     try super.copyItem(at: srcURL, to: dstURL)
   }
@@ -63,7 +64,8 @@ enum DownloadFileStoreTests {
     precondition(manager.fileExists(atPath: source.path)) // URLSession owns cleanup.
 
     // Neither the existing target nor partial data is published after a failed copy.
-    let deniedCopy = DeniedMoveManager(source: source, denyCopy: true)
+    let outOfSpace = NSError(domain: NSCocoaErrorDomain, code: NSFileWriteOutOfSpaceError)
+    let deniedCopy = DeniedMoveManager(source: source, copyError: outOfSpace)
     do {
       try DownloadFileStore.save(source, to: target, manager: deniedCopy)
       preconditionFailure("Expected a copy failure")
@@ -71,6 +73,8 @@ enum DownloadFileStoreTests {
       let description = downloadErrorDescription(error)
       precondition(description.contains("NSCocoaErrorDomain \(NSFileWriteNoPermissionError)"))
       precondition(description.contains("NSCocoaErrorDomain \(NSFileWriteOutOfSpaceError)"))
+      // 磁碟滿不是 sandbox 問題: 不能因此改成前景下載, 更不該寫下永久標記.
+      precondition(!DownloadFileStore.isHandoverDenied(error))
     }
     let preserved = try Data(contentsOf: target)
     precondition(preserved == original)
@@ -112,6 +116,16 @@ enum DownloadFileStoreTests {
       NSError(domain: NSCocoaErrorDomain, code: NSFileWriteOutOfSpaceError)))
     precondition(!DownloadFileStore.isHandoverDenied(
       NSError(domain: NSPOSIXErrorDomain, code: Int(ENOSPC))))
+    // 搬移被擋、複製也讀不到 → 真的是 sandbox 問題, 要認得出來.
+    try original.write(to: source)
+    let unreadableCopy = DeniedMoveManager(source: source,
+      copyError: NSError(domain: NSCocoaErrorDomain, code: NSFileReadNoPermissionError))
+    do {
+      try DownloadFileStore.save(source, to: target, manager: unreadableCopy)
+      preconditionFailure("Expected a copy failure")
+    } catch {
+      precondition(DownloadFileStore.isHandoverDenied(error))
+    }
     print("DownloadFileStore tests passed")
   }
 }
