@@ -114,8 +114,8 @@ public final class BackgroundDownloadSession: NSObject {
 
     allTasks { tasks in
       self.state.async {
-        let busy = tasks.contains { task in
-          TransferMeta(task: task)?.sn == sn && (task.state == .running || task.state == .suspended)
+        let busy = tasks.contains { ref in
+          TransferMeta(task: ref.task)?.sn == sn && (ref.task.state == .running || ref.task.state == .suspended)
         }
         if busy {
           DispatchQueue.main.async { done(nil) }
@@ -150,18 +150,19 @@ public final class BackgroundDownloadSession: NSObject {
 
   /// 叫停並留下續傳資料. 真的有停到東西才回 true.
   func cancel(sn: String, done: @escaping (Bool) -> Void) {
-    allTasks { tasks in
-      let matching = tasks.filter { task in
-        TransferMeta(task: task)?.sn == sn && (task.state == .running || task.state == .suspended)
+    allTasks { refs in
+      let matching = refs.filter { ref in
+        TransferMeta(task: ref.task)?.sn == sn && (ref.task.state == .running || ref.task.state == .suspended)
       }
       if matching.isEmpty {
         DispatchQueue.main.async { done(false) }
         return
       }
       let group = DispatchGroup()
-      for task in matching {
+      for ref in matching {
+        let task = ref.task
         // 前景的沒有系統續傳資料可言, 直接停; 背景的留續傳資料給下一次.
-        guard task.session === self.session,
+        guard ref.isBackground,
               let download = task as? URLSessionDownloadTask,
               let meta = TransferMeta(task: task) else {
           task.cancel()
@@ -186,34 +187,45 @@ public final class BackgroundDownloadSession: NSObject {
 
   /// 兩個 session 的任務都要看: 背景的在系統手上, 前景的是重抓.
   /// taskIdentifier 只在各自的 session 內唯一, 兩個 session 可能撞號.
-  private func taskKey(_ task: URLSessionTask) -> String {
-    "\((task.session === session ? "b" : "f"))-\(task.taskIdentifier)"
+  private struct TaskRef {
+    let task: URLSessionTask
+    let key: String
+    let isBackground: Bool
   }
 
-  private func allTasks(_ done: @escaping ([URLSessionTask]) -> Void) {
+  /// URLSessionTask 沒有公開的 session 屬性, 所以身分由呼叫端告訴我們:
+  /// 從哪個 session 拿到這個任務, 就是那一個 session 的 key.
+  private func taskKey(_ task: URLSessionTask, in session: URLSession) -> String {
+    (session === self.session ? "b" : "f") + "-\(task.taskIdentifier)"
+  }
+
+  private func allTasks(_ done: @escaping ([TaskRef]) -> Void) {
     let group = DispatchGroup()
-    var tasks: [URLSessionTask] = []
-    for target in [session!, foregroundSession!] {
+    var refs: [TaskRef] = []
+    let sessions: [(URLSession, Bool)] = [(session, true), (foregroundSession, false)]
+    for (target, isBackground) in sessions {
       group.enter()
       target.getAllTasks { result in
-        tasks.append(contentsOf: result)
+        refs.append(contentsOf: result.map { task in
+          TaskRef(task: task, key: self.taskKey(task, in: target), isBackground: isBackground)
+        })
         group.leave()
       }
     }
-    group.notify(queue: state) { done(tasks) }
+    group.notify(queue: state) { done(refs) }
   }
 
   func snapshot(_ done: @escaping ([String: Any]) -> Void) {
-    allTasks { tasks in
+    allTasks { refs in
       self.state.async {
         var running: [[String: Any]] = []
-        for task in tasks where task.state == .running || task.state == .suspended {
-          guard let meta = TransferMeta(task: task) else { continue }
-          let expected = task.countOfBytesExpectedToReceive
+        for ref in refs where ref.task.state == .running || ref.task.state == .suspended {
+          guard let meta = TransferMeta(task: ref.task) else { continue }
+          let expected = ref.task.countOfBytesExpectedToReceive
           running.append([
             "sn": meta.sn,
             "name": meta.name,
-            "received": meta.offset + task.countOfBytesReceived,
+            "received": meta.offset + ref.task.countOfBytesReceived,
             "total": expected > 0 ? meta.offset + expected : 0,
           ])
         }
@@ -246,7 +258,9 @@ public final class BackgroundDownloadSession: NSObject {
   }
 
   /// 在 didFinishDownloadingTo 裡同步做完: 回傳之後系統就把暫存檔刪了.
-  private func finish(_ meta: TransferMeta, task: URLSessionDownloadTask, location: URL) -> Outcome {
+  private func finish(
+    _ meta: TransferMeta, task: URLSessionDownloadTask, owner: URLSession, location: URL
+  ) -> Outcome {
     let manager = FileManager.default
     let dir = meta.directory
     let part = dir.appendingPathComponent(meta.name + ".part")
@@ -293,7 +307,7 @@ public final class BackgroundDownloadSession: NSObject {
     } catch {
       // sideload 重簽的 App 拿不到系統暫存檔的 sandbox extension, 檔案永遠
       // 搬不進 App 內. 改用前景 session 重抓一次, 之後直接走前景.
-      if DownloadFileStore.isHandoverDenied(error), retryInForeground(meta, task: task) {
+      if DownloadFileStore.isHandoverDenied(error), retryInForeground(meta, task: task, owner: owner) {
         return .retrying
       }
       return .failed("\(operation)失敗（HTTP \(status)）：\n\(downloadErrorDescription(error))")
@@ -302,15 +316,17 @@ public final class BackgroundDownloadSession: NSObject {
 
   /// 同一支 URL 再抓一次, 這次是行程內下載, 暫存檔在 App 自己的 tmp,
   /// 不經 nsurlsessiond, 不受重簽的 sandbox 問題影響.
-  private func retryInForeground(_ meta: TransferMeta, task: URLSessionDownloadTask) -> Bool {
-    guard !retriedTasks.contains(taskKey(task)),
+  private func retryInForeground(
+    _ meta: TransferMeta, task: URLSessionDownloadTask, owner: URLSession
+  ) -> Bool {
+    guard !retriedTasks.contains(taskKey(task, in: owner)),
           let original = task.originalRequest ?? task.currentRequest, original.url != nil
     else { return false }
     var request = original
     request.allowsCellularAccess = meta.allowCellular
     let retry = foregroundSession.downloadTask(with: request)
     retry.taskDescription = meta.encoded
-    retriedTasks.insert(taskKey(retry))
+    retriedTasks.insert(taskKey(retry, in: self.foregroundSession))
     rememberForegroundOnly()
     retry.resume()
     return true
@@ -424,7 +440,7 @@ extension BackgroundDownloadSession: URLSessionDownloadDelegate {
     totalBytesExpectedToWrite: Int64
   ) {
     let now = Date().timeIntervalSince1970
-    let key = taskKey(downloadTask)
+    let key = taskKey(downloadTask, in: session)
     if let last = lastProgress[key], now - last < 0.5 { return }
     lastProgress[key] = now
     guard let meta = TransferMeta(task: downloadTask) else { return }
@@ -444,15 +460,17 @@ extension BackgroundDownloadSession: URLSessionDownloadDelegate {
     didFinishDownloadingTo location: URL
   ) {
     guard let meta = TransferMeta(task: downloadTask) else { return }
-    outcomes[taskKey(downloadTask)] = finish(meta, task: downloadTask, location: location)
+    outcomes[taskKey(downloadTask, in: session)] = finish(
+      meta, task: downloadTask, owner: session, location: location)
   }
 
   public func urlSession(
     _ session: URLSession, task: URLSessionTask, didCompleteWithError error: Error?
   ) {
-    lastProgress[taskKey(task)] = nil
-    let outcome = outcomes.removeValue(forKey: taskKey(task))
-    retriedTasks.remove(taskKey(task))
+    let key = taskKey(task, in: session)
+    lastProgress[key] = nil
+    let outcome = outcomes.removeValue(forKey: key)
+    retriedTasks.remove(key)
     guard let meta = TransferMeta(task: task) else { return }
 
     var result: [String: Any] = ["sn": meta.sn, "name": meta.name]
@@ -495,10 +513,10 @@ extension BackgroundDownloadSession: URLSessionDownloadDelegate {
 
     let payload = result
     let label = meta.label
-    let finished = taskKey(task)
-    allTasks { tasks in
-      let remaining = tasks.filter { other in
-        self.taskKey(other) != finished && (other.state == .running || other.state == .suspended)
+    let finished = key
+    allTasks { refs in
+      let remaining = refs.filter { ref in
+        ref.key != finished && (ref.task.state == .running || ref.task.state == .suspended)
       }.count
       DispatchQueue.main.async {
         if let listener = self.listener {
