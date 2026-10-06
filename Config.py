@@ -1033,15 +1033,25 @@ def invalid_cookie():
         else:
             __color_print(0, 'cookie狀態', '已成功標記失效cookie', no_sn=True, display=False)
     if settings["auto_login"]["enabled"]:
-        __color_print(0, 'cookie狀態', '已開啟自動登入，嘗試透過瀏覽器登入...', no_sn=True, display=True)
-        loginer_return = Loginer.do_all(settings["auto_login"]["username"], settings["auto_login"]["password"], settings["auto_login"]["headless"], settings["auto_login"]["save_browser_cookie"])
-        if loginer_return:
-            open('cookie.txt', 'w').write(loginer_return)
-            __color_print(0, 'cookie狀態', '登入成功！已更新cookie。', no_sn=True, display=True)
-            return True
-        else:
-            __color_print(0, 'cookie狀態', '使用瀏覽器登入失敗！', no_sn=True, display=True)
+        return auto_login(settings)
     return False
+
+
+def auto_login(settings):
+    # 透過瀏覽器登入換一份新 cookie, 有沒有開自動登入由呼叫端判斷
+    global cookie
+    __color_print(0, 'cookie狀態', '已開啟自動登入，嘗試透過瀏覽器登入...', no_sn=True, display=True)
+    loginer_return = Loginer.do_all(settings["auto_login"]["username"], settings["auto_login"]["password"], settings["auto_login"]["headless"], settings["auto_login"]["save_browser_cookie"])
+    if not loginer_return:
+        __color_print(0, 'cookie狀態', '使用瀏覽器登入失敗！', no_sn=True, display=True)
+        return False
+    # 要寫到 cookie_path, 不是「目前工作目錄」下的 cookie.txt: 不是在程式資料夾啟動的話,
+    # read_cookie() 永遠讀不到新 cookie, 只會再標記失效、再開一次瀏覽器登入
+    with open(cookie_path, 'w', encoding='utf-8') as f:
+        f.write(loginer_return)
+    cookie = None  # 記憶體裡那份是登入前的, 下一次 read_cookie() 要讀新的
+    __color_print(0, 'cookie狀態', '登入成功！已更新cookie。', no_sn=True, display=True)
+    return True
 
 
 def time_stamp_to_time(timestamp):
