@@ -1,4 +1,5 @@
 import Foundation
+import Darwin
 
 // Run with the production helper using swiftc (no Flutter engine or device required).
 private final class DeniedMoveManager: FileManager {
@@ -98,6 +99,19 @@ enum DownloadFileStoreTests {
     precondition(description.contains("NSCocoaErrorDomain \(NSFileWriteNoPermissionError)"))
     precondition(description.contains("NSPOSIXErrorDomain 13"))
     precondition(!description.contains("do-not-display"))
+
+    // sideload 重簽的 App 拿不到系統暫存檔的 sandbox extension; 這種錯誤要
+    // 認得出來 (NSCocoaErrorDomain 513 或 NSPOSIXErrorDomain 1), 才能改用
+    // 前景 session 重抓.
+    let handover = NSError(domain: NSCocoaErrorDomain, code: NSFileWriteNoPermissionError,
+      userInfo: [NSUnderlyingErrorKey: NSError(domain: NSPOSIXErrorDomain, code: EPERM)])
+    precondition(DownloadFileStore.isHandoverDenied(handover))
+    precondition(DownloadFileStore.isHandoverDenied(
+      NSError(domain: NSCocoaErrorDomain, code: NSFileWriteNoPermissionError)))
+    precondition(!DownloadFileStore.isHandoverDenied(
+      NSError(domain: NSCocoaErrorDomain, code: NSFileWriteOutOfSpaceError)))
+    precondition(!DownloadFileStore.isHandoverDenied(
+      NSError(domain: NSPOSIXErrorDomain, code: ENOSPC)))
     print("DownloadFileStore tests passed")
   }
 }

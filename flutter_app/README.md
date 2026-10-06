@@ -77,6 +77,10 @@ Android TV 使用手機登入：先在手機連上電視遙控器，再到 Disco
 * 勾了「一起抓彈幕」的話同時抓一份 `.ass`, 離線播放才有彈幕.
 * 下載完的集數, 首頁跟播放頁會自動改讀本機檔 —— 連不到伺服器時照樣點得開.
 * 檔案放在 App 自己的沙盒裡 (`path_provider` 的 documents), 移除 App 就一起消失.
+* iOS 把整支檔案交給系統的背景 URLSession (`NativeTransfer`), 抓完才叫醒 App 收尾.
+  若這個安裝收不到系統交付的暫存檔 (sideload 用共用/萬用憑證重簽時拿不到
+  sandbox extension, 會出現 NSCocoaErrorDomain 513), 會自動改用前景 session
+  重抓一次, 並記住之後都走前景, 不會再跳錯誤.
 
 ### 匯出影片檔
 

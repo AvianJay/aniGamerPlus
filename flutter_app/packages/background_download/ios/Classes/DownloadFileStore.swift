@@ -1,4 +1,5 @@
 import Foundation
+import Darwin
 
 /// URLSession 的暫存檔必須在 delegate 回傳前保存到 App 內。
 enum DownloadFileStore {
@@ -26,6 +27,27 @@ enum DownloadFileStore {
       }
     }
     try promote(staging, to: target, manager: manager)
+  }
+
+  /// 這個錯誤是不是「系統交付的暫存檔碰不到」: 重簽過的 App (共用/萬用憑證
+  /// 的 sideload) 拿不到 nsurlsessiond 那顆檔案的 sandbox extension, 搬不出
+  /// 來也讀不到, 典型是 NSCocoaErrorDomain 513 加上 NSPOSIXErrorDomain 1.
+  static func isHandoverDenied(_ error: Error) -> Bool {
+    if error is SaveError { return true }
+    var current = error as NSError
+    for _ in 0..<5 {
+      if current.domain == NSCocoaErrorDomain,
+         current.code == NSFileWriteNoPermissionError || current.code == NSFileReadNoPermissionError {
+        return true
+      }
+      if current.domain == NSPOSIXErrorDomain,
+         current.code == EPERM || current.code == EACCES {
+        return true
+      }
+      guard let next = current.userInfo[NSUnderlyingErrorKey] as? NSError else { return false }
+      current = next
+    }
+    return false
   }
 
   /// 完整檔案才會進到這裡；替換失敗不能先刪掉舊影片。

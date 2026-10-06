@@ -28,11 +28,19 @@ public final class BackgroundDownloadSession: NSObject {
   /// 所有狀態都在這條佇列上動, URLSession 的 delegate 也跑在這上面
   private let state = DispatchQueue(label: "tw.avianjay.background_download")
   private var session: URLSession!
+  /// 前景 session: 系統交付的暫存檔碰不到時 (sideload 重簽拿不到 sandbox
+  /// extension) 改用它重抓. 前景下載在行程內做, 暫存檔在 App 自己的 tmp.
+  private var foregroundSession: URLSession!
+  /// 已經確定這個安裝的背景交付不能用, 之後的下載直接走前景
+  private var foregroundOnly = false
+  /// 前景重抓的 task, 不讓它再觸發一次重抓
+  private var retriedTasks: Set<String> = []
   private var eventsCompletion: (() -> Void)?
   private var eventsFinished = false
-  /// didFinishDownloadingTo 的結果, 留給接著來的 didCompleteWithError 一起送
-  private var outcomes: [Int: Outcome] = [:]
-  private var lastProgress: [Int: TimeInterval] = [:]
+  /// didFinishDownloadingTo 的結果, 留給接著來的 didCompleteWithError 一起送.
+  /// taskIdentifier 只在各自的 session 內唯一, 所以 key 帶上 session.
+  private var outcomes: [String: Outcome] = [:]
+  private var lastProgress: [String: TimeInterval] = [:]
 
   private lazy var storage: URL = {
     let base = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
@@ -52,6 +60,18 @@ public final class BackgroundDownloadSession: NSObject {
     queue.maxConcurrentOperationCount = 1
     queue.underlyingQueue = state
     session = URLSession(configuration: config, delegate: self, delegateQueue: queue)
+
+    let foregroundConfig = URLSessionConfiguration.default
+    foregroundConfig.urlCache = nil
+    foregroundConfig.requestCachePolicy = .reloadIgnoringLocalCacheData
+    let foregroundQueue = OperationQueue()
+    foregroundQueue.maxConcurrentOperationCount = 1
+    foregroundQueue.underlyingQueue = state
+    foregroundSession = URLSession(
+      configuration: foregroundConfig, delegate: self, delegateQueue: foregroundQueue)
+
+    foregroundOnly = FileManager.default.fileExists(
+      atPath: storage.appendingPathComponent("foreground-only").path)
   }
 
   /// App 一啟動就叫: 背景 session 要早點接回來, 上一輪沒送到的事件才收得到.
@@ -92,7 +112,7 @@ public final class BackgroundDownloadSession: NSObject {
       sn: sn, dir: Self.homeRelative(directory), name: name, offset: offset,
       label: args["label"] as? String ?? sn, allowCellular: allowCellular)
 
-    session.getAllTasks { tasks in
+    allTasks { tasks in
       self.state.async {
         let busy = tasks.contains { task in
           TransferMeta(task: task)?.sn == sn && (task.state == .running || task.state == .suspended)
@@ -104,7 +124,8 @@ public final class BackgroundDownloadSession: NSObject {
         let task: URLSessionDownloadTask
         // 續傳資料裡夾著當初那一個請求 (含 allowsCellularAccess). 起點或行動網路
         // 設定不一樣了就不能用, 從 .part 的尾巴重新要.
-        if let saved = self.loadResume(name: name),
+        if !self.foregroundOnly,
+           let saved = self.loadResume(name: name),
            saved.meta.offset == offset, saved.meta.allowCellular == allowCellular {
           task = self.session.downloadTask(withResumeData: saved.data)
         } else {
@@ -116,7 +137,8 @@ public final class BackgroundDownloadSession: NSObject {
             request.setValue("bytes=\(offset)-", forHTTPHeaderField: "Range")
           }
           request.allowsCellularAccess = allowCellular
-          task = self.session.downloadTask(with: request)
+          let target = self.foregroundOnly ? self.foregroundSession! : self.session!
+          task = target.downloadTask(with: request)
         }
         self.dropResume(name: name)
         task.taskDescription = meta.encoded
@@ -128,7 +150,7 @@ public final class BackgroundDownloadSession: NSObject {
 
   /// 叫停並留下續傳資料. 真的有停到東西才回 true.
   func cancel(sn: String, done: @escaping (Bool) -> Void) {
-    session.getAllTasks { tasks in
+    allTasks { tasks in
       let matching = tasks.filter { task in
         TransferMeta(task: task)?.sn == sn && (task.state == .running || task.state == .suspended)
       }
@@ -138,7 +160,10 @@ public final class BackgroundDownloadSession: NSObject {
       }
       let group = DispatchGroup()
       for task in matching {
-        guard let download = task as? URLSessionDownloadTask, let meta = TransferMeta(task: task) else {
+        // 前景的沒有系統續傳資料可言, 直接停; 背景的留續傳資料給下一次.
+        guard task.session === self.session,
+              let download = task as? URLSessionDownloadTask,
+              let meta = TransferMeta(task: task) else {
           task.cancel()
           continue
         }
@@ -159,8 +184,27 @@ public final class BackgroundDownloadSession: NSObject {
     state.async { self.dropResume(name: name) }
   }
 
+  /// 兩個 session 的任務都要看: 背景的在系統手上, 前景的是重抓.
+  /// taskIdentifier 只在各自的 session 內唯一, 兩個 session 可能撞號.
+  private func taskKey(_ task: URLSessionTask) -> String {
+    "\((task.session === session ? "b" : "f"))-\(task.taskIdentifier)"
+  }
+
+  private func allTasks(_ done: @escaping ([URLSessionTask]) -> Void) {
+    let group = DispatchGroup()
+    var tasks: [URLSessionTask] = []
+    for target in [session!, foregroundSession!] {
+      group.enter()
+      target.getAllTasks { result in
+        tasks.append(contentsOf: result)
+        group.leave()
+      }
+    }
+    group.notify(queue: state) { done(tasks) }
+  }
+
   func snapshot(_ done: @escaping ([String: Any]) -> Void) {
-    session.getAllTasks { tasks in
+    allTasks { tasks in
       self.state.async {
         var running: [[String: Any]] = []
         for task in tasks where task.state == .running || task.state == .suspended {
@@ -192,6 +236,8 @@ public final class BackgroundDownloadSession: NSObject {
     case done(Int64)
     case notFound
     case failed(String)
+    /// 系統交付的檔案碰不到, 已經改用前景 session 重抓
+    case retrying
   }
 
   private struct TransferError: LocalizedError {
@@ -200,11 +246,12 @@ public final class BackgroundDownloadSession: NSObject {
   }
 
   /// 在 didFinishDownloadingTo 裡同步做完: 回傳之後系統就把暫存檔刪了.
-  private func finish(_ meta: TransferMeta, response: HTTPURLResponse?, location: URL) -> Outcome {
+  private func finish(_ meta: TransferMeta, task: URLSessionDownloadTask, location: URL) -> Outcome {
     let manager = FileManager.default
     let dir = meta.directory
     let part = dir.appendingPathComponent(meta.name + ".part")
     let target = dir.appendingPathComponent(meta.name)
+    let response = task.response as? HTTPURLResponse
     let status = response?.statusCode ?? 0
     var operation = "建立下載目錄"
     do {
@@ -244,8 +291,37 @@ public final class BackgroundDownloadSession: NSObject {
       dropResume(name: meta.name)
       return .done(Self.size(of: target) ?? 0)
     } catch {
+      // sideload 重簽的 App 拿不到系統暫存檔的 sandbox extension, 檔案永遠
+      // 搬不進 App 內. 改用前景 session 重抓一次, 之後直接走前景.
+      if DownloadFileStore.isHandoverDenied(error), retryInForeground(meta, task: task) {
+        return .retrying
+      }
       return .failed("\(operation)失敗（HTTP \(status)）：\n\(downloadErrorDescription(error))")
     }
+  }
+
+  /// 同一支 URL 再抓一次, 這次是行程內下載, 暫存檔在 App 自己的 tmp,
+  /// 不經 nsurlsessiond, 不受重簽的 sandbox 問題影響.
+  private func retryInForeground(_ meta: TransferMeta, task: URLSessionDownloadTask) -> Bool {
+    guard !retriedTasks.contains(taskKey(task)),
+          let original = task.originalRequest ?? task.currentRequest, original.url != nil
+    else { return false }
+    var request = original
+    request.allowsCellularAccess = meta.allowCellular
+    let retry = foregroundSession.downloadTask(with: request)
+    retry.taskDescription = meta.encoded
+    retriedTasks.insert(taskKey(retry))
+    rememberForegroundOnly()
+    retry.resume()
+    return true
+  }
+
+  /// 記住這個安裝的背景交付不能用; 之後的下載直接走前景, 不用先白抓一次.
+  private func rememberForegroundOnly() {
+    guard !foregroundOnly else { return }
+    foregroundOnly = true
+    let marker = storage.appendingPathComponent("foreground-only")
+    try? Data().write(to: marker, options: .atomic)
   }
 
   private static func finishEvents(_ handler: @escaping () -> Void) {
@@ -348,8 +424,9 @@ extension BackgroundDownloadSession: URLSessionDownloadDelegate {
     totalBytesExpectedToWrite: Int64
   ) {
     let now = Date().timeIntervalSince1970
-    if let last = lastProgress[downloadTask.taskIdentifier], now - last < 0.5 { return }
-    lastProgress[downloadTask.taskIdentifier] = now
+    let key = taskKey(downloadTask)
+    if let last = lastProgress[key], now - last < 0.5 { return }
+    lastProgress[key] = now
     guard let meta = TransferMeta(task: downloadTask) else { return }
     // 伺服器不吃 Range 的話回的是整支 (200), 起點就不是 offset 了
     let partial = (downloadTask.response as? HTTPURLResponse)?.statusCode == 206
@@ -367,19 +444,22 @@ extension BackgroundDownloadSession: URLSessionDownloadDelegate {
     didFinishDownloadingTo location: URL
   ) {
     guard let meta = TransferMeta(task: downloadTask) else { return }
-    outcomes[downloadTask.taskIdentifier] = finish(
-      meta, response: downloadTask.response as? HTTPURLResponse, location: location)
+    outcomes[taskKey(downloadTask)] = finish(meta, task: downloadTask, location: location)
   }
 
   public func urlSession(
     _ session: URLSession, task: URLSessionTask, didCompleteWithError error: Error?
   ) {
-    lastProgress[task.taskIdentifier] = nil
-    let outcome = outcomes.removeValue(forKey: task.taskIdentifier)
+    lastProgress[taskKey(task)] = nil
+    let outcome = outcomes.removeValue(forKey: taskKey(task))
+    retriedTasks.remove(taskKey(task))
     guard let meta = TransferMeta(task: task) else { return }
 
     var result: [String: Any] = ["sn": meta.sn, "name": meta.name]
     switch outcome {
+    case .retrying?:
+      // 前景重抓接手了, 這一輪不報結果
+      return
     case .done(let size)?:
       result["status"] = "done"
       result["received"] = size
@@ -415,10 +495,10 @@ extension BackgroundDownloadSession: URLSessionDownloadDelegate {
 
     let payload = result
     let label = meta.label
-    let finished = task.taskIdentifier
-    session.getAllTasks { tasks in
+    let finished = taskKey(task)
+    allTasks { tasks in
       let remaining = tasks.filter { other in
-        other.taskIdentifier != finished && (other.state == .running || other.state == .suspended)
+        self.taskKey(other) != finished && (other.state == .running || other.state == .suspended)
       }.count
       DispatchQueue.main.async {
         if let listener = self.listener {
