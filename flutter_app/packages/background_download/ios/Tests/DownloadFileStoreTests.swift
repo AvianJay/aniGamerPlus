@@ -126,6 +126,25 @@ enum DownloadFileStoreTests {
     } catch {
       precondition(DownloadFileStore.isHandoverDenied(error))
     }
+    // 升級相容: 舊版的 resume-<name>.json 根層級就是 TransferMeta, 沒有
+    // foreground 那一層; 要讀得回來, 而且當成背景 session (舊版只有背景).
+    let legacyJSON = """
+    {"sn":"10615","dir":"Documents/downloads/10615","name":"10615-1080p.mp4",
+     "offset":3145728,"label":"死亡筆記本 37","allowCellular":true}
+    """
+    let legacy = ResumeStore.decode(Data(legacyJSON.utf8))
+    precondition(legacy?.meta.sn == "10615")
+    precondition(legacy?.meta.offset == 3145728 && legacy?.meta.allowCellular == true)
+    precondition(legacy?.foreground == false)
+    precondition(legacy?.meta.directory.lastPathComponent == "10615")
+
+    // 新格式要讀得回來, 而且記得自己是哪一個 session 產生的.
+    let current = ResumeStore.encode(legacy!.meta, foreground: true)
+    let reread = ResumeStore.decode(current!)
+    precondition(reread?.foreground == true && reread?.meta.name == "10615-1080p.mp4")
+
+    // 壞掉的續傳檔就當沒有.
+    precondition(ResumeStore.decode(Data("not json".utf8)) == nil)
     print("DownloadFileStore tests passed")
   }
 }

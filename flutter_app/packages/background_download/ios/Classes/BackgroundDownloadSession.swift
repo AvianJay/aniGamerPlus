@@ -372,9 +372,7 @@ public final class BackgroundDownloadSession: NSObject {
 
   private func saveResume(_ meta: TransferMeta, _ data: Data, foreground: Bool) {
     let files = resumeFiles(name: meta.name)
-    guard let encoded = try? JSONEncoder().encode(
-      SavedResume(meta: meta, foreground: foreground))
-    else { return }
+    guard let encoded = ResumeStore.encode(meta, foreground: foreground) else { return }
     try? data.write(to: files.data, options: .atomic)
     try? encoded.write(to: files.meta, options: .atomic)
   }
@@ -383,7 +381,7 @@ public final class BackgroundDownloadSession: NSObject {
     let files = resumeFiles(name: name)
     guard let data = try? Data(contentsOf: files.data),
           let raw = try? Data(contentsOf: files.meta),
-          let saved = try? JSONDecoder().decode(SavedResume.self, from: raw)
+          let saved = ResumeStore.decode(raw)
     else {
       return nil
     }
@@ -543,45 +541,5 @@ extension BackgroundDownloadSession: URLSessionDownloadDelegate {
     }
     eventsCompletion = nil
     Self.finishEvents(handler)
-  }
-}
-
-/// 續傳資料連同它是哪一個 session 產生的 —— 背景與前景的續傳資料不能互換.
-struct SavedResume: Codable {
-  var meta: TransferMeta
-  var foreground: Bool
-}
-
-/// 跟著每個工作走的資料, 放在 taskDescription 裡 —— App 被收掉重開之後
-/// URLSession 還給我們的工作只剩這個可以認.
-struct TransferMeta: Codable {
-  var sn: String
-  /// 相對於 NSHomeDirectory() 的下載目錄
-  var dir: String
-  var name: String
-  var offset: Int64
-  var label: String
-  var allowCellular: Bool
-}
-
-extension TransferMeta {
-  init?(task: URLSessionTask) {
-    guard let text = task.taskDescription, let data = text.data(using: .utf8),
-          let meta = try? JSONDecoder().decode(TransferMeta.self, from: data)
-    else {
-      return nil
-    }
-    self = meta
-  }
-
-  var encoded: String {
-    guard let data = try? JSONEncoder().encode(self) else { return "" }
-    return String(data: data, encoding: .utf8) ?? ""
-  }
-
-  var directory: URL {
-    if dir.hasPrefix("/") { return URL(fileURLWithPath: dir, isDirectory: true) }
-    return URL(fileURLWithPath: NSHomeDirectory(), isDirectory: true)
-      .appendingPathComponent(dir, isDirectory: true)
   }
 }

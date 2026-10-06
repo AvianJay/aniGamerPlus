@@ -195,6 +195,7 @@ jobs:
           set -euo pipefail
           xcrun swiftc -swift-version 5 \
             packages/background_download/ios/Classes/DownloadFileStore.swift \
+            packages/background_download/ios/Classes/ResumeStore.swift \
             packages/background_download/ios/Tests/DownloadFileStoreTests.swift \
             -o "${RUNNER_TEMP}/download-file-store-tests"
           "${RUNNER_TEMP}/download-file-store-tests"
