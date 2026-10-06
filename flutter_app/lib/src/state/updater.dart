@@ -24,10 +24,13 @@ import 'package:package_info_plus/package_info_plus.dart';
 import 'package:path_provider/path_provider.dart';
 import 'package:url_launcher/url_launcher.dart';
 
-/// 這個 fork 自己發 nightly，所以更新也看自己這一份: 上游的 build number
-/// 永遠比 fork 大，指過去只會一直跳「有新版本」, 裝回上游又會把 iOS
-/// sideload 的下載修正蓋掉.
-const String kUpdateRepo = 'nka551774-hue/aniGamerPlus';
+/// 更新來源預設是上游; 自己的 fork 想追自己的 releases, 就在建置時蓋掉:
+/// `--dart-define=UPDATE_REPO=<owner>/<repo>` —— CI 會把 repository
+/// variable `UPDATE_REPO` 傳進來, 沒設就照預設走.
+const String kUpdateRepo = String.fromEnvironment(
+  'UPDATE_REPO',
+  defaultValue: 'AvianJay/aniGamerPlus',
+);
 const String kNightlyTag = 'nightly';
 const String kNightlyManifest = 'flutter-nightly.json';
 

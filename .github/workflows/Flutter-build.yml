@@ -118,7 +118,16 @@ jobs:
           KEYSTORE_PATH: ${{ github.workspace }}/flutter_app/android/app/release-keystore.jks
           KEYSTORE_ALIAS: ${{ secrets.KEYSTORE_ALIAS }}
           KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
-        run: flutter build apk --release --build-number "${GITHUB_RUN_NUMBER}"
+          # 自己的 fork 想追自己的 releases, 就設 repository variable
+          # UPDATE_REPO=owner/repo; 沒設就跟著上游.
+          UPDATE_REPO: ${{ vars.UPDATE_REPO }}
+        run: |
+          set -euo pipefail
+          DEFINE=""
+          if [[ -n "${UPDATE_REPO}" ]]; then
+            DEFINE="--dart-define=UPDATE_REPO=${UPDATE_REPO}"
+          fi
+          flutter build apk --release --build-number "${GITHUB_RUN_NUMBER}" ${DEFINE}
 
       - name: Build the app bundle
         env:
@@ -194,9 +203,16 @@ jobs:
         run: bash tool/prepare_platforms.sh
 
       - name: Build
+        env:
+          UPDATE_REPO: ${{ vars.UPDATE_REPO }}
         run: |
+          set -euo pipefail
+          DEFINE=""
+          if [[ -n "${UPDATE_REPO}" ]]; then
+            DEFINE="--dart-define=UPDATE_REPO=${UPDATE_REPO}"
+          fi
           flutter build ios --release --no-codesign \
-            --build-number "${GITHUB_RUN_NUMBER}"
+            --build-number "${GITHUB_RUN_NUMBER}" ${DEFINE}
 
       - name: Check the bundle
         run: |

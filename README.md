@@ -712,6 +712,7 @@ sideload 用共用／萬用憑證重簽的安裝, 下載會在收尾時失敗:
 這個 fork 自己建置的未簽名 IPA:
 <https://github.com/nka551774-hue/aniGamerPlus/releases/download/nightly/aniGamerPlus-nightly-unsigned.ipa>
 
-App 內更新的來源也指回這個 fork（`flutter_app/lib/src/state/updater.dart` 的
-`kUpdateRepo`）, 免得一直提示要裝回上游那一版. 詳見
+App 內更新的來源預設跟著上游; 這個 fork 是在 GitHub 的 repository variable
+`UPDATE_REPO` 設成 `nka551774-hue/aniGamerPlus`（建置時以
+`--dart-define=UPDATE_REPO=...` 傳入）, 免得一直提示要裝回上游那一版. 詳見
 <https://github.com/nka551774-hue/aniGamerPlus/issues/1>.

@@ -231,9 +231,9 @@ lib/
 `Python-build.yml` 也會把伺服器執行檔放進同一個 `nightly` release.
 
 這個 fork (`nka551774-hue/aniGamerPlus`) 自己發 nightly: 未簽名 IPA 在
-`releases/download/nightly/aniGamerPlus-nightly-unsigned.ipa`, App 內更新
-(`lib/src/state/updater.dart` 的 `kUpdateRepo`) 也指回這一份, 免得一直提示
-要裝回上游那一版.
+`releases/download/nightly/aniGamerPlus-nightly-unsigned.ipa`. App 內更新的
+來源預設跟著上游, 建置時可以用 `--dart-define=UPDATE_REPO=<owner>/<repo>`
+蓋掉 (CI 讀 repository variable `UPDATE_REPO`), 這個 fork 就是設成自己.
 
 ### App 內更新
 
@@ -244,6 +244,7 @@ APK / IPA 提供 App 內更新。AAB 建置時傳入 `--dart-define=APP_UPDATER=
 「我的 → 檢查更新」, 開 App 時也會自己看一次 (「App 偏好設定 → 更新」可關).
 
 * 通道: 正式版 (`releases/latest`) 或 Nightly (`releases/download/nightly/flutter-nightly.json`), 比的是 build number (= CI run number)
+* 來源: 預設 `AvianJay/aniGamerPlus`; 自己的 fork 可以 `--dart-define=UPDATE_REPO=<owner>/<repo>` 換成自己的 releases
 * Android: 下載 APK 後交給系統安裝器. 要跟手上那一版同一把金鑰簽才蓋得過去, debug 版裝不了 release 版的更新
 * iOS: 自動偵測 TrollStore / SideStore / AltStore / LCSign；LCSign 用 `loadcontroller://import?url=` 匯入 IPA，需在 LCSign 完成簽名與安裝；都沒有就用瀏覽器下載
 
