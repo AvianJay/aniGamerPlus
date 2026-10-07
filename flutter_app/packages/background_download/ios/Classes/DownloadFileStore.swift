@@ -1,4 +1,5 @@
 import Foundation
+import Darwin
 
 /// URLSession 的暫存檔必須在 delegate 回傳前保存到 App 內。
 enum DownloadFileStore {
@@ -21,11 +22,41 @@ enum DownloadFileStore {
       do {
         try manager.copyItem(at: source, to: staging)
       } catch {
-        throw SaveError(message:
-          "搬移暫存檔失敗：\n\(downloadErrorDescription(failure))\n\n複製暫存檔失敗：\n\(downloadErrorDescription(error))")
+        throw SaveError(
+          message: "搬移暫存檔失敗：\n\(downloadErrorDescription(failure))\n\n複製暫存檔失敗：\n\(downloadErrorDescription(error))",
+          cause: error as NSError)
       }
     }
     try promote(staging, to: target, manager: manager)
+  }
+
+  /// 這個錯誤是不是「系統交付的暫存檔碰不到」: 重簽過的 App (共用/萬用憑證
+  /// 的 sideload) 拿不到 nsurlsessiond 那顆檔案的 sandbox extension, 搬不出
+  /// 來也讀不到, 典型是 NSCocoaErrorDomain 513 加上 NSPOSIXErrorDomain 1.
+  static func isHandoverDenied(_ error: Error) -> Bool {
+    // 搬移被擋、複製也失敗時會包成 SaveError; 分類要看底下真正的原因, 不能
+    // 只要是 SaveError 就算 —— 複製失敗可能是磁碟滿 (ENOSPC), 那重抓一樣
+    // 會失敗, 還會把這個安裝永久切成前景下載.
+    if let save = error as? SaveError { return isPermissionFailure(save.cause) }
+    return isPermissionFailure(error)
+  }
+
+  /// 沿著底層原因鏈找「碰不到這個檔案」的權限錯誤.
+  private static func isPermissionFailure(_ error: Error) -> Bool {
+    var current = error as NSError
+    for _ in 0..<5 {
+      if current.domain == NSCocoaErrorDomain,
+         current.code == NSFileWriteNoPermissionError || current.code == NSFileReadNoPermissionError {
+        return true
+      }
+      if current.domain == NSPOSIXErrorDomain,
+         current.code == EPERM || current.code == EACCES {
+        return true
+      }
+      guard let next = current.userInfo[NSUnderlyingErrorKey] as? NSError else { return false }
+      current = next
+    }
+    return false
   }
 
   /// 完整檔案才會進到這裡；替換失敗不能先刪掉舊影片。
@@ -39,6 +70,8 @@ enum DownloadFileStore {
 
   private struct SaveError: LocalizedError {
     let message: String
+    /// 失敗的真正原因 (複製那一步), 分類要用.
+    let cause: NSError
     var errorDescription: String? { message }
   }
 }

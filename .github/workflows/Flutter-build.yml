@@ -103,12 +103,11 @@ jobs:
         run: |
           set -euo pipefail
           if [[ -z "${KEYSTORE_BASE64}" || -z "${KEYSTORE_ALIAS}" || -z "${KEYSTORE_PASSWORD}" ]]; then
-            if [[ "${GITHUB_EVENT_NAME}" == "pull_request" ]]; then
-              echo "Android signing secrets are unavailable; this pull request will use the debug key."
+              # No keystore here (a fork, or a pull request): fall back to the
+              # debug key, which is what prepare_platforms.sh already does when
+              # KEYSTORE_PATH is unset.
+              echo "Android signing secrets are unavailable; this build will use the debug key."
               exit 0
-            fi
-            echo "KEYSTORE_BASE64, KEYSTORE_ALIAS and KEYSTORE_PASSWORD are required." >&2
-            exit 1
           fi
           umask 077
           printf '%s' "${KEYSTORE_BASE64}" | base64 --decode > android/app/release-keystore.jks
@@ -119,7 +118,16 @@ jobs:
           KEYSTORE_PATH: ${{ github.workspace }}/flutter_app/android/app/release-keystore.jks
           KEYSTORE_ALIAS: ${{ secrets.KEYSTORE_ALIAS }}
           KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
-        run: flutter build apk --release --build-number "${GITHUB_RUN_NUMBER}"
+          # 自己的 fork 想追自己的 releases, 就設 repository variable
+          # UPDATE_REPO=owner/repo; 沒設就跟著上游.
+          UPDATE_REPO: ${{ vars.UPDATE_REPO }}
+        run: |
+          set -euo pipefail
+          DEFINE=""
+          if [[ -n "${UPDATE_REPO}" ]]; then
+            DEFINE="--dart-define=UPDATE_REPO=${UPDATE_REPO}"
+          fi
+          flutter build apk --release --build-number "${GITHUB_RUN_NUMBER}" ${DEFINE}
 
       - name: Build the app bundle
         env:
@@ -187,6 +195,7 @@ jobs:
           set -euo pipefail
           xcrun swiftc -swift-version 5 \
             packages/background_download/ios/Classes/DownloadFileStore.swift \
+            packages/background_download/ios/Classes/ResumeStore.swift \
             packages/background_download/ios/Tests/DownloadFileStoreTests.swift \
             -o "${RUNNER_TEMP}/download-file-store-tests"
           "${RUNNER_TEMP}/download-file-store-tests"
@@ -195,9 +204,16 @@ jobs:
         run: bash tool/prepare_platforms.sh
 
       - name: Build
+        env:
+          UPDATE_REPO: ${{ vars.UPDATE_REPO }}
         run: |
+          set -euo pipefail
+          DEFINE=""
+          if [[ -n "${UPDATE_REPO}" ]]; then
+            DEFINE="--dart-define=UPDATE_REPO=${UPDATE_REPO}"
+          fi
           flutter build ios --release --no-codesign \
-            --build-number "${GITHUB_RUN_NUMBER}"
+            --build-number "${GITHUB_RUN_NUMBER}" ${DEFINE}
 
       - name: Check the bundle
         run: |

@@ -77,6 +77,10 @@ Android TV 使用手機登入：先在手機連上電視遙控器，再到 Disco
 * 勾了「一起抓彈幕」的話同時抓一份 `.ass`, 離線播放才有彈幕.
 * 下載完的集數, 首頁跟播放頁會自動改讀本機檔 —— 連不到伺服器時照樣點得開.
 * 檔案放在 App 自己的沙盒裡 (`path_provider` 的 documents), 移除 App 就一起消失.
+* iOS 把整支檔案交給系統的背景 URLSession (`NativeTransfer`), 抓完才叫醒 App 收尾.
+  若這個安裝收不到系統交付的暫存檔 (sideload 用共用/萬用憑證重簽時拿不到
+  sandbox extension, 會出現 NSCocoaErrorDomain 513), 會自動改用前景 session
+  重抓一次, 並記住之後都走前景, 不會再跳錯誤.
 
 ### 匯出影片檔
 
@@ -226,6 +230,11 @@ lib/
 都會上傳成 artifact, 發 release 的時候 APK 跟 IPA 會自動附上去.
 `Python-build.yml` 也會把伺服器執行檔放進同一個 `nightly` release.
 
+這個 fork (`nka551774-hue/aniGamerPlus`) 自己發 nightly: 未簽名 IPA 在
+`releases/download/nightly/aniGamerPlus-nightly-unsigned.ipa`. App 內更新的
+來源預設跟著上游, 建置時可以用 `--dart-define=UPDATE_REPO=<owner>/<repo>`
+蓋掉 (CI 讀 repository variable `UPDATE_REPO`), 這個 fork 就是設成自己.
+
 ### App 內更新
 
 APK / IPA 提供 App 內更新。AAB 建置時傳入 `--dart-define=APP_UPDATER=false`，
@@ -235,6 +244,7 @@ APK / IPA 提供 App 內更新。AAB 建置時傳入 `--dart-define=APP_UPDATER=
 「我的 → 檢查更新」, 開 App 時也會自己看一次 (「App 偏好設定 → 更新」可關).
 
 * 通道: 正式版 (`releases/latest`) 或 Nightly (`releases/download/nightly/flutter-nightly.json`), 比的是 build number (= CI run number)
+* 來源: 預設 `AvianJay/aniGamerPlus`; 自己的 fork 可以 `--dart-define=UPDATE_REPO=<owner>/<repo>` 換成自己的 releases
 * Android: 下載 APK 後交給系統安裝器. 要跟手上那一版同一把金鑰簽才蓋得過去, debug 版裝不了 release 版的更新
 * iOS: 自動偵測 TrollStore / SideStore / AltStore / LCSign；LCSign 用 `loadcontroller://import?url=` 匯入 IPA，需在 LCSign 完成簽名與安裝；都沒有就用瀏覽器下載
 

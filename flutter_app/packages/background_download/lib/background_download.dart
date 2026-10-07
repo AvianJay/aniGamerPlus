@@ -8,6 +8,9 @@
 /// * [NativeTransfer]: 只有 iOS. App 被系統暫停之後 Dart 就不會再跑了, 前景
 ///   服務那一招在 iOS 上不存在, 所以影片檔整支交給系統的背景 URLSession 抓,
 ///   抓完系統才把 App 叫醒來收尾.
+///   sideload 用共用/萬用憑證重簽時拿不到系統暫存檔的 sandbox extension,
+///   這種安裝會自動退回前景 session 重抓一次, 之後都走前景 (不會報錯, 但
+///   App 被系統暫停時下載會跟著停).
 library;
 
 import 'dart:async';

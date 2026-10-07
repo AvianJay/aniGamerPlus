@@ -24,7 +24,13 @@ import 'package:package_info_plus/package_info_plus.dart';
 import 'package:path_provider/path_provider.dart';
 import 'package:url_launcher/url_launcher.dart';
 
-const String kUpdateRepo = 'AvianJay/aniGamerPlus';
+/// 更新來源預設是上游; 自己的 fork 想追自己的 releases, 就在建置時蓋掉:
+/// `--dart-define=UPDATE_REPO=<owner>/<repo>` —— CI 會把 repository
+/// variable `UPDATE_REPO` 傳進來, 沒設就照預設走.
+const String kUpdateRepo = String.fromEnvironment(
+  'UPDATE_REPO',
+  defaultValue: 'AvianJay/aniGamerPlus',
+);
 const String kNightlyTag = 'nightly';
 const String kNightlyManifest = 'flutter-nightly.json';
 
