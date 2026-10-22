@@ -208,8 +208,9 @@ const List<PlayerChoice<double>> kDanmakuSpeeds = [
 const List<List<String>> kGestureHelp = [
   ['輕點畫面', '顯示 / 收起控制列'],
   ['左右滑動', '快轉 / 倒退 (整個畫面 = 120 秒)'],
-  ['左半邊上下滑', '畫面亮度'],
-  ['右半邊上下滑', '音量'],
+  ['拖曳進度條', '調整進度，輕點不會跳轉'],
+  ['左半邊上下滑', '畫面亮度 (需開啟上下滑動設定)'],
+  ['右半邊上下滑', '音量 (需開啟上下滑動設定)'],
   ['連點兩下中央', '播放 / 暫停'],
   ['連點兩下左 / 右', '倒退 / 快進 10 秒'],
   ['長按畫面', '2 倍速播放'],
@@ -496,6 +497,8 @@ class _WatchPageState extends State<WatchPage> with WidgetsBindingObserver {
   int _sourceGeneration = 0;
   bool _scrubbing = false;
   double _scrubValue = 0;
+  double _timelineDragStart = 0;
+  bool _timelineDragging = false;
   final SeekPreview _preview = SeekPreview();
   bool _background = false;
   bool _resumeAfterBackground = false;
@@ -4338,6 +4341,8 @@ class _WatchPageState extends State<WatchPage> with WidgetsBindingObserver {
   // ------------------------------------------------------------- 手勢層
 
   Widget _gestureLayer(Size size, {Widget? child}) {
+    final levelGestures = !Device.tv &&
+        prefs.playerLevelGestures(isTablet: Device.isTablet(context));
     return GestureDetector(
       behavior: HitTestBehavior.opaque,
       onTap: _toggleControls,
@@ -4349,14 +4354,20 @@ class _WatchPageState extends State<WatchPage> with WidgetsBindingObserver {
       onHorizontalDragStart: _onHorizontalStart,
       onHorizontalDragUpdate: (details) => _onHorizontalUpdate(details, size),
       onHorizontalDragEnd: _onHorizontalEnd,
-      onVerticalDragStart: (details) => _onVerticalStart(details, size),
-      onVerticalDragUpdate: (details) => _onVerticalUpdate(details, size),
-      onVerticalDragEnd: _onVerticalEnd,
-      onVerticalDragCancel: () {
-        _dragSide = '';
-        setState(() => _hud = '');
-      },
+      onVerticalDragStart:
+          levelGestures ? (details) => _onVerticalStart(details, size) : null,
+      onVerticalDragUpdate:
+          levelGestures ? (details) => _onVerticalUpdate(details, size) : null,
+      onVerticalDragEnd: levelGestures ? _onVerticalEnd : null,
+      onVerticalDragCancel: !levelGestures
+          ? null
+          : () {
+              _dragSide = '';
+              setState(() => _hud = '');
+            },
       onHorizontalDragCancel: () {
+        // Losing the gesture to the timeline must not cancel its preview.
+        if (_timelineDragging) return;
         _preview.cancel();
         setState(() {
           _scrubbing = false;
@@ -4862,6 +4873,7 @@ class _WatchPageState extends State<WatchPage> with WidgetsBindingObserver {
             ),
             child: Slider(
               key: const ValueKey('player-timeline'),
+              allowedInteraction: SliderInteraction.slideOnly,
               value: shown.clamp(0.0, max),
               max: max,
               secondaryTrackValue: secondary,
@@ -4870,6 +4882,8 @@ class _WatchPageState extends State<WatchPage> with WidgetsBindingObserver {
                   ? null
                   : (value) {
                       _showControls();
+                      _timelineDragStart = shown.clamp(0.0, max);
+                      _timelineDragging = true;
                       setState(() {
                         _scrubbing = true;
                         _scrubValue = value;
@@ -4885,9 +4899,14 @@ class _WatchPageState extends State<WatchPage> with WidgetsBindingObserver {
               onChangeEnd: !enabled
                   ? null
                   : (value) {
+                      _timelineDragging = false;
                       setState(() => _scrubbing = false);
                       _preview.cancel();
-                      unawaited(_seekTo(value));
+                      // slideOnly still reports a tap at the current value.
+                      // Avoid restarting playback when no dragging occurred.
+                      if (value != _timelineDragStart) {
+                        unawaited(_seekTo(value));
+                      }
                       _armIdle();
                     },
             ),
@@ -5693,6 +5712,21 @@ class _WatchPageState extends State<WatchPage> with WidgetsBindingObserver {
                       unawaited(state.savePref(() => prefs.setAutoNext(value)));
                     }),
                   ),
+                  if (!Device.tv)
+                    _settingsSwitch(
+                      title: '上下滑動調整亮度與音量',
+                      subtitle: const Text('左側調整亮度，右側調整音量。手機預設關閉，平板預設開啟。'),
+                      value: prefs.playerLevelGestures(
+                          isTablet: Device.isTablet(context)),
+                      onChanged: (value) => refresh(() {
+                        setState(() {
+                          _dragSide = '';
+                          _hud = '';
+                        });
+                        unawaited(state.savePref(
+                            () => prefs.setPlayerLevelGestures(value)));
+                      }),
+                    ),
                   _settingsTile(
                     title: '手勢說明',
                     trailing: const Icon(Icons.chevron_right_rounded, size: 20),

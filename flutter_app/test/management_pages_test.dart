@@ -39,6 +39,7 @@ void main() {
   late Map<String, dynamic> config;
   final uploads = <Map<String, dynamic>>[];
   Completer<void>? saveWait;
+  SharedPreferences? originalPreferences;
 
   setUpAll(loadCaptureFonts);
 
@@ -46,6 +47,9 @@ void main() {
     temp = await Directory.systemTemp.createTemp('agp-management-');
     PathProviderPlatform.instance = _Paths(temp.path);
     SharedPreferences.setMockInitialValues({});
+    // Prefs caches the first SharedPreferences object across tests.
+    originalPreferences ??= await SharedPreferences.getInstance();
+    await originalPreferences!.remove('agp-player-level-gestures');
     uploads.clear();
     saveWait = null;
     config = {
@@ -257,6 +261,44 @@ void main() {
     await tester.tap(label);
     await tester.pumpAndSettle();
     expect(state.prefs.downloadAutoDeleteWatched, isFalse);
+    await tester.pumpWidget(const SizedBox());
+  });
+
+  testWidgets('phone gesture preference defaults off and survives reopening',
+      (tester) async {
+    await open(tester, AppPrefsPage(state: state));
+    final setting = find.widgetWithText(SwitchListTile, '上下滑動調整亮度與音量');
+    await tester.scrollUntilVisible(setting, 200,
+        scrollable: find.byType(Scrollable).first);
+    expect(tester.widget<SwitchListTile>(setting).value, isFalse);
+    await capture(tester, 'player-gestures-phone-default');
+    await tester.tap(setting);
+    await tester.pumpAndSettle();
+    final saved = await SharedPreferences.getInstance();
+    await saved.reload();
+    expect(saved.getBool('agp-player-level-gestures'), isTrue);
+    await tester.pumpWidget(const SizedBox());
+    await open(tester, AppPrefsPage(state: state));
+    await tester.scrollUntilVisible(setting, 200,
+        scrollable: find.byType(Scrollable).first);
+    expect(tester.widget<SwitchListTile>(setting).value, isTrue);
+    await tester.pumpWidget(const SizedBox());
+  });
+
+  testWidgets('iPad gesture preference defaults on and saves disabling',
+      (tester) async {
+    await open(tester, AppPrefsPage(state: state),
+        size: const Size(1024, 1366));
+    final setting = find.widgetWithText(SwitchListTile, '上下滑動調整亮度與音量');
+    expect(tester.widget<SwitchListTile>(setting).value, isTrue);
+    await capture(tester, 'player-gestures-ipad-default');
+    await tester.tap(setting);
+    await tester.pumpAndSettle();
+    expect(state.prefs.playerLevelGestures(isTablet: true), isFalse);
+    expect(
+        (await SharedPreferences.getInstance())
+            .getBool('agp-player-level-gestures'),
+        isFalse);
     await tester.pumpWidget(const SizedBox());
   });
 

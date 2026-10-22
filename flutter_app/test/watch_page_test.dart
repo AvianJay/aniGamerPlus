@@ -275,6 +275,7 @@ void main() {
   late AppState state;
   late DelayedPlayer player;
   late DeviceLevels levels;
+  SharedPreferences? originalPreferences;
   setUp(() async {
     levels = DeviceLevels();
     temp = await Directory.systemTemp.createTemp('agp-player-test-');
@@ -282,6 +283,9 @@ void main() {
     WakelockPlusPlatformInterface.instance = Wake();
     SharedPreferences.setMockInitialValues(
         {'agp-server': 'http://localhost:12345'});
+    // Prefs caches the first SharedPreferences object across tests.
+    originalPreferences ??= await SharedPreferences.getInstance();
+    await originalPreferences!.remove('agp-player-level-gestures');
     state = await AppState.boot();
     state.offline = true;
     state.downloads.concurrency = 0;
@@ -1197,7 +1201,7 @@ void main() {
     await tester.pumpWidget(const SizedBox());
     await tester.pump(const Duration(seconds: 1));
   });
-  testWidgets('visible controls allow vertical brightness and volume gestures',
+  testWidgets('tablet defaults allow vertical brightness and volume gestures',
       (tester) async {
     await open(tester);
     final surface = find
@@ -1225,6 +1229,139 @@ void main() {
     expect(tester.takeException(), isNull);
     await tester.pumpWidget(const SizedBox());
     await tester.pump(const Duration(seconds: 1));
+  });
+
+  testWidgets('tapping the timeline never seeks in phone or tablet layouts',
+      (tester) async {
+    await open(tester, size: const Size(390, 844));
+    for (final size in [
+      const Size(390, 844),
+      const Size(844, 390),
+      const Size(1024, 1366),
+    ]) {
+      await resizeViewport(tester, size);
+      await tester.pump();
+      final timeline = find.byKey(const ValueKey('player-timeline'));
+      final rect = tester.getRect(timeline);
+      final before = tester.widget<Slider>(timeline).value;
+      for (final fraction in [.25, .75]) {
+        await tester
+            .tapAt(Offset(rect.left + rect.width * fraction, rect.center.dy));
+        await tester.pump(const Duration(milliseconds: 300));
+        expect(player.seeks, isEmpty);
+        expect(tester.widget<Slider>(timeline).value, closeTo(before, 1));
+        expect(find.byKey(const ValueKey('seek-preview')), findsNothing);
+      }
+    }
+    expect(player.playing, isTrue);
+    await tester.pumpWidget(const SizedBox());
+  });
+
+  testWidgets(
+      'timeline dragging seeks once on release without jumping on touch',
+      (tester) async {
+    await open(tester, size: const Size(844, 390));
+    final timeline = find.byKey(const ValueKey('player-timeline'));
+    final rect = tester.getRect(timeline);
+    final before = tester.widget<Slider>(timeline).value;
+    final gesture = await tester
+        .startGesture(Offset(rect.left + rect.width * .5, rect.center.dy));
+    await tester.pump(const Duration(milliseconds: 150));
+    expect(tester.widget<Slider>(timeline).value, closeTo(before, 1));
+    expect(player.seeks, isEmpty);
+    await gesture.moveBy(const Offset(80, 0));
+    await tester.pump();
+    await gesture.moveBy(const Offset(40, 0));
+    await tester.pump();
+    expect(tester.widget<Slider>(timeline).value, greaterThan(before));
+    expect(player.seeks, isEmpty);
+    final target = tester.widget<Slider>(timeline).value;
+    await gesture.up();
+    await tester.pump(const Duration(milliseconds: 300));
+    expect(player.seeks, hasLength(1));
+    expect(player.seeks.single.inMilliseconds / 1000, closeTo(target, .01));
+    player.actual = player.seeks.single;
+    await tester.pump(const Duration(milliseconds: 150));
+    await tester.pumpWidget(const SizedBox());
+  });
+
+  Future<void> swipeLevels(WidgetTester tester) async {
+    final surface = find.byType(ColoredBox).evaluate().firstWhere(
+        (e) => (e.widget as ColoredBox).color == const Color(0xFF384054));
+    final box = surface.renderObject! as RenderBox;
+    for (final side in [.2, .8]) {
+      await tester.dragFrom(
+          box.localToGlobal(
+              Offset(box.size.width * side, box.size.height * .4)),
+          const Offset(0, 60));
+      await tester.pump();
+    }
+    await tester.pump(const Duration(milliseconds: 300));
+  }
+
+  Future<void> toggleLevelGestures(WidgetTester tester) async {
+    await tester.tap(find.byTooltip('設定'));
+    await tester.pump(const Duration(milliseconds: 300));
+    final setting = find.widgetWithText(SwitchListTile, '上下滑動調整亮度與音量');
+    await tester.scrollUntilVisible(setting, 200,
+        scrollable: find.byType(Scrollable).last);
+    await tester.pump(const Duration(milliseconds: 300));
+    await tester.tap(setting);
+    await tester.pump();
+    Navigator.of(tester.element(setting)).pop();
+    await tester.pump(const Duration(milliseconds: 300));
+  }
+
+  testWidgets('phone swipes default off and player settings can enable them',
+      (tester) async {
+    await open(tester, size: const Size(390, 844));
+    for (final size in [const Size(390, 844), const Size(844, 390)]) {
+      await resizeViewport(tester, size);
+      await tester.pump();
+      await swipeLevels(tester);
+      expect(levels.brightness, 1);
+      expect(levels.volume, 1);
+      expect(find.textContaining('畫面亮度 100%'), findsNothing);
+    }
+    await toggleLevelGestures(tester);
+    expect(state.prefs.playerLevelGestures(isTablet: false), isTrue);
+    expect(
+        (await SharedPreferences.getInstance())
+            .getBool('agp-player-level-gestures'),
+        isTrue);
+    await swipeLevels(tester);
+    expect(levels.brightness, lessThan(1));
+    expect(levels.volume, lessThan(1));
+    await tester.pumpWidget(const SizedBox());
+  });
+
+  testWidgets('iPad swipes can be disabled and stay off in split view',
+      (tester) async {
+    await open(tester, size: const Size(1024, 1366));
+    await toggleLevelGestures(tester);
+    expect(state.prefs.playerLevelGestures(isTablet: true), isFalse);
+    await swipeLevels(tester);
+    expect(levels.brightness, 1);
+    expect(levels.volume, 1);
+    await resizeViewport(tester, const Size(390, 1366));
+    tester.view.display.size = const Size(1024, 1366);
+    await tester.pump();
+    await swipeLevels(tester);
+    expect(levels.brightness, 1);
+    expect(levels.volume, 1);
+    await tester.pumpWidget(const SizedBox());
+  });
+
+  testWidgets('iPad split view retains the enabled tablet default',
+      (tester) async {
+    await open(tester, size: const Size(1024, 1366));
+    await resizeViewport(tester, const Size(390, 1366));
+    tester.view.display.size = const Size(1024, 1366);
+    await tester.pump();
+    await swipeLevels(tester);
+    expect(levels.brightness, lessThan(1));
+    expect(levels.volume, lessThan(1));
+    await tester.pumpWidget(const SizedBox());
   });
   testWidgets('dragging shows the selected frame without seeking until release',
       (tester) async {

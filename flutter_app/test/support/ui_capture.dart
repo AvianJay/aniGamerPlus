@@ -9,9 +9,13 @@ import 'package:flutter_test/flutter_test.dart';
 Future<void> resizeViewport(WidgetTester tester, Size size) async {
   tester.view.devicePixelRatio = 1;
   tester.view.physicalSize = size;
+  tester.view.display.size = size;
+  tester.view.display.devicePixelRatio = 1;
   await tester.binding.setSurfaceSize(size);
   addTearDown(tester.view.resetPhysicalSize);
   addTearDown(tester.view.resetDevicePixelRatio);
+  addTearDown(tester.view.display.resetSize);
+  addTearDown(tester.view.display.resetDevicePixelRatio);
   addTearDown(() => tester.binding.setSurfaceSize(null));
 }
 

@@ -15,6 +15,7 @@ import '../state/prefs.dart';
 import '../state/updater.dart';
 import '../theme.dart';
 import '../util/build_config.dart';
+import '../util/device.dart';
 import '../util/format.dart';
 import '../widgets/common.dart';
 import 'watch_page.dart';
@@ -119,8 +120,17 @@ class _AppPrefsPageState extends State<AppPrefsPage> {
           ),
           const ListTile(
             title: Text('螢幕亮度'),
-            subtitle: Text('進入播放器時跟隨裝置亮度，播放時可在畫面左側上下滑動調整。'),
+            subtitle: Text('進入播放器時跟隨裝置亮度，也可在播放設定中調整。'),
           ),
+          if (!Device.tv)
+            SwitchListTile(
+              title: const Text('上下滑動調整亮度與音量'),
+              subtitle: const Text('左側調整亮度，右側調整音量。手機預設關閉，平板預設開啟。'),
+              value:
+                  prefs.playerLevelGestures(isTablet: Device.isTablet(context)),
+              onChanged: (value) =>
+                  _save(() => prefs.setPlayerLevelGestures(value)),
+            ),
           SwitchListTile(
             title: const Text('自動播放下一集'),
             subtitle: const Text('一集播完之後倒數 8 秒接下一集'),

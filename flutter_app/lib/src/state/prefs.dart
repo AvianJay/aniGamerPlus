@@ -108,6 +108,12 @@ class Prefs {
   Future<void> setBrightness(double value) =>
       _sp.setDouble('agp-brightness', value);
 
+  /// An explicit choice takes precedence over the phone/tablet default.
+  bool playerLevelGestures({required bool isTablet}) =>
+      _sp.getBool('agp-player-level-gestures') ?? isTablet;
+  Future<void> setPlayerLevelGestures(bool value) =>
+      _sp.setBool('agp-player-level-gestures', value);
+
   double get rate => _sp.getDouble('agp-rate') ?? 1.0;
   Future<void> setRate(double value) => _sp.setDouble('agp-rate', value);
 

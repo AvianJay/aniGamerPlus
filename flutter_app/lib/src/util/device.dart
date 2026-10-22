@@ -7,6 +7,7 @@ library;
 import 'dart:io';
 
 import 'package:flutter/services.dart';
+import 'package:flutter/widgets.dart';
 
 class Device {
   Device._();
@@ -14,6 +15,12 @@ class Device {
   /// 在 main() 裡、runApp 之前問一次, 之後整支 App 同步讀.
   /// 測試裡可以直接改.
   static bool tv = false;
+
+  /// Use the whole display so rotation and iPad split view keep the same default.
+  static bool isTablet(BuildContext context) {
+    final display = View.of(context).display;
+    return display.size.shortestSide / display.devicePixelRatio >= 600;
+  }
 
   /// 給手機遙控用的名字: 配對時電視上顯示「誰」想連進來, 手機上列出「哪一台」.
   /// Android 用系統設定裡的裝置名稱 (電視多半是「客廳電視」這種), 沒有就用型號.
