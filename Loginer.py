@@ -2,14 +2,13 @@
 # -*- coding: utf-8 -*-
 # 動畫瘋一直把我登出所以加這個 ;(
 from selenium import webdriver
-from selenium.common import NoSuchElementException, ElementNotInteractableException
+from selenium.common.exceptions import NoSuchElementException, StaleElementReferenceException, TimeoutException
 from selenium.webdriver.chrome.service import Service as ChromeService
 from selenium.webdriver.common.by import By
-from selenium.webdriver import Keys, ActionChains
+from selenium.webdriver import ActionChains
+from selenium.webdriver.support import expected_conditions as EC
 from selenium.webdriver.support.ui import WebDriverWait
-from selenium.webdriver.support.ui import Select
 from webdriver_manager.chrome import ChromeDriverManager
-from selenium.webdriver.chrome.options import Options
 from selenium_recaptcha_solver import RecaptchaSolver
 import time
 import sys
@@ -23,6 +22,12 @@ import Config
 # 網站端認的是 BAHARUNE, App 端認的是 MB_BAHARUNE。少了前者, ani.gamer.com.tw 會把
 # 你當訪客 —— 照樣給你影片, 只是先排 25 秒廣告, 然後最高 360P
 _WEB_LOGIN_COOKIE = 'BAHARUNE'
+_RECAPTCHA_FRAME = (
+    'iframe[src*="/recaptcha/"][src*="/anchor"], iframe[title="reCAPTCHA"]'
+)
+_RECAPTCHA_MARKUP = (
+    '.g-recaptcha, [name="g-recaptcha-response"], script[src*="/recaptcha/"]'
+)
 
 
 FINGERPRINT_CHECK_URL = 'https://ja3.zone/check'
@@ -68,7 +73,76 @@ def get_driver(headless=False):
         return webdriver.Chrome(options=opt)
 
 
-def login(driver, username, password, save_cookie=False):
+def _recaptcha_complete(driver):
+    # Keep the response token inside the browser; callers only need a boolean.
+    return driver.execute_script('''
+        return Array.from(document.querySelectorAll('[name="g-recaptcha-response"]'))
+            .some(element => Boolean(element.value.trim()));
+    ''')
+
+
+def _solve_recaptcha(driver, timeout=20, allow_manual=False, manual_timeout=120):
+    driver.switch_to.default_content()
+
+    def visible_frame(current_driver):
+        for frame in current_driver.find_elements(By.CSS_SELECTOR, _RECAPTCHA_FRAME):
+            try:
+                if frame.is_displayed():
+                    return frame
+            except StaleElementReferenceException:
+                continue
+        return False
+
+    try:
+        frame = WebDriverWait(driver, timeout).until(visible_frame)
+    except TimeoutException:
+        # An unloaded widget is not the same as a page with no CAPTCHA.
+        if driver.find_elements(By.CSS_SELECTOR, _RECAPTCHA_MARKUP):
+            __color_print(0, "登入狀態", detail='reCAPTCHA 未能載入，請稍後重試',
+                          no_sn=True, status=1)
+            return False
+        return True
+
+    if _recaptcha_complete(driver):
+        return True
+
+    solver_error = None
+    try:
+        RecaptchaSolver(driver=driver).click_recaptcha_v2(iframe=frame)
+    except Exception as error:
+        # The solver may time out waiting for an audio challenge even when the
+        # checkbox passed asynchronously. Check completion before giving up.
+        # Do not log exception text: third-party errors can contain request data.
+        solver_error = type(error).__name__
+    finally:
+        # The solver's checkbox-only success path leaves us inside the iframe.
+        driver.switch_to.default_content()
+
+    try:
+        WebDriverWait(driver, timeout).until(_recaptcha_complete)
+        return True
+    except TimeoutException:
+        pass
+
+    if allow_manual:
+        __color_print(0, "登入狀態", detail=f'請在瀏覽器中完成 reCAPTCHA 驗證（等待 {manual_timeout} 秒）',
+                      no_sn=True, status=1)
+        try:
+            WebDriverWait(driver, manual_timeout).until(_recaptcha_complete)
+            return True
+        except TimeoutException:
+            pass
+
+    detail = 'reCAPTCHA 驗證未通過，未送出登入表單'
+    if solver_error:
+        detail += f'（{solver_error}）'
+    if not allow_manual:
+        detail += '；可停用 headless 後在瀏覽器中完成驗證'
+    __color_print(0, "登入狀態", detail=detail, no_sn=True, status=1)
+    return False
+
+
+def login(driver, username, password, save_cookie=False, allow_manual_captcha=False):
     __color_print(0, "登入狀態", detail='正在登入', no_sn=True)
     driver.get("https://gamer.com.tw/")
     if os.path.exists('cookies.pkl'):
@@ -90,17 +164,14 @@ def login(driver, username, password, save_cookie=False):
             os.remove('cookies.pkl')
         driver.get("https://user.gamer.com.tw/login.php")
         time.sleep(1)
-    user_input = driver.find_element(By.XPATH, '//*[@id="form-login"]/input[1]')
-    pass_input = driver.find_element(By.XPATH, '//*[@id="form-login"]/div[1]/input')
-    login_button = driver.find_element(By.XPATH, '//*[@id="btn-login"]')
+    wait = WebDriverWait(driver, 20)
+    user_input = wait.until(EC.visibility_of_element_located((By.XPATH, '//*[@id="form-login"]/input[1]')))
+    pass_input = wait.until(EC.visibility_of_element_located((By.XPATH, '//*[@id="form-login"]/div[1]/input')))
     user_input.send_keys(username)
     pass_input.send_keys(password)
-    try:
-        solver = RecaptchaSolver(driver=driver)
-        recaptcha_iframe = driver.find_element(By.XPATH, '//iframe[@title="reCAPTCHA"]')
-        solver.click_recaptcha_v2(iframe=recaptcha_iframe)
-    except NoSuchElementException:
-        pass
+    if not _solve_recaptcha(driver, allow_manual=allow_manual_captcha):
+        return False
+    login_button = wait.until(EC.element_to_be_clickable((By.ID, 'btn-login')))
     ActionChains(driver).move_to_element(login_button).click().perform()
     time.sleep(10)
     if driver.current_url == 'https://user.gamer.com.tw/login.php':
@@ -200,7 +271,7 @@ def do_all(username, password, headless, save_cookie):
         __color_print(0, "登入狀態", detail='啟動瀏覽器時發生異常: ' + str(e), status=1, no_sn=True)
         return False
     try:
-        if login(driver, username, password, save_cookie):
+        if login(driver, username, password, save_cookie, allow_manual_captcha=not headless):
             raw_cookie = get_raw_cookie(driver)
             update_browser_identity(driver)
         else:
@@ -216,11 +287,26 @@ def do_all(username, password, headless, save_cookie):
             pass
 
 
+def _parse_bool(value):
+    value = value.lower()
+    if value in ('true', '1'):
+        return True
+    if value in ('false', '0'):
+        return False
+    raise ValueError('headless 和 save_cookie 必須是 true 或 false')
+
+
 if __name__ == "__main__":
     if len(sys.argv) < 5:
         print("Usage:", sys.argv[0], "[username] [password] [headless?] [save_cookie?]\nreturns raw cookie.\n? = [true/false]")
         exit(1)
-    stat = do_all(sys.argv[1], sys.argv[2], bool(sys.argv[3]), bool(sys.argv[4]))
+    try:
+        headless = _parse_bool(sys.argv[3])
+        save_cookie = _parse_bool(sys.argv[4])
+    except ValueError as error:
+        print(str(error))
+        exit(1)
+    stat = do_all(sys.argv[1], sys.argv[2], headless, save_cookie)
     if stat:
         print(stat)
         exit(0)
