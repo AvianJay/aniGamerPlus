@@ -1,6 +1,6 @@
 """CAPTCHA regressions with synthetic drivers and no runtime configuration.
 
-Run with ``python -m pytest tests/test_loginer_captcha.py --noconftest -q``.
+Run with ``python -m pytest tests/test_loginer_captcha.py --disable-plugin-autoload --noconftest -q``.
 """
 
 import importlib.util
@@ -9,7 +9,7 @@ import sys
 import types
 
 import pytest
-from selenium.common.exceptions import NoSuchElementException, TimeoutException
+from selenium.common.exceptions import NoSuchElementException, TimeoutException, WebDriverException
 
 
 @pytest.fixture
@@ -66,8 +66,15 @@ class Element:
         pass
 
 
+class ChallengeFrame(Element):
+    def __init__(self, *, displayed=True, notices=()):
+        super().__init__(displayed)
+        self.notices = list(notices)
+
+
 class CaptchaDriver:
-    def __init__(self, *, iframe_after=1, markup=True, token_after=None):
+    def __init__(self, *, iframe_after=1, markup=True, token_after=None,
+                 challenge_frames=()):
         self.iframe_after = iframe_after
         self.markup = markup
         self.token_after = token_after
@@ -77,19 +84,36 @@ class CaptchaDriver:
         self.context = 'document'
         self.default_content_calls = 0
         self.iframe = Element()
-        self.switch_to = types.SimpleNamespace(default_content=self.default_content)
+        self.challenge_frames = list(challenge_frames)
+        self.frame_visits = []
+        self.switch_to = types.SimpleNamespace(
+            default_content=self.default_content, frame=self.switch_frame)
 
     def default_content(self):
         self.context = 'document'
         self.default_content_calls += 1
 
+    def switch_frame(self, frame):
+        assert self.context == 'document'
+        self.context = frame
+        self.frame_visits.append(frame)
+
     def find_elements(self, by, selector):
+        if 'bframe' in selector:
+            assert self.context == 'document'
+            return self.challenge_frames
         if 'iframe' in selector:
+            assert self.context == 'document'
             self.iframe_polls += 1
             if self.iframe_after is not None and self.iframe_polls >= self.iframe_after:
                 return [self.iframe]
             return []
-        return [Element()] if self.markup else []
+        if 'rc-doscaptcha' in selector:
+            assert isinstance(self.context, ChallengeFrame)
+            return self.context.notices
+        if 'g-recaptcha' in selector:
+            return [Element()] if self.markup else []
+        return []
 
     def find_element(self, by, selector):
         elements = self.find_elements(by, selector)
@@ -98,6 +122,7 @@ class CaptchaDriver:
         return elements[0]
 
     def execute_script(self, script, *args):
+        assert self.context == 'document'
         self.token_polls += 1
         return self.token_after is not None and self.token_polls >= self.token_after
 
@@ -173,15 +198,127 @@ def test_solver_error_restores_document_and_fails(loginer, monkeypatch):
 
 
 def test_response_can_confirm_success_after_solver_error(loginer, monkeypatch):
-    driver = CaptchaDriver(token_after=2)
+    driver = CaptchaDriver(token_after=2, challenge_frames=[
+        ChallengeFrame(notices=[Element()]),
+    ])
     install_solver(monkeypatch, loginer, error=TimeoutException('synthetic timeout'))
 
     assert loginer._solve_recaptcha(driver)
     assert driver.context == 'document'
+    assert driver.frame_visits == []
+
+
+def test_visible_audio_block_is_detected_and_restores_document(loginer):
+    frame = ChallengeFrame(notices=[Element(displayed=False), Element()])
+    driver = CaptchaDriver(challenge_frames=[frame])
+    driver.context = 'captcha'
+
+    assert loginer._recaptcha_audio_blocked(driver)
+    assert driver.frame_visits == [frame]
+    assert driver.context == 'document'
+
+
+@pytest.mark.parametrize('frame_displayed, notice_displayed', [
+    (False, True), (True, False),
+])
+def test_hidden_audio_block_is_not_counted(loginer, frame_displayed, notice_displayed):
+    frame = ChallengeFrame(displayed=frame_displayed,
+                           notices=[Element(displayed=notice_displayed)])
+    driver = CaptchaDriver(challenge_frames=[frame])
+
+    assert not loginer._recaptcha_audio_blocked(driver)
+    assert driver.frame_visits == ([frame] if frame_displayed else [])
+    assert driver.context == 'document'
+
+
+def test_audio_block_detection_checks_later_challenge_frames(loginer):
+    frames = [ChallengeFrame(), ChallengeFrame(notices=[Element()])]
+    driver = CaptchaDriver(challenge_frames=frames)
+
+    assert loginer._recaptcha_audio_blocked(driver)
+    assert driver.frame_visits == frames
+    assert driver.context == 'document'
+
+
+def test_audio_block_diagnostic_error_restores_document(loginer, monkeypatch):
+    driver = CaptchaDriver(challenge_frames=[ChallengeFrame()])
+    find_elements = driver.find_elements
+
+    def fail_inside_challenge(by, selector):
+        if 'rc-doscaptcha' in selector:
+            raise WebDriverException('synthetic diagnostic failure')
+        return find_elements(by, selector)
+
+    monkeypatch.setattr(driver, 'find_elements', fail_inside_challenge)
+
+    assert not loginer._recaptcha_audio_blocked(driver)
+    assert driver.context == 'document'
+
+
+def test_confirmed_block_skips_automatic_response_wait(loginer, monkeypatch):
+    driver = CaptchaDriver(challenge_frames=[ChallengeFrame(notices=[Element()])])
+    install_solver(monkeypatch, loginer, error=RuntimeError('private request payload'))
+    details = []
+    monkeypatch.setattr(loginer, '__color_print',
+                        lambda *args, **kwargs: details.append(kwargs.get('detail', '')))
+
+    assert not loginer._solve_recaptcha(driver, timeout=3)
+    assert driver.wait_timeouts == [3]
+    assert driver.token_polls == 2
+    assert driver.context == 'document'
+    assert 'Google 已封鎖此瀏覽器或網路的音訊驗證請求' in details[-1]
+    assert 'headless' not in details[-1]
+    assert 'private request payload' not in ''.join(details)
+
+
+def test_confirmed_block_can_still_allow_manual_completion(loginer, monkeypatch):
+    driver = CaptchaDriver(token_after=3,
+                           challenge_frames=[ChallengeFrame(notices=[Element()])])
+    install_solver(monkeypatch, loginer)
+
+    assert loginer._solve_recaptcha(driver, timeout=3, allow_manual=True, manual_timeout=9)
+    assert driver.wait_timeouts == [3, 9]
+    assert driver.context == 'document'
+
+
+@pytest.mark.parametrize('message, reason', [
+    ('Google has detected automated queries. Try again later.', '未取得音訊驗證連結'),
+    ('Speech recognition API could not understand audio, try again', '無法辨識音訊驗證內容'),
+    ('Failed to solve captcha after 5 attempts', '音訊驗證重試次數已用完'),
+])
+def test_known_solver_errors_report_static_reason(loginer, monkeypatch, message, reason):
+    driver = CaptchaDriver()
+    install_solver(monkeypatch, loginer, error=RuntimeError(message))
+    details = []
+    monkeypatch.setattr(loginer, '__color_print',
+                        lambda *args, **kwargs: details.append(kwargs.get('detail', '')))
+
+    assert not loginer._solve_recaptcha(driver, timeout=3)
+    assert reason in details[-1]
+    assert message not in ''.join(details)
+    assert 'Google 已封鎖' not in details[-1]
+    assert driver.wait_timeouts == [3, 3]
+
+
+@pytest.mark.parametrize('message', [
+    'private request payload',
+    'Google has detected automated queries. Try again later. private request payload',
+])
+def test_unknown_solver_error_payload_is_not_logged(loginer, monkeypatch, message):
+    driver = CaptchaDriver()
+    install_solver(monkeypatch, loginer, error=RuntimeError(message))
+    details = []
+    monkeypatch.setattr(loginer, '__color_print',
+                        lambda *args, **kwargs: details.append(kwargs.get('detail', '')))
+
+    assert not loginer._solve_recaptcha(driver)
+    assert 'RuntimeError' in details[-1]
+    assert 'private request payload' not in ''.join(details)
+    assert '未取得音訊驗證連結' not in details[-1]
 
 
 def test_manual_fallback_allows_a_later_response(loginer, monkeypatch):
-    driver = CaptchaDriver(token_after=6)
+    driver = CaptchaDriver(token_after=7)
     install_solver(monkeypatch, loginer)
 
     assert loginer._solve_recaptcha(driver, timeout=3, allow_manual=True, manual_timeout=9)
@@ -189,7 +326,7 @@ def test_manual_fallback_allows_a_later_response(loginer, monkeypatch):
 
 
 def test_automatic_mode_does_not_wait_for_manual_completion(loginer, monkeypatch):
-    driver = CaptchaDriver(token_after=6)
+    driver = CaptchaDriver(token_after=7)
     install_solver(monkeypatch, loginer)
 
     assert not loginer._solve_recaptcha(driver, timeout=3, allow_manual=False, manual_timeout=9)
@@ -202,6 +339,22 @@ def test_manual_fallback_is_bounded(loginer, monkeypatch):
 
     assert not loginer._solve_recaptcha(driver, allow_manual=True, manual_timeout=9)
     assert driver.wait_timeouts.count(9) == 1
+
+
+@pytest.mark.parametrize('token_after, expected', [(3, True), (None, False)])
+def test_manual_only_preserves_challenge_and_uses_only_manual_wait(
+        loginer, monkeypatch, token_after, expected):
+    driver = CaptchaDriver(token_after=token_after)
+
+    def unexpected_solver(*args, **kwargs):
+        pytest.fail('Remote recovery must not start an automatic audio challenge')
+
+    monkeypatch.setattr(loginer, 'RecaptchaSolver', unexpected_solver)
+
+    assert loginer._solve_recaptcha(
+        driver, timeout=3, allow_manual=True, manual_timeout=9, manual_only=True) is expected
+    assert driver.wait_timeouts == [3, 9]
+    assert driver.context == 'document'
 
 
 class LoginDriver:
@@ -238,11 +391,11 @@ def test_failed_captcha_prevents_login_submission(loginer, monkeypatch):
 
 def test_login_finds_and_clicks_button_after_captcha_completion(loginer, monkeypatch):
     driver = LoginDriver()
-    manual_modes = []
+    captcha_options = []
 
     def solve(current_driver, **kwargs):
         assert current_driver is driver
-        manual_modes.append(kwargs['allow_manual'])
+        captcha_options.append(kwargs)
         driver.events.append('captcha_complete')
         return True
 
@@ -264,9 +417,12 @@ def test_login_finds_and_clicks_button_after_captcha_completion(loginer, monkeyp
     monkeypatch.setattr(loginer, '_solve_recaptcha', solve)
     monkeypatch.setattr(loginer, 'ActionChains', Actions)
 
-    assert loginer.login(driver, 'test-user', 'test-password', allow_manual_captcha=True)
+    assert loginer.login(driver, 'test-user', 'test-password', allow_manual_captcha=True,
+                         manual_captcha=True, captcha_timeout=37)
     assert driver.events == ['captcha_complete', 'button_lookup', 'submit']
-    assert manual_modes == [True]
+    assert captcha_options == [{
+        'allow_manual': True, 'manual_only': True, 'manual_timeout': 37,
+    }]
 
 
 @pytest.mark.parametrize('headless', [True, False])
@@ -283,6 +439,176 @@ def test_do_all_only_offers_manual_captcha_with_visible_browser(loginer, monkeyp
 
     assert loginer.do_all('test-user', 'test-password', headless, False) is False
     assert seen == [not headless]
+
+
+@pytest.fixture
+def remote_session(loginer, monkeypatch, tmp_path):
+    application_dir = tmp_path / 'application'
+    application_dir.mkdir()
+    cookie_path = application_dir / 'cookie.txt'
+    cookie_path.write_text('previous-synthetic-cookie', encoding='utf-8')
+    settings = {'auto_login': {
+        'username': 'private-synthetic-username',
+        'password': 'private-synthetic-password',
+    }}
+    old_cache = object()
+    monkeypatch.setattr(loginer.Config, 'read_settings', lambda: settings, raising=False)
+    monkeypatch.setattr(loginer.Config, 'working_dir', str(application_dir), raising=False)
+    monkeypatch.setattr(loginer.Config, 'cookie_path', str(cookie_path), raising=False)
+    monkeypatch.setattr(loginer.Config, 'cookie', old_cache, raising=False)
+    monkeypatch.setattr(loginer, '__color_print',
+                        lambda *args, **kwargs: print(kwargs.get('detail', '')))
+    events = []
+    driver = types.SimpleNamespace(
+        capabilities={'goog:chromeOptions': {'debuggerAddress': '127.0.0.1:54321'}},
+        quit=lambda: events.append('quit'),
+    )
+
+    def get_driver(*, headless):
+        assert headless is True
+        assert Path.cwd() == application_dir
+        events.append('driver')
+        return driver
+
+    def get_raw_cookie(current_driver):
+        assert current_driver is driver
+        events.append('raw_cookie')
+        return 'BAHARUNE=private-synthetic-cookie'
+
+    def update_identity(current_driver):
+        assert current_driver is driver
+        events.append('identity')
+        return True
+
+    monkeypatch.setattr(loginer, 'get_driver', get_driver)
+    monkeypatch.setattr(loginer, 'get_raw_cookie', get_raw_cookie)
+    monkeypatch.setattr(loginer, 'update_browser_identity', update_identity)
+    return types.SimpleNamespace(
+        application_dir=application_dir, cookie_path=cookie_path,
+        settings=settings, old_cache=old_cache, events=events, driver=driver,
+    )
+
+
+def test_remote_login_saves_session_and_never_prints_secrets(
+        loginer, monkeypatch, remote_session, capsys):
+    session = remote_session
+    previous_dir = Path.cwd()
+    login_options = []
+
+    def login(driver, username, password, **kwargs):
+        assert driver is session.driver
+        assert Path.cwd() == session.application_dir
+        assert username == session.settings['auto_login']['username']
+        assert password == session.settings['auto_login']['password']
+        login_options.append(kwargs)
+        session.events.append('login')
+        return True
+
+    monkeypatch.setattr(loginer, 'login', login)
+
+    assert loginer.remote_login(timeout=37)
+    assert login_options == [{
+        'save_cookie': True, 'allow_manual_captcha': True,
+        'manual_captcha': True, 'captcha_timeout': 37,
+    }]
+    assert session.cookie_path.read_text(encoding='utf-8') == 'BAHARUNE=private-synthetic-cookie'
+    assert loginer.Config.cookie is None
+    assert session.events == ['driver', 'login', 'raw_cookie', 'identity', 'quit']
+    assert Path.cwd() == previous_dir
+    assert list(session.application_dir.glob('.login-*')) == []
+    output = capsys.readouterr()
+    assert '9222:127.0.0.1:54321' in output.out
+    assert 'chrome://inspect/#devices' in output.out
+    assert 'server session has been saved' in output.out
+    for secret in ('private-synthetic-username', 'private-synthetic-password',
+                   'private-synthetic-cookie'):
+        assert secret not in output.out + output.err
+
+
+def test_remote_login_timeout_preserves_session_and_quits(
+        loginer, monkeypatch, remote_session, capsys):
+    session = remote_session
+    previous_dir = Path.cwd()
+
+    def login(*args, **kwargs):
+        assert kwargs['captcha_timeout'] == 37
+        session.events.append('login_timeout')
+        return False
+
+    monkeypatch.setattr(loginer, 'login', login)
+
+    assert not loginer.remote_login(timeout=37)
+    assert session.cookie_path.read_text(encoding='utf-8') == 'previous-synthetic-cookie'
+    assert loginer.Config.cookie is session.old_cache
+    assert session.events == ['driver', 'login_timeout', 'quit']
+    assert Path.cwd() == previous_dir
+    assert list(session.application_dir.glob('.login-*')) == []
+    assert 'server session has been saved' not in capsys.readouterr().out
+
+
+def test_remote_login_error_keeps_payload_private_and_quits(
+        loginer, monkeypatch, remote_session, capsys):
+    session = remote_session
+    previous_dir = Path.cwd()
+
+    def login(*args, **kwargs):
+        raise RuntimeError('private-synthetic-password private-synthetic-cookie')
+
+    monkeypatch.setattr(loginer, 'login', login)
+
+    assert not loginer.remote_login()
+    assert session.events == ['driver', 'quit']
+    assert Path.cwd() == previous_dir
+    assert session.cookie_path.read_text(encoding='utf-8') == 'previous-synthetic-cookie'
+    output = capsys.readouterr()
+    assert 'RuntimeError' in output.out
+    assert 'private-synthetic-password' not in output.out + output.err
+    assert 'private-synthetic-cookie' not in output.out + output.err
+
+
+def test_remote_login_failed_cookie_replace_preserves_old_cookie_and_cleans_up(
+        loginer, monkeypatch, remote_session):
+    session = remote_session
+    previous_dir = Path.cwd()
+    monkeypatch.setattr(loginer, 'login', lambda *args, **kwargs: True)
+
+    def fail_replace(source, destination):
+        assert Path(source).read_text(encoding='utf-8') == 'BAHARUNE=private-synthetic-cookie'
+        assert Path(destination) == session.cookie_path
+        raise OSError('synthetic replacement failure')
+
+    monkeypatch.setattr(loginer.os, 'replace', fail_replace)
+
+    assert not loginer.remote_login()
+    assert session.cookie_path.read_text(encoding='utf-8') == 'previous-synthetic-cookie'
+    assert loginer.Config.cookie is session.old_cache
+    assert session.events[-1] == 'quit'
+    assert Path.cwd() == previous_dir
+    assert list(session.application_dir.glob('.login-*')) == []
+
+
+@pytest.mark.parametrize('address', [
+    '192.0.2.10:54321', '0.0.0.0:54321', '[::]:54321',
+    'localhost:0', '127.0.0.1:65536', '127.0.0.1:not-a-port',
+])
+def test_remote_login_rejects_nonloopback_or_invalid_debugger(
+        loginer, monkeypatch, remote_session, capsys, address):
+    session = remote_session
+    session.driver.capabilities['goog:chromeOptions']['debuggerAddress'] = address
+    previous_dir = Path.cwd()
+
+    def unexpected_login(*args, **kwargs):
+        pytest.fail('Invalid debugger address must be rejected before entering credentials')
+
+    monkeypatch.setattr(loginer, 'login', unexpected_login)
+
+    assert not loginer.remote_login()
+    assert session.events == ['driver', 'quit']
+    assert Path.cwd() == previous_dir
+    assert session.cookie_path.read_text(encoding='utf-8') == 'previous-synthetic-cookie'
+    output = capsys.readouterr()
+    assert 'ValueError' in output.out
+    assert 'ssh -N' not in output.out
 
 
 @pytest.mark.parametrize('value, expected', [

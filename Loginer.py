@@ -2,7 +2,7 @@
 # -*- coding: utf-8 -*-
 # 動畫瘋一直把我登出所以加這個 ;(
 from selenium import webdriver
-from selenium.common.exceptions import NoSuchElementException, StaleElementReferenceException, TimeoutException
+from selenium.common.exceptions import NoSuchElementException, StaleElementReferenceException, TimeoutException, WebDriverException
 from selenium.webdriver.chrome.service import Service as ChromeService
 from selenium.webdriver.common.by import By
 from selenium.webdriver import ActionChains
@@ -16,6 +16,7 @@ import os
 import pickle
 import re
 import shutil
+import tempfile
 import Config
 
 
@@ -28,6 +29,11 @@ _RECAPTCHA_FRAME = (
 _RECAPTCHA_MARKUP = (
     '.g-recaptcha, [name="g-recaptcha-response"], script[src*="/recaptcha/"]'
 )
+_RECAPTCHA_ERROR_REASONS = {
+    'Google has detected automated queries. Try again later.': '未取得音訊驗證連結',
+    'Speech recognition API could not understand audio, try again': '無法辨識音訊驗證內容',
+    'Failed to solve captcha after 5 attempts': '音訊驗證重試次數已用完',
+}
 
 
 FINGERPRINT_CHECK_URL = 'https://ja3.zone/check'
@@ -81,7 +87,34 @@ def _recaptcha_complete(driver):
     ''')
 
 
-def _solve_recaptcha(driver, timeout=20, allow_manual=False, manual_timeout=120):
+def _recaptcha_audio_blocked(driver):
+    """Distinguish Google's explicit block from a slow/missing audio link."""
+    try:
+        driver.switch_to.default_content()
+        frames = driver.find_elements(
+            By.CSS_SELECTOR, 'iframe[src*="recaptcha"][src*="bframe"]')
+        for frame in frames:
+            if not frame.is_displayed():
+                continue
+            driver.switch_to.frame(frame)
+            notices = driver.find_elements(
+                By.CSS_SELECTOR, '.rc-doscaptcha-header, .rc-doscaptcha-body')
+            if any(notice.is_displayed() for notice in notices):
+                return True
+            driver.switch_to.default_content()
+    except WebDriverException:
+        # Diagnostics must not obscure the original solver failure.
+        return False
+    finally:
+        try:
+            driver.switch_to.default_content()
+        except WebDriverException:
+            pass
+    return False
+
+
+def _solve_recaptcha(driver, timeout=20, allow_manual=False, manual_timeout=120,
+                     manual_only=False):
     driver.switch_to.default_content()
 
     def visible_frame(current_driver):
@@ -108,21 +141,28 @@ def _solve_recaptcha(driver, timeout=20, allow_manual=False, manual_timeout=120)
 
     solver_error = None
     try:
-        RecaptchaSolver(driver=driver).click_recaptcha_v2(iframe=frame)
+        if not manual_only:
+            RecaptchaSolver(driver=driver).click_recaptcha_v2(iframe=frame)
     except Exception as error:
         # The solver may time out waiting for an audio challenge even when the
         # checkbox passed asynchronously. Check completion before giving up.
         # Do not log exception text: third-party errors can contain request data.
-        solver_error = type(error).__name__
+        solver_error = _RECAPTCHA_ERROR_REASONS.get(str(error), type(error).__name__)
     finally:
         # The solver's checkbox-only success path leaves us inside the iframe.
         driver.switch_to.default_content()
 
-    try:
-        WebDriverWait(driver, timeout).until(_recaptcha_complete)
+    if _recaptcha_complete(driver):
         return True
-    except TimeoutException:
-        pass
+    audio_blocked = _recaptcha_audio_blocked(driver)
+    if audio_blocked:
+        solver_error = 'Google 已封鎖此瀏覽器或網路的音訊驗證請求'
+    elif not manual_only:
+        try:
+            WebDriverWait(driver, timeout).until(_recaptcha_complete)
+            return True
+        except TimeoutException:
+            pass
 
     if allow_manual:
         __color_print(0, "登入狀態", detail=f'請在瀏覽器中完成 reCAPTCHA 驗證（等待 {manual_timeout} 秒）',
@@ -136,13 +176,14 @@ def _solve_recaptcha(driver, timeout=20, allow_manual=False, manual_timeout=120)
     detail = 'reCAPTCHA 驗證未通過，未送出登入表單'
     if solver_error:
         detail += f'（{solver_error}）'
-    if not allow_manual:
+    if not allow_manual and not audio_blocked:
         detail += '；可停用 headless 後在瀏覽器中完成驗證'
     __color_print(0, "登入狀態", detail=detail, no_sn=True, status=1)
     return False
 
 
-def login(driver, username, password, save_cookie=False, allow_manual_captcha=False):
+def login(driver, username, password, save_cookie=False, allow_manual_captcha=False,
+          manual_captcha=False, captcha_timeout=120):
     __color_print(0, "登入狀態", detail='正在登入', no_sn=True)
     driver.get("https://gamer.com.tw/")
     if os.path.exists('cookies.pkl'):
@@ -169,7 +210,8 @@ def login(driver, username, password, save_cookie=False, allow_manual_captcha=Fa
     pass_input = wait.until(EC.visibility_of_element_located((By.XPATH, '//*[@id="form-login"]/div[1]/input')))
     user_input.send_keys(username)
     pass_input.send_keys(password)
-    if not _solve_recaptcha(driver, allow_manual=allow_manual_captcha):
+    if not _solve_recaptcha(driver, allow_manual=allow_manual_captcha,
+                            manual_only=manual_captcha, manual_timeout=captcha_timeout):
         return False
     login_button = wait.until(EC.element_to_be_clickable((By.ID, 'btn-login')))
     ActionChains(driver).move_to_element(login_button).click().perform()
@@ -287,6 +329,62 @@ def do_all(username, password, headless, save_cookie):
             pass
 
 
+def remote_login(timeout=600):
+    """Recover a server session through SSH-forwarded Chrome DevTools."""
+    driver = None
+    cookie_temp = None
+    previous_dir = os.getcwd()
+    try:
+        # Load credentials through the normal runtime path, never via argv or
+        # stdout. Keep browser cookies in the application directory as usual.
+        settings = Config.read_settings()
+        os.chdir(Config.working_dir)
+        driver = get_driver(headless=True)
+        address = driver.capabilities['goog:chromeOptions']['debuggerAddress']
+        host, _, port = address.rpartition(':')
+        if host not in ('127.0.0.1', 'localhost') or not 0 < int(port) < 65536:
+            raise ValueError('Chrome debugger must listen on loopback')
+        print('Chrome is running headlessly. On your PC, open an SSH tunnel:', flush=True)
+        print(f'  ssh -N -L 9222:127.0.0.1:{port} <user>@<server>', flush=True)
+        print('Open chrome://inspect/#devices, configure localhost:9222, then Inspect the login page.',
+              flush=True)
+        print('Enable the DevTools screencast to complete the CAPTCHA. No browser UI is needed on the server.',
+              flush=True)
+        if not login(driver, settings['auto_login']['username'], settings['auto_login']['password'],
+                     save_cookie=True, allow_manual_captcha=True,
+                     manual_captcha=True, captcha_timeout=timeout):
+            return False
+        raw_cookie = get_raw_cookie(driver)
+        update_browser_identity(driver)
+        # Replace atomically and retain private permissions on the new file.
+        with tempfile.NamedTemporaryFile(mode='w', encoding='utf-8',
+                                         dir=os.path.dirname(Config.cookie_path),
+                                         prefix='.login-', delete=False) as output:
+            cookie_temp = output.name
+            output.write(raw_cookie)
+        os.replace(cookie_temp, Config.cookie_path)
+        cookie_temp = None
+        Config.cookie = None
+        print('Login succeeded; the server session has been saved. You can close the SSH tunnel.', flush=True)
+        return True
+    except Exception as error:
+        __color_print(0, "登入狀態", detail='遠端登入失敗（' + type(error).__name__ + '）',
+                      status=1, no_sn=True)
+        return False
+    finally:
+        if cookie_temp is not None:
+            try:
+                os.remove(cookie_temp)
+            except OSError:
+                pass
+        if driver is not None:
+            try:
+                driver.quit()
+            except Exception:
+                pass
+        os.chdir(previous_dir)
+
+
 def _parse_bool(value):
     value = value.lower()
     if value in ('true', '1'):
@@ -297,8 +395,11 @@ def _parse_bool(value):
 
 
 if __name__ == "__main__":
+    if sys.argv[1:] == ['--remote-login']:
+        exit(0 if remote_login() else 1)
     if len(sys.argv) < 5:
         print("Usage:", sys.argv[0], "[username] [password] [headless?] [save_cookie?]\nreturns raw cookie.\n? = [true/false]")
+        print("Server recovery:", sys.argv[0], "--remote-login\nuses saved account settings and writes cookies without printing them.")
         exit(1)
     try:
         headless = _parse_bool(sys.argv[3])
