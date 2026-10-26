@@ -65,6 +65,10 @@ git pull
 python3 aniGamerPlus.py
 ```
 
+啟用 `auto_login` 並設定 `headless: true` 時，會先透過巴哈姆特 App 登入介面取得 Cookie，
+再確認網站接受該登入。此方式不需要瀏覽器或 Google reCAPTCHA；若 App 登入失敗，
+才會改用原本的瀏覽器登入流程。帳號密碼沿用 `auto_login` 設定。
+
 ## Docker 運行
 
 ### (可選) 建構自己的 Image

@@ -10,6 +10,8 @@ from selenium.webdriver.support import expected_conditions as EC
 from selenium.webdriver.support.ui import WebDriverWait
 from webdriver_manager.chrome import ChromeDriverManager
 from selenium_recaptcha_solver import RecaptchaSolver
+from curl_cffi import requests as curl_requests
+from urllib.parse import urlsplit
 import time
 import sys
 import os
@@ -17,6 +19,7 @@ import pickle
 import re
 import shutil
 import tempfile
+import uuid
 import Config
 
 
@@ -306,7 +309,74 @@ def update_browser_identity(driver):
     return True
 
 
+def app_login(username, password, save_cookie=False):
+    __color_print(0, "登入狀態", detail='正在透過 App 介面登入', no_sn=True)
+    try:
+        settings = Config.read_settings()
+        headers = {
+            'User-Agent': 'Bahadroid (https://www.gamer.com.tw/)',
+            'X-Bahamut-App-Instanceid': uuid.uuid4().hex,
+            'X-Bahamut-App-Android': 'tw.com.gamer.android.activecenter',
+            'X-Bahamut-App-Version': '251',
+        }
+        with curl_requests.Session(impersonate='chrome') as session:
+            session.cookies.set('ckAPP_VCODE', '7045', domain='.gamer.com.tw', secure=True)
+            response = session.post(
+                'https://api.gamer.com.tw/mobile_app/user/v3/do_login.php',
+                headers=headers,
+                data={'uid': username, 'passwd': password, 'vcode': '7045'},
+                timeout=30,
+            )
+            response.raise_for_status()
+            result = response.json()
+            if not isinstance(result, dict) or result.get('success') != 1:
+                __color_print(0, "登入狀態", detail='App 登入未成功，改用瀏覽器登入',
+                              no_sn=True, status=1)
+                return False
+
+            response = session.get('https://user.gamer.com.tw/login.php',
+                                   headers={'User-Agent': settings['ua']}, timeout=30)
+            response.raise_for_status()
+            target = urlsplit(response.url)
+            cookies = [cookie for cookie in session.cookies.jar
+                       if cookie.domain.lstrip('.') in ('gamer.com.tw', 'ani.gamer.com.tw')
+                       and not cookie.is_expired()]
+            if (target.hostname not in ('gamer.com.tw', 'www.gamer.com.tw')
+                    or target.path not in ('', '/')
+                    or not any(cookie.name == _WEB_LOGIN_COOKIE and cookie.value
+                               and cookie.value != 'deleted' for cookie in cookies)):
+                __color_print(0, "登入狀態", detail='App 登入後未通過網站登入驗證',
+                              no_sn=True, status=1)
+                return False
+
+            if save_cookie:
+                browser_cookies = []
+                for cookie in cookies:
+                    browser_cookie = {
+                        'name': cookie.name, 'value': cookie.value,
+                        'domain': cookie.domain, 'path': cookie.path or '/',
+                        'secure': cookie.secure,
+                    }
+                    if cookie.expires is not None:
+                        browser_cookie['expiry'] = int(cookie.expires)
+                    browser_cookies.append(browser_cookie)
+                with open('cookies.pkl', 'wb') as output:
+                    pickle.dump(browser_cookies, output)
+            raw_cookie = '; '.join(f'{cookie.name}={cookie.value}' for cookie in cookies)
+        __color_print(0, "登入狀態", detail='App 登入成功，已通過網站登入驗證',
+                      no_sn=True, status=2)
+        return raw_cookie
+    except Exception as error:
+        __color_print(0, "登入狀態", detail='App 登入失敗（' + type(error).__name__ + '）',
+                      no_sn=True, status=1)
+        return False
+
+
 def do_all(username, password, headless, save_cookie):
+    if headless:
+        raw_cookie = app_login(username, password, save_cookie)
+        if raw_cookie:
+            return raw_cookie
     try:
         driver = get_driver(headless)
     except Exception as e:

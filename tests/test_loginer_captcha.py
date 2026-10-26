@@ -5,10 +5,12 @@ Run with ``python -m pytest tests/test_loginer_captcha.py --disable-plugin-autol
 
 import importlib.util
 from pathlib import Path
+import pickle
 import sys
 import types
 
 import pytest
+from requests.cookies import RequestsCookieJar
 from selenium.common.exceptions import NoSuchElementException, TimeoutException, WebDriverException
 
 
@@ -430,6 +432,7 @@ def test_do_all_only_offers_manual_captcha_with_visible_browser(loginer, monkeyp
     driver = types.SimpleNamespace(quit=lambda: None)
     seen = []
     monkeypatch.setattr(loginer, 'get_driver', lambda requested: driver)
+    monkeypatch.setattr(loginer, 'app_login', lambda *args: False)
 
     def login(*args, **kwargs):
         seen.append(kwargs['allow_manual_captcha'])
@@ -439,6 +442,152 @@ def test_do_all_only_offers_manual_captcha_with_visible_browser(loginer, monkeyp
 
     assert loginer.do_all('test-user', 'test-password', headless, False) is False
     assert seen == [not headless]
+
+
+@pytest.fixture
+def app_session(loginer, monkeypatch):
+    state = types.SimpleNamespace(
+        result={'success': True}, web_cookie='synthetic-web-token',
+        target='https://www.gamer.com.tw/', calls=[], closed=False,
+        deleted=False, error=None,
+    )
+    jar = RequestsCookieJar()
+    state.jar = jar
+
+    class Session:
+        def __init__(self, **kwargs):
+            self.cookies = types.SimpleNamespace(jar=jar, set=jar.set)
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            state.closed = True
+
+        def post(self, url, **kwargs):
+            state.calls.append(('post', url, kwargs))
+            if state.error:
+                raise state.error
+            if state.web_cookie is not None:
+                jar.set('BAHARUNE', state.web_cookie, domain='.gamer.com.tw',
+                        secure=True, expires=2147483647)
+            jar.set('MB_BAHARUNE', 'synthetic-app-token', domain='.gamer.com.tw')
+            jar.set('unrelated', 'private-other-token', domain='example.com')
+            return types.SimpleNamespace(raise_for_status=lambda: None,
+                                         json=lambda: state.result)
+
+        def get(self, url, **kwargs):
+            state.calls.append(('get', url, kwargs))
+            if state.deleted:
+                jar.set('BAHARUNE', 'deleted', domain='.gamer.com.tw')
+            return types.SimpleNamespace(raise_for_status=lambda: None, url=state.target)
+
+    monkeypatch.setattr(loginer.curl_requests, 'Session', Session)
+    monkeypatch.setattr(loginer.Config, 'read_settings', lambda: {'ua': 'test-browser-agent'},
+                        raising=False)
+    return state
+
+
+def test_app_login_obtains_a_verified_web_session_without_a_browser(
+        loginer, app_session, capsys):
+    result = loginer.app_login('private-test-user', 'private-test-password')
+
+    assert 'BAHARUNE=synthetic-web-token' in result
+    assert 'MB_BAHARUNE=synthetic-app-token' in result
+    assert 'unrelated' not in result
+    assert app_session.closed
+    assert [call[0] for call in app_session.calls] == ['post', 'get']
+    _, url, request = app_session.calls[0]
+    assert url == 'https://api.gamer.com.tw/mobile_app/user/v3/do_login.php'
+    assert request['data'] == {
+        'uid': 'private-test-user', 'passwd': 'private-test-password', 'vcode': '7045',
+    }
+    assert app_session.jar.get('ckAPP_VCODE') == request['data']['vcode']
+    assert app_session.calls[1][2]['headers']['User-Agent'] == 'test-browser-agent'
+    assert not Path('cookies.pkl').exists()
+    output = capsys.readouterr()
+    for secret in ('private-test-user', 'private-test-password', 'synthetic-web-token'):
+        assert secret not in output.out + output.err
+
+
+@pytest.mark.parametrize('result', [{'success': False}, {'success': 'false'}, {}, []])
+def test_app_login_rejects_unsuccessful_responses(loginer, app_session, result):
+    app_session.result = result
+
+    assert loginer.app_login('user', 'password', save_cookie=True) is False
+    assert [call[0] for call in app_session.calls] == ['post']
+    assert not Path('cookies.pkl').exists()
+    assert app_session.closed
+
+
+def test_app_login_requires_the_web_cookie_even_with_an_app_cookie(loginer, app_session):
+    app_session.web_cookie = None
+
+    assert loginer.app_login('user', 'password', save_cookie=True) is False
+    assert not Path('cookies.pkl').exists()
+
+
+@pytest.mark.parametrize('target', [
+    'https://user.gamer.com.tw/login.php',
+    'https://user.gamer.com.tw/two-factor.php',
+    'https://www.gamer.com.tw/error.php',
+    'https://example.com/',
+])
+def test_app_login_requires_a_successful_web_login_redirect(loginer, app_session, target):
+    app_session.target = target
+
+    assert loginer.app_login('user', 'password', save_cookie=True) is False
+    assert not Path('cookies.pkl').exists()
+
+
+def test_app_login_rejects_a_web_cookie_deleted_during_validation(loginer, app_session):
+    app_session.deleted = True
+
+    assert loginer.app_login('user', 'password') is False
+
+
+def test_app_login_can_save_browser_compatible_cookies(loginer, app_session):
+    assert loginer.app_login('user', 'password', save_cookie=True)
+
+    with Path('cookies.pkl').open('rb') as saved:
+        cookies = pickle.load(saved)
+    web_cookie = next(cookie for cookie in cookies if cookie['name'] == 'BAHARUNE')
+    assert web_cookie == {
+        'name': 'BAHARUNE', 'value': 'synthetic-web-token',
+        'domain': '.gamer.com.tw', 'path': '/', 'secure': True, 'expiry': 2147483647,
+    }
+    assert all(cookie['name'] != 'unrelated' for cookie in cookies)
+
+
+def test_app_login_does_not_log_request_secrets_on_failure(
+        loginer, monkeypatch, app_session, capsys):
+    app_session.error = RuntimeError('private-test-password synthetic-web-token')
+    monkeypatch.setattr(loginer, '__color_print',
+                        lambda *args, **kwargs: print(kwargs.get('detail', '')))
+
+    assert loginer.app_login('user', 'private-test-password') is False
+    assert app_session.closed
+    output = capsys.readouterr()
+    assert 'RuntimeError' in output.out
+    assert 'private-test-password' not in output.out + output.err
+    assert 'synthetic-web-token' not in output.out + output.err
+
+
+def test_headless_app_login_success_skips_browser_startup(loginer, monkeypatch):
+    calls = []
+
+    def app_login(*args):
+        calls.append(args)
+        return 'BAHARUNE=synthetic-web-token'
+
+    def unexpected_browser(*args):
+        pytest.fail('Successful app login must not start a browser')
+
+    monkeypatch.setattr(loginer, 'app_login', app_login)
+    monkeypatch.setattr(loginer, 'get_driver', unexpected_browser)
+
+    assert loginer.do_all('user', 'password', True, True) == 'BAHARUNE=synthetic-web-token'
+    assert calls == [('user', 'password', True)]
 
 
 @pytest.fixture
