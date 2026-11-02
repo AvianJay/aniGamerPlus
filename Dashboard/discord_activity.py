@@ -121,6 +121,8 @@ class ActivityBackend:
         with self.lock:
             for room in self.rooms.values():
                 changed = False
+                if room.get('auto_grant_issuer', {}).get('sid') == sid:
+                    changed = self._clear_auto_grant(room)
                 for uid, grant in list(room['grants'].items()):
                     if grant['issuer_sid'] == sid:
                         room['grants'].pop(uid, None)
@@ -325,6 +327,26 @@ class ActivityBackend:
             self.login_attempts.pop(key, None)
         return self._identity(session)
 
+    def presence_token(self, session, body):
+        """Upgrade only the SDK token, keeping the existing viewing identity."""
+        config = self._configured()
+        code = body.get('code')
+        if not isinstance(code, str) or not 1 <= len(code) <= 4096:
+            raise ActivityError(400, 'invalid_code', 'Discord 授權碼無效。')
+        token = self._discord_request('POST', '/oauth2/token', data={
+            'client_id': config['client_id'], 'client_secret': config['client_secret'],
+            'grant_type': 'authorization_code', 'code': code})
+        access_token = token.get('access_token')
+        if not isinstance(access_token, str) or not access_token:
+            raise ActivityError(502, 'discord_failed', 'Discord 未回傳授權資料。')
+        scope = token.get('scope')
+        if not isinstance(scope, str) or not {'identify', 'rpc.activities.write'} <= set(scope.split()):
+            raise ActivityError(403, 'presence_scope_required', '請允許 Discord 播放動態權限。')
+        user = self._discord_request('GET', '/users/@me', headers={'Authorization': 'Bearer ' + access_token})
+        if user.get('id') != session['user']['id']:
+            raise ActivityError(403, 'discord_identity_mismatch', '請使用目前 Activity 的 Discord 帳號授權。')
+        return {'access_token': access_token}
+
     def link(self, session, *, unlink=False):
         account = self._account(session)
         if account is None:
@@ -389,13 +411,99 @@ class ActivityBackend:
             room['host_id'] = next(iter(eligible), None)
         if old_host != room['host_id']:
             room['grants'].clear()
+            self._clear_auto_grant(room)
+        auto_changed = False
+        if room.get('auto_grant') and self._auto_grant_authority(room, now) is None:
+            auto_changed = self._clear_auto_grant(room)
         removed_grants = []
         for uid, grant in list(room['grants'].items()):
             if not self._valid_grant(room, uid, grant, now):
                 room['grants'].pop(uid, None)
                 removed_grants.append(uid)
-        if (old != list(room['members']) or old_host != room['host_id'] or removed_grants or
+        auto_changed = self._apply_auto_grants(room, now) or auto_changed
+        if (old != list(room['members']) or old_host != room['host_id'] or removed_grants or auto_changed or
                 old_logged_in != {uid: member.get('logged_in') for uid, member in room['members'].items()}):
+            room['revision'] += 1
+
+    def _clear_auto_grant(self, room, *, clear_blocked=True):
+        changed = bool(room.get('auto_grant'))
+        room['auto_grant'] = False
+        room['auto_grant_issuer'] = {}
+        if clear_blocked:
+            room['auto_grant_blocked'] = set()
+        for uid, grant in list(room['grants'].items()):
+            if grant.get('automatic'):
+                room['grants'].pop(uid, None)
+                changed = True
+            elif grant.get('auto_recipient_sessions'):
+                grant['recipient_sessions'].difference_update(grant.pop('auto_recipient_sessions'))
+                changed = True
+        return changed
+
+    def _auto_grant_authority(self, room, now):
+        authority = room.get('auto_grant_issuer')
+        if not room.get('auto_grant') or not authority:
+            return None
+        issuer = self.sessions.get(authority['sid'])
+        host = room['members'].get(room['host_id'])
+        if (not issuer or issuer['expires'] <= now or not host or
+                authority['sid'] not in host['sessions'] or
+                issuer.get('instance_id') != room['instance_id'] or
+                issuer.get('user', {}).get('id') != room['host_id'] or
+                issuer.get('local_token') != authority['token']):
+            return None
+        account = self._account(issuer)
+        return (authority['sid'], issuer, account) if account and account['token'] == authority['token'] else None
+
+    def _apply_auto_grants(self, room, now):
+        authority = self._auto_grant_authority(room, now)
+        if authority is None or not room['sn']:
+            return False
+        issuer_sid, issuer, account = authority
+        changed = False
+        for uid, member in room['members'].items():
+            if uid == room['host_id'] or uid in room['auto_grant_blocked']:
+                continue
+            recipients = {sid for sid in member['sessions'] if self._account(self.sessions[sid]) is None}
+            if not recipients:
+                continue
+            grant = room['grants'].get(uid)
+            if grant:
+                new_sessions = recipients - grant['recipient_sessions']
+                if new_sessions:
+                    grant['recipient_sessions'].update(new_sessions)
+                    if not grant.get('automatic'):
+                        grant.setdefault('auto_recipient_sessions', set()).update(new_sessions)
+                    changed = True
+                continue
+            room['grants'][uid] = self._new_grant(room, issuer_sid, issuer, account, recipients, now,
+                                                 automatic=True)
+            changed = True
+        return changed
+
+    def _new_grant(self, room, sid, session, account, recipients, now, *, automatic=False):
+        return {'token': secrets.token_urlsafe(32), 'sn': room['sn'],
+                'issuer_sid': sid, 'issuer_id': session['user']['id'], 'issuer_token': account['token'],
+                'recipient_sessions': set(recipients), 'automatic': automatic,
+                'expires': min(now + GUEST_GRANT_TTL, session['expires'])}
+
+    def _set_auto_grant(self, room, sid, session, body):
+        if room['host_id'] != session['user']['id']:
+            raise ActivityError(403, 'host_required', '只有主控者可以設定自動授權。')
+        account = self._account(session)
+        if account is None:
+            raise ActivityError(403, 'login_required', '主控者必須登入網站帳號才能授權訪客。')
+        enabled = body.get('enabled')
+        if not isinstance(enabled, bool):
+            raise ActivityError(400, 'invalid_auto_grant', '請指定是否啟用自動授權。')
+        if enabled:
+            issuer = {'sid': sid, 'token': account['token']}
+            if not room['auto_grant'] or room['auto_grant_issuer'] != issuer:
+                self._clear_auto_grant(room, clear_blocked=False)
+                room['auto_grant'] = True
+                room['auto_grant_issuer'] = issuer
+                room['revision'] += 1
+        elif self._clear_auto_grant(room, clear_blocked=False):
             room['revision'] += 1
 
     def _valid_grant(self, room, uid, grant, now, *, sid=None):
@@ -431,7 +539,8 @@ class ActivityBackend:
                         raise ActivityError(503, 'server_busy', '一起看房間暫時已滿。')
                     room = {'instance_id': instance_id, 'host_id': None, 'members': {}, 'sn': None,
                             'position': 0.0, 'paused': True, 'rate': 1.0,
-                            'updated_at': now, 'last_active': now, 'revision': 0, 'grants': {}}
+                            'updated_at': now, 'last_active': now, 'revision': 0, 'grants': {},
+                            'auto_grant': False, 'auto_grant_issuer': {}, 'auto_grant_blocked': set()}
                     self.rooms[instance_id] = room
                 old_instance = session.get('instance_id')
                 if old_instance and old_instance != instance_id and old_instance in self.rooms:
@@ -462,6 +571,10 @@ class ActivityBackend:
                 self._control(room, body, now)
             elif action in ('grant', 'revoke'):
                 self._guest_grant(room, sid, session, body, now, revoke=action == 'revoke')
+            elif action == 'auto-grant':
+                self._set_auto_grant(room, sid, session, body)
+            if self._apply_auto_grants(room, now):
+                room['revision'] += 1
             return self._snapshot(room, uid, now, sid=sid)
 
     def _guest_grant(self, room, sid, session, body, now, *, revoke=False):
@@ -481,13 +594,12 @@ class ActivityBackend:
             raise ActivityError(404, 'participant_required', '請選擇目前 Activity 中的其他觀眾。')
         if revoke:
             room['grants'].pop(target, None)
+            if room['auto_grant']:
+                room['auto_grant_blocked'].add(target)
         else:
-            room['grants'][target] = {
-                'token': secrets.token_urlsafe(32), 'sn': sn,
-                'issuer_sid': sid, 'issuer_id': uid, 'issuer_token': account['token'],
-                'recipient_sessions': set(room['members'][target]['sessions']),
-                'expires': min(now + GUEST_GRANT_TTL, session['expires']),
-            }
+            room['auto_grant_blocked'].discard(target)
+            room['grants'][target] = self._new_grant(room, sid, session, account,
+                                                   room['members'][target]['sessions'], now)
         room['revision'] += 1
 
     def _remove_member(self, room, sid, uid, now):
@@ -513,6 +625,7 @@ class ActivityBackend:
             room.update(sn=str(sn), position=0.0, paused=True, rate=1.0,
                         updated_at=now, revision=room['revision'] + 1)
             room['grants'].clear()
+            room['auto_grant_blocked'].clear()
             return
         values = {}
         for field, lower, upper in (('position', 0, 7 * 24 * 3600), ('rate', 0.25, 4)):
@@ -562,6 +675,8 @@ class ActivityBackend:
                             'grant_expires_at': member_grant['expires'] if member_grant else None})
         result.update(server_time=now, is_host=uid == room['host_id'] and (not requires_login or own_account is not None),
                       members=members, can_watch=can_watch,
+                      auto_grant=room['auto_grant'],
+                      auto_grant_available=uid == room['host_id'] and own_account is not None,
                       watch_token=grant['token'] if valid_grant and own_account is None else None,
                       grant_expires_at=grant['expires'] if valid_grant else None)
         return result
@@ -588,6 +703,8 @@ class ActivityBackend:
                 result = self._identity(session)
             elif action == 'login':
                 result = self.login(sid, session, body)
+            elif action == 'presence-token':
+                result = self.presence_token(session, body)
             elif action in ('link', 'unlink'):
                 result = self.link(session, unlink=action == 'unlink')
             elif action == 'logout':
@@ -616,7 +733,7 @@ def install(server):
         return response
 
     server.app.add_api_route('/discord/activity', page, methods=['GET'])
-    for action in ('config', 'me', 'state', 'token', 'login', 'link', 'unlink', 'logout', 'join', 'control', 'leave', 'grant', 'revoke'):
+    for action in ('config', 'me', 'state', 'token', 'presence-token', 'login', 'link', 'unlink', 'logout', 'join', 'control', 'leave', 'grant', 'revoke', 'auto-grant'):
         def make_endpoint(action):
             async def endpoint(request: Request):
                 if request.method == 'GET':

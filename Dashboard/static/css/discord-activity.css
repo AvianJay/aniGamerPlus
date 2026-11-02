@@ -1,4 +1,4 @@
-.activity-body { min-width: 280px; }
+.activity-body { min-width: 0; }
 .activity-body [hidden] { display: none !important; }
 .activity-body button, .activity-body input { font: inherit; }
 .activity-body button { -webkit-tap-highlight-color: transparent; }
@@ -7,15 +7,23 @@
 .activity-brand { font-size: 17px; font-weight: 800; white-space: nowrap; }
 .activity-brand b { color: var(--agp-accent); font-size: 20px; margin-left: 2px; }
 .activity-wordmark { border-left: 1px solid var(--agp-line-strong); color: var(--agp-fg-dim); font-size: 13px; font-weight: 500; padding-left: 12px; }
-.activity-status { align-items: center; color: var(--agp-fg-dim); display: inline-flex; font-size: 12px; gap: 7px; }
+.activity-status { align-items: center; color: var(--agp-fg-dim); display: inline-flex; font-size: 12px; gap: 7px; white-space: nowrap; }
 .activity-status::before { background: #848794; border-radius: 50%; content: ''; height: 6px; width: 6px; }
 .activity-status[data-state="connected"]::before { background: #65dc9e; box-shadow: 0 0 9px #65dc9e44; }
 .activity-status[data-state="error"]::before { background: #ff7588; }
 .activity-main { margin: 0 auto; max-width: 1660px; padding: 22px max(24px, env(safe-area-inset-left)) max(24px, env(safe-area-inset-bottom)); }
 .activity-layout { align-items: start; display: grid; gap: 22px; grid-template-columns: minmax(0, 1fr) 320px; }
 .activity-stage-column { min-width: 0; }
-.activity-theater { aspect-ratio: 16 / 9; background: #050507; border: 1px solid var(--agp-line); border-radius: 14px; min-height: 270px; overflow: hidden; position: relative; }
+.activity-theater { aspect-ratio: 16 / 9; background: #050507; border: 1px solid var(--agp-line); border-radius: 14px; max-width: 100%; min-height: 270px; min-width: 0; overflow: hidden; position: relative; width: 100%; }
 .activity-theater iframe { border: 0; height: 100%; left: 0; position: absolute; top: 0; width: 100%; }
+.activity-player-expanded { overflow: hidden !important; }
+.activity-player-expanded .activity-theater { aspect-ratio: auto; border: 0; border-radius: 0; height: 100%; inset: 0; min-height: 0; position: fixed; width: 100%; z-index: 200; }
+.activity-expanded-exit { align-items: center; background: #15171de6; display: flex; gap: 9px; position: absolute; right: max(14px, env(safe-area-inset-right)); top: max(12px, env(safe-area-inset-top)); z-index: 5; }
+.activity-expanded-exit span { border: 1px solid var(--agp-line-strong); border-radius: 4px; color: var(--agp-fg-faint); font-size: 10px; padding: 2px 4px; }
+.activity-auto-grant { border-bottom: 1px solid var(--agp-line); margin-bottom: 15px; padding-bottom: 12px; }
+.activity-auto-grant button { text-align: left; width: 100%; }
+.activity-auto-grant button[aria-pressed="true"] { background: #ff003316; border-color: #ff00334a; color: #ff9aaf; }
+.activity-auto-grant p { font-size: 11px; margin: 7px 0 0; }
 .activity-placeholder { align-items: center; background: radial-gradient(ellipse at 50% 80%, #40102255, transparent 65%); display: flex; flex-direction: column; height: 100%; justify-content: center; min-height: 270px; padding: 28px; text-align: center; }
 .activity-play-symbol { align-items: center; background: #ff003315; border: 1px solid #ff003326; border-radius: 18px; color: #ff3057; display: flex; font-size: 26px; height: 66px; justify-content: center; margin-bottom: 20px; padding-left: 4px; width: 66px; }
 .activity-placeholder h1 { font-size: clamp(20px, 2.4vw, 30px); letter-spacing: -.02em; margin: 8px 0 10px; }
@@ -90,3 +98,38 @@
 @media (max-width: 1000px) { .activity-layout { grid-template-columns: minmax(0, 1fr) 280px; gap: 16px; } .activity-main { padding: 16px; } .activity-panel { padding: 14px; } .activity-topbar { padding-left: 16px; padding-right: 16px; } }
 @media (max-width: 760px) { .activity-layout { grid-template-columns: 1fr; } .activity-sidebar { display: grid; gap: 14px; grid-template-columns: minmax(0, 1fr) minmax(0, 1.4fr); } .activity-theater, .activity-placeholder { min-height: 230px; } .activity-brand { font-size: 15px; gap: 8px; } .activity-wordmark { font-size: 12px; padding-left: 8px; } .activity-topbar-actions { gap: 5px; } .activity-status { font-size: 11px; } .activity-library-list { max-height: 330px; } .activity-now-playing { padding-top: 18px; } .activity-now-playing h2 { font-size: 19px; } }
 @media (max-width: 480px) { .activity-topbar { gap: 8px; min-height: 59px; padding: 10px 12px; } .activity-brand img { height: 22px; width: 22px; } .activity-wordmark { display: none; } .activity-main { padding: 12px; } .activity-sidebar { display: flex; } .activity-theater, .activity-placeholder { min-height: 210px; } .activity-placeholder { padding: 20px; } .activity-play-symbol { height: 47px; margin-bottom: 15px; width: 47px; font-size: 20px; border-radius: 13px; } .activity-placeholder h1 { font-size: 20px; } .activity-placeholder > p:last-of-type { font-size: 12px; } .activity-now-playing h2 { font-size: 17px; } .activity-field { flex-basis: 100%; } .activity-account-form .activity-button { width: 100%; } .activity-control-description { font-size: 11px; } }
+@media (max-width: 480px) { .activity-topbar { align-items: flex-start; } .activity-brand { padding-top: 8px; } .activity-topbar-actions { flex: 1; flex-wrap: wrap; justify-content: flex-end; min-width: 0; } #activityPresenceToggle { max-width: 100%; order: 3; } }
+
+/* Discord's mobile floating Activity can be a small square. Keep its existing
+   player at the viewport size instead of squeezing the whole page into it. */
+.activity-body.activity-client-compact { height: 100vh; height: 100dvh; min-height: 0; overflow: hidden; }
+.activity-client-compact .activity-topbar, .activity-client-compact .activity-sidebar,
+.activity-client-compact .activity-now-playing, .activity-client-compact .activity-control-description,
+.activity-client-compact .activity-notice, .activity-client-compact .activity-account,
+.activity-client-compact .activity-toast { display: none !important; }
+.activity-client-compact .activity-main { height: 100%; margin: 0; max-width: none; padding: 0; width: 100%; }
+.activity-client-compact .activity-layout, .activity-client-compact .activity-stage-column { display: block; height: 100%; min-height: 0; }
+.activity-client-compact .activity-theater { aspect-ratio: auto; border: 0; border-radius: 0; height: 100%; min-height: 0; width: 100%; }
+.activity-client-compact .activity-placeholder { min-height: 0; overflow: auto; padding: 14px; }
+.activity-client-compact .activity-placeholder .activity-play-symbol,
+.activity-client-compact .activity-placeholder .activity-eyebrow { display: none; }
+.activity-client-compact .activity-placeholder h1 { font-size: 16px; line-height: 1.4; margin: 0 0 8px; }
+.activity-client-compact .activity-placeholder > p:last-of-type { font-size: 11px; line-height: 1.5; }
+.activity-client-compact .activity-placeholder .activity-button { font-size: 11px !important; margin-top: 10px; min-height: 28px; padding: 5px 9px; }
+.activity-client-compact .activity-expanded-exit { font-size: 10px !important; min-height: 27px; padding: 4px 7px; right: 6px; top: 6px; }
+.activity-client-compact .activity-expanded-exit span { display: none; }
+@media (max-width: 280px), (max-width: 640px) and (max-height: 360px) {
+  .activity-body { height: 100vh; height: 100dvh; min-height: 0; overflow: hidden; }
+  .activity-topbar, .activity-sidebar, .activity-now-playing, .activity-control-description,
+  .activity-notice, .activity-account, .activity-toast { display: none !important; }
+  .activity-main { height: 100%; margin: 0; max-width: none; padding: 0; width: 100%; }
+  .activity-layout, .activity-stage-column { display: block; height: 100%; min-height: 0; }
+  .activity-theater { aspect-ratio: auto; border: 0; border-radius: 0; height: 100%; min-height: 0; width: 100%; }
+  .activity-placeholder { min-height: 0; overflow: auto; padding: 14px; }
+  .activity-placeholder .activity-play-symbol, .activity-placeholder .activity-eyebrow { display: none; }
+  .activity-placeholder h1 { font-size: 16px; line-height: 1.4; margin: 0 0 8px; }
+  .activity-placeholder > p:last-of-type { font-size: 11px; line-height: 1.5; }
+  .activity-placeholder .activity-button { font-size: 11px !important; margin-top: 10px; min-height: 28px; padding: 5px 9px; }
+  .activity-expanded-exit { font-size: 10px !important; min-height: 27px; padding: 4px 7px; right: 6px; top: 6px; }
+  .activity-expanded-exit span { display: none; }
+}

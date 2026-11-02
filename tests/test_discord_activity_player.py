@@ -238,6 +238,42 @@ def test_guest_player_carries_video_grant_on_media_and_metadata_only(activity_pl
     assert frame.evaluate("activityWatchUrl('./watch/time?type=set')") == './watch/time?type=set'
 
 
+def test_activity_fullscreen_uses_parent_messages_and_reflects_parent_state(activity_player):
+    page, frame = activity_player
+    frame.evaluate("""() => {
+      window.nativeFullscreenCalls=0;
+      Element.prototype.requestFullscreen=function(){window.nativeFullscreenCalls++;throw Error('native disabled')};
+      Element.prototype.webkitRequestFullscreen=function(){window.nativeFullscreenCalls++;throw Error('native disabled')};
+      window.page.player.toggleFullscreen();
+    }""")
+    page.wait_for_function("window.activityMessages.some(message=>message.type==='agp:activity-fullscreen'&&message.expanded===true)")
+    assert frame.evaluate('window.nativeFullscreenCalls') == 0
+    page.evaluate("""() => document.querySelector('#player').contentWindow.postMessage(
+      {type:'agp:activity-fullscreen-state',expanded:true},location.origin)""")
+    frame.wait_for_function("document.querySelector('#fullscreenToggle').getAttribute('aria-pressed')==='true'")
+    assert frame.locator('#fullscreenToggle').get_attribute('aria-label') == '還原畫面'
+    frame.locator('#fullscreenToggle').focus()
+    page.keyboard.press('Escape')
+    page.wait_for_function("window.activityMessages.some(message=>message.type==='agp:activity-fullscreen'&&message.expanded===false)")
+    page.evaluate("""() => document.querySelector('#player').contentWindow.postMessage(
+      {type:'agp:activity-fullscreen-state',expanded:false},location.origin)""")
+    frame.wait_for_function("document.querySelector('#fullscreenToggle').getAttribute('aria-pressed')==='false'")
+    assert frame.evaluate('window.nativeFullscreenCalls') == 0
+
+
+def test_activity_playback_metadata_has_flutter_template_fields_without_capability(activity_player):
+    page, frame = activity_player
+    frame.goto(frame.url + '&ag=guest-test-capability-scoped-to-this-video')
+    frame.wait_for_function('window.page?.player?.video.readyState>=2')
+    page.wait_for_function("window.activityMessages.some(message=>message.type==='agp:activity-playback'&&message.duration>0)")
+    metadata = page.evaluate("window.activityMessages.filter(message=>message.type==='agp:activity-playback'&&message.duration>0).at(-1)")
+    assert metadata['sn'] == str(FIRST_SN)
+    assert metadata['title'] and metadata['episode']
+    assert isinstance(metadata['paused'], bool)
+    assert metadata['rate'] == 1
+    assert 'guest-test-capability' not in str(metadata)
+
+
 @pytest.mark.parametrize('width', [900, 390])
 def test_player_fits_activity_frame_without_inner_scrolling(activity_player, width):
     page, frame = activity_player
@@ -256,3 +292,38 @@ def test_player_fits_activity_frame_without_inner_scrolling(activity_player, wid
     assert layout['controlsBottom'] <= layout['viewport'] + 1
     assert layout['shellBottom'] <= layout['viewport'] + 1
     assert layout['scrollHeight'] <= layout['viewport'] + 1, layout
+
+
+@pytest.mark.parametrize('width,height', [(200, 200), (240, 240), (320, 240), (390, 220)])
+def test_actual_player_controls_fit_discord_mobile_square_and_survive_restore(activity_player, width, height):
+    page, frame = activity_player
+    snapshot(page, host=True, position=5)
+    frame.wait_for_function('Math.abs(window.page.player.video.currentTime-5)<.1')
+    frame.evaluate('window.savedVideo=window.page.player.video')
+    page.evaluate("""() => {
+      const stage=document.querySelector('#stage');
+      stage.style.cssText='width:100vw;height:100vh;aspect-ratio:auto';
+    }""")
+    page.set_viewport_size({'width': width, 'height': height})
+    frame.evaluate('window.page.player.showControls()')
+    layout = frame.evaluate("""() => {
+      const rect=document.querySelector('#playerShell').getBoundingClientRect();
+      const controls=['#playToggle','#settingsToggle','#fullscreenToggle'].map(id=>{
+        const el=document.querySelector(id);const box=el.getBoundingClientRect();
+        return {width:box.width,left:box.left,right:box.right,top:box.top,bottom:box.bottom};
+      });
+      return {width:innerWidth,height:innerHeight,scrollWidth:document.documentElement.scrollWidth,
+        scrollHeight:document.documentElement.scrollHeight,playerWidth:rect.width,playerHeight:rect.height,controls};
+    }""")
+    assert layout['width'] == layout['playerWidth'] == layout['scrollWidth'] == width
+    assert layout['height'] == layout['playerHeight'] == layout['scrollHeight'] == height
+    for button in layout['controls']:
+        assert button['width'] >= 30
+        assert 0 <= button['left'] < button['right'] <= width
+        assert 0 <= button['top'] < button['bottom'] <= height
+    assert frame.evaluate('window.page.player.video===window.savedVideo')
+    assert frame.evaluate('window.page.player.video.currentTime') == pytest.approx(5, abs=.1)
+    page.set_viewport_size({'width': 390, 'height': 844})
+    assert frame.evaluate('window.page.player.video===window.savedVideo')
+    assert frame.evaluate('document.documentElement.scrollWidth===innerWidth')
+    assert frame.evaluate('document.documentElement.scrollHeight===innerHeight')

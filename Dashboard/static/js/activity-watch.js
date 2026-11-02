@@ -10,9 +10,21 @@
     var connected = false;
     var expected = {};
     var lastRevision = null;
+    var expanded = false;
+    var lastPlaybackReport = 0;
     var hint;
 
     function send(message) { window.parent.postMessage(message, location.origin); }
+    function playbackReport(force) {
+        if (!player || (!force && performance.now() - lastPlaybackReport < 5000)) { return; }
+        lastPlaybackReport = performance.now();
+        var video = player.video;
+        send({ type: 'agp:activity-playback', sn: String(player.videoData.sn),
+            title: player.seriesInfo && player.seriesInfo.title || player.videoData.anime_name || player.videoData.title || '',
+            episode: episodeLabel(player.videoData), position: video.currentTime,
+            duration: player.playableDuration(), paused: video.paused,
+            rate: video.playbackRate, cover: player.seriesInfo && player.seriesInfo.cover || '' });
+    }
     function position() {
         if (!snapshot) { return 0; }
         return Math.max(0, snapshot.position + (snapshot.paused ? 0 :
@@ -63,6 +75,29 @@
         };
     }
 
+    function syncExpanded(on) {
+        expanded = !!on;
+        if (!player) { return; }
+        player.pseudoFullscreen = expanded;
+        player.syncFullscreenButton();
+    }
+
+    // Discord owns the outer window. Expand our parent Activity layout only.
+    AgpPlayer.prototype.toggleFullscreen = function () {
+        send({ type: 'agp:activity-fullscreen', expanded: !expanded });
+    };
+    AgpPlayer.prototype.setPseudoFullscreen = function (on) {
+        send({ type: 'agp:activity-fullscreen', expanded: !!on });
+    };
+    AgpPlayer.prototype.syncFullscreenButton = function () {
+        var button = this.shell.querySelector('#fullscreenToggle');
+        if (!button) { return; }
+        button.innerHTML = AGP.icon(expanded ? 'compress' : 'expand', 23);
+        button.setAttribute('aria-pressed', String(expanded));
+        button.setAttribute('aria-label', expanded ? '還原畫面' : '填滿畫面');
+        this.shell.classList.toggle('is-fullscreen', expanded);
+    };
+
     // Prevent player navigation from discarding the Discord SDK and room context.
     AgpPlayer.prototype.goRelative = function (direction) {
         var next = this.neighbour(direction);
@@ -81,6 +116,13 @@
     };
     var handleKey = AgpPlayer.prototype.handleKey;
     AgpPlayer.prototype.handleKey = function (event) {
+        if (event.key === 'Escape' && expanded) {
+            send({ type: 'agp:activity-fullscreen', expanded: false });
+            this.closeMenus();
+            this.cancelNextEpisode();
+            event.preventDefault();
+            return;
+        }
         if ((!connected || !host) && ['Home', 'End'].indexOf(event.key) !== -1) {
             event.preventDefault();
             return;
@@ -90,8 +132,13 @@
 
     window.addEventListener('message', function (event) {
         if (event.source !== window.parent || event.origin !== location.origin || !event.data) { return; }
+        if (event.data.type === 'agp:activity-fullscreen-state') {
+            syncExpanded(event.data.expanded === true);
+            return;
+        }
         if (event.data.type === 'agp:activity-disconnect') {
             connected = false;
+            syncExpanded(false);
             if (player) { player.video.pause(); player.seek.disabled = true; }
             inform();
             return;
@@ -122,6 +169,7 @@
             player = instance;
             player.autoNext = false;
             player.seek.disabled = true;
+            syncExpanded(expanded);
             hint = document.createElement('p');
             hint.className = 'activity-player-hint';
             hint.setAttribute('role', 'status');
@@ -129,6 +177,7 @@
             var video = player.video;
             ['play', 'pause', 'seeked', 'ratechange', 'ended'].forEach(function (name) {
                 video.addEventListener(name, function () {
+                    playbackReport(true);
                     if (Object.prototype.hasOwnProperty.call(expected, name)) {
                         var value = expected[name];
                         delete expected[name];
@@ -140,10 +189,13 @@
                     control({ play: 'play', pause: 'pause', seeked: 'seek', ratechange: 'rate', ended: 'pause' }[name]);
                 });
             });
-            video.addEventListener('loadedmetadata', function () { apply(true); });
+            video.addEventListener('loadedmetadata', function () { apply(true); playbackReport(true); });
+            video.addEventListener('durationchange', function () { playbackReport(true); });
+            video.addEventListener('timeupdate', function () { playbackReport(false); });
             setInterval(function () { if (connected && host && !video.seeking && video.readyState >= 2) { control('sync'); } }, 5000);
             inform();
             send({ type: 'agp:activity-ready' });
+            playbackReport(true);
             apply(true);
         }
     };

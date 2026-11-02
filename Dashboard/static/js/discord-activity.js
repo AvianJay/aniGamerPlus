@@ -27,6 +27,13 @@
     var lastSync = 0;
     var controlChain = Promise.resolve();
     var controlEpoch = 0;
+    var expanded = false;
+    var autoGrantPending = false;
+    var presence = null;
+    var presencePending = false;
+    var presenceScopeGranted = false;
+    var playbackMetadata = null;
+    var layoutSubscribed = false;
     var frame = document.getElementById('activityPlayer');
     var elements = {};
     [
@@ -37,7 +44,8 @@
         'playerPlaceholder', 'lobbyTitle', 'lobbyDescription', 'connectButton',
         'playingTitle', 'playingEpisode', 'playbackRole', 'controlDescription',
         'memberCount', 'memberList', 'refreshLibrary', 'librarySearch',
-        'libraryHint', 'libraryList', 'activityToast'
+        'libraryHint', 'libraryList', 'activityToast', 'activityExpandedExit',
+        'autoGrantControls', 'autoGrantToggle', 'activityPresenceToggle'
     ].forEach(function (id) { elements[id] = document.getElementById(id); });
 
     function status(text, state) {
@@ -55,6 +63,125 @@
         elements.activityToast.textContent = message;
         elements.activityToast.hidden = false;
         toastTimer = setTimeout(function () { elements.activityToast.hidden = true; }, 4500);
+    }
+
+    function postExpanded() {
+        if (frame.contentWindow) {
+            frame.contentWindow.postMessage({ type: 'agp:activity-fullscreen-state', expanded: expanded }, window.location.origin);
+        }
+    }
+
+    function subscribeLayout() {
+        if (layoutSubscribed || !sdk || typeof sdk.subscribe !== 'function') { return; }
+        layoutSubscribed = true;
+        var change = function (value) {
+            if (!value || [0, 1, 2].indexOf(value.layout_mode) === -1) { return; }
+            document.body.classList.toggle('activity-client-compact', value.layout_mode !== 0);
+        };
+        try {
+            Promise.resolve(sdk.subscribe('ACTIVITY_LAYOUT_MODE_UPDATE', change)).catch(function () {
+                layoutSubscribed = false;
+            });
+        } catch (_) { layoutSubscribed = false; }
+    }
+
+    function renderPresence() {
+        elements.activityPresenceToggle.hidden = !presence;
+        elements.activityPresenceToggle.disabled = presencePending || !identity || !identity.user;
+        var enabled = !!(presence && presence.enabled);
+        elements.activityPresenceToggle.setAttribute('aria-pressed', String(enabled));
+        elements.activityPresenceToggle.textContent = '顯示播放動態：' + (enabled ? '開啟' : '關閉');
+    }
+
+    function updatePresence() {
+        if (!presence) { return; }
+        if (!joined || !currentState || !currentState.can_watch || !currentVideo) {
+            presence.clear();
+            return;
+        }
+        var state = Object.assign({}, currentState);
+        state.server_time += Math.max(0, performance.now() - snapshotReceivedAt) / 1000;
+        presence.update({ state: state, identity: identity,
+            video: findVideo(currentVideo), player: playbackMetadata });
+    }
+
+    async function authorizePresence() {
+        if (presenceScopeGranted) { return; }
+        if (!sdk || !identity || !identity.user) { throw new Error('請先連線 Discord。'); }
+        var userId = String(identity.user.id);
+        var authorized = await sdk.commands.authorize({
+            client_id: config.client_id, response_type: 'code', state: csrf,
+            prompt: 'none', scope: ['identify', 'applications.commands', 'rpc.activities.write']
+        });
+        var exchanged = await api('presence-token', { code: authorized.code });
+        var auth = await sdk.commands.authenticate({ access_token: exchanged.access_token });
+        delete exchanged.access_token;
+        if (!auth || !auth.user || String(auth.user.id) !== userId ||
+            !identity || String(identity.user.id) !== userId) {
+            throw new Error('Discord 身分已變更，請重新連線。');
+        }
+        presenceScopeGranted = true;
+    }
+
+    function setupPresence() {
+        if (!window.AgpDiscordPresence) { return; }
+        if (!presence) {
+            presence = window.AgpDiscordPresence.create({ sdk: sdk, authorize: authorizePresence,
+                onChange: renderPresence,
+                onError: function () { toast('無法更新 Discord 播放動態，觀看不受影響。'); }
+            });
+        }
+        renderPresence();
+    }
+
+    async function togglePresence() {
+        if (!presence || presencePending) { return; }
+        presencePending = true;
+        renderPresence();
+        try {
+            await presence.setEnabled(!presence.enabled);
+            updatePresence();
+        } catch (_) {
+            toast('未能啟用播放動態，請確認 Discord 已允許播放動態權限。');
+        } finally {
+            presencePending = false;
+            renderPresence();
+        }
+    }
+
+    function setExpanded(on) {
+        expanded = !!on && joined && !!currentVideo && !frame.hidden;
+        document.body.classList.toggle('activity-player-expanded', expanded);
+        elements.activityExpandedExit.hidden = !expanded;
+        postExpanded();
+        if (expanded) { frame.focus(); }
+    }
+
+    function renderAutoGrant() {
+        var available = !!(joined && currentState && currentState.auto_grant_available &&
+            currentState.is_host && identity && identity.account && config && config.requires_login);
+        elements.autoGrantControls.hidden = !available;
+        elements.autoGrantToggle.disabled = !available || autoGrantPending;
+        var enabled = !!(currentState && currentState.auto_grant);
+        elements.autoGrantToggle.setAttribute('aria-pressed', String(enabled));
+        elements.autoGrantToggle.textContent = '自動授權訪客：' + (enabled ? '開啟' : '關閉');
+    }
+
+    async function toggleAutoGrant() {
+        if (autoGrantPending || !joined || !currentState || !currentState.auto_grant_available ||
+            !currentState.is_host || !identity || !identity.account) { return; }
+        var enable = !currentState.auto_grant;
+        autoGrantPending = true;
+        renderAutoGrant();
+        try {
+            acceptState(await api('auto-grant', { instance_id: instanceId, enabled: enable }));
+            toast(enable ? '已開啟自動授權，每集都會使用新的觀看授權。' : '已關閉自動授權，手動授權仍然保留。');
+        } catch (error) {
+            toast(errorMessage(error, '無法更新自動授權，請稍後再試。'));
+        } finally {
+            autoGrantPending = false;
+            renderAutoGrant();
+        }
     }
 
     function errorMessage(error, fallback) {
@@ -301,6 +428,9 @@
     }
 
     function clearPlayer() {
+        playbackMetadata = null;
+        if (presence) { presence.clear(); }
+        setExpanded(false);
         clearTimeout(grantExpiryTimer);
         if (frame.contentWindow) {
             frame.contentWindow.postMessage({ type: 'agp:activity-disconnect' }, window.location.origin);
@@ -335,6 +465,7 @@
         var videoChanged = currentVideo !== nextVideo || currentWatchToken !== nextToken;
         currentState = state;
         snapshotReceivedAt = performance.now();
+        renderAutoGrant();
         if (membershipChanged) { memberSignature = signature; renderMembers(state); }
         if (roleChanged) {
             elements.playbackRole.hidden = false;
@@ -393,6 +524,7 @@
             elements.lobbyDescription.textContent = state.is_host ? '從旁邊的片庫挑選，播放進度會自動同步給所有人。' : '主控選片後，畫面和播放進度會自動同步。';
         }
         postState();
+        updatePresence();
     }
 
     function haltPlayback() {
@@ -401,6 +533,7 @@
         clearPlayer();
         joined = false;
         currentState = null;
+        renderAutoGrant();
         elements.playbackRole.hidden = true;
         elements.refreshLibrary.disabled = true;
         elements.librarySearch.disabled = true;
@@ -427,6 +560,7 @@
             acceptState(state);
         } catch (error) {
             if (!joined) { return; }
+            if (presence) { presence.clear(); }
             if (error.code === 'join_required') {
                 try { await joinRoom(); return; } catch (joinError) { error = joinError; }
             }
@@ -521,6 +655,10 @@
         status('正在連線', '');
         notice('');
         try {
+            if (presence) {
+                await presence.setEnabled(false);
+                renderPresence();
+            }
             var params = new URLSearchParams(window.location.search);
             if (!params.get('frame_id') || !params.get('instance_id') || !params.get('platform')) {
                 elements.lobbyTitle.textContent = '從 Discord 開始一起看';
@@ -543,6 +681,7 @@
                 sdk.ready(),
                 new Promise(function (_, reject) { setTimeout(function () { reject(new Error('未能連到 Discord，請從語音頻道重新開啟活動。')); }, 15000); })
             ]);
+            subscribeLayout();
             var authorized = await sdk.commands.authorize({
                 client_id: config.client_id,
                 response_type: 'code',
@@ -551,6 +690,7 @@
                 scope: ['identify', 'applications.commands']
             });
             identity = await api('token', { code: authorized.code });
+            presenceScopeGranted = false;
             if (identity.csrf_token) { csrf = identity.csrf_token; }
             var auth = await sdk.commands.authenticate({ access_token: identity.access_token });
             delete identity.access_token;
@@ -558,6 +698,7 @@
                 throw new Error('Discord 身分驗證未完成，請重新開啟活動。');
             }
             instanceId = sdk.instanceId;
+            setupPresence();
             renderIdentity();
             await joinRoom();
         } catch (error) {
@@ -630,11 +771,36 @@
         authorizeMember(button.dataset.accessAction, button.dataset.userId, button.dataset.sn);
     });
     elements.connectButton.addEventListener('click', start);
-    frame.addEventListener('load', postState);
+    elements.autoGrantToggle.addEventListener('click', toggleAutoGrant);
+    elements.activityPresenceToggle.addEventListener('click', togglePresence);
+    elements.activityExpandedExit.addEventListener('click', function () { setExpanded(false); });
+    document.addEventListener('keydown', function (event) {
+        if (event.key === 'Escape' && expanded) { setExpanded(false); event.preventDefault(); }
+    });
+    frame.addEventListener('load', function () { postState(); postExpanded(); });
     window.addEventListener('message', function (event) {
         if (event.origin !== window.location.origin || event.source !== frame.contentWindow || !event.data) { return; }
         var data = event.data;
-        if (data.type === 'agp:activity-ready') { postState(); return; }
+        if (data.type === 'agp:activity-playback') {
+            if (!joined || !currentState || !currentState.can_watch || String(data.sn) !== currentVideo) { return; }
+            playbackMetadata = {
+                sn: currentVideo,
+                title: typeof data.title === 'string' ? data.title : '',
+                episode: typeof data.episode === 'string' ? data.episode : '',
+                position: Number.isFinite(data.position) ? data.position : 0,
+                duration: Number.isFinite(data.duration) ? data.duration : 0,
+                paused: data.paused !== false,
+                rate: Number.isFinite(data.rate) ? data.rate : 1,
+                cover: typeof data.cover === 'string' ? data.cover : ''
+            };
+            updatePresence();
+            return;
+        }
+        if (data.type === 'agp:activity-ready') { postState(); postExpanded(); return; }
+        if (data.type === 'agp:activity-fullscreen') {
+            if (typeof data.expanded === 'boolean') { setExpanded(data.expanded); }
+            return;
+        }
         if (data.type === 'agp:activity-autoplay-blocked') { toast('點一下播放器開始播放，之後會自動跟上主控進度。'); return; }
         if (data.type !== 'agp:activity-control' || !joined || !currentState || !currentState.is_host) { return; }
         if (['select', 'play', 'pause', 'seek', 'rate', 'sync'].indexOf(data.action) < 0) { return; }
@@ -655,6 +821,7 @@
         sendControl(payload);
     });
     window.addEventListener('pagehide', function () {
+        if (presence) { presence.clear(); }
         clearTimeout(pollTimer);
         if (joined && csrf) {
             api('leave', { instance_id: instanceId }, { keepalive: true }).catch(function () {});

@@ -18,6 +18,10 @@ class ActivityMock:
         self.calls = []
         self.authorizations = []
         self.join_grant_duration = None
+        self.auto_grant_fail = False
+        self.auto_grant_requests = []
+        self.use_real_presence = False
+        self.fail_next_state = False
         self.identity = {
             'user': {'id': '123', 'username': 'discord-me'},
             'account': None, 'linked': False, 'requires_login': True,
@@ -34,6 +38,7 @@ class ActivityMock:
             'updated_at': time.time(), 'server_time': time.time(),
             'is_host': False, 'revision': 1, 'can_watch': False,
             'watch_token': None, 'grant_expires_at': None,
+            'auto_grant': False, 'auto_grant_available': False,
         }
 
     def handle(self, route):
@@ -51,11 +56,19 @@ class ActivityMock:
         if path == '/discord/activity':
             return respond((ROOT / 'Dashboard/templates/discord_activity.html').read_bytes(), 'text/html')
         if path == '/static/js/vendor/discord-embedded-app-sdk.js':
-            return respond('''window.DiscordEmbeddedAppSDK={DiscordSDK:class{
+            return respond('''window.sdkAuthorizations=[];window.sdkActivities=[];
+                window.DiscordEmbeddedAppSDK={DiscordSDK:class{
                 constructor(){this.instanceId='room';this.commands={
-                    authorize:async()=>({code:'fake-code'}),
-                    authenticate:async()=>({user:{id:'123'}})}}
-                ready(){return Promise.resolve()}}};''', 'application/javascript')
+                    authorize:async(value)=>{window.sdkAuthorizations.push(value);return {code:'fake-code'}},
+                    authenticate:async()=>({user:{id:'123'}}),
+                    setActivity:async(value)=>{window.sdkActivities.push(value);return value}}}
+                ready(){return Promise.resolve()}
+                subscribe(event,handler){if(event==='ACTIVITY_LAYOUT_MODE_UPDATE')window.sdkLayoutHandler=handler;return Promise.resolve()}
+                unsubscribe(){return Promise.resolve()}}};''', 'application/javascript')
+        if path == '/static/js/discord-activity-presence.js':
+            if self.use_real_presence:
+                return respond((ROOT/'Dashboard/static/js/discord-activity-presence.js').read_bytes(), 'application/javascript')
+            return respond('''window.AgpDiscordPresence={create:()=>({update(){},clear(){},destroy(){},setEnabled:async()=>{}})};''', 'application/javascript')
         if path.startswith('/static/'):
             file = ROOT / 'Dashboard' / path.lstrip('/')
             content_type = {'.css': 'text/css', '.js': 'application/javascript', '.ico': 'image/x-icon'}.get(file.suffix)
@@ -70,12 +83,16 @@ class ActivityMock:
         if path == '/discord/activity/token':
             assert request.post_data_json == {'code': 'fake-code'}
             return respond({**self.identity, 'access_token': 'fake-token'})
+        if path == '/discord/activity/presence-token':
+            assert request.post_data_json == {'code': 'fake-code'}
+            return respond({'access_token': 'fake-presence-token'})
         if path == '/discord/activity/me':
             return respond(self.identity)
         if path == '/discord/activity/login':
             assert request.post_data_json == {'username': 'tester', 'password': 'test-password'}
             self.identity['account'] = {'username': 'tester', 'role': 'user'}
             self.state.update(host_id='123', is_host=True, can_watch=True,
+                              auto_grant_available=True,
                               revision=self.state['revision'] + 1)
             self.state['members'][0].update(logged_in=True, is_guest=False, requires_approval=False, authorized=True)
             return respond(self.identity)
@@ -85,11 +102,15 @@ class ActivityMock:
         if path == '/discord/activity/unlink':
             self.identity.update(account=None, linked=False)
             self.state.update(host_id='456', is_host=False, can_watch=False,
+                              auto_grant=False, auto_grant_available=False,
                               watch_token=None, grant_expires_at=None,
                               revision=self.state['revision'] + 1)
             self.state['members'][0].update(logged_in=False, is_guest=True, requires_approval=True, authorized=False)
             return respond(self.identity)
         if path in ['/discord/activity/join', '/discord/activity/state']:
+            if path.endswith('/state') and self.fail_next_state:
+                self.fail_next_state = False
+                return respond({'error': 'session_expired', 'message': '連線已過期'}, status=401)
             if path.endswith('/join') and self.join_grant_duration is not None:
                 self.state['grant_expires_at'] = time.time() + self.join_grant_duration
                 self.join_grant_duration = None
@@ -104,6 +125,15 @@ class ActivityMock:
             self.state['members'][1].update(authorized=granted, requires_approval=not granted,
                                             grant_expires_at=time.time()+600 if granted else None)
             self.state['revision'] += 1
+            return respond(self.state)
+        if path == '/discord/activity/auto-grant':
+            data = request.post_data_json
+            assert set(data) == {'instance_id', 'enabled'}
+            assert data['instance_id'] == 'room' and isinstance(data['enabled'], bool)
+            self.auto_grant_requests.append(data)
+            if self.auto_grant_fail:
+                return respond({'message': '更新失敗'}, status=503)
+            self.state.update(auto_grant=data['enabled'], revision=self.state['revision']+1)
             return respond(self.state)
         if path == '/video_list.json':
             return respond({'videos': [
@@ -258,3 +288,244 @@ def test_guest_grant_expiry_stops_player_before_next_room_poll(activity_ui):
     assert frame.locator('#activityPlayer').get_attribute('src') is None
     assert frame.locator('#lobbyTitle').text_content() == '本集授權已到期'
     assert ('GET', '/video_list.json') not in mocked.calls
+
+
+def test_host_auto_grant_toggle_is_authoritative_and_failure_keeps_previous_state(activity_ui):
+    page, mocked = activity_ui
+    page.goto(ORIGIN + '/outer')
+    frame = page.frames[1]
+    frame.wait_for_function("document.querySelector('#lobbyTitle').textContent==='等候主辦人授權'")
+    assert frame.locator('#autoGrantControls').is_hidden()
+    frame.locator('#accountToggle').click()
+    frame.locator('#accountUsername').fill('tester')
+    frame.locator('#accountPassword').fill('test-password')
+    frame.locator('#accountLogin').click()
+    button = frame.locator('#autoGrantToggle')
+    button.wait_for(state='visible')
+    assert button.get_attribute('aria-pressed') == 'false'
+    button.click()
+    frame.wait_for_function("document.querySelector('#autoGrantToggle').getAttribute('aria-pressed')==='true'")
+    assert mocked.auto_grant_requests == [{'instance_id': 'room', 'enabled': True}]
+    mocked.auto_grant_fail = True
+    button.click()
+    frame.wait_for_function("document.querySelector('#activityToast').textContent==='更新失敗'")
+    assert button.get_attribute('aria-pressed') == 'true'
+    assert not button.is_disabled()
+    mocked.auto_grant_fail = False
+    button.click()
+    frame.wait_for_function("document.querySelector('#autoGrantToggle').getAttribute('aria-pressed')==='false'")
+    mocked.state.update(is_host=False, auto_grant_available=False, revision=mocked.state['revision']+1)
+    frame.locator('#autoGrantControls').wait_for(state='hidden')
+
+
+def test_optional_presence_uses_flutter_template_and_separate_authorization_without_resetting_room(activity_ui):
+    page, mocked = activity_ui
+    mocked.use_real_presence = True
+    mocked.state.update(host_id='456', sn='100', can_watch=True, watch_token='guest-video-token',
+                        position=12, rate=1.5, paused=False, updated_at=time.time())
+    page.goto(ORIGIN + '/outer')
+    frame = page.frames[1]
+    player = frame.locator('#activityPlayer')
+    player.wait_for(state='visible')
+    assert frame.locator('#activityPresenceToggle').get_attribute('aria-pressed') == 'false'
+    assert frame.evaluate('window.sdkActivities') == []
+    assert all('rpc.activities.write' not in value['scope'] for value in frame.evaluate('window.sdkAuthorizations'))
+    before_src = player.get_attribute('src')
+    child = frame.child_frames[0]
+    child.evaluate("""() => parent.postMessage({type:'agp:activity-playback',sn:'100',
+      title:'孤獨搖滾！',episode:'第 1 集',position:12,duration:1440,paused:false,rate:1.5,
+      cover:'https://example.com/cover.webp'},location.origin)""")
+    frame.locator('#activityPresenceToggle').click()
+    frame.wait_for_function("window.sdkActivities.some(value=>value.activity?.details==='孤獨搖滾！')")
+    assert frame.locator('#activityPresenceToggle').get_attribute('aria-pressed') == 'true'
+    assert ('POST', '/discord/activity/presence-token') in mocked.calls
+    assert mocked.calls.count(('POST', '/discord/activity/token')) == 1
+    authorization = frame.evaluate('window.sdkAuthorizations.at(-1)')
+    assert 'rpc.activities.write' in authorization['scope']
+    activity = frame.evaluate('window.sdkActivities.filter(value=>value.activity?.details).at(-1).activity')
+    assert activity['type'] == 3 and activity['details'] == '孤獨搖滾！'
+    assert activity['state'] == '第 1 集'
+    assert activity['assets'] == {'large_image': 'https://example.com/cover.webp', 'large_text': '孤獨搖滾！'}
+    assert activity['timestamps']['end'] > activity['timestamps']['start']
+    assert 'guest-video-token' not in str(activity)
+    assert player.get_attribute('src') == before_src
+    mocked.state.update(paused=True, position=30, updated_at=time.time(), revision=mocked.state['revision']+1)
+    child.evaluate("""() => parent.postMessage({type:'agp:activity-playback',sn:'100',
+      title:'孤獨搖滾！',episode:'第 1 集',position:30,duration:1440,paused:true,rate:1.5,
+      cover:'https://example.com/cover.webp'},location.origin)""")
+    frame.wait_for_function("window.sdkActivities.at(-1).activity?.state==='第 1 集 · 已暫停'", timeout=7000)
+    assert 'timestamps' not in frame.evaluate('window.sdkActivities.at(-1).activity')
+    frame.locator('#activityPresenceToggle').click()
+    frame.wait_for_function('window.sdkActivities.at(-1).activity===null')
+    assert frame.locator('#activityPresenceToggle').get_attribute('aria-pressed') == 'false'
+    assert player.get_attribute('src') == before_src
+    frame.locator('#activityPresenceToggle').click()
+    frame.wait_for_function("window.sdkActivities.at(-1)?.activity?.details==='孤獨搖滾！'")
+    mocked.state.update(can_watch=False, watch_token=None, revision=mocked.state['revision']+1)
+    player.wait_for(state='hidden')
+    frame.wait_for_function('window.sdkActivities.at(-1).activity===null')
+
+
+@pytest.mark.parametrize('width,height', [(1280, 900), (390, 844)])
+def test_activity_fullscreen_fills_parent_viewport_without_native_fullscreen_or_reload(activity_ui, width, height):
+    page, mocked = activity_ui
+    page.set_viewport_size({'width': width, 'height': height})
+    mocked.state.update(host_id='456', sn='100', can_watch=True, watch_token='guest-current-video')
+    page.goto(ORIGIN + '/outer')
+    frame = page.frames[1]
+    player = frame.locator('#activityPlayer')
+    player.wait_for(state='visible')
+    frame.wait_for_function("document.querySelector('#activityPlayer').contentWindow.latest?.state?.sn==='100'")
+    assert frame.evaluate('document.documentElement.scrollWidth<=innerWidth')
+    before_src = player.get_attribute('src')
+    child = frame.child_frames[0]
+    child.evaluate("""() => {
+      window.keepPlayer=true;
+      parent.postMessage({type:'agp:activity-fullscreen',expanded:true},location.origin);
+    }""")
+    frame.wait_for_function("document.body.classList.contains('activity-player-expanded')")
+    box = player.bounding_box()
+    viewport = frame.evaluate('({width:innerWidth,height:innerHeight})')
+    theater = frame.evaluate("""() => {
+      const rect=document.querySelector('.activity-theater').getBoundingClientRect();
+      return {x:rect.x,y:rect.y,width:rect.width,height:rect.height};
+    }""")
+    assert theater == {'x': 0, 'y': 0, 'width': viewport['width'], 'height': viewport['height']}
+    assert box['width'] == viewport['width'] and box['height'] == viewport['height']
+    assert frame.evaluate('document.fullscreenElement') is None
+    frame.locator('#activityExpandedExit').click()
+    frame.wait_for_function("!document.body.classList.contains('activity-player-expanded')")
+    child.evaluate("parent.postMessage({type:'agp:activity-fullscreen',expanded:true},location.origin)")
+    frame.wait_for_function("document.body.classList.contains('activity-player-expanded')")
+    frame.locator('#activityExpandedExit').focus()
+    page.keyboard.press('Escape')
+    frame.wait_for_function("!document.body.classList.contains('activity-player-expanded')")
+    assert player.get_attribute('src') == before_src
+    assert child.evaluate('window.keepPlayer') is True
+    child.evaluate("parent.postMessage({type:'agp:activity-fullscreen',expanded:true},location.origin)")
+    frame.wait_for_function("document.body.classList.contains('activity-player-expanded')")
+    mocked.state.update(can_watch=False, watch_token=None, revision=mocked.state['revision']+1)
+    player.wait_for(state='hidden')
+    assert not frame.evaluate("document.body.classList.contains('activity-player-expanded')")
+
+
+@pytest.mark.parametrize('width,height', [(200, 200), (240, 240), (320, 240), (390, 220)])
+def test_discord_small_mobile_view_preserves_player_without_scaling_whole_page(activity_ui, width, height):
+    page, mocked = activity_ui
+    mocked.state.update(host_id='456', sn='100', can_watch=True, watch_token='same-video-capability')
+    page.goto(ORIGIN + '/outer')
+    frame = page.frames[1]
+    player = frame.locator('#activityPlayer')
+    player.wait_for(state='visible')
+    child = frame.child_frames[0]
+    child.evaluate('window.samePlayer=true')
+    original_src = player.get_attribute('src')
+    page.evaluate("""() => {
+      document.body.style.margin='0';
+      const activity=document.querySelector('#activity');
+      activity.style.cssText='position:fixed;inset:0;border:0;width:100vw;height:100vh';
+    }""")
+    page.set_viewport_size({'width': width, 'height': height})
+    layout = frame.evaluate("""() => {
+      const box=document.querySelector('.activity-theater').getBoundingClientRect();
+      return {width:innerWidth,height:innerHeight,scrollWidth:document.documentElement.scrollWidth,
+        scrollHeight:document.documentElement.scrollHeight,x:box.x,y:box.y,playerWidth:box.width,playerHeight:box.height,
+        topbar:getComputedStyle(document.querySelector('.activity-topbar')).display,
+        sidebar:getComputedStyle(document.querySelector('.activity-sidebar')).display};
+    }""")
+    assert layout == {'width': width, 'height': height, 'scrollWidth': width, 'scrollHeight': height,
+                      'x': 0, 'y': 0, 'playerWidth': width, 'playerHeight': height,
+                      'topbar': 'none', 'sidebar': 'none'}
+    assert player.get_attribute('src') == original_src
+    assert child.evaluate('window.samePlayer') is True
+    # Resizing a floating Activity does not change the user's expansion choice.
+    child.evaluate("parent.postMessage({type:'agp:activity-fullscreen',expanded:true},location.origin)")
+    frame.locator('#activityExpandedExit').wait_for(state='visible')
+    assert frame.locator('#activityExpandedExit').bounding_box()['width'] < width
+    frame.locator('#activityExpandedExit').click()
+    page.set_viewport_size({'width': 390, 'height': 844})
+    frame.wait_for_function("getComputedStyle(document.querySelector('.activity-topbar')).display!=='none'")
+    assert frame.evaluate('document.documentElement.scrollWidth<=innerWidth')
+    assert player.get_attribute('src') == original_src
+    assert child.evaluate('window.samePlayer') is True
+    assert not frame.evaluate("document.body.classList.contains('activity-player-expanded')")
+
+
+def test_discord_small_waiting_view_never_creates_guest_player(activity_ui):
+    page, mocked = activity_ui
+    page.goto(ORIGIN + '/outer')
+    frame = page.frames[1]
+    frame.wait_for_function("document.querySelector('#lobbyTitle').textContent==='等候主辦人授權'")
+    page.evaluate("""() => {
+      document.body.style.margin='0';
+      document.querySelector('#activity').style.cssText='position:fixed;inset:0;border:0;width:100vw;height:100vh';
+    }""")
+    page.set_viewport_size({'width': 200, 'height': 200})
+    assert frame.locator('#playerPlaceholder').is_visible()
+    assert frame.locator('#activityPlayer').is_hidden()
+    assert frame.locator('#activityPlayer').get_attribute('src') is None
+    assert frame.locator('#lobbyTitle').is_visible()
+    assert frame.evaluate('document.documentElement.scrollWidth===innerWidth')
+    assert frame.evaluate('document.documentElement.scrollHeight===innerHeight')
+    assert ('GET', '/video_list.json') not in mocked.calls
+
+
+def test_reconnect_resets_optional_presence_until_user_grants_scope_again(activity_ui):
+    page, mocked = activity_ui
+    mocked.use_real_presence = True
+    mocked.state.update(host_id='456', sn='100', can_watch=True, watch_token='guest-video-token',
+                        position=12, paused=True, updated_at=time.time())
+    page.goto(ORIGIN + '/outer')
+    frame = page.frames[1]
+    player = frame.locator('#activityPlayer')
+    player.wait_for(state='visible')
+    frame.child_frames[0].evaluate("""() => parent.postMessage({type:'agp:activity-playback',sn:'100',
+      title:'孤獨搖滾！',episode:'第 1 集',position:12,duration:1440,paused:true,rate:1},location.origin)""")
+    frame.locator('#activityPresenceToggle').click()
+    frame.wait_for_function("window.sdkActivities.at(-1)?.activity?.details==='孤獨搖滾！'")
+    assert mocked.calls.count(('POST', '/discord/activity/presence-token')) == 1
+    mocked.fail_next_state = True
+    frame.locator('#connectButton').wait_for(state='visible')
+    player.wait_for(state='hidden')
+    frame.locator('#connectButton').click()
+    player.wait_for(state='visible')
+    assert frame.locator('#activityPresenceToggle').get_attribute('aria-pressed') == 'false'
+    assert frame.evaluate('window.sdkActivities.at(-1).activity') is None
+    assert mocked.calls.count(('POST', '/discord/activity/token')) == 2
+    assert mocked.calls.count(('POST', '/discord/activity/presence-token')) == 1
+    assert 'rpc.activities.write' not in frame.evaluate('window.sdkAuthorizations.at(-1).scope')
+    frame.locator('#activityPresenceToggle').click()
+    frame.wait_for_function("document.querySelector('#activityPresenceToggle').getAttribute('aria-pressed')==='true'")
+    assert mocked.calls.count(('POST', '/discord/activity/presence-token')) == 2
+    assert 'rpc.activities.write' in frame.evaluate('window.sdkAuthorizations.at(-1).scope')
+
+
+@pytest.mark.parametrize('layout_mode', [1, 2])
+def test_discord_minimized_layout_uses_player_only_even_without_viewport_resize(activity_ui, layout_mode):
+    page, mocked = activity_ui
+    mocked.state.update(host_id='456', sn='100', can_watch=True, watch_token='same-video-token')
+    page.goto(ORIGIN + '/outer')
+    frame = page.frames[1]
+    player = frame.locator('#activityPlayer')
+    player.wait_for(state='visible')
+    frame.wait_for_function("typeof window.sdkLayoutHandler==='function'")
+    before_src = player.get_attribute('src')
+    child = frame.child_frames[0]
+    child.evaluate('window.samePlayer=true')
+    frame.evaluate('(mode)=>window.sdkLayoutHandler({layout_mode:mode})', layout_mode)
+    frame.wait_for_function("document.body.classList.contains('activity-client-compact')")
+    layout = frame.evaluate("""() => {
+      const box=document.querySelector('.activity-theater').getBoundingClientRect();
+      return {x:box.x,y:box.y,width:box.width,height:box.height,
+        viewportWidth:innerWidth,viewportHeight:innerHeight,
+        scrollWidth:document.documentElement.scrollWidth,scrollHeight:document.documentElement.scrollHeight,
+        topbar:getComputedStyle(document.querySelector('.activity-topbar')).display};
+    }""")
+    assert layout['x'] == layout['y'] == 0
+    assert layout['width'] == layout['viewportWidth'] == layout['scrollWidth']
+    assert layout['height'] == layout['viewportHeight'] == layout['scrollHeight']
+    assert layout['topbar'] == 'none'
+    frame.evaluate('window.sdkLayoutHandler({layout_mode:0})')
+    frame.wait_for_function("getComputedStyle(document.querySelector('.activity-topbar')).display!=='none'")
+    assert player.get_attribute('src') == before_src
+    assert child.evaluate('window.samePlayer') is True

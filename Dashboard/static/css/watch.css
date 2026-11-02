@@ -1242,6 +1242,23 @@ body.player-pseudo-fullscreen { overflow: hidden; }
   .watch-index-grid { gap: 10px; grid-template-columns: repeat(auto-fill, minmax(140px, 1fr)); }
 }
 
+/* Only the Activity frame can shrink to Discord's tiny mobile floating view. */
+@media (max-width: 300px), (max-height: 250px) {
+  .activity-watch .activity-player-hint,
+  .activity-watch .desktop-player-chapter-button,
+  .activity-watch .desktop-player-time,
+  .activity-watch .desktop-player-caption,
+  .activity-watch .desktop-player-control-row [data-action="prev"],
+  .activity-watch .desktop-player-control-row [data-action="next"],
+  .activity-watch .desktop-player-control-row [data-action="danmaku"],
+  .activity-watch .desktop-player-control-row [data-action="pip"],
+  .activity-watch .touch-player-center > button:not(.touch-player-play),
+  .activity-watch .player-skip-intro { display: none !important; }
+  .activity-watch .desktop-player-control-row { gap: 4px; }
+  .activity-watch .desktop-player-controls { padding-left: 6px; padding-right: 6px; }
+  .activity-watch .desktop-player-menu { left: 6px; max-height: calc(100% - 78px); right: 6px; width: auto; }
+}
+
 @media (prefers-reduced-motion: reduce) {
   .desktop-player-controls,
   .desktop-player-caption,

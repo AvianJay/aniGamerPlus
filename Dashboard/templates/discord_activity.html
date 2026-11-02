@@ -13,9 +13,10 @@
   </script>
   <link rel="icon" href="static/img/aniGamerPlus.ico">
   <link rel="stylesheet" href="static/css/agp.css?v=8">
-  <link rel="stylesheet" href="static/css/discord-activity.css?v=2">
+  <link rel="stylesheet" href="static/css/discord-activity.css?v=4">
   <script defer src="static/js/vendor/discord-embedded-app-sdk.js"></script>
-  <script defer src="static/js/discord-activity.js?v=2"></script>
+  <script defer src="static/js/discord-activity-presence.js?v=1"></script>
+  <script defer src="static/js/discord-activity.js?v=3"></script>
 </head>
 <body class="agp-body activity-body">
   <header class="activity-topbar">
@@ -26,6 +27,7 @@
     </div>
     <div class="activity-topbar-actions">
       <span id="connectionStatus" class="activity-status" role="status">正在連線</span>
+      <button id="activityPresenceToggle" class="activity-button activity-button-quiet" type="button" aria-pressed="false" hidden>顯示播放動態</button>
       <button id="accountToggle" class="activity-button activity-button-quiet" type="button" aria-expanded="false" aria-controls="accountPanel">帳號</button>
     </div>
   </header>
@@ -62,7 +64,8 @@
             <p id="lobbyDescription">主控選片後，其他人同步觀看。尚未登入的朋友可由主辦人授權觀看這集。</p>
             <button id="connectButton" class="activity-button activity-button-primary" type="button" hidden>重新連線</button>
           </div>
-          <iframe id="activityPlayer" title="一起看播放器" allow="autoplay; fullscreen; picture-in-picture" allowfullscreen hidden></iframe>
+          <iframe id="activityPlayer" title="一起看播放器" allow="autoplay; picture-in-picture" hidden></iframe>
+          <button id="activityExpandedExit" class="activity-button activity-expanded-exit" type="button" hidden>還原畫面 <span aria-hidden="true">Esc</span></button>
         </section>
         <div class="activity-now-playing">
           <div class="activity-now-title"><span class="activity-eyebrow">正在一起看</span><h2 id="playingTitle">尚未選片</h2><p id="playingEpisode" class="activity-muted">等主控選一集，就可以開始了。</p></div>
@@ -74,8 +77,12 @@
       <aside class="activity-sidebar">
         <section class="activity-panel activity-room" aria-labelledby="roomHeading">
           <div class="activity-panel-heading"><h2 id="roomHeading">一起看的人</h2><span id="memberCount" class="activity-count">0</span></div>
+          <div id="autoGrantControls" class="activity-auto-grant" hidden>
+            <button id="autoGrantToggle" class="activity-button" type="button" aria-pressed="false">自動授權訪客：關閉</button>
+            <p class="activity-muted">開啟後，新加入的訪客與換片都會自動取得該集授權。</p>
+          </div>
           <ul id="memberList" class="activity-members"><li class="activity-muted">連線後會顯示參與者</li></ul>
-          <p class="activity-room-note">主辦人可授權訪客觀看目前這集；換片後需重新授權。主控離開後，由可接手的人繼續。</p>
+          <p class="activity-room-note">主辦人可授權訪客觀看，每集皆使用獨立授權。主控離開後，由可接手的人繼續。</p>
         </section>
         <section class="activity-panel activity-library" aria-labelledby="libraryHeading">
           <div class="activity-panel-heading"><h2 id="libraryHeading">挑一集來看</h2><button id="refreshLibrary" class="activity-button activity-button-quiet" type="button" disabled>重新整理</button></div>

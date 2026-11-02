@@ -191,6 +191,71 @@ def granted_guest(env):
     return host, guest, token
 
 
+def test_automatic_grants_rotate_on_video_switch_and_stop_on_disable(env):
+    host = env[0]
+    authenticate(host)
+    guest = TestClient(server.app, base_url='https://activity.test', follow_redirects=False)
+    assert authenticate(guest, '222')['can_watch'] is False
+    enabled = host.post('/discord/activity/auto-grant', json={'instance_id': 'room-one', 'enabled': True})
+    assert enabled.status_code == 200 and enabled.json()['auto_grant'] is True
+    assert host.post('/discord/activity/control', json={
+        'instance_id': 'room-one', 'action': 'select', 'sn': '101'}).status_code == 200
+    first = guest.get('/discord/activity/state?instance_id=room-one').json()['watch_token']
+    assert guest.get('/get_video.mp4', params={'id': '101', 'ag': first}).status_code == 200
+    assert guest.get('/get_video.mp4', params={'id': '102', 'ag': first}).status_code == 403
+    assert host.post('/discord/activity/control', json={
+        'instance_id': 'room-one', 'action': 'select', 'sn': '102'}).status_code == 200
+    second = guest.get('/discord/activity/state?instance_id=room-one').json()['watch_token']
+    assert second != first
+    assert guest.get('/get_video.mp4', params={'id': '101', 'ag': first}).status_code == 403
+    assert guest.get('/get_video.mp4', params={'id': '102', 'ag': first}).status_code == 403
+    assert guest.get('/get_video.mp4', params={'id': '102', 'ag': second}).status_code == 200
+    late_guest = TestClient(server.app, base_url='https://activity.test', follow_redirects=False)
+    state = authenticate(late_guest, '333')
+    assert state['can_watch'] is True and state['watch_token'] != second
+    assert late_guest.get('/get_video.mp4', params={'id': '102', 'ag': state['watch_token']}).status_code == 200
+    assert host.post('/discord/activity/auto-grant', json={
+        'instance_id': 'room-one', 'enabled': False}).json()['auto_grant'] is False
+    assert guest.get('/get_video.mp4', params={'id': '102', 'ag': second}).status_code == 403
+    assert late_guest.get('/get_video.mp4', params={'id': '102', 'ag': state['watch_token']}).status_code == 403
+
+
+def test_manual_revoke_overrides_auto_grant_for_the_current_episode(env):
+    host, guest, manual = granted_guest(env)
+    assert host.post('/discord/activity/auto-grant', json={
+        'instance_id': 'room-one', 'enabled': True}).status_code == 200
+    assert guest.post('/discord/activity/auto-grant', json={
+        'instance_id': 'room-one', 'enabled': False}).status_code == 403
+    assert host.post('/discord/activity/revoke', json={
+        'instance_id': 'room-one', 'user_id': '222', 'sn': '101'}).status_code == 200
+    for _ in range(2):
+        assert guest.get('/discord/activity/state?instance_id=room-one').json()['can_watch'] is False
+    assert guest.get('/get_video.mp4', params={'id': '101', 'ag': manual}).status_code == 403
+    assert host.post('/discord/activity/control', json={
+        'instance_id': 'room-one', 'action': 'select', 'sn': '102'}).status_code == 200
+    state = guest.get('/discord/activity/state?instance_id=room-one').json()
+    assert state['can_watch'] is True
+    assert guest.get('/get_video.mp4', params={'id': '102', 'ag': state['watch_token']}).status_code == 200
+
+
+def test_presence_permission_upgrade_does_not_revoke_automatic_guest_watch(env, monkeypatch):
+    host, guest, _ = granted_guest(env)
+    host.post('/discord/activity/auto-grant', json={'instance_id': 'room-one', 'enabled': True})
+    original = server.discord_activity._discord_request
+    def discord_request(method, path, **kwargs):
+        if path == '/oauth2/token':
+            return {'access_token': 'upgraded-sdk-access', 'scope': 'identify rpc.activities.write', 'expires_in': 99999}
+        if path == '/users/@me':
+            return {'id': '111'}
+        return original(method, path, **kwargs)
+    monkeypatch.setattr(server.discord_activity, '_discord_request', discord_request)
+    response = host.post('/discord/activity/presence-token', json={'code': 'upgraded-sdk-code'})
+    assert response.status_code == 200 and response.json() == {'access_token': 'upgraded-sdk-access'}
+    state = guest.get('/discord/activity/state?instance_id=room-one').json()
+    assert state['auto_grant'] is True and state['can_watch'] is True
+    assert guest.get('/get_video.mp4', params={'id': '101', 'ag': state['watch_token']}).status_code == 200
+
+
 def test_host_grant_opens_only_one_video_without_lending_account_identity(env):
     host, guest, token = granted_guest(env)
     params = {'id': '101', 'ag': token}
