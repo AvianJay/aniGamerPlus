@@ -86,6 +86,11 @@
         "password": "admin",
         "online_watch": false,
         "online_watch_requires_login": false,
+        "discord_activity": {
+            "client_id": "",
+            "client_secret": "",
+            "bot_token": ""
+        },
         "user_control": {
             "enabled": false,
             "allow_register": false,
@@ -100,7 +105,7 @@
     },
     "save_logs": true,
     "quantity_of_logs": 7,
-    "config_version": 18.4,
+    "config_version": 18.5,
     "database_version": 2.0,
     "m3u8": false,
     "auto_update_danmu": false,

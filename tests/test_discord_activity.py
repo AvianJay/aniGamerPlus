@@ -13,10 +13,11 @@ from Dashboard import discord_activity as activity
 
 @pytest.fixture
 def env(monkeypatch):
-    for name, value in [('CLIENT_ID', '12345'), ('CLIENT_SECRET', 'test-client-secret'), ('BOT_TOKEN', 'test-bot-token')]:
-        monkeypatch.setenv('AGP_DISCORD_' + name, value)
     settings = {'dashboard': {'online_watch': True, 'online_watch_requires_login': False,
-                             'user_control': {'enabled': True}}}
+                             'user_control': {'enabled': True},
+                             'discord_activity': {'client_id': '12345',
+                                                  'client_secret': 'test-client-secret',
+                                                  'bot_token': 'test-bot-token'}}}
     data = {'users': [
         {'username': 'alice', 'password': 'alicepw', 'token': 'alice-token', 'role': 'user'},
         {'username': 'bob', 'password': 'bobpw', 'token': 'bob-token', 'role': 'user'}]}

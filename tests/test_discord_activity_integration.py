@@ -16,7 +16,9 @@ from Dashboard import discord_activity as activity
 def env(monkeypatch, tmp_path):
     settings = {'danmu': False, 'segment_download_mode': True,
                 'dashboard': {'online_watch': True, 'online_watch_requires_login': True,
-                             'user_control': {'enabled': True, 'allow_register': False}}}
+                             'user_control': {'enabled': True, 'allow_register': False},
+                             'discord_activity': {'client_id': '12345', 'client_secret': 'fake-secret',
+                                                  'bot_token': 'fake-bot-token'}}}
     users = {'users': [
         {'username': 'alice', 'password': 'alicepw', 'token': 'alice-token',
          'role': 'user', 'videotimes': {}, 'discord_account': {'id': '111', 'username': 'discord-alice'}},
@@ -38,8 +40,6 @@ def env(monkeypatch, tmp_path):
     monkeypatch.setattr(server.discord_activity, 'login_attempts', {})
     if hasattr(server.discord_activity, 'grants'):
         monkeypatch.setattr(server.discord_activity, 'grants', {})
-    for name, value in [('CLIENT_ID', '12345'), ('CLIENT_SECRET', 'fake-secret'), ('BOT_TOKEN', 'fake-bot-token')]:
-        monkeypatch.setenv('AGP_DISCORD_' + name, value)
     def discord_request(method, path, **kwargs):
         if path == '/oauth2/token':
             code = kwargs['data']['code']

@@ -55,7 +55,7 @@ sn_list_path = os.path.join(working_dir, 'sn_list.txt')
 cookie_path = os.path.join(working_dir, 'cookie.txt')
 logs_dir = os.path.join(working_dir, 'logs')
 aniGamerPlus_version = 'v25.2'
-latest_config_version = 18.4
+latest_config_version = 18.5
 latest_database_version = 2.0
 cookie = None
 max_multi_thread = 5
@@ -267,6 +267,11 @@ def __init_settings():
                     'password': 'admin',
                     'online_watch': False,
                     'online_watch_requires_login': False,
+                    'discord_activity': {
+                        'client_id': '',
+                        'client_secret': '',
+                        'bot_token': '',
+                    },
                     'user_control': {
                         'enabled': False,
                         'allow_register': False,
@@ -582,6 +587,11 @@ def __update_settings(old_settings):  # 升级配置文件
         # online watch require login
         new_settings['dashboard']['online_watch_requires_login'] = False
 
+    activity = new_settings['dashboard'].setdefault('discord_activity', {})
+    if isinstance(activity, dict):
+        for key in ('client_id', 'client_secret', 'bot_token'):
+            activity.setdefault(key, '')
+
     if 'command_console' not in new_settings.keys():
         new_settings['command_console'] = False
 
@@ -599,8 +609,7 @@ def __update_settings(old_settings):  # 升级配置文件
         }
 
     new_settings['config_version'] = latest_config_version
-    with open(config_path, 'w', encoding='utf-8') as f:
-        json.dump(new_settings, f, ensure_ascii=False, indent=4)
+    __atomic_write(config_path, json.dumps(new_settings, ensure_ascii=False, indent=4))
     msg = '配置文件從 v' + str(old_settings['config_version']) + ' 升級到 v' + str(
         latest_config_version) + ' 你的有效配置不會丟失!'
     __color_print(0, msg, status=2, no_sn=True)

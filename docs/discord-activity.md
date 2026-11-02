@@ -38,17 +38,25 @@ Discord 會在開啟 Activity 時傳入自己的實例參數；保留這些參�
 
 開發中的 Application 先由擁有者或開發團隊成員測試，並在 Discord 使用者設定開啟 Developer Mode。未公開發行的 Activity 不保證所有伺服器成員都能看見；雙人測試時也要讓第二個帳號具有測試存取權。
 
-## 3. 設定伺服器環境變數
+## 3. 設定 config.json
 
-讓啟動 Dashboard 的同一個程序取得以下環境變數，然後重新啟動 Dashboard：
+在 `config.json` 的 `dashboard` 底下填入 `discord_activity`，然後重新啟動 Dashboard：
 
-| 變數 | 內容 | 可否公開 |
+```json
+"discord_activity": {
+    "client_id": "你的 Application ID",
+    "client_secret": "你的 OAuth2 Client Secret",
+    "bot_token": "你的 Bot Token"
+}
+```
+
+| 欄位 | 內容 | 可否公開 |
 | --- | --- | --- |
-| `AGP_DISCORD_CLIENT_ID` | 上述 Application ID | 可以 |
-| `AGP_DISCORD_CLIENT_SECRET` | 同一個 Application 的 OAuth2 Client Secret | 保密 |
-| `AGP_DISCORD_BOT_TOKEN` | 同一個 Application 的 Bot Token | 保密 |
+| `dashboard.discord_activity.client_id` | 上述 Application ID | 可以 |
+| `dashboard.discord_activity.client_secret` | 同一個 Application 的 OAuth2 Client Secret | 保密 |
+| `dashboard.discord_activity.bot_token` | 同一個 Application 的 Bot Token | 保密 |
 
-使用作業系統、服務管理器或容器的環境變數／秘密注入機制設定；不要把秘密寫進前端、分享連結或版本庫。程式直接讀取啟動環境，不會自行讀取 `.env`。Docker 部署時也必須將這三個變數傳入容器，只在主機設定不會自動傳入。
+這三個欄位只從 `config.json` 讀取，不使用環境變數。舊版設定升級時會自動補上空白欄位；範例見 `config-sample.json`。Docker 沿用既有的 `config.json` 掛載，不需要另外傳入環境變數。Client Secret 與 Bot Token 只供伺服器使用，不會回傳到 Activity 前端；請勿將填有憑證的設定檔放進版本庫或分享。
 
 OAuth 授權碼由伺服器交換並向 Discord 查驗使用者。Bot Token 查詢實際 Activity Instance 的成員名單，避免只憑網址上的房間 ID 就加入房間。[Discord 多人與實例驗證說明](https://github.com/discord/discord-api-docs/blob/main/developers/activities/development-guides/multiplayer-experience.mdx)
 

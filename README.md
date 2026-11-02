@@ -259,6 +259,11 @@ docker run -td --name anigamerplus \
         "password": "admin",  // 已停用, 同上
         "online_watch": false,  // 線上觀看開關
         "online_watch_requires_login": false,  // 線上觀看是否要求登入 (需開啟 user_control)
+        "discord_activity": {  // Discord Activity 設定，詳見 docs/discord-activity.md
+            "client_id": "",
+            "client_secret": "",
+            "bot_token": ""
+        },
         "user_control": {  // 帳號系統
             // 關閉時控制臺完全不認人: 連得到這個埠的人都是管理員 (可以改設定、
             // 改 sn_list、下指令). host 只要不是 127.0.0.1 就務必開啟.
@@ -607,6 +612,11 @@ Web 控制臺默認啓用, 默認端口 5000, 支援 SSL (https), 證書保存�
     "password": "admin",  # BasicAuth 密碼
     "online_watch": false,  # 線上觀看開關
     "online_watch_requires_login": false,  # 線上觀看是否要求登入 (需開啟 user_control)
+    "discord_activity": {  # Discord Activity 憑證，填好後重新啟動
+        "client_id": "",
+        "client_secret": "",
+        "bot_token": ""
+    },
     "user_control": {  # 帳號系統
         "enabled": false,  # 開啟後才有登入/註冊/用戶管理
         "allow_register": false,  # 是否開放註冊

@@ -1,11 +1,10 @@
 """Discord Activity identity and authoritative watch rooms.
 
-Credentials are consumed from the process environment only. All state here is
+Credentials are read from dashboard.discord_activity in config.json. State is
 process local: run the Dashboard with one ASGI worker. Discord identities are
 verified using OAuth and room membership using the application's Bot token.
 """
 import math
-import os
 import re
 import secrets
 import threading
@@ -53,8 +52,16 @@ class ActivityBackend:
         self.login_attempts = {}
 
     def config(self):
-        return {name: os.environ.get('AGP_DISCORD_' + name.upper(), '').strip()
-                for name in ('client_id', 'client_secret', 'bot_token')}
+        activity = self.server._get_current_settings().get('dashboard', {}).get('discord_activity', {})
+        if not isinstance(activity, dict):
+            activity = {}
+        config = {}
+        for name in ('client_id', 'client_secret', 'bot_token'):
+            value = activity.get(name, '')
+            if name == 'client_id' and isinstance(value, int) and not isinstance(value, bool):
+                value = str(value)
+            config[name] = value.strip() if isinstance(value, str) else ''
+        return config
 
     def _settings(self):
         settings = self.server._get_current_settings()
