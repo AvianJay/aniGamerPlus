@@ -12,6 +12,7 @@
 - **Web 介面整個重寫** —— 首頁分頁 (最近更新/繼續看/收藏/每日更新)、直接逛動畫瘋**整個片庫**、搜尋、作品資訊
 - **線上觀看** —— 邊看邊下載、播放器可切畫質 (伺服器代理動畫瘋的其他解析度)、手機可加到主畫面當 PWA 用
 - **帳號系統** —— 註冊/登入/用戶管理, 線上看可以要求登入
+- **Discord 語音頻道一起看** —— Activity 內登入與綁定 Discord、第一位加入者主控、其他人同步播放；啟用方式見 [Discord Activity 設定](docs/discord-activity.md)
 - **Flutter 原生 App** (iOS/Android) —— 不是包網頁的殼, 直接打 Dashboard API, 還能**把整集下載到手機離線看**, 詳見 [flutter_app/](flutter_app/README.md)
 - Windows 有 `start-dashboard.bat`, 雙擊就開伺服器
 

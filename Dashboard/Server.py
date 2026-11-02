@@ -28,6 +28,7 @@ import tempfile
 import threading, traceback
 import random, string, hashlib, hmac, secrets
 import platform, shutil, subprocess
+from http.cookies import SimpleCookie
 
 from curl_cffi import requests as curl_requests
 from aniGamerPlus import Config
@@ -136,6 +137,23 @@ class _RequestBodyLimitMiddleware:
 app.add_middleware(_RequestBodyLimitMiddleware,
                    max_body_size=MAX_REQUEST_BODY_BYTES)
 
+class _ActivityGrantLogFilter(logging.Filter):
+    """Keep guest capabilities out of Uvicorn's request URL log."""
+
+    def filter(self, record):
+        if isinstance(record.args, tuple) and len(record.args) == 5:
+            client, method, target, version, status = record.args
+            if isinstance(target, str):
+                parts = urllib.parse.urlsplit(target)
+                query = urllib.parse.parse_qsl(parts.query, keep_blank_values=True)
+                if any(name == 'ag' for name, _ in query):
+                    query = [(name, '[redacted]' if name == 'ag' else value) for name, value in query]
+                    target = urllib.parse.urlunsplit((parts.scheme, parts.netloc, parts.path,
+                                                      urllib.parse.urlencode(query), parts.fragment))
+                    record.args = (client, method, target, version, status)
+        return True
+
+
 # 日志处理
 logger = logging.getLogger('dashboard')
 logging.basicConfig(level=logging.INFO)  # 记录访问
@@ -147,6 +165,7 @@ handler.extMatch = re.compile(r'^\d{4}-\d{2}-\d{2}.log')
 logger.addHandler(handler)
 logger.propagate = False  # 不在控制台上输出
 logging.getLogger('uvicorn.access').addHandler(handler)
+logging.getLogger('uvicorn.access').addFilter(_ActivityGrantLogFilter())
 
 # websocket鉴权不再需要 token, 进度通道直接认管理員 cookie (见 tasks_progress).
 # 这个 token 只保留给 /data/get_token 的兼容回應 (monitor.js 之前的版本会来取).
@@ -1339,8 +1358,23 @@ def _catalog_episodes(info):
     return groups
 
 
+def _activity_guest_allowed(request):
+    """Only the Activity middleware may attach this verified, video-bound grant."""
+    access = getattr(request.state, 'activity_guest_access', None)
+    return bool(access and access['sn'] == request.query_params.get('id'))
+
+
+def _guest_video_data(video):
+    return {key: value for key, value in video.items() if key in {
+        'sn', 'anime_name', 'title', 'episode', 'resolution', 'source',
+        'timestamp', 'danmu', 'streaming', 'pending',
+    }}
+
+
 def _catalog_login_error(current_settings, request):
     # 片单跟片库同一道门: 设了要登入才能看, 片单也不该是敞开的
+    if _activity_guest_allowed(request):
+        return None
     if current_settings['dashboard']['online_watch_requires_login']:
         vaild_user, user_role = verify_user(request.cookies)
         if not vaild_user:
@@ -1403,6 +1437,8 @@ def _media_access_error(current_settings, request):
     票驗過的請求會在 request.state 上留一個記號, add_accept_ranges 看到它才補
     CORS 標頭 —— 帶 cookie 的一般播放用不到, 也不該拿到.
     """
+    if _activity_guest_allowed(request):
+        return None
     ticket = request.query_params.get('ct')
     if not current_settings['dashboard']['online_watch_requires_login']:
         if ticket:
@@ -1904,8 +1940,10 @@ def _cast_query(ticket):
     return '&ct=%s' % urllib.parse.quote(ticket, safe='') if ticket else ''
 
 
-def _hls_render(sn, parsed, ready, complete, ticket=None):
+def _hls_render(sn, parsed, ready, complete, ticket=None, activity_grant=None):
     ct = _cast_query(ticket)
+    if activity_grant:
+        ct += '&ag=' + urllib.parse.quote(activity_grant, safe='')
     lines = [
         '#EXTM3U',
         '#EXT-X-VERSION:3',
@@ -2250,9 +2288,11 @@ def _stream_key(sn, res, media):
     return media['key']
 
 
-def _stream_render(sn, res, parsed, ticket=None):
+def _stream_render(sn, res, parsed, ticket=None, activity_grant=None):
     """把上游的 chunklist 改寫成全部指回我們自己的版本."""
     ct = _cast_query(ticket)
+    if activity_grant:
+        ct += '&ag=' + urllib.parse.quote(activity_grant, safe='')
     lines = [
         '#EXTM3U',
         '#EXT-X-VERSION:3',
@@ -2310,6 +2350,9 @@ def _build_watch_bootstrap(request, current_settings=None):
     bootstrap['initialVideoData'] = initial_video
     bootstrap['streaming'] = bool(initial_video.get('streaming'))
     bootstrap['initialVideoSeries'] = [video for video in video_list if video.get('anime_name') == initial_video.get('anime_name')]
+    if _activity_guest_allowed(request):
+        bootstrap['initialVideoData'] = _guest_video_data(initial_video)
+        bootstrap['initialVideoSeries'] = [bootstrap['initialVideoData']]
 
     user = _get_request_user(request, current_settings)
     if user:
@@ -2643,7 +2686,15 @@ async def tasks_progress(websocket: WebSocket):
 
 @app.get('/')
 def home(request: Request):
+    # Discord launches the root mapping and supplies the SDK handshake context.
     current_settings = _get_current_settings()
+    if all(request.query_params.get(key) for key in ('frame_id', 'instance_id', 'platform')):
+        gated = _online_watch_gate(current_settings)
+        if gated is not None:
+            return gated
+        response = _render(request, 'discord_activity.html')
+        response.headers['Cache-Control'] = 'no-store'
+        return response
     if current_settings["dashboard"]["online_watch"]:
         if current_settings["dashboard"]["user_control"]["enabled"]:
             logined, user_role = verify_user(request.cookies)
@@ -2691,7 +2742,7 @@ def watch(request: Request):
     gated = _online_watch_gate(current_settings)
     if gated is not None:
         return gated
-    if current_settings['dashboard']['online_watch_requires_login']:
+    if current_settings['dashboard']['online_watch_requires_login'] and not _activity_guest_allowed(request):
         vaild_user, user_role = verify_user(request.cookies)
         if not vaild_user:
             return _redirect("./login?error=2")
@@ -2739,6 +2790,8 @@ def watch_series(request: Request):
     gated = _online_watch_gate(current_settings)
     if gated is not None:
         return gated
+    if _activity_guest_allowed(request):
+        return JSONResponse({'groups': []}, headers={'Cache-Control': 'private, no-store'})
     if current_settings['dashboard']['online_watch_requires_login']:
         vaild_user, user_role = verify_user(request.cookies)
         if not vaild_user:
@@ -3109,7 +3162,7 @@ def get_thumbnail(request: Request):
     gated = _online_watch_gate(current_settings)
     if gated is not None:
         return gated
-    if current_settings['dashboard']['online_watch_requires_login']:
+    if current_settings['dashboard']['online_watch_requires_login'] and not _activity_guest_allowed(request):
         vaild_user, user_role = verify_user(request.cookies)
         if not vaild_user:
             return JSONResponse({"error": "login required"}, status_code=403)
@@ -3342,6 +3395,10 @@ def getvid(request: Request):
         'resolution': int(res) if res and str(res).isdigit() else 0,
     })
     if playback_source and playback_source.get('url'):
+        if _activity_guest_allowed(request):
+            # A redirect would escape per-request revocation and could disclose
+            # an upstream credential. Guest capabilities stay on this server.
+            return JSONResponse({'error': 'guest_source_unavailable'}, status_code=403)
         return _redirect(playback_source['url'])
 
     path = _find_video_path(sn, res)
@@ -3489,7 +3546,8 @@ def hls_playlist(request: Request):
 
     body = _hls_render(request.query_params.get('id'), state['parsed'],
                        state['ready'], state['mode'] == 'finalising',
-                       ticket=_cast_ticket_param(request))
+                       ticket=_cast_ticket_param(request),
+                       activity_grant=request.query_params.get('ag') if _activity_guest_allowed(request) else None)
     if request.method == 'HEAD':
         resp = Response(status_code=200)
         resp.headers['Content-Type'] = HLS_MIME
@@ -3638,7 +3696,8 @@ def stream_playlist(request: Request):
     if denied is not None:
         return denied
     body = _stream_render(sn, res, media['parsed'],
-                          ticket=_cast_ticket_param(request))
+                          ticket=_cast_ticket_param(request),
+                          activity_grant=request.query_params.get('ag') if _activity_guest_allowed(request) else None)
     if request.method == 'HEAD':
         resp = Response(status_code=200)
         resp.headers['Content-Type'] = HLS_MIME
@@ -3720,7 +3779,7 @@ def getsub(request: Request):
     # 每一支放影音出去的路由都有這一段, 只有這裡漏掉 —— 開了
     # online_watch_requires_login 的伺服器上, 任何人都能不登入就把任一集的彈幕
     # 拉走, 而且順手觸發下面那條對外連線
-    if current_settings['dashboard']['online_watch_requires_login']:
+    if current_settings['dashboard']['online_watch_requires_login'] and not _activity_guest_allowed(request):
         vaild_user, user_role = verify_user(request.cookies)
         if not vaild_user:
             return JSONResponse({"error": "login required"}, status_code=403)
@@ -3774,6 +3833,10 @@ def videolist(request: Request):
     gated = _online_watch_gate(current_settings)
     if gated is not None:
         return gated
+    if _activity_guest_allowed(request):
+        video = _find_video_entry(request.state.activity_guest_access['sn'])
+        return JSONResponse({'videos': [_guest_video_data(video)] if video else []},
+                            headers={'Cache-Control': 'private, no-store'})
     if current_settings['dashboard']['online_watch_requires_login']:
         vaild_user, user_role = verify_user(request.cookies)
         if not vaild_user:
@@ -4352,6 +4415,73 @@ def run():
                     ssl_certfile=ssl_certfile, ssl_keyfile=ssl_keyfile)
     else:
         uvicorn.run(app, host=host, port=port)
+
+
+from Dashboard.discord_activity import install as _install_discord_activity
+
+discord_activity = _install_discord_activity(sys.modules[__name__])
+
+_ACTIVITY_READ_PATHS = frozenset({
+    '/watch', '/video_list.json', '/anime_info', '/watch/series.json',
+    '/watch/skip.json', '/thumbnail.webp', '/thumbnails.json',
+    '/get_video.mp4', '/get_danmu.ass', '/hls/status.json',
+    '/hls/playlist.m3u8', '/hls/key.bin', '/hls/segment.ts',
+    '/stream/sources.json', '/stream/playlist.m3u8', '/stream/key.bin',
+    '/stream/segment.ts',
+})
+
+_ACTIVITY_GUEST_PATHS = _ACTIVITY_READ_PATHS - {'/thumbnails.json', '/anime_info'}
+
+
+@app.middleware('http')
+async def activity_watch_identity(request: Request, call_next):
+    """Use Activity identity only within the existing viewing API.
+
+    The website token stays server-side; this cookie is never sufficient to
+    access administrator, settings, password or account-management routes.
+    """
+    guest_request = 'ag' in request.query_params
+    if guest_request:
+        if request.method not in ('GET', 'HEAD') or request.url.path not in _ACTIVITY_GUEST_PATHS:
+            return JSONResponse({'error': 'guest_access_denied'}, status_code=403,
+                                headers={'Cache-Control': 'no-store'})
+        access = await run_in_threadpool(discord_activity.guest_access, request)
+        if access is None:
+            return JSONResponse({'error': 'guest_access_denied'}, status_code=403,
+                                headers={'Cache-Control': 'no-store'})
+        request.state.activity_guest_access = access
+    allowed = (request.method in ('GET', 'HEAD') and request.url.path in _ACTIVITY_READ_PATHS)
+    allowed = allowed or (request.url.path == '/watch/time' and request.method in ('GET', 'POST'))
+    activity_request = guest_request or (allowed and discord_activity.cookie_name in request.cookies)
+    if activity_request:
+        if (request.url.path == '/watch/time' and
+                (request.method == 'POST' or request.query_params.get('type') in ('set', 'del')) and
+                request.headers.get('X-Activity-Playback') != '1'):
+            return JSONResponse({'error': 'activity_header_required'}, status_code=403,
+                                headers={'Cache-Control': 'no-store'})
+        user = None if guest_request else await run_in_threadpool(discord_activity.auth_user, request)
+        cookies = SimpleCookie()
+        for name, value in request.cookies.items():
+            if name not in ('token', 'logined'):
+                cookies[name] = value
+        if user:
+            cookies['token'] = user['token']
+            cookies['logined'] = 'true'
+        # Replace even when revoked, so an old website cookie cannot mask expiry.
+        request.scope['headers'] = [(name, value) for name, value in request.scope['headers']
+                                    if name.lower() != b'cookie']
+        request.scope['headers'].append((b'cookie', cookies.output(header='', sep=';').strip().encode('latin-1')))
+        if hasattr(request, '_cookies'):
+            del request._cookies
+        if hasattr(request, '_headers'):
+            del request._headers
+    response = await call_next(request)
+    if activity_request:
+        response.headers['Cache-Control'] = 'private, no-store'
+        response.headers['Vary'] = 'Cookie'
+    if guest_request:
+        response.headers['Referrer-Policy'] = 'no-referrer'
+    return response
 
 
 if __name__ == '__main__':

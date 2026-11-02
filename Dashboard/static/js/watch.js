@@ -9,6 +9,22 @@
 var AGP = window.AGP;
 var dashboardApi = window.dashboardApi || {};
 
+/* A guest capability accompanies only this episode's local viewing requests. */
+var activityWatchParams = new URLSearchParams(window.location.search);
+var activityWatchGrant = activityWatchParams.get('ag');
+function activityWatchUrl(value) {
+    if (!activityWatchGrant) { return value; }
+    var url = new URL(value, window.location.href);
+    if (url.origin !== window.location.origin) { return value; }
+    var path = url.pathname.replace(/^\/\.proxy(?=\/)/, '');
+    if (!/^\/(?:video_list\.json|watch\/series\.json|watch\/skip\.json|thumbnail\.webp|get_video\.mp4|get_danmu\.ass|hls\/(?:status\.json|playlist\.m3u8)|stream\/(?:sources\.json|playlist\.m3u8))$/.test(path)) {
+        return value;
+    }
+    url.searchParams.set('ag', activityWatchGrant);
+    if (!url.searchParams.has('id')) { url.searchParams.set('id', activityWatchParams.get('id') || ''); }
+    return url.href;
+}
+
 /* The iOS shell injects this before any page script runs. Where it exists, the
    two levels a browser refuses to hand over — the device's screen brightness
    and the system output volume — are the system's own, so the player drives
@@ -129,6 +145,7 @@ function getBootstrappedResumeTime(sn) {
 }
 
 async function getTime(sn) {
+    if (window.AgpActivityPlayer) { return 0; }
     var bootstrapped = getBootstrappedResumeTime(sn);
     if (bootstrapped !== null) { return bootstrapped; }
     if (!isLoggedIn()) { return 0; }
@@ -180,7 +197,7 @@ async function setTime(sn, time, ended, duration, force) {
     if (duration) { query += '&duration=' + Math.round(duration); }
     query += ended ? '&time=0&ended=true' : '&time=' + Math.round(time);
     try {
-        await fetch(query);
+        await fetch(query, window.AgpActivityPlayer ? { headers: { 'X-Activity-Playback': '1' } } : {});
     } catch (error) { /* a lost position is not worth interrupting playback */ }
 }
 
@@ -202,7 +219,7 @@ var videoListCache = null;
 async function getVideoList() {
     if (videoListCache) { return videoListCache; }
     try {
-        var response = await fetch('./video_list.json');
+        var response = await fetch(activityWatchUrl('./video_list.json'));
         videoListCache = await response.json();
     } catch (error) {
         console.error('無法載入影片清單：', error);
@@ -239,7 +256,7 @@ async function getVideoSeries(video) {
    片庫本來就收得下不是動畫瘋來的東西 */
 async function fetchSeriesInfo(sn) {
     try {
-        var response = await fetch('./watch/series.json?id=' + encodeURIComponent(sn));
+        var response = await fetch(activityWatchUrl('./watch/series.json?id=' + encodeURIComponent(sn)));
         if (!response.ok) { return null; }
         var data = await response.json();
         return data && data.groups && data.groups.length ? data : null;
@@ -307,7 +324,7 @@ async function reloadIfStreaming(sn) {
     var params = new URLSearchParams(window.location.search);
     if (params.get('streaming')) { return false; }  /* 試過了, 別無限重整 */
     try {
-        var response = await fetch('./hls/status.json?id=' + encodeURIComponent(sn));
+        var response = await fetch(activityWatchUrl('./hls/status.json?id=' + encodeURIComponent(sn)));
         var data = await response.json();
         if (!data || data.mode === 'none' || data.mode === 'file') { return false; }
     } catch (error) {
@@ -333,7 +350,7 @@ async function openingJson(url, options) {
     var controller = new AbortController();
     var timer = setTimeout(function () { controller.abort(); }, 8000);
     try {
-        var response = await fetch(url, Object.assign({}, options, { signal: controller.signal }));
+        var response = await fetch(activityWatchUrl(url), Object.assign({}, options, { signal: controller.signal }));
         if (!response.ok) { var error = new Error('Opening API ' + response.status); error.status = response.status; throw error; }
         return await response.json();
     } finally { clearTimeout(timer); }
@@ -787,7 +804,7 @@ AgpPlayer.prototype.build = function () {
     this.streamRetries = 0;
 
     /* Something to look at while the first bytes arrive, instead of a black box. */
-    this.video.poster = './thumbnail.webp?id=' + encodeURIComponent(this.videoData.sn);
+    this.video.poster = activityWatchUrl('./thumbnail.webp?id=' + encodeURIComponent(this.videoData.sn));
     /* 串流要等第一次狀態回來才知道下到哪一片, 這裡先不接來源 */
     if (!this.streaming) { this.attachSource(); }
     this.video.playbackRate = this.rate;
@@ -809,7 +826,7 @@ AgpPlayer.prototype.build = function () {
     /* Desktop autoplays muted-free because the file is same-origin and the
        navigation was user-initiated; a rejected promise just leaves the poster
        frame up, which is the right fallback. */
-    this.wantsAutoplay = !this.isTouch;
+    this.wantsAutoplay = !this.isTouch && !window.AgpActivityPlayer;
     if (this.streaming) {
         /* 串流的起播由 maybeAutoplay() 等到緩衝夠了才放行 */
         this.showDownloading(this.videoData.pending ? '正在準備下載…' : '正在解析…');
@@ -831,13 +848,13 @@ var STREAM_PENDING_GRACE = 120000;
 AgpPlayer.prototype.attachSource = function () {
     /* 已經在片庫裡的走完成檔, 還在下載的走 HLS. 兩條路都只讀本機磁碟 */
     if (this.streaming) { this.attachStream(); return; }
-    this.video.src = './get_video.mp4?id=' + encodeURIComponent(this.videoData.sn) +
-        (this.videoData.resolution ? '&res=' + encodeURIComponent(this.videoData.resolution) : '');
+    this.video.src = activityWatchUrl('./get_video.mp4?id=' + encodeURIComponent(this.videoData.sn) +
+        (this.videoData.resolution ? '&res=' + encodeURIComponent(this.videoData.resolution) : ''));
 };
 
 AgpPlayer.prototype.attachStream = function () {
     var self = this;
-    var url = './hls/playlist.m3u8?id=' + encodeURIComponent(this.videoData.sn);
+    var url = activityWatchUrl('./hls/playlist.m3u8?id=' + encodeURIComponent(this.videoData.sn));
     this.destroyStream();
     this.streamAttached = true;
 
@@ -997,7 +1014,7 @@ AgpPlayer.prototype.pollStreamStatus = async function () {
     if (!this.streaming) { return; }
     var data;
     try {
-        var response = await fetch('./hls/status.json?id=' + encodeURIComponent(this.videoData.sn));
+        var response = await fetch(activityWatchUrl('./hls/status.json?id=' + encodeURIComponent(this.videoData.sn)));
         data = await response.json();
     } catch (error) {
         return;  /* 一次沒問到不算事, 五秒後再問 */
@@ -1695,7 +1712,7 @@ AgpPlayer.prototype.loadDanmaku = async function () {
         this.onDanmakuLoaded([]);
         return;
     }
-    var url = './get_danmu.ass?id=' + encodeURIComponent(this.videoData.sn) + '&t=' + Date.now();
+    var url = activityWatchUrl('./get_danmu.ass?id=' + encodeURIComponent(this.videoData.sn) + '&t=' + Date.now());
     for (var attempt = 0; attempt < 3; attempt++) {
         try {
             var response = await fetch(url);
@@ -2995,6 +3012,8 @@ async function main() {
             renderDanmakuList(rows);
         }
     });
+
+    if (window.AgpActivityPlayer) { window.AgpActivityPlayer.connect(page.player); }
 
     renderAdvancedPanel(page.player);
 

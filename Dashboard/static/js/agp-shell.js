@@ -197,6 +197,7 @@
     }
 
     function registerServiceWorker() {
+        if (new URLSearchParams(global.location.search).get('activity') === '1') { return; }
         if (!('serviceWorker' in global.navigator)) { return; }
         if (global.location.protocol !== 'https:' && global.location.hostname !== 'localhost' &&
             global.location.hostname !== '127.0.0.1') {
