@@ -13,10 +13,10 @@
   </script>
   <link rel="icon" href="static/img/aniGamerPlus.ico">
   <link rel="stylesheet" href="static/css/agp.css?v=8">
-  <link rel="stylesheet" href="static/css/discord-activity.css?v=4">
+  <link rel="stylesheet" href="static/css/discord-activity.css?v=5">
   <script defer src="static/js/vendor/discord-embedded-app-sdk.js"></script>
   <script defer src="static/js/discord-activity-presence.js?v=1"></script>
-  <script defer src="static/js/discord-activity.js?v=3"></script>
+  <script defer src="static/js/discord-activity.js?v=4"></script>
 </head>
 <body class="agp-body activity-body">
   <header class="activity-topbar">
@@ -62,6 +62,7 @@
             <p class="activity-eyebrow">同一個頻道，同一個畫面</p>
             <h1 id="lobbyTitle">和朋友一起看動畫</h1>
             <p id="lobbyDescription">主控選片後，其他人同步觀看。尚未登入的朋友可由主辦人授權觀看這集。</p>
+            <button id="activityLoginPrompt" class="activity-button activity-button-primary" type="button" hidden>登入網站帳號</button>
             <button id="connectButton" class="activity-button activity-button-primary" type="button" hidden>重新連線</button>
           </div>
           <iframe id="activityPlayer" title="一起看播放器" allow="autoplay; picture-in-picture" hidden></iframe>

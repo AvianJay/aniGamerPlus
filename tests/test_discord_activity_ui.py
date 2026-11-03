@@ -22,6 +22,7 @@ class ActivityMock:
         self.auto_grant_requests = []
         self.use_real_presence = False
         self.fail_next_state = False
+        self.platform = 'desktop'
         self.identity = {
             'user': {'id': '123', 'username': 'discord-me'},
             'account': None, 'linked': False, 'requires_login': True,
@@ -52,7 +53,8 @@ class ActivityMock:
 
         if path == '/outer':
             return respond('''<!doctype html><iframe id="activity" style="border:0;width:100%;height:900px"
-                src="/.proxy/discord/activity?frame_id=frame&amp;instance_id=room&amp;platform=desktop"></iframe>''', 'text/html')
+                src="/.proxy/discord/activity?frame_id=frame&amp;instance_id=room&amp;platform=PLATFORM"></iframe>'''
+                           .replace('PLATFORM', self.platform), 'text/html')
         if path == '/discord/activity':
             return respond((ROOT / 'Dashboard/templates/discord_activity.html').read_bytes(), 'text/html')
         if path == '/static/js/vendor/discord-embedded-app-sdk.js':
@@ -529,3 +531,117 @@ def test_discord_minimized_layout_uses_player_only_even_without_viewport_resize(
     frame.wait_for_function("getComputedStyle(document.querySelector('.activity-topbar')).display!=='none'")
     assert player.get_attribute('src') == before_src
     assert child.evaluate('window.samePlayer') is True
+
+
+def set_native_mobile_overlays(page, frame, *, top=72, bottom=80, left=20, right=20,
+                               publish_insets=True):
+    """Model Discord controls outside our iframe, including real pointer blocking."""
+    insets = {'top': top, 'bottom': bottom, 'left': left, 'right': right}
+    page.evaluate("""(insets) => {
+      document.body.style.margin='0';
+      document.querySelector('#activity').style.cssText=
+        'position:fixed;inset:0;border:0;width:100vw;height:100vh';
+      for(const side of ['top','bottom','left','right']) {
+        let overlay=document.getElementById('discord-native-'+side);
+        if(!overlay){overlay=document.createElement('div');overlay.id='discord-native-'+side;document.body.append(overlay);}
+        overlay.style.cssText='position:fixed;z-index:2147483647;background:#282a36;pointer-events:auto';
+        if(side==='top'||side==='bottom'){
+          Object.assign(overlay.style,{left:'0',right:'0',height:insets[side]+'px',[side]:'0'});
+        }else{
+          Object.assign(overlay.style,{top:insets.top+'px',bottom:insets.bottom+'px',width:insets[side]+'px',[side]:'0'});
+        }
+      }
+    }""", insets)
+    if publish_insets:
+        frame.evaluate("""(insets) => {
+          for(const [side,value] of Object.entries(insets))
+            document.documentElement.style.setProperty('--discord-safe-area-inset-'+side,value+'px');
+        }""", insets)
+
+
+def open_mobile_activity(activity_ui):
+    page, mocked = activity_ui
+    mocked.platform = 'mobile'
+    page.set_viewport_size({'width': 390, 'height': 844})
+    page.goto(ORIGIN + '/outer')
+    frame = page.frames[1]
+    frame.wait_for_function("document.querySelector('#lobbyTitle').textContent==='等候主辦人授權'")
+    return page, mocked, frame
+
+
+def assert_native_controls_do_not_cover(locator, page, *, top, bottom, left, right):
+    box = locator.bounding_box()
+    assert box is not None
+    assert box['y'] >= top
+    assert box['y'] + box['height'] <= page.viewport_size['height'] - bottom
+    assert box['x'] >= left
+    assert box['x'] + box['width'] <= page.viewport_size['width'] - right
+
+
+@pytest.mark.parametrize('entrance', ['#accountToggle', '#activityLoginPrompt'])
+def test_mobile_login_remains_clickable_beneath_discord_native_controls(activity_ui, entrance):
+    page, mocked, frame = open_mobile_activity(activity_ui)
+    set_native_mobile_overlays(page, frame)
+    button = frame.locator(entrance)
+    button.wait_for(state='visible')
+    button.scroll_into_view_if_needed()
+    assert_native_controls_do_not_cover(button, page, top=72, bottom=80, left=20, right=20)
+    button.click()
+    frame.locator('#accountUsername').fill('tester')
+    frame.locator('#accountPassword').fill('test-password')
+    submit = frame.locator('#accountLogin')
+    submit.scroll_into_view_if_needed()
+    assert_native_controls_do_not_cover(submit, page, top=72, bottom=80, left=20, right=20)
+    submit.click()
+    frame.wait_for_function("document.querySelectorAll('.activity-episode').length===2")
+    assert mocked.identity['account']['username'] == 'tester'
+    assert ('POST', '/discord/activity/login') in mocked.calls
+    assert frame.locator('#activityLoginPrompt').is_hidden()
+
+
+def test_mobile_login_uses_startup_fallback_before_discord_publishes_safe_areas(activity_ui):
+    page, _, frame = open_mobile_activity(activity_ui)
+    set_native_mobile_overlays(page, frame, top=56, bottom=56, left=0, right=0,
+                               publish_insets=False)
+    button = frame.locator('#accountToggle')
+    assert_native_controls_do_not_cover(button, page, top=56, bottom=56, left=0, right=0)
+    button.click()
+    frame.locator('#accountUsername').fill('tester')
+    frame.locator('#accountPassword').fill('test-password')
+    frame.locator('#accountLogin').click()
+    frame.wait_for_function("document.querySelectorAll('.activity-episode').length===2")
+
+
+def test_mobile_native_safe_area_changes_move_login_without_reloading_activity(activity_ui):
+    page, mocked, frame = open_mobile_activity(activity_ui)
+    set_native_mobile_overlays(page, frame)
+    frame.evaluate('window.sameActivity=true')
+    set_native_mobile_overlays(page, frame, top=104, bottom=96, left=28, right=24)
+    button = frame.locator('#accountToggle')
+    button.scroll_into_view_if_needed()
+    assert_native_controls_do_not_cover(button, page, top=104, bottom=96, left=28, right=24)
+    button.click()
+    assert frame.locator('#accountUsername').is_visible()
+    assert frame.evaluate('window.sameActivity') is True
+    assert mocked.calls.count(('POST', '/discord/activity/token')) == 1
+    assert frame.evaluate('document.documentElement.scrollWidth<=innerWidth')
+
+
+def test_mobile_keyboard_height_does_not_hide_account_form_as_a_compact_preview(activity_ui):
+    page, mocked, frame = open_mobile_activity(activity_ui)
+    set_native_mobile_overlays(page, frame)
+    frame.locator('#activityLoginPrompt').click()
+    frame.locator('#accountUsername').fill('tester')
+    # An iOS/Android keyboard can reduce a focused Activity below the compact
+    # media query threshold; that must not turn the active login form into PIP.
+    page.set_viewport_size({'width': 390, 'height': 320})
+    set_native_mobile_overlays(page, frame, top=56, bottom=48, left=12, right=12)
+    assert frame.locator('#accountPanel').is_visible()
+    assert frame.locator('#accountUsername').is_visible()
+    frame.locator('#accountPassword').fill('test-password')
+    submit = frame.locator('#accountLogin')
+    submit.scroll_into_view_if_needed()
+    assert_native_controls_do_not_cover(submit, page, top=56, bottom=48, left=12, right=12)
+    submit.click()
+    frame.wait_for_function("document.querySelectorAll('.activity-episode').length===2")
+    assert mocked.identity['account']['username'] == 'tester'

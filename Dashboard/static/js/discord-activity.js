@@ -3,6 +3,8 @@
 
     var proxy = /(^|\.)discordsays\.com$/.test(window.location.hostname) ? '/.proxy' : '';
     var root = proxy + '/';
+    document.documentElement.classList.toggle('activity-mobile',
+        new URLSearchParams(window.location.search).get('platform') === 'mobile');
     var endpoint = root + 'discord/activity/';
     var sdk = null;
     var config = null;
@@ -45,7 +47,7 @@
         'playingTitle', 'playingEpisode', 'playbackRole', 'controlDescription',
         'memberCount', 'memberList', 'refreshLibrary', 'librarySearch',
         'libraryHint', 'libraryList', 'activityToast', 'activityExpandedExit',
-        'autoGrantControls', 'autoGrantToggle', 'activityPresenceToggle'
+        'autoGrantControls', 'autoGrantToggle', 'activityPresenceToggle', 'activityLoginPrompt'
     ].forEach(function (id) { elements[id] = document.getElementById(id); });
 
     function status(text, state) {
@@ -227,9 +229,17 @@
     }
 
     function openAccount(open) {
+        if (open && expanded) { setExpanded(false); }
         elements.accountPanel.hidden = !open;
+        document.body.classList.toggle('activity-account-open', open);
         elements.accountToggle.setAttribute('aria-expanded', String(open));
-        if (open && !elements.accountForm.hidden) { elements.accountUsername.focus(); }
+        if (open) {
+            requestAnimationFrame(function () {
+                if (elements.accountPanel.hidden) { return; }
+                elements.accountPanel.scrollIntoView({ block: 'start' });
+                if (!elements.accountForm.hidden) { elements.accountUsername.focus({ preventScroll: true }); }
+            });
+        }
     }
 
     function accountFeedback(message, success) {
@@ -242,6 +252,7 @@
         var user = identity && identity.user;
         var linked = !!(identity && identity.linked);
         elements.accountToggle.disabled = !user || !(config && config.accounts_enabled);
+        elements.activityLoginPrompt.hidden = !user || !(config && config.accounts_enabled) || !!account;
         elements.accountToggle.textContent = account ? account.username : '登入帳號';
         elements.accountIdentity.hidden = !account;
         elements.accountActions.hidden = !account;
@@ -737,6 +748,7 @@
     }
 
     elements.accountToggle.addEventListener('click', function () { openAccount(elements.accountPanel.hidden); });
+    elements.activityLoginPrompt.addEventListener('click', function () { openAccount(true); });
     elements.accountClose.addEventListener('click', function () { openAccount(false); });
     elements.accountForm.addEventListener('submit', async function (event) {
         event.preventDefault();
