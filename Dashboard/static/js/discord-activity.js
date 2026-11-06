@@ -31,6 +31,11 @@
     var controlEpoch = 0;
     var expanded = false;
     var autoGrantPending = false;
+    var PRESENCE_SCOPE = 'rpc.activities.write';
+    var PRESENCE_PREFERENCE = 'agp-discord-activity-presence';
+    var presenceWanted = true;
+    try { presenceWanted = window.localStorage.getItem(PRESENCE_PREFERENCE) !== 'false'; }
+    catch (_) { /* Storage can be unavailable in an embedded Activity. */ }
     var presence = null;
     var presencePending = false;
     var presenceScopeGranted = false;
@@ -90,7 +95,7 @@
 
     function renderPresence() {
         elements.activityPresenceToggle.hidden = !presence;
-        elements.activityPresenceToggle.disabled = presencePending || !identity || !identity.user;
+        elements.activityPresenceToggle.disabled = starting || presencePending || !identity || !identity.user;
         var enabled = !!(presence && presence.enabled);
         elements.activityPresenceToggle.setAttribute('aria-pressed', String(enabled));
         elements.activityPresenceToggle.textContent = '顯示播放動態：' + (enabled ? '開啟' : '關閉');
@@ -108,14 +113,25 @@
             video: findVideo(currentVideo), player: playbackMetadata });
     }
 
+    function requestDiscordCode(withPresence) {
+        var request = {
+            client_id: config.client_id, response_type: 'code', state: csrf,
+            scope: ['identify', 'applications.commands']
+        };
+        if (withPresence) { request.scope.push(PRESENCE_SCOPE); }
+        else { request.prompt = 'none'; }
+        return sdk.commands.authorize(request);
+    }
+
+    function hasPresenceScope(auth) {
+        return Array.isArray(auth.scopes) && auth.scopes.includes(PRESENCE_SCOPE);
+    }
+
     async function authorizePresence() {
         if (presenceScopeGranted) { return; }
         if (!sdk || !identity || !identity.user) { throw new Error('請先連線 Discord。'); }
         var userId = String(identity.user.id);
-        var authorized = await sdk.commands.authorize({
-            client_id: config.client_id, response_type: 'code', state: csrf,
-            prompt: 'none', scope: ['identify', 'applications.commands', 'rpc.activities.write']
-        });
+        var authorized = await requestDiscordCode(true);
         var exchanged = await api('presence-token', { code: authorized.code });
         var auth = await sdk.commands.authenticate({ access_token: exchanged.access_token });
         delete exchanged.access_token;
@@ -123,10 +139,11 @@
             !identity || String(identity.user.id) !== userId) {
             throw new Error('Discord 身分已變更，請重新連線。');
         }
+        if (!hasPresenceScope(auth)) { throw new Error('請允許 Discord 播放動態權限。'); }
         presenceScopeGranted = true;
     }
 
-    function setupPresence() {
+    async function setupPresence() {
         if (!window.AgpDiscordPresence) { return; }
         if (!presence) {
             presence = window.AgpDiscordPresence.create({ sdk: sdk, authorize: authorizePresence,
@@ -134,15 +151,23 @@
                 onError: function () { toast('無法更新 Discord 播放動態，觀看不受影響。'); }
             });
         }
-        renderPresence();
+        await presence.setEnabled(presenceWanted && presenceScopeGranted);
+        if (presenceWanted && !presenceScopeGranted) {
+            toast('Discord 未授予播放動態權限。你仍可觀看，也可以按「顯示播放動態」重新授權。');
+        }
     }
 
     async function togglePresence() {
-        if (!presence || presencePending) { return; }
+        if (!presence || presencePending || starting) { return; }
         presencePending = true;
         renderPresence();
         try {
-            await presence.setEnabled(!presence.enabled);
+            var enable = !presence.enabled;
+            if (await presence.setEnabled(enable) === enable) {
+                presenceWanted = enable;
+                try { window.localStorage.setItem(PRESENCE_PREFERENCE, String(enable)); }
+                catch (_) { /* Keep the choice for this session. */ }
+            }
             updatePresence();
         } catch (_) {
             toast('未能啟用播放動態，請確認 Discord 已允許播放動態權限。');
@@ -674,9 +699,9 @@
         status('正在連線', '');
         notice('');
         try {
+            presenceScopeGranted = false;
             if (presence) {
                 await presence.setEnabled(false);
-                renderPresence();
             }
             var params = new URLSearchParams(window.location.search);
             if (!params.get('frame_id') || !params.get('instance_id') || !params.get('platform')) {
@@ -701,23 +726,26 @@
                 new Promise(function (_, reject) { setTimeout(function () { reject(new Error('未能連到 Discord，請從語音頻道重新開啟活動。')); }, 15000); })
             ]);
             subscribeLayout();
-            var authorized = await sdk.commands.authorize({
-                client_id: config.client_id,
-                response_type: 'code',
-                state: csrf,
-                prompt: 'none',
-                scope: ['identify', 'applications.commands']
-            });
+            var withPresence = presenceWanted && !!window.AgpDiscordPresence;
+            var authorized;
+            try {
+                authorized = await requestDiscordCode(withPresence);
+            } catch (error) {
+                if (!withPresence) { throw error; }
+                // Declining the optional permission must not prevent watching.
+                withPresence = false;
+                authorized = await requestDiscordCode(false);
+            }
             identity = await api('token', { code: authorized.code });
-            presenceScopeGranted = false;
             if (identity.csrf_token) { csrf = identity.csrf_token; }
             var auth = await sdk.commands.authenticate({ access_token: identity.access_token });
             delete identity.access_token;
             if (!auth || !auth.user || String(auth.user.id) !== String(identity.user.id)) {
                 throw new Error('Discord 身分驗證未完成，請重新開啟活動。');
             }
+            presenceScopeGranted = withPresence && hasPresenceScope(auth);
             instanceId = sdk.instanceId;
-            setupPresence();
+            await setupPresence();
             renderIdentity();
             await joinRoom();
         } catch (error) {
@@ -729,6 +757,7 @@
             elements.connectButton.hidden = false;
         } finally {
             starting = false;
+            renderPresence();
             elements.connectButton.disabled = false;
         }
     }

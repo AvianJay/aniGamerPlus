@@ -58,7 +58,7 @@ def calls(page, count):
     return page.evaluate('window.calls')
 
 
-def test_flutter_template_is_opt_in_and_uses_room_playback_clock(page):
+def test_publisher_waits_for_authorization_then_uses_room_playback_clock(page):
     update(page, payload())
     assert not page.evaluate('presence.enabled')
     assert page.evaluate('authorizations') == 0

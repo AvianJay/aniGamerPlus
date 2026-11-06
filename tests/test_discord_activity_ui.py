@@ -21,7 +21,6 @@ class ActivityMock:
         self.join_grant_duration = None
         self.auto_grant_fail = False
         self.auto_grant_requests = []
-        self.use_real_presence = False
         self.fail_next_state = False
         self.platform = 'desktop'
         self.identity = {
@@ -62,16 +61,16 @@ class ActivityMock:
             return respond('''window.sdkAuthorizations=[];window.sdkActivities=[];
                 window.DiscordEmbeddedAppSDK={DiscordSDK:class{
                 constructor(){this.instanceId='room';this.commands={
-                    authorize:async(value)=>{window.sdkAuthorizations.push(value);return {code:'fake-code'}},
-                    authenticate:async()=>({user:{id:'123'}}),
+                    authorize:async(value)=>{
+                        window.sdkAuthorizations.push(value);
+                        if(window.denyPresence && value.scope.includes('rpc.activities.write')) throw new Error('Access denied');
+                        return {code:'fake-code'}},
+                    authenticate:async()=>({user:{id:'123'},scopes:window.sdkAuthorizations.at(-1).scope
+                        .filter(scope=>!window.omitPresenceScope || scope!=='rpc.activities.write')}),
                     setActivity:async(value)=>{window.sdkActivities.push(value);return value}}}
                 ready(){return Promise.resolve()}
                 subscribe(event,handler){if(event==='ACTIVITY_LAYOUT_MODE_UPDATE')window.sdkLayoutHandler=handler;return Promise.resolve()}
                 unsubscribe(){return Promise.resolve()}}};''', 'application/javascript')
-        if path == '/static/js/discord-activity-presence.js':
-            if self.use_real_presence:
-                return respond((ROOT/'Dashboard/static/js/discord-activity-presence.js').read_bytes(), 'application/javascript')
-            return respond('''window.AgpDiscordPresence={create:()=>({update(){},clear(){},destroy(){},setEnabled:async()=>{}})};''', 'application/javascript')
         if path.startswith('/static/'):
             file = ROOT / 'Dashboard' / path.lstrip('/')
             content_type = {'.css': 'text/css', '.js': 'application/javascript', '.ico': 'image/x-icon'}.get(file.suffix)
@@ -346,30 +345,23 @@ def test_host_auto_grant_toggle_is_authoritative_and_failure_keeps_previous_stat
     frame.locator('#autoGrantControls').wait_for(state='hidden')
 
 
-def test_optional_presence_uses_flutter_template_and_separate_authorization_without_resetting_room(activity_ui):
+def test_presence_uses_launch_authorization_and_publishes_playback_by_default(activity_ui):
     page, mocked = activity_ui
-    mocked.use_real_presence = True
     mocked.state.update(host_id='456', sn='100', can_watch=True, watch_token='guest-video-token',
                         position=12, rate=1.5, paused=False, updated_at=time.time())
     page.goto(ORIGIN + '/outer')
     frame = page.frames[1]
     player = frame.locator('#activityPlayer')
     player.wait_for(state='visible')
-    assert frame.locator('#activityPresenceToggle').get_attribute('aria-pressed') == 'false'
-    assert frame.evaluate('window.sdkActivities') == []
-    assert all('rpc.activities.write' not in value['scope'] for value in frame.evaluate('window.sdkAuthorizations'))
+    assert frame.locator('#activityPresenceToggle').get_attribute('aria-pressed') == 'true'
+    assert frame.evaluate('window.sdkAuthorizations.map(request=>request.scope)') == [
+        ['identify', 'applications.commands', 'rpc.activities.write']]
     before_src = player.get_attribute('src')
     child = frame.child_frames[0]
     child.evaluate("""() => parent.postMessage({type:'agp:activity-playback',sn:'100',
       title:'孤獨搖滾！',episode:'第 1 集',position:12,duration:1440,paused:false,rate:1.5,
       cover:'https://example.com/cover.webp'},location.origin)""")
-    frame.locator('#activityPresenceToggle').click()
     frame.wait_for_function("window.sdkActivities.some(value=>value.activity?.details==='孤獨搖滾！')")
-    assert frame.locator('#activityPresenceToggle').get_attribute('aria-pressed') == 'true'
-    assert ('POST', '/discord/activity/presence-token') in mocked.calls
-    assert mocked.calls.count(('POST', '/discord/activity/token')) == 1
-    authorization = frame.evaluate('window.sdkAuthorizations.at(-1)')
-    assert 'rpc.activities.write' in authorization['scope']
     activity = frame.evaluate('window.sdkActivities.filter(value=>value.activity?.details).at(-1).activity')
     assert activity['type'] == 3 and activity['details'] == '孤獨搖滾！'
     assert activity['state'] == '第 1 集'
@@ -389,6 +381,9 @@ def test_optional_presence_uses_flutter_template_and_separate_authorization_with
     assert player.get_attribute('src') == before_src
     frame.locator('#activityPresenceToggle').click()
     frame.wait_for_function("window.sdkActivities.at(-1)?.activity?.details==='孤獨搖滾！'")
+    assert frame.evaluate('window.sdkAuthorizations.length') == 1
+    assert mocked.calls.count(('POST', '/discord/activity/token')) == 1
+    assert ('POST', '/discord/activity/presence-token') not in mocked.calls
     mocked.state.update(can_watch=False, watch_token=None, revision=mocked.state['revision']+1)
     player.wait_for(state='hidden')
     frame.wait_for_function('window.sdkActivities.at(-1).activity===null')
@@ -498,34 +493,79 @@ def test_discord_small_waiting_view_never_creates_guest_player(activity_ui):
     assert ('GET', '/video_list.json') not in mocked.calls
 
 
-def test_reconnect_resets_optional_presence_until_user_grants_scope_again(activity_ui):
+@pytest.mark.parametrize('grant_on_reconnect', [True, False])
+def test_reconnect_checks_new_token_before_resuming_presence(activity_ui, grant_on_reconnect):
     page, mocked = activity_ui
-    mocked.use_real_presence = True
     mocked.state.update(host_id='456', sn='100', can_watch=True, watch_token='guest-video-token',
                         position=12, paused=True, updated_at=time.time())
     page.goto(ORIGIN + '/outer')
     frame = page.frames[1]
     player = frame.locator('#activityPlayer')
     player.wait_for(state='visible')
-    frame.child_frames[0].evaluate("""() => parent.postMessage({type:'agp:activity-playback',sn:'100',
-      title:'孤獨搖滾！',episode:'第 1 集',position:12,duration:1440,paused:true,rate:1},location.origin)""")
-    frame.locator('#activityPresenceToggle').click()
-    frame.wait_for_function("window.sdkActivities.at(-1)?.activity?.details==='孤獨搖滾！'")
-    assert mocked.calls.count(('POST', '/discord/activity/presence-token')) == 1
+    frame.wait_for_function("window.sdkActivities.at(-1)?.activity?.details==='sn 100'")
     mocked.fail_next_state = True
     frame.locator('#connectButton').wait_for(state='visible')
     player.wait_for(state='hidden')
+    frame.wait_for_function('window.sdkActivities.at(-1)?.activity===null')
+    frame.evaluate('omit=>window.omitPresenceScope=omit', not grant_on_reconnect)
     frame.locator('#connectButton').click()
     player.wait_for(state='visible')
-    assert frame.locator('#activityPresenceToggle').get_attribute('aria-pressed') == 'false'
-    assert frame.evaluate('window.sdkActivities.at(-1).activity') is None
     assert mocked.calls.count(('POST', '/discord/activity/token')) == 2
+    assert ('POST', '/discord/activity/presence-token') not in mocked.calls
+    assert frame.evaluate('window.sdkAuthorizations.map(request=>request.scope)') == [
+        ['identify', 'applications.commands', 'rpc.activities.write']] * 2
+    toggle = frame.locator('#activityPresenceToggle')
+    if grant_on_reconnect:
+        assert toggle.get_attribute('aria-pressed') == 'true'
+        frame.wait_for_function("window.sdkActivities.at(-1)?.activity?.details==='sn 100'")
+    else:
+        assert toggle.get_attribute('aria-pressed') == 'false'
+        assert frame.evaluate('window.sdkActivities.at(-1).activity') is None
+
+
+@pytest.mark.parametrize('denied', [True, False], ids=['declined', 'missing-scope'])
+def test_presence_permission_failure_allows_watching_and_retry_in_place(activity_ui, denied):
+    page, mocked = activity_ui
+    page.add_init_script('window.denyPresence=true' if denied else 'window.omitPresenceScope=true')
+    mocked.state.update(host_id='456', sn='100', can_watch=True, watch_token='guest-video-token')
+    page.goto(ORIGIN + '/outer')
+    frame = page.frames[1]
+    player = frame.locator('#activityPlayer')
+    player.wait_for(state='visible')
+    original_src = player.get_attribute('src')
+    toggle = frame.locator('#activityPresenceToggle')
+    assert toggle.get_attribute('aria-pressed') == 'false'
+    scopes = ['identify', 'applications.commands', 'rpc.activities.write']
+    assert frame.evaluate('window.sdkAuthorizations.map(request=>request.scope)') == (
+        [scopes, ['identify', 'applications.commands']] if denied else [scopes])
+    assert frame.evaluate('window.sdkActivities') == []
+    assert ('POST', '/discord/activity/presence-token') not in mocked.calls
+    frame.evaluate('window.denyPresence=window.omitPresenceScope=false')
+    toggle.click()
+    frame.wait_for_function("window.sdkActivities.at(-1)?.activity?.details==='sn 100'")
+    assert frame.evaluate('window.sdkAuthorizations.at(-1).scope') == scopes
+    assert toggle.get_attribute('aria-pressed') == 'true'
     assert mocked.calls.count(('POST', '/discord/activity/presence-token')) == 1
-    assert 'rpc.activities.write' not in frame.evaluate('window.sdkAuthorizations.at(-1).scope')
+    assert mocked.calls.count(('POST', '/discord/activity/token')) == 1
+    assert mocked.calls.count(('POST', '/discord/activity/join')) == 1
+    assert player.get_attribute('src') == original_src
+
+
+def test_turning_off_presence_skips_optional_scope_on_next_launch(activity_ui):
+    page, mocked = activity_ui
+    mocked.state.update(host_id='456', sn='100', can_watch=True, watch_token='guest-video-token')
+    page.goto(ORIGIN + '/outer')
+    frame = page.frames[1]
+    frame.wait_for_function("window.sdkActivities.at(-1)?.activity?.details==='sn 100'")
     frame.locator('#activityPresenceToggle').click()
-    frame.wait_for_function("document.querySelector('#activityPresenceToggle').getAttribute('aria-pressed')==='true'")
-    assert mocked.calls.count(('POST', '/discord/activity/presence-token')) == 2
-    assert 'rpc.activities.write' in frame.evaluate('window.sdkAuthorizations.at(-1).scope')
+    frame.wait_for_function('window.sdkActivities.at(-1)?.activity===null')
+    page.reload()
+    frame = page.frames[1]
+    frame.locator('#activityPlayer').wait_for(state='visible')
+    assert frame.locator('#activityPresenceToggle').get_attribute('aria-pressed') == 'false'
+    assert frame.evaluate('window.sdkAuthorizations.map(request=>request.scope)') == [
+        ['identify', 'applications.commands']]
+    assert frame.evaluate('window.sdkActivities') == []
 
 
 @pytest.mark.parametrize('layout_mode', [1, 2])
