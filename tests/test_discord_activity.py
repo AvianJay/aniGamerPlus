@@ -135,6 +135,19 @@ def test_unique_binding_auto_login_and_unlink_revocation(env):
     assert client(env).get('/discord/activity/me').json()['account'] is None
 
 
+def test_login_binds_discord_by_default_and_reports_conflicts(env):
+    alice = client(env)
+    body = post(alice, 'login', username='alice', password='alicepw', link=True).json()
+    assert body['linked'] is True and 'link_error' not in body
+    assert env.data['users'][0]['discord_account']['id'] == '111'
+    assert client(env).get('/discord/activity/me').json()['account']['username'] == 'alice'
+    other = client(env)
+    body = post(other, 'login', username='bob', password='bobpw', link=True).json()
+    assert body['account']['username'] == 'bob' and body['linked'] is False
+    assert body['link_error']
+    assert 'discord_account' not in env.data['users'][1]
+
+
 def test_different_discord_cannot_replace_existing_binding(env):
     c = client(env)
     post(c, 'login', username='alice', password='alicepw')

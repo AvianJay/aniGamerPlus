@@ -16,6 +16,7 @@ ACTIVITY_URL = ORIGIN + '/.proxy/discord/activity'
 class ActivityMock:
     def __init__(self):
         self.calls = []
+        self.login_requests = []
         self.authorizations = []
         self.join_grant_duration = None
         self.auto_grant_fail = False
@@ -91,8 +92,11 @@ class ActivityMock:
         if path == '/discord/activity/me':
             return respond(self.identity)
         if path == '/discord/activity/login':
-            assert request.post_data_json == {'username': 'tester', 'password': 'test-password'}
+            body = request.post_data_json
+            assert {k: body[k] for k in ('username', 'password')} == {'username': 'tester', 'password': 'test-password'}
+            self.login_requests.append(body)
             self.identity['account'] = {'username': 'tester', 'role': 'user'}
+            self.identity['linked'] = body.get('link') is True
             self.state.update(host_id='123', is_host=True, can_watch=True,
                               auto_grant_available=True,
                               revision=self.state['revision'] + 1)
@@ -198,11 +202,14 @@ def test_embedded_activity_login_link_host_sync_and_unlink(activity_ui):
     frame.locator('#accountUsername').wait_for(state='visible')
     assert frame.evaluate('window.parent!==window')
     assert ('GET', '/video_list.json') not in mocked.calls
+    assert frame.locator('#accountRemember').is_checked()
+    frame.locator('#accountRemember').uncheck()
     frame.locator('#accountUsername').fill('tester')
     frame.locator('#accountPassword').fill('test-password')
     frame.locator('#accountLogin').click()
     frame.wait_for_function("document.querySelectorAll('.activity-episode').length===2")
     assert frame.locator('#accountPassword').input_value() == ''
+    assert mocked.login_requests[-1]['link'] is False
     assert not mocked.identity['linked']
     assert ('POST', '/discord/activity/link') not in mocked.calls
     assert frame.locator('#memberList img').count() == 0
@@ -230,6 +237,25 @@ def test_embedded_activity_login_link_host_sync_and_unlink(activity_ui):
     frame.locator('#accountUnlink').click()
     frame.locator('#accountUsername').wait_for(state='visible')
     assert frame.locator('#activityPlayer').is_hidden()
+
+
+def test_login_binds_discord_by_default_and_closes_account_sheet(activity_ui):
+    page, mocked = activity_ui
+    page.goto(ORIGIN + '/outer')
+    frame = page.frames[1]
+    frame.wait_for_function("document.querySelector('#lobbyTitle').textContent==='等候主辦人授權'")
+    frame.locator('#activityLoginPrompt').click()
+    frame.locator('#accountUsername').fill('tester')
+    frame.locator('#accountPassword').fill('test-password')
+    frame.locator('#accountLogin').click()
+    frame.wait_for_function("document.querySelectorAll('.activity-episode').length===2")
+    assert mocked.login_requests[-1]['link'] is True
+    assert ('POST', '/discord/activity/link') not in mocked.calls
+    frame.locator('#accountPanel').wait_for(state='hidden')
+    assert frame.locator('#accountToggle').get_attribute('data-linked') == 'true'
+    frame.locator('#accountToggle').click()
+    assert frame.locator('#accountUnlink').is_visible()
+    assert frame.locator('#accountLink').is_hidden()
 
 
 def test_guest_waits_then_watches_only_granted_episode_and_stops_on_revoke(activity_ui):

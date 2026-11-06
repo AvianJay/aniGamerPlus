@@ -47,7 +47,8 @@
         'playingTitle', 'playingEpisode', 'playbackRole', 'controlDescription',
         'memberCount', 'memberList', 'refreshLibrary', 'librarySearch',
         'libraryHint', 'libraryList', 'activityToast', 'activityExpandedExit',
-        'autoGrantControls', 'autoGrantToggle', 'activityPresenceToggle', 'activityLoginPrompt'
+        'autoGrantControls', 'autoGrantToggle', 'activityPresenceToggle', 'activityLoginPrompt',
+        'accountRemember'
     ].forEach(function (id) { elements[id] = document.getElementById(id); });
 
     function status(text, state) {
@@ -236,8 +237,8 @@
         if (open) {
             requestAnimationFrame(function () {
                 if (elements.accountPanel.hidden) { return; }
-                elements.accountPanel.scrollIntoView({ block: 'start' });
-                if (!elements.accountForm.hidden) { elements.accountUsername.focus({ preventScroll: true }); }
+                if (!elements.accountForm.hidden) { elements.accountUsername.focus(); }
+                else { elements.accountClose.focus(); }
             });
         }
     }
@@ -251,26 +252,33 @@
         var account = identity && identity.account;
         var user = identity && identity.user;
         var linked = !!(identity && identity.linked);
-        elements.accountToggle.disabled = !user || !(config && config.accounts_enabled);
-        elements.activityLoginPrompt.hidden = !user || !(config && config.accounts_enabled) || !!account;
+        var accountsEnabled = !!(config && config.accounts_enabled);
+        elements.accountToggle.disabled = !user || !accountsEnabled;
+        elements.accountToggle.hidden = !!config && !accountsEnabled;
+        elements.activityLoginPrompt.hidden = !user || !accountsEnabled || !!account;
         elements.accountToggle.textContent = account ? account.username : '登入帳號';
+        elements.accountToggle.dataset.initial = account ? Array.from(account.username)[0].toUpperCase() : '?';
+        elements.accountToggle.dataset.linked = String(linked);
+        elements.accountToggle.title = account ? (linked ? '已綁定 Discord，會自動登入' : '尚未綁定 Discord') : '';
         elements.accountIdentity.hidden = !account;
         elements.accountActions.hidden = !account;
-        elements.accountForm.hidden = !!account;
+        elements.accountForm.hidden = !!account || !accountsEnabled;
         elements.accountLink.hidden = linked;
         elements.accountUnlink.hidden = !linked;
         if (account) {
-            elements.accountIdentity.textContent = '網站帳號：' + account.username + (linked ? ' · 已綁定 Discord' : ' · 尚未綁定');
+            elements.accountIdentity.textContent = account.username + (linked ? ' · 已綁定 Discord' : ' · 尚未綁定 Discord');
         }
-        if (config && !config.accounts_enabled) {
+        var discordName = user ? String(user.global_name || user.username || '') : '';
+        if (!accountsEnabled) {
             elements.accountDescription.textContent = '這台伺服器未啟用網站帳號，將以 Discord 身分加入。';
-            elements.accountForm.hidden = true;
-        } else if (linked && account) {
-            elements.accountDescription.textContent = '已使用綁定的網站帳號登入。解除綁定後，之後開啟活動將需要重新登入網站帳號。';
+        } else if (linked) {
+            elements.accountDescription.textContent = '此 Discord 帳號已綁定，之後開啟活動會自動登入。解除綁定後需要重新輸入密碼。';
         } else if (account) {
-            elements.accountDescription.textContent = '已登入。你可以將網站帳號綁定目前的 Discord 身分，下次開啟活動時直接登入。';
+            elements.accountDescription.textContent = '綁定後，' + (discordName || '這個 Discord 帳號') + ' 下次開啟活動就會自動登入。';
         } else {
-            elements.accountDescription.textContent = (config && config.requires_login ? '你可以登入網站帳號，或在房間等候主辦人授權觀看目前這集。' : '這台伺服器允許訪客觀看；你也可以登入網站帳號。') + ' 綁定 Discord 後，下次開啟活動就能直接登入。';
+            elements.accountDescription.textContent = config && config.requires_login
+                ? '登入後即可選片與觀看；未登入也可以等主辦人授權觀看目前這集。'
+                : '登入後會使用你的網站帳號；不登入也能以 Discord 身分觀看。';
         }
     }
 
@@ -556,7 +564,7 @@
         status('等待登入', '');
         notice(message || '這台伺服器要求登入網站帳號才能觀看。請在活動內登入後繼續。');
         elements.lobbyTitle.textContent = '登入後，就能一起看';
-        elements.lobbyDescription.textContent = '在上方登入網站帳號；綁定 Discord 後，下次開啟就可以直接加入。';
+        elements.lobbyDescription.textContent = '登入網站帳號並綁定 Discord，下次開啟就會自動加入。';
         openAccount(true);
     }
 
@@ -733,7 +741,15 @@
             identity = await api(action, body);
             if (identity.csrf_token) { csrf = identity.csrf_token; }
             renderIdentity();
-            accountFeedback(success, true);
+            var message = typeof success === 'function' ? success(identity) : success;
+            if (identity.link_error) {
+                accountFeedback('已登入，但未能綁定：' + identity.link_error);
+            } else if (action === 'login' && identity.linked) {
+                openAccount(false);
+                toast(message);
+            } else {
+                accountFeedback(message, true);
+            }
             // Refresh room authorization immediately after login, unlink or logout.
             controlEpoch += 1;
             clearPlayer();
@@ -750,13 +766,19 @@
     elements.accountToggle.addEventListener('click', function () { openAccount(elements.accountPanel.hidden); });
     elements.activityLoginPrompt.addEventListener('click', function () { openAccount(true); });
     elements.accountClose.addEventListener('click', function () { openAccount(false); });
+    elements.accountPanel.addEventListener('click', function (event) {
+        if (event.target === elements.accountPanel) { openAccount(false); }
+    });
     elements.accountForm.addEventListener('submit', async function (event) {
         event.preventDefault();
         var password = elements.accountPassword.value;
         elements.accountPassword.value = '';
         await accountAction(elements.accountLogin, 'login', {
-            username: elements.accountUsername.value.trim(), password: password
-        }, '已登入。你可以選擇綁定 Discord，之後直接登入。');
+            username: elements.accountUsername.value.trim(), password: password,
+            link: elements.accountRemember.checked
+        }, function (result) {
+            return result.linked ? '已登入並綁定 Discord，下次開啟活動會自動登入。' : '已登入。可以在這裡綁定 Discord，之後自動登入。';
+        });
         password = '';
     });
     elements.accountLink.addEventListener('click', function () {
@@ -767,7 +789,8 @@
     });
     elements.accountSwitch.addEventListener('click', function () {
         elements.accountForm.hidden = false;
-        accountFeedback('登入另一個網站帳號後，可以另行選擇是否綁定。');
+        elements.accountActions.hidden = true;
+        accountFeedback('');
         elements.accountUsername.focus();
     });
     elements.librarySearch.addEventListener('input', renderLibrary);
@@ -787,6 +810,7 @@
     elements.activityPresenceToggle.addEventListener('click', togglePresence);
     elements.activityExpandedExit.addEventListener('click', function () { setExpanded(false); });
     document.addEventListener('keydown', function (event) {
+        if (event.key === 'Escape' && !elements.accountPanel.hidden) { openAccount(false); event.preventDefault(); return; }
         if (event.key === 'Escape' && expanded) { setExpanded(false); event.preventDefault(); }
     });
     frame.addEventListener('load', function () { postState(); postExpanded(); });

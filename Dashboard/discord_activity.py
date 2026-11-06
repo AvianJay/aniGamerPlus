@@ -325,7 +325,18 @@ class ActivityBackend:
             session['local_token'] = fresh['token']
             session['linked_login'] = False
             self.login_attempts.pop(key, None)
-        return self._identity(session)
+        result = None
+        if body.get('link') is True:
+            # Remember this Discord identity by default; a conflicting binding
+            # keeps the password login and only reports why it was not linked.
+            try:
+                result = self.link(session)
+            except ActivityError as error:
+                if error.error not in ('already_linked', 'different_account'):
+                    raise
+                result = self._identity(session)
+                result['link_error'] = error.message
+        return result or self._identity(session)
 
     def presence_token(self, session, body):
         """Upgrade only the SDK token, keeping the existing viewing identity."""
