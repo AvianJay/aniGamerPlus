@@ -23,6 +23,8 @@ class ActivityMock:
         self.auto_grant_requests = []
         self.fail_next_state = False
         self.platform = 'desktop'
+        self.media_status = 200
+        self.media_content_type = 'video/mp4'
         self.identity = {
             'user': {'id': '123', 'username': 'discord-me'},
             'account': None, 'linked': False, 'requires_login': True,
@@ -145,6 +147,8 @@ class ActivityMock:
                 {'sn': 100, 'anime_name': '孤獨搖滾！', 'episode': 1, 'resolution': 1080},
                 {'sn': 101, 'anime_name': '孤獨搖滾！', 'episode': 2, 'resolution': 1080},
             ]})
+        if path == '/get_video.mp4' and request.method == 'HEAD':
+            return respond('', self.media_content_type, self.media_status)
         if path == '/discord/activity/control':
             data = request.post_data_json
             assert data['action'] == 'select'
@@ -356,6 +360,7 @@ def test_presence_uses_launch_authorization_and_publishes_playback_by_default(ac
     assert frame.locator('#activityPresenceToggle').get_attribute('aria-pressed') == 'true'
     assert frame.evaluate('window.sdkAuthorizations.map(request=>request.scope)') == [
         ['identify', 'applications.commands', 'rpc.activities.write']]
+    assert frame.evaluate("window.sdkAuthorizations.every(request=>request.prompt==='none')")
     before_src = player.get_attribute('src')
     child = frame.child_frames[0]
     child.evaluate("""() => parent.postMessage({type:'agp:activity-playback',sn:'100',
@@ -544,11 +549,41 @@ def test_presence_permission_failure_allows_watching_and_retry_in_place(activity
     toggle.click()
     frame.wait_for_function("window.sdkActivities.at(-1)?.activity?.details==='sn 100'")
     assert frame.evaluate('window.sdkAuthorizations.at(-1).scope') == scopes
+    assert frame.evaluate("window.sdkAuthorizations.every(request=>request.prompt==='none')")
     assert toggle.get_attribute('aria-pressed') == 'true'
     assert mocked.calls.count(('POST', '/discord/activity/presence-token')) == 1
     assert mocked.calls.count(('POST', '/discord/activity/token')) == 1
     assert mocked.calls.count(('POST', '/discord/activity/join')) == 1
     assert player.get_attribute('src') == original_src
+
+
+@pytest.mark.parametrize('status,content_type,expected', [
+    (200, 'video/mp4', '無法讀取或解碼影片'),
+    (403, 'application/json', '無法取得影片觀看授權'),
+    (404, 'application/json', '伺服器找不到這一集'),
+    (503, 'application/json', 'HTTP 503'),
+    (200, 'text/html', '沒有回傳影片資料'),
+])
+def test_source_error_shows_http_diagnosis_without_autoplay_hint(activity_ui, status, content_type, expected):
+    page, mocked = activity_ui
+    mocked.media_status = status
+    mocked.media_content_type = content_type
+    mocked.state.update(host_id='456', sn='100', can_watch=True, watch_token='guest-video-token')
+    page.goto(ORIGIN + '/outer')
+    frame = page.frames[1]
+    frame.locator('#activityPlayer').wait_for(state='visible')
+    child = frame.child_frames[0]
+    child.evaluate("""() => parent.postMessage({type:'agp:activity-playback-error',
+      sn:'100',reason:'unsupported'},location.origin)""")
+    frame.wait_for_function('text=>document.querySelector("#activityNotice").textContent.includes(text)', arg=expected)
+    assert ('HEAD', '/get_video.mp4') in mocked.calls
+    assert not frame.locator('#activityNotice').is_hidden()
+    assert '點一下播放器' not in frame.locator('#activityToast').inner_text()
+    # Normal room polling must not erase an unresolved playback failure.
+    page.wait_for_timeout(1100)
+    assert expected in frame.locator('#activityNotice').inner_text()
+    child.evaluate("""() => parent.postMessage({type:'agp:activity-playback-ok',sn:'100'},location.origin)""")
+    frame.locator('#activityNotice').wait_for(state='hidden')
 
 
 def test_turning_off_presence_skips_optional_scope_on_next_launch(activity_ui):

@@ -40,6 +40,8 @@
     var presencePending = false;
     var presenceScopeGranted = false;
     var playbackMetadata = null;
+    var playbackNotice = '';
+    var playbackErrorRevision = 0;
     var layoutSubscribed = false;
     var frame = document.getElementById('activityPlayer');
     var elements = {};
@@ -64,6 +66,44 @@
     function notice(message) {
         elements.activityNotice.textContent = message || '';
         elements.activityNotice.hidden = !message;
+    }
+
+    async function showPlaybackError(data) {
+        if (!joined || !currentState || !currentState.can_watch || String(data.sn) !== currentVideo) { return; }
+        var messages = {
+            unsupported: '無法讀取或解碼影片。請確認 Discord 已更新並開啟硬體加速，再按播放重試。',
+            decode: '影片解碼失敗。請確認 Discord 已更新並開啟硬體加速，再按播放重試。',
+            network: '影片連線失敗，請按播放重試。',
+            source: '影片載入失敗，請按播放重試。'
+        };
+        if (!Object.prototype.hasOwnProperty.call(messages, data.reason)) { return; }
+        var revision = ++playbackErrorRevision;
+        playbackNotice = messages[data.reason];
+        notice(playbackNotice);
+        if (data.streaming) { return; }
+        // A media source error can also be an HTTP denial/HTML response. Check
+        // headers only, keeping the episode capability on our own media route.
+        var controller = new AbortController();
+        var timeout = setTimeout(function () { controller.abort(); }, 5000);
+        try {
+            var video = findVideo(currentVideo);
+            var url = root + 'get_video.mp4?id=' + encodeURIComponent(currentVideo) +
+                (video && video.resolution ? '&res=' + encodeURIComponent(video.resolution) : '') +
+                (currentWatchToken ? '&ag=' + encodeURIComponent(currentWatchToken) : '');
+            var response = await fetch(url, { method: 'HEAD', cache: 'no-store', redirect: 'error', signal: controller.signal });
+            if (revision !== playbackErrorRevision) { return; }
+            if (response.status === 401 || response.status === 403) {
+                playbackNotice = '無法取得影片觀看授權，請重新連線或請主控重新授權。';
+            } else if (response.status === 404) {
+                playbackNotice = '伺服器找不到這一集的影片檔案，請主控重新選片。';
+            } else if (!response.ok) {
+                playbackNotice = '影片來源暫時無法使用（HTTP ' + response.status + '），請按播放重試。';
+            } else if (/text\/html|application\/json/i.test(response.headers.get('Content-Type') || '')) {
+                playbackNotice = '影片來源沒有回傳影片資料，請重新連線後重試。';
+            }
+            notice(playbackNotice);
+        } catch (_) { /* Keep the original media error if the diagnostic fails. */ }
+        finally { clearTimeout(timeout); }
     }
 
     function toast(message) {
@@ -116,10 +156,10 @@
     function requestDiscordCode(withPresence) {
         var request = {
             client_id: config.client_id, response_type: 'code', state: csrf,
+            prompt: 'none',
             scope: ['identify', 'applications.commands']
         };
         if (withPresence) { request.scope.push(PRESENCE_SCOPE); }
-        else { request.prompt = 'none'; }
         return sdk.commands.authorize(request);
     }
 
@@ -472,6 +512,8 @@
     }
 
     function clearPlayer() {
+        playbackErrorRevision += 1;
+        playbackNotice = '';
         playbackMetadata = null;
         if (presence) { presence.clear(); }
         setExpanded(false);
@@ -561,7 +603,7 @@
             clearPlayer();
             waitingForAccess(accessExpired);
         } else {
-            notice('');
+            notice(playbackNotice);
         }
         if (canWatch && !nextVideo) {
             elements.lobbyTitle.textContent = state.is_host ? '選一集，大家一起看' : '等主控選一集';
@@ -866,7 +908,20 @@
             if (typeof data.expanded === 'boolean') { setExpanded(data.expanded); }
             return;
         }
-        if (data.type === 'agp:activity-autoplay-blocked') { toast('點一下播放器開始播放，之後會自動跟上主控進度。'); return; }
+        if (data.type === 'agp:activity-playback-error') { showPlaybackError(data); return; }
+        if (data.type === 'agp:activity-playback-ok') {
+            if (!joined || !currentState || !currentState.can_watch || String(data.sn) !== currentVideo) { return; }
+            playbackErrorRevision += 1;
+            if (elements.activityNotice.textContent === playbackNotice) { notice(''); }
+            playbackNotice = '';
+            return;
+        }
+        if (data.type === 'agp:activity-autoplay-blocked') {
+            if (joined && currentState && currentState.can_watch && String(data.sn) === currentVideo) {
+                toast('點一下播放器開始播放，之後會自動跟上主控進度。');
+            }
+            return;
+        }
         if (data.type !== 'agp:activity-control' || !joined || !currentState || !currentState.is_host) { return; }
         if (['select', 'play', 'pause', 'seek', 'rate', 'sync'].indexOf(data.action) < 0) { return; }
         if (data.action !== 'select' && data.sn && String(data.sn) !== currentVideo) { return; }

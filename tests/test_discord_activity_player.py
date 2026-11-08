@@ -140,6 +140,104 @@ def test_initial_paused_snapshot_sets_position_and_rate_without_feedback(activit
     assert frame.locator('#playerSeek').is_disabled()
     page.wait_for_timeout(200)
     assert controls(page) == []
+    assert frame.locator('.activity-player-hint').count() == 0
+
+
+@pytest.mark.parametrize('host', [True, False], ids=['host', 'follower'])
+def test_transient_source_failure_reloads_once_and_restores_room_clock(activity_player, host):
+    page, frame = activity_player
+    requests = []
+
+    def fail_first(route):
+        requests.append(route.request.url)
+        if len(requests) == 1:
+            route.fulfill(status=503, content_type='application/json', body='{}')
+        else:
+            route.continue_()
+
+    page.context.route('**/get_video.mp4?*', fail_first)
+    frame.goto(frame.url + '&ag=retry-test-episode-capability')
+    page.wait_for_function("window.activityMessages.some(message=>message.type==='agp:activity-ready')")
+    snapshot(page, host=host, position=2, paused=False)
+    frame.wait_for_function('window.page?.player?.video.readyState>=2 && !window.page.player.video.paused')
+    assert len(requests) >= 2
+    for url in requests:
+        assert parse_qs(urlsplit(url).query)['ag'] == ['retry-test-episode-capability']
+    assert frame.evaluate('window.page.player.video.currentTime') == pytest.approx(2, abs=.6)
+    assert not page.evaluate("window.activityMessages.some(message=>message.type==='agp:activity-autoplay-blocked')")
+    assert controls(page) == []
+
+
+@pytest.mark.parametrize('host', [True, False], ids=['host', 'follower'])
+def test_permanent_source_failure_stops_retrying_and_is_not_autoplay_denial(activity_player, host):
+    page, frame = activity_player
+    requests = []
+
+    def deny_source(route):
+        requests.append(route.request.url)
+        route.fulfill(status=403, content_type='application/json', body='{}')
+
+    page.context.route('**/get_video.mp4?*', deny_source)
+    frame.goto(frame.url)
+    page.wait_for_function("window.activityMessages.some(message=>message.type==='agp:activity-playback-error')")
+    assert len(requests) == 2
+    for revision in range(1, 4):
+        snapshot(page, host=host, paused=False, revision=revision)
+        page.wait_for_timeout(100)
+    assert len(requests) == 2
+    assert not page.evaluate("window.activityMessages.some(message=>message.type==='agp:activity-autoplay-blocked')")
+    assert controls(page) == []
+    page.context.unroute('**/get_video.mp4?*', deny_source)
+    frame.locator('#playToggle').click()
+    frame.wait_for_function('window.page.player.video.readyState>=2 && !window.page.player.video.paused')
+    if host:
+        wait_control(page, 'play')
+    else:
+        assert controls(page) == []
+
+
+@pytest.mark.parametrize('host', [True, False], ids=['host', 'follower'])
+@pytest.mark.parametrize('name', ['NotSupportedError', 'NotAllowedError', 'AbortError'])
+def test_play_rejections_are_handled_and_manual_retry_can_recover(activity_player, host, name):
+    page, frame = activity_player
+    frame.evaluate("""name => {
+      const video=window.page.player.video;
+      window.originalPlay=video.play;
+      window.playAttempts=0;
+      video.play=function(){window.playAttempts++;return Promise.reject(new DOMException('fixture failure',name))};
+    }""", name)
+    snapshot(page, host=host, paused=host)
+    if host:
+        frame.evaluate('window.page.player.toggle()')
+    expected_attempts = 2 if name == 'NotSupportedError' else 1
+    frame.wait_for_function('count=>window.playAttempts>=count', arg=expected_attempts)
+    frame.wait_for_function('!window.page.player.playPromise')
+    messages = page.evaluate('window.activityMessages')
+    errors = [message for message in messages if message['type'] == 'agp:activity-playback-error']
+    autoplay = [message for message in messages if message['type'] == 'agp:activity-autoplay-blocked']
+    assert bool(errors) == (name == 'NotSupportedError')
+    assert bool(autoplay) == (name == 'NotAllowedError')
+    if errors:
+        assert errors[0]['reason'] == 'unsupported'
+    frame.evaluate('() => {window.page.player.video.play=window.originalPlay}')
+    frame.locator('#playToggle').click()
+    frame.wait_for_function('!window.page.player.video.paused && window.page.player.video.readyState>=2')
+    page.wait_for_function("window.activityMessages.some(message=>message.type==='agp:activity-playback-ok')")
+    if host:
+        wait_control(page, 'play')
+    else:
+        assert controls(page) == []
+
+
+def test_failed_host_playback_does_not_send_paused_heartbeat(activity_player):
+    page, frame = activity_player
+    frame.evaluate("""() => {
+      window.page.player.video.play=()=>Promise.reject(new DOMException('fixture failure','NotAllowedError'));
+    }""")
+    snapshot(page, host=True, paused=False)
+    page.wait_for_function("window.activityMessages.some(message=>message.type==='agp:activity-autoplay-blocked')")
+    page.wait_for_timeout(5200)
+    assert not page.evaluate("window.activityMessages.some(message=>message.type==='agp:activity-control')")
 
 
 def test_follower_cannot_pause_seek_or_change_shared_rate(activity_player):

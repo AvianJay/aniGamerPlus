@@ -848,8 +848,60 @@ var STREAM_PENDING_GRACE = 120000;
 AgpPlayer.prototype.attachSource = function () {
     /* 已經在片庫裡的走完成檔, 還在下載的走 HLS. 兩條路都只讀本機磁碟 */
     if (this.streaming) { this.attachStream(); return; }
+    this.sourceRetryAttempted = false;
     this.video.src = activityWatchUrl('./get_video.mp4?id=' + encodeURIComponent(this.videoData.sn) +
         (this.videoData.resolution ? '&res=' + encodeURIComponent(this.videoData.resolution) : ''));
+};
+
+AgpPlayer.prototype.retryFileSource = function (manual) {
+    if (this.streaming || !this.video.getAttribute('src') || (this.sourceRetryAttempted && !manual)) { return false; }
+    this.sourceRetryAttempted = true;
+    var at = this.video.currentTime;
+    // The Activity restores the room clock on loadedmetadata itself.
+    if (at > 0 && !window.AgpActivityPlayer) { this.resumeOnMetadata(at, false); }
+    this.video.load();
+    return true;
+};
+
+AgpPlayer.prototype.playbackError = function (error) {
+    if (error && error.name === 'AbortError') { return; }
+    var code = this.video.error && this.video.error.code;
+    var reason = error && error.name === 'NotAllowedError' ? 'autoplay' :
+        code === 2 ? 'network' : code === 3 ? 'decode' :
+        (code === 4 || (error && error.name === 'NotSupportedError')) ? 'unsupported' : 'source';
+    this.loader.hidden = true;
+    this.updatePlayButtons();
+    if (window.AgpActivityPlayer) { window.AgpActivityPlayer.playbackError(reason); }
+    else {
+        this.flash(reason === 'autoplay' ? '請按播放開始觀看' :
+            reason === 'unsupported' || reason === 'decode' ? '無法解碼影片，或影片來源無法讀取' : '影片載入失敗，請再按播放重試');
+    }
+};
+
+// Every play attempt must consume its rejection, including clicks and room sync.
+AgpPlayer.prototype.play = function () {
+    if (this.playPromise) { return this.playPromise; }
+    var self = this;
+    this.playPromise = (async function () {
+        try {
+            try { await self.video.play(); }
+            catch (error) {
+                var code = self.video.error && self.video.error.code;
+                if ((error.name === 'NotSupportedError' || code === 2 || code === 4) &&
+                    self.retryFileSource()) {
+                    await self.video.play();
+                } else { throw error; }
+            }
+            if (window.AgpActivityPlayer) { window.AgpActivityPlayer.playbackStarted(); }
+            return true;
+        } catch (error) {
+            self.playbackError(error);
+            return false;
+        } finally {
+            self.playPromise = null;
+        }
+    }());
+    return this.playPromise;
 };
 
 AgpPlayer.prototype.attachStream = function () {
@@ -956,7 +1008,6 @@ AgpPlayer.prototype.clampSeek = function (seconds) {
 };
 
 AgpPlayer.prototype.maybeAutoplay = function () {
-    var self = this;
     if (!this.wantsAutoplay) { return; }
     if (this.streaming) {
         if (!this.streamAttached) { return; }
@@ -967,8 +1018,7 @@ AgpPlayer.prototype.maybeAutoplay = function () {
         }
     }
     this.wantsAutoplay = false;
-    var attempt = this.video.play();
-    if (attempt && attempt.catch) { attempt.catch(function () { self.updatePlayButtons(); }); }
+    this.play();
 };
 
 AgpPlayer.prototype.resumeOnMetadata = function (seconds, play) {
@@ -977,8 +1027,7 @@ AgpPlayer.prototype.resumeOnMetadata = function (seconds, play) {
         self.video.removeEventListener('loadedmetadata', handoff);
         if (seconds > 0) { self.video.currentTime = self.clampSeek(seconds); }
         if (play) {
-            var attempt = self.video.play();
-            if (attempt && attempt.catch) { attempt.catch(function () { self.updatePlayButtons(); }); }
+            self.play();
         }
     });
 };
@@ -1178,8 +1227,10 @@ AgpPlayer.prototype.wire = function () {
         /* 串流時錯誤歸 hls.js 管, 它自己在退避重試. 在這裡再喊一次只會蓋掉正在跑的
            復原, 還讓人以為壞了 */
         if (self.streaming) { return; }
-        self.loader.hidden = true;
-        self.flash('影片載入失敗');
+        // An in-flight play() handles its own error and one source reload.
+        if (self.playPromise) { return; }
+        if ((video.error.code === 2 || video.error.code === 4) && self.retryFileSource()) { return; }
+        self.playbackError(video.error);
     });
 
     this.seek.addEventListener('input', function () {
@@ -1269,9 +1320,10 @@ AgpPlayer.prototype.handleAction = function (action) {
 };
 
 AgpPlayer.prototype.toggle = function () {
+    var self = this;
     if (this.video.paused) {
-        this.video.play();
-        this.flash('播放');
+        if (this.video.error) { this.retryFileSource(true); }
+        this.play().then(function (started) { if (started) { self.flash('播放'); } });
     } else {
         this.video.pause();
         this.flash('暫停');

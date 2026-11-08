@@ -1244,7 +1244,6 @@ body.player-pseudo-fullscreen { overflow: hidden; }
 
 /* Only the Activity frame can shrink to Discord's tiny mobile floating view. */
 @media (max-width: 300px), (max-height: 250px) {
-  .activity-watch .activity-player-hint,
   .activity-watch .desktop-player-chapter-button,
   .activity-watch .desktop-player-time,
   .activity-watch .desktop-player-caption,

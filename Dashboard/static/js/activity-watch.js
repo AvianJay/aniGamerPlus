@@ -12,7 +12,8 @@
     var lastRevision = null;
     var expanded = false;
     var lastPlaybackReport = 0;
-    var hint;
+    var playbackBlocked = false;
+    var lastPlaybackError = '';
 
     function send(message) { window.parent.postMessage(message, location.origin); }
     function playbackReport(force) {
@@ -30,12 +31,7 @@
         return Math.max(0, snapshot.position + (snapshot.paused ? 0 :
             (performance.now() - receivedAt) / 1000 * snapshot.rate));
     }
-    function status(text) { if (hint) { hint.textContent = text; } }
-    function inform() {
-        status(!connected ? '同步連線中斷，正在重新連線…' :
-            host ? '你是主控，可以播放、暫停與調整進度。' : '跟隨主控播放 · 音量與彈幕可自行調整');
-    }
-    function apply(force) {
+    function apply(force, manual) {
         if (!player || !snapshot) { return; }
         var video = player.video;
         var target = position();
@@ -52,12 +48,11 @@
         if (snapshot.paused || !connected) {
             if (!video.paused) { expected.pause = true; video.pause(); }
         }
-        else if (video.paused && !video.ended) {
+        else if (video.paused && !video.ended && (manual || (!playbackBlocked && video.readyState >= 1))) {
+            if (manual && video.error) { player.retryFileSource(true); }
             expected.play = true;
-            video.play().then(inform).catch(function () {
-                delete expected.play;
-                status('點一下播放器開始收看，之後會跟隨主控同步。');
-                send({ type: 'agp:activity-autoplay-blocked' });
+            player.play().then(function (started) {
+                if (!started) { delete expected.play; }
             });
         }
     }
@@ -110,8 +105,8 @@
     AgpPlayer.prototype.applySettingRate = guarded(AgpPlayer.prototype.applySettingRate);
     var toggle = AgpPlayer.prototype.toggle;
     AgpPlayer.prototype.toggle = function () {
-        if (connected && host) { return toggle.call(this); }
-        if (connected && snapshot && !snapshot.paused) { apply(true); }
+        if (connected && host) { playbackBlocked = false; return toggle.call(this); }
+        if (connected && snapshot && !snapshot.paused) { apply(true, true); }
         else { this.flash('等待主控開始播放'); }
     };
     var handleKey = AgpPlayer.prototype.handleKey;
@@ -140,7 +135,6 @@
             connected = false;
             syncExpanded(false);
             if (player) { player.video.pause(); player.seek.disabled = true; }
-            inform();
             return;
         }
         if (event.data.type !== 'agp:activity-state') { return; }
@@ -161,19 +155,28 @@
         }
         if (!host || force || state.revision !== lastRevision) { apply(force); }
         lastRevision = state.revision;
-        inform();
     });
 
     window.AgpActivityPlayer = {
+        playbackError: function (reason) {
+            playbackBlocked = true;
+            delete expected.play;
+            if (lastPlaybackError === reason) { return; }
+            lastPlaybackError = reason;
+            send({ type: reason === 'autoplay' ? 'agp:activity-autoplay-blocked' : 'agp:activity-playback-error',
+                sn: String(player ? player.videoData.sn : activityWatchParams.get('id') || ''),
+                streaming: !!(player && player.streaming), reason: reason });
+        },
+        playbackStarted: function () {
+            playbackBlocked = false;
+            lastPlaybackError = '';
+            if (player) { send({ type: 'agp:activity-playback-ok', sn: String(player.videoData.sn) }); }
+        },
         connect: function (instance) {
             player = instance;
             player.autoNext = false;
             player.seek.disabled = true;
             syncExpanded(expanded);
-            hint = document.createElement('p');
-            hint.className = 'activity-player-hint';
-            hint.setAttribute('role', 'status');
-            player.shell.appendChild(hint);
             var video = player.video;
             ['play', 'pause', 'seeked', 'ratechange', 'ended'].forEach(function (name) {
                 video.addEventListener(name, function () {
@@ -185,15 +188,19 @@
                             (name === 'ratechange' && video.playbackRate === value) ||
                             (name === 'play' && !video.paused) || (name === 'pause' && video.paused)) { return; }
                     }
+                    // A local media failure/reload must not pause everyone else.
+                    if (video.error || playbackBlocked || (name === 'pause' && video.readyState === 0)) { return; }
                     if (!connected || !host) { apply(false); return; }
                     control({ play: 'play', pause: 'pause', seeked: 'seek', ratechange: 'rate', ended: 'pause' }[name]);
                 });
             });
-            video.addEventListener('loadedmetadata', function () { apply(true); playbackReport(true); });
+            video.addEventListener('loadedmetadata', function () { playbackBlocked = false; apply(true); playbackReport(true); });
             video.addEventListener('durationchange', function () { playbackReport(true); });
             video.addEventListener('timeupdate', function () { playbackReport(false); });
-            setInterval(function () { if (connected && host && !video.seeking && video.readyState >= 2) { control('sync'); } }, 5000);
-            inform();
+            setInterval(function () {
+                if (connected && host && !playbackBlocked && !player.playPromise && !video.error &&
+                    !video.seeking && video.readyState >= 2) { control('sync'); }
+            }, 5000);
             send({ type: 'agp:activity-ready' });
             playbackReport(true);
             apply(true);
@@ -209,8 +216,6 @@
             '.activity-watch nav{display:none!important}.activity-watch .watch-grid{display:block}' +
             '.activity-watch .watch-page{width:100%;max-width:none;margin:0;padding:0}' +
             '.activity-watch{overflow:hidden}.activity-watch .player-shell{border:0;border-radius:0;height:100vh;aspect-ratio:auto}' +
-            '.activity-player-hint{position:absolute;top:8px;left:12px;right:12px;z-index:4;pointer-events:none;margin:0;' +
-            'color:#c8ccd7;text-shadow:0 1px 4px #000;font-size:12px}' +
             '.activity-viewer [data-action="prev"],.activity-viewer [data-action="next"],' +
             '.activity-viewer [data-action="back"],.activity-viewer [data-action="forward"],' +
             '.activity-viewer #skipIntro{display:none!important}';
