@@ -346,9 +346,9 @@ function episodeNumber(video) {
 var openingCharactersPromise = null;
 var openingMalIds = new Map();
 var openingAnimeShows = new Map();
-async function openingJson(url, options) {
+async function openingJson(url, options, timeout) {
     var controller = new AbortController();
-    var timer = setTimeout(function () { controller.abort(); }, 8000);
+    var timer = setTimeout(function () { controller.abort(); }, timeout || 8000);
     try {
         var response = await fetch(activityWatchUrl(url), Object.assign({}, options, { signal: controller.signal }));
         if (!response.ok) { var error = new Error('Opening API ' + response.status); error.status = response.status; throw error; }
@@ -476,6 +476,20 @@ async function openingMalId(title, seasonStart) {
     openingMalIds.set(key, work);
     try { return await work; } catch (error) { openingMalIds.delete(key); throw error; }
 }
+async function serverOpeningSkip(sn, duration, animeSkipFallback) {
+    // Discord only allows same-origin connections. The server resolves all of
+    // Bangumi, AniList/Jikan and AniSkip/AnimeSkip behind this episode-scoped API.
+    var data = await openingJson('./watch/skip.json?id=' + encodeURIComponent(sn) +
+        '&duration=' + Math.round(duration) + '&anime_skip_fallback=' + (animeSkipFallback ? '1' : '0'), null, 45000);
+    var interval = data && data.interval;
+    if (!Array.isArray(interval) || interval.length !== 2 ||
+        !Number.isFinite(interval[0]) || !Number.isFinite(interval[1]) ||
+        interval[0] < 0 || interval[1] - interval[0] < 40 || interval[1] - interval[0] > 210 ||
+        interval[1] > duration - 300 ||
+        (data.source !== 'AniSkip' && (data.source !== 'AnimeSkip' || !animeSkipFallback))) { return null; }
+    return { start: interval[0], end: interval[1], source: data.source };
+}
+
 async function clientOpeningSkip(title, seasonStart, episode, duration, animeSkipFallback) {
     var number = openingEpisode(episode);
     if (!title || !number || !isFinite(duration) || duration < 600 || duration > 7200) {
@@ -1812,7 +1826,10 @@ AgpPlayer.prototype.loadOpeningSkip = function () {
     this.aniskipIntro = null;
     this.syncSkipButton();
     var self = this;
-    clientOpeningSkip(title, seasonStart, episode, duration, animeSkipFallback)
+    var lookup = window.AgpActivityPlayer
+        ? serverOpeningSkip(this.videoData.sn, duration, animeSkipFallback)
+        : clientOpeningSkip(title, seasonStart, episode, duration, animeSkipFallback);
+    lookup
         .then(function (interval) {
             if (self.skipRequestKey !== key || !interval) { return; }
             self.aniskipIntro = interval;

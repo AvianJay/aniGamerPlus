@@ -188,7 +188,7 @@
         if (!presence) {
             presence = window.AgpDiscordPresence.create({ sdk: sdk, authorize: authorizePresence,
                 onChange: renderPresence,
-                onError: function () { toast('無法更新 Discord 播放動態，觀看不受影響。'); }
+                onError: function (message) { toast(message); }
             });
         }
         await presence.setEnabled(presenceWanted && presenceScopeGranted);

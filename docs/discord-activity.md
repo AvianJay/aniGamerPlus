@@ -87,6 +87,8 @@ Activity 內的放大按鈕會將播放器鋪滿 Discord 活動區域，保留�
 
 「顯示播放動態」預設開啟。Discord 授權成功後，開始觀看就會顯示作品名稱、集數、播放時間及可取得的封面；暫停時會標示「已暫停」。如果 Discord 沒有授予播放動態權限，開關會保持關閉；按一下即可重新要求權限，不會重設房間或訪客授權。
 
+播放動態透過 Discord SDK 的 `setActivity` 更新；暫時送出失敗時會在至少 5 秒後重試一次，持續失敗時可關閉後重新啟用。錯誤提示會保留 Discord 提供的數字錯誤碼，不顯示授權憑證或原始回應。
+
 停止觀看、失去觀看授權或手動關閉頂端的「顯示播放動態」時，會清除自訂動態。手動關閉後，同一個用戶端會記住選擇，下次啟動只要求基本權限。若用戶端封鎖本機儲存，這個選擇只保留到離開頁面為止。
 
 Discord 顯示的應用程式名稱由 Developer Portal 的 Application 名稱決定，請將它設為想顯示的 `aniGamerPlus` 名稱；內容模板與 Flutter 相同。[Discord Activity 播放動態說明](https://github.com/discord/discord-api-docs/blob/main/developers/rich-presence/using-with-the-embedded-app-sdk.mdx)
@@ -100,6 +102,8 @@ Discord 顯示的應用程式名稱由 Developer Portal 的 Application 名稱�
 主辦人換片（包括重新選擇同一集）、撤銷授權、離開、主控接棒，或主辦人的網站登入／綁定失效時，舊 token 即失效。訪客離開、連線逾時或不再是 Discord 房間成員也會失效。重新加入、換集後都需要新的授權；若主辦人已開啟自動授權，則由伺服器重新簽發，否則需手動授權。授權最長兩小時，且不會超過主辦人的 Discord 工作階段期限。
 
 瀏覽器若阻擋自動播放，先在播放器按一次播放。這是各自裝置的播放許可；觀眾仍會跟隨主控方的房間狀態。
+
+Activity 的片頭時間查詢走同站的 `/watch/skip.json`，由伺服器查詢 Bangumi、AniList／Jikan 及 AniSkip／AnimeSkip，避免被 Discord 的 CSP 擋住。此查詢沿用目前影片的訪客授權；「只用 AniSkip」也會停用伺服器端的 AnimeSkip 備援。查詢失敗不會中止影片播放或 SDK 播放動態更新。
 
 影片來源載入失敗時，播放器會自動重載一次；仍然失敗時會停止自動重試，並在活動頁顯示原因。`NotSupportedError` 不一定代表缺少解碼器，影片請求被拒絕、檔案不存在或代理回傳 HTML 也可能導致來源無法播放；活動頁會另外檢查影片端點的 HTTP 狀態。若來源正常但只有特定用戶端無法解碼，可確認該用戶端的 Discord 版本及硬體加速設定。按播放可以重新嘗試，恢復播放後會清除錯誤並跟上房間進度。
 

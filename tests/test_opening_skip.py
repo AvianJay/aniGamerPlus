@@ -73,6 +73,12 @@ def test_bocchi_search_simplifies_the_bangumi_keyword():
                                     session=BocchiSession()) == 47917
 
 
+def test_server_title_simplification_works_without_optional_opencc(monkeypatch):
+    monkeypatch.setattr(OpeningSkip, '_t2s', None)
+    assert OpeningSkip._simplify('孤獨搖滾！') == '孤独摇滚！'
+    assert OpeningSkip._simplify('進擊的巨人') == '进击的巨人'
+
+
 class BackupSession:
     def __init__(self, *, anilist_down=False, aniskip_status=404, anime_skip=None):
         self.anilist_down = anilist_down
@@ -122,6 +128,18 @@ def test_aniskip_keeps_priority_without_extra_requests():
     series = OpeningSkip.resolve_series('孤獨搖滾！', '2022/10/09', session=session)
     assert OpeningSkip.opening_op(series, 1, 1420, session=session)['source'] == 'AniSkip'
     assert not any('jikan.moe' in url or 'anime-skip.com' in url for url in session.calls)
+
+
+@pytest.mark.parametrize('aniskip_status', [404, 503])
+def test_aniskip_only_does_not_query_anime_skip(aniskip_status):
+    session = BackupSession(aniskip_status=aniskip_status)
+    series = OpeningSkip.resolve_series('孤獨搖滾！', '2022/10/09', session=session)
+    if aniskip_status == 404:
+        assert OpeningSkip.opening_op(series, 3, 1420, session=session, anime_skip_fallback=False) is None
+    else:
+        with pytest.raises(RuntimeError):
+            OpeningSkip.opening_op(series, 3, 1420, session=session, anime_skip_fallback=False)
+    assert not any('anime-skip.com' in url for url in session.calls)
 
 
 @pytest.mark.parametrize('episode,interval', [

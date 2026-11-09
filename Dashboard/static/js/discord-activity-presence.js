@@ -93,24 +93,30 @@
         var inFlight = false;
         var timer = 0;
         var urgent = false;
+        var retries = 0;
+        var retryPending = false;
 
         function notify() {
             if (typeof options.onChange === 'function') { options.onChange(enabled); }
         }
-        function report() {
-            if (typeof options.onError === 'function') { options.onError('無法更新 Discord 播放動態，觀看不受影響。'); }
+        function report(error) {
+            // SDK errors can contain credentials or response bodies. Only the
+            // numeric RPC code may leave this module.
+            var code = error && Number.isInteger(error.code) ? '（Discord 錯誤碼 ' + error.code + '）' : '';
+            if (typeof options.onError === 'function') { options.onError('無法更新 Discord 播放動態' + code + '，觀看不受影響。'); }
         }
         function flush() {
             clearTimeout(timer);
             timer = 0;
             if (inFlight || !sdk || !sdk.commands || typeof sdk.commands.setActivity !== 'function') { return; }
             var now = Date.now();
-            if (sent && !changed(desired, previous, now)) { return; }
+            if (sent && !retryPending && !changed(desired, previous, now)) { return; }
             if (!urgent && now - lastWrite < UPDATE_INTERVAL) {
                 timer = setTimeout(flush, UPDATE_INTERVAL - (now - lastWrite));
                 return;
             }
             urgent = false;
+            retryPending = false;
             var value = desired;
             var payload = activity(value, now);
             inFlight = true;
@@ -119,17 +125,25 @@
                 .then(function () {
                     sent = true;
                     previous = value;
-                }).catch(function () {
-                    // Do not retry every room poll after scope or RPC failure.
+                    retries = 0;
+                }).catch(function (error) {
                     sent = true;
                     previous = value;
-                    report();
+                    report(error);
+                    // Recover a transient RPC failure once, respecting the
+                    // same rate limit as normal updates and later room polls.
+                    if (retries < 1 && !changed(desired, value, Date.now())) {
+                        retries += 1;
+                        retryPending = true;
+                        timer = setTimeout(flush, UPDATE_INTERVAL);
+                    }
                 }).finally(function () {
                     inFlight = false;
                     if (desired !== value) { flush(); }
                 });
         }
         function queue(value, immediate) {
+            if (changed(value, desired, Date.now())) { retries = 0; retryPending = false; }
             desired = value;
             urgent = urgent || immediate;
             if (!sent && value === null && !inFlight) { return; }

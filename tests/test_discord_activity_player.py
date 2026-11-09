@@ -65,12 +65,18 @@ def activity_player(activity_player_browser, activity_player_server):
             # Progress persistence belongs to the existing watch tests. Keep
             # their shared history fixture unchanged when this frame closes.
             route.fulfill(content_type='application/json', body='{"status":"200"}')
+        elif request_url.netloc == origin and request_url.path == '/watch':
+            response = route.fetch()
+            route.fulfill(response=response, headers={
+                **response.headers, 'Content-Security-Policy': "connect-src 'self'"})
         elif request_url.netloc == origin:
             route.continue_()
         else:
             route.abort()
 
     context.route('**/*', local_only)
+    context.add_init_script("""window.cspViolations=[];
+      addEventListener('securitypolicyviolation',event=>cspViolations.push(event.violatedDirective));""")
     page.goto(activity_player_server.url + '/activity-player-harness')
     page.wait_for_function("""() => {
       const frame=document.querySelector('#player').contentWindow;
@@ -141,6 +147,61 @@ def test_initial_paused_snapshot_sets_position_and_rate_without_feedback(activit
     page.wait_for_timeout(200)
     assert controls(page) == []
     assert frame.locator('.activity-player-hint').count() == 0
+
+
+@pytest.mark.parametrize('mode,source,accepted', [
+    ('aniskip-first', 'AniSkip', True),
+    ('aniskip-first', 'AnimeSkip', True),
+    ('aniskip-only', 'AniSkip', True),
+    ('aniskip-only', 'AnimeSkip', False),
+])
+def test_opening_lookup_uses_local_episode_grant_under_discord_csp(activity_player, mode, source, accepted):
+    page, frame = activity_player
+    requests = []
+
+    def opening(route):
+        requests.append(route.request.url)
+        route.fulfill(json={'interval': [40, 90], 'source': source})
+
+    page.route('**/watch/skip.json?*', opening)
+    frame.goto(frame.url + '&ag=opening-test-episode-capability')
+    frame.wait_for_function('window.page?.player?.video.readyState>=2')
+    with page.expect_response('**/watch/skip.json?*') as response:
+        frame.evaluate("""mode=>{
+          const player=window.page.player;
+          player.skipMode=mode;
+          player.playableDuration=()=>1440;
+          player.seekableDuration=()=>1440;
+          Object.defineProperty(player.video,'currentTime',{configurable:true,writable:true,value:60});
+          player.loadOpeningSkip();
+        }""", mode)
+    response.value.finished()
+    if accepted:
+        frame.wait_for_function('window.page.player.aniskipIntro!==null')
+        assert frame.locator('#skipIntro').get_attribute('aria-label') == '跳過片頭 · ' + source
+        assert frame.locator('#skipIntro').is_visible()
+    else:
+        assert frame.evaluate('serverOpeningSkip(window.page.player.videoData.sn,1440,false)') is None
+        assert frame.evaluate('window.page.player.aniskipIntro') is None
+    query = parse_qs(urlsplit(requests[-1]).query)
+    assert query['id'] == [str(FIRST_SN)]
+    assert query['ag'] == ['opening-test-episode-capability']
+    assert query['anime_skip_fallback'] == ['0' if mode == 'aniskip-only' else '1']
+    assert frame.evaluate('window.cspViolations') == []
+
+
+def test_opening_api_failure_keeps_playback_available_without_external_fallback(activity_player):
+    page, frame = activity_player
+    page.route('**/watch/skip.json?*', lambda route: route.fulfill(status=503, json={}))
+    frame.evaluate("""() => {
+      const player=window.page.player;
+      player.playableDuration=()=>1440;
+      player.loadOpeningSkip();
+    }""")
+    frame.wait_for_function('window.page.player.skipRetryAfter>Date.now()')
+    snapshot(page, paused=False)
+    frame.wait_for_function('!window.page.player.video.paused')
+    assert frame.evaluate('window.cspViolations') == []
 
 
 @pytest.mark.parametrize('host', [True, False], ids=['host', 'follower'])

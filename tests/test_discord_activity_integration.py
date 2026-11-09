@@ -305,6 +305,26 @@ def test_guest_capability_cannot_escape_through_external_plugin_redirect(env, mo
     assert ordinary.status_code == 302 and ordinary.headers['location'] == external
 
 
+def test_guest_opening_lookup_uses_server_metadata_and_keeps_episode_scope(env, monkeypatch):
+    _, guest, token = granted_guest(env)
+    monkeypatch.setattr(server, '_find_video_entry', lambda sn: {'sn': sn, 'source': server.BAHAMUT_SOURCE})
+    monkeypatch.setattr(server, '_read_catalog_cache', lambda *args: None)
+    monkeypatch.setattr(server, '_write_catalog_cache', lambda *args: None)
+    monkeypatch.setattr(server.OpeningSkip, 'resolve_series', lambda *args: {'malId': 12345})
+    calls = []
+    def opening(series, episode, duration, *, anime_skip_fallback):
+        calls.append((series['malId'], episode, duration, anime_skip_fallback))
+        return {'interval': [40, 130], 'source': 'AniSkip'}
+    monkeypatch.setattr(server.OpeningSkip, 'opening_op', opening)
+    params = {'id': '101', 'ag': token, 'duration': 1440, 'anime_skip_fallback': '0'}
+    result = guest.get('/watch/skip.json', params=params)
+    assert result.status_code == 200
+    assert result.json() == {'interval': [40, 130], 'source': 'AniSkip'}
+    assert calls == [(12345, 1, 1440, False)]
+    assert guest.get('/watch/skip.json', params={**params, 'id': '102'}).status_code == 403
+    assert len(calls) == 1
+
+
 @pytest.mark.parametrize('path', [
     '/watch', '/video_list.json', '/watch/series.json', '/anime_info',
     '/watch/skip.json', '/thumbnail.webp', '/get_video.mp4', '/get_danmu.ass',

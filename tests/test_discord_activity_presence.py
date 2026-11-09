@@ -169,12 +169,39 @@ def test_artwork_never_includes_guest_capabilities_or_credentials(page, cover):
 
 
 def test_rpc_failure_is_sanitized_and_does_not_retry_each_poll(page):
-    page.evaluate("() => {sdk.commands.setActivity=async value=>{calls.push(value);throw new Error('secret-sdk-body')}}")
+    page.evaluate("""() => {sdk.commands.setActivity=async value=>{
+      calls.push(value);throw Object.assign(new Error('secret-sdk-body'),{code:4006})}}
+    """)
     update(page, payload())
     page.evaluate('presence.setEnabled(true)')
     calls(page, 1)
     page.wait_for_function('failures.length===1')
     assert 'secret' not in json.dumps(page.evaluate('failures'))
-    update(page, payload(position=110), elapsed=5000)
+    assert '4006' in page.evaluate('failures[0]')
+    for position in (102, 104, 106):
+        update(page, payload(position=position), elapsed=1000)
     page.wait_for_timeout(30)
     assert len(page.evaluate('calls')) == 1
+    update(page, payload(position=110), elapsed=2000)
+    calls(page, 2)
+    page.wait_for_function('failures.length===2')
+    # Exhausting the single retry must not start an endless loop on room polls.
+    update(page, payload(position=120), elapsed=5000)
+    page.wait_for_timeout(30)
+    assert len(page.evaluate('calls')) == 2
+
+
+def test_transient_rpc_failure_recovers_on_later_poll_without_manual_toggle(page):
+    page.evaluate("""() => {sdk.commands.setActivity=async value=>{
+      calls.push(value);if(calls.length===1)throw new Error('transient-sdk-failure')}}
+    """)
+    update(page, payload())
+    page.evaluate('presence.setEnabled(true)')
+    calls(page, 1)
+    page.wait_for_function('failures.length===1')
+    update(page, payload(position=110), elapsed=5000)
+    calls(page, 2)
+    update(page, payload(position=120), elapsed=5000)
+    page.wait_for_timeout(30)
+    assert len(page.evaluate('calls')) == 2
+    assert page.evaluate('presence.enabled')

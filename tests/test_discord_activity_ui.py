@@ -51,6 +51,7 @@ class ActivityMock:
 
         def respond(body, content_type='application/json', status=200):
             route.fulfill(status=status, content_type=content_type,
+                          headers={'Content-Security-Policy': "connect-src 'self'"} if content_type == 'text/html' else {},
                           body=body if isinstance(body, (str, bytes)) else json.dumps(body))
 
         if path == '/outer':
@@ -392,6 +393,24 @@ def test_presence_uses_launch_authorization_and_publishes_playback_by_default(ac
     mocked.state.update(can_watch=False, watch_token=None, revision=mocked.state['revision']+1)
     player.wait_for(state='hidden')
     frame.wait_for_function('window.sdkActivities.at(-1).activity===null')
+
+
+def test_bangumi_csp_failure_does_not_interrupt_sdk_presence(activity_ui):
+    page, mocked = activity_ui
+    mocked.state.update(host_id='456', sn='100', can_watch=True, watch_token='guest-video-token')
+    page.goto(ORIGIN + '/outer')
+    frame = page.frames[1]
+    frame.locator('#activityPlayer').wait_for(state='visible')
+    child = frame.child_frames[0]
+    result = child.evaluate("""async () => {
+      try {await fetch('https://api.bgm.tv/v0/search/subjects',{method:'POST'});return 'allowed'}
+      catch(error){return error.name}
+    }""")
+    assert result == 'TypeError'
+    child.evaluate("""() => parent.postMessage({type:'agp:activity-playback',sn:'100',
+      title:'孤獨搖滾！',episode:'第 1 集',duration:1440,paused:true,rate:1},location.origin)""")
+    frame.wait_for_function("window.sdkActivities.at(-1)?.activity?.details==='孤獨搖滾！'")
+    assert frame.locator('#activityPresenceToggle').get_attribute('aria-pressed') == 'true'
 
 
 @pytest.mark.parametrize('width,height', [(1280, 900), (390, 844)])

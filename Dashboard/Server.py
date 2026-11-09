@@ -2988,8 +2988,9 @@ def watch_skip(request: Request):
         return JSONResponse({'interval': None}, headers={'Cache-Control': 'private, max-age=600'})
     title = Catalog.series_title(anime.get('title'))
     season_start = anime.get('seasonStart') or ''
-    cache_name = 'skip_v2_' + hashlib.sha256(
-        f'{title}|{season_start}|{episode}|{duration}'.encode('utf-8')
+    anime_skip_fallback = request.query_params.get('anime_skip_fallback') != '0'
+    cache_name = 'skip_v3_' + hashlib.sha256(
+        f'{title}|{season_start}|{episode}|{duration}|{int(anime_skip_fallback)}'.encode('utf-8')
     ).hexdigest()[:20]
     cached = _read_catalog_cache(cache_name, 7 * 24 * 3600)
     if cached is not None:
@@ -3003,7 +3004,7 @@ def watch_skip(request: Request):
             _write_catalog_cache(mal_cache_name, {'series': series})
         else:
             series = mal_cache.get('series')
-        result = OpeningSkip.opening_op(series, episode, duration)
+        result = OpeningSkip.opening_op(series, episode, duration, anime_skip_fallback=anime_skip_fallback)
     except Exception:
         logger.exception('Opening skip lookup failed for %s', sn)
         return JSONResponse({'interval': None}, headers={'Cache-Control': 'no-store'})

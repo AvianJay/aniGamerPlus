@@ -7,7 +7,10 @@ Unknown or ambiguous matches return no interval; the client can use danmaku.
 """
 
 import difflib
+from functools import lru_cache
+import json
 import math
+from pathlib import Path
 import re
 import unicodedata
 
@@ -21,8 +24,17 @@ except ImportError:  # Old server installs can start before dependencies are upg
 _t2s = OpenCC('t2s') if OpenCC else None
 
 
+@lru_cache(maxsize=1)
+def _title_translation():
+    # The watch page ships the same title map; opening lookup should still
+    # resolve traditional titles on servers without the optional OpenCC package.
+    path = Path(__file__).resolve().parent / 'Dashboard/static/data/opening_t2s.json'
+    return str.maketrans(json.loads(path.read_text(encoding='utf-8')))
+
+
 def _simplify(value):
-    return _t2s.convert(str(value or '')) if _t2s else str(value or '')
+    text = str(value or '')
+    return _t2s.convert(text) if _t2s else text.translate(_title_translation())
 _season = re.compile(r'第\s*([一二三四五六七八九十\d]+)\s*季', re.I)
 
 
@@ -227,14 +239,16 @@ def anime_skip_op(series, episode, duration, *, session=requests):
     return min(valid, key=lambda row: (-row[1], row[2]))[0]
 
 
-def opening_op(series, episode, duration, *, session=requests):
+def opening_op(series, episode, duration, *, session=requests, anime_skip_fallback=True):
     if not series or not 1 <= episode <= 999 or not 600 <= duration <= 7200:
         return None
     if isinstance(series.get('episodes'), int) and episode > series['episodes']:
         return None
     failure = None
-    for source, lookup in [('AniSkip', lambda: aniskip_op(series['malId'], episode, duration, session=session)),
-                           ('AnimeSkip', lambda: anime_skip_op(series, episode, duration, session=session))]:
+    lookups = [('AniSkip', lambda: aniskip_op(series['malId'], episode, duration, session=session))]
+    if anime_skip_fallback:
+        lookups.append(('AnimeSkip', lambda: anime_skip_op(series, episode, duration, session=session)))
+    for source, lookup in lookups:
         try:
             interval = lookup()
             if interval:
